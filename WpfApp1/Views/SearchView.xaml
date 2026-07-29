@@ -1,0 +1,119 @@
+<UserControl x:Class="DocMind.Views.SearchView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="clr-namespace:DocMind.ViewModels"
+             xmlns:m="clr-namespace:DocMind.Models"
+             mc:Ignorable="d"
+             d:DesignHeight="450" d:DesignWidth="800">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <Style x:Key="HitScore" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Foreground" Value="#2B6CB0" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+        </Style>
+    </UserControl.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 搜索条 -->
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBox Grid.Column="0"
+                     Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
+                     ToolTip="输入搜索词，回车开始搜索"
+                     Margin="0,0,8,0" Padding="6" VerticalContentAlignment="Center"
+                     KeyUp="QueryBox_KeyUp" />
+            <TextBox Grid.Column="1"
+                     Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
+                     Width="120" ToolTip="集合" Padding="6" Margin="0,0,8,0" />
+            <ComboBox Grid.Column="2" SelectedValue="{Binding TopK}" Width="80" Margin="0,0,8,0">
+                <ComboBoxItem Content="5"  />
+                <ComboBoxItem Content="10" />
+                <ComboBoxItem Content="20" />
+                <ComboBoxItem Content="50" />
+            </ComboBox>
+            <StackPanel Grid.Column="3" Orientation="Horizontal">
+                <Button Content="搜索" Command="{Binding SearchCommand}" Margin="0,0,4,0" Padding="10,4" />
+                <Button Content="清空" Command="{Binding ClearCommand}" Padding="10,4" />
+            </StackPanel>
+        </Grid>
+
+        <!-- 结果统计条 -->
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,4"
+                    Visibility="{Binding LastResponse, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="{Binding LastResponse.Total, StringFormat=共 {0} 条}" Margin="0,0,16,0" />
+            <TextBlock Text="{Binding LastResponse.ElapsedMs, StringFormat=耗时 {0:F0}ms}" />
+        </StackPanel>
+
+        <!-- 结果列表 + 详情 -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.4*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="1.6*" />
+            </Grid.ColumnDefinitions>
+
+            <ListBox Grid.Column="0"
+                      ItemsSource="{Binding Hits}"
+                      SelectedItem="{Binding SelectedHit}"
+                      HorizontalContentAlignment="Stretch"
+                      BorderThickness="1">
+                <ListBox.ItemTemplate>
+                    <DataTemplate DataType="{x:Type m:SearchHit}">
+                        <StackPanel Margin="2">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Style="{StaticResource HitScore}"
+                                           Text="{Binding Score, StringFormat=\{0:F4\}}" />
+                                <TextBlock Text="{Binding Chunk.DocumentId}"
+                                           Foreground="#666" FontSize="11" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding Chunk.Content}"
+                                       TextTrimming="CharacterEllipsis"
+                                       MaxHeight="48" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center" Background="#E2E8F0" />
+
+            <Border Grid.Column="2" Padding="8" BorderBrush="#E2E8F0" BorderThickness="1,0,0,0">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="详情"
+                               FontWeight="Bold" Margin="0,0,0,6" />
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <TextBlock
+                            Text="{Binding SelectedHit.Chunk.Content}"
+                            TextWrapping="Wrap" FontSize="14"
+                            Visibility="{Binding SelectedHit, Converter={StaticResource BoolToVis}}"
+                            xml:space="preserve" />
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <!-- 状态栏 -->
+        <DockPanel Grid.Row="3" Margin="0,8,0,0">
+            <TextBlock DockPanel.Dock="Left" Text="●" Foreground="#2B6CB0" Margin="0,0,4,0" />
+            <TextBlock Text="{Binding StatusMessage}" Foreground="#4A5560" />
+            <ProgressBar DockPanel.Dock="Right"
+                        IsIndeterminate="True" Width="120" Height="14"
+                        Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
+                        Margin="8,0,0,0" />
+        </DockPanel>
+    </Grid>
+</UserControl>
