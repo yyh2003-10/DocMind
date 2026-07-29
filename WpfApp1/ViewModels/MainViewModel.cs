@@ -42,11 +42,11 @@ public class MainViewModel : ViewModelBase
 
         Title = "DocMind";
 
-        NavigationItems.Add(new NavigationItem { Title = "搜索", Icon = "🔍", ViewModelType = typeof(SearchViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "导入", Icon = "📥", ViewModelType = typeof(ImportViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "转换", Icon = "🔄", ViewModelType = typeof(ConvertViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "质量看板", Icon = "📊", ViewModelType = typeof(QualityViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "设置", Icon = "⚙️", ViewModelType = typeof(SettingsViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "搜索", Icon = "🔍", IconPath = "Assets/nav-search.png", ViewModelType = typeof(SearchViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "导入", Icon = "📥", IconPath = "Assets/nav-import.png", ViewModelType = typeof(ImportViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "转换", Icon = "🔄", IconPath = "Assets/nav-convert.png", ViewModelType = typeof(ConvertViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "质量看板", Icon = "📊", IconPath = "Assets/nav-quality.png", ViewModelType = typeof(QualityViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "设置", Icon = "⚙️", IconPath = "Assets/nav-settings.png", ViewModelType = typeof(SettingsViewModel) });
 
         SelectedNavigationItem = NavigationItems[0];
     }

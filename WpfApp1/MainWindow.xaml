@@ -8,7 +8,7 @@
         xmlns:v="clr-namespace:DocMind.Views"
         mc:Ignorable="d"
         Title="{Binding Title}" Height="600" Width="1000"
-        d:DataContext="{d:DesignInstance Type=vm:MainViewModel}">
+        d:DataContext="{d:DesignInstance Type=vm:MainViewModel}" Icon="/托盘图标D 单.png" ResizeMode="CanMinimize">
 
     <Window.Resources>
         <!-- DataTemplates to map ViewModels to Views -->
@@ -30,6 +30,11 @@
     </Window.Resources>
 
     <Grid Background="{StaticResource BackgroundBrush}">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="37*"/>
+            <ColumnDefinition Width="322*"/>
+            <ColumnDefinition Width="641*"/>
+        </Grid.ColumnDefinitions>
         <Grid.RowDefinitions>
             <RowDefinition Height="50"/>
             <RowDefinition Height="*"/>
@@ -37,7 +42,7 @@
         </Grid.RowDefinitions>
 
         <!-- Top Bar -->
-        <Border Grid.Row="0" BorderBrush="#EEE" BorderThickness="0,0,0,1">
+        <Border Grid.Row="0" BorderBrush="#EEE" BorderThickness="0,0,0,1" Grid.ColumnSpan="3">
             <Grid Margin="10,0">
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="DocMind" FontWeight="Bold" FontSize="18" Foreground="{StaticResource PrimaryBrush}"/>
@@ -49,7 +54,7 @@
         </Border>
 
         <!-- Main Content Area -->
-        <Grid Grid.Row="1">
+        <Grid Grid.Row="1" Grid.ColumnSpan="3" Margin="0,0,0,30" Grid.RowSpan="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="160"/>
                 <!-- Sidebar -->
@@ -66,9 +71,9 @@
                          Style="{StaticResource NavigationListBoxStyle}">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <StackPanel Orientation="Horizontal" Margin="10,15">
-                                <TextBlock Text="{Binding Icon}" Margin="0,0,10,0"/>
-                                <TextBlock Text="{Binding Title}"/>
+                            <StackPanel Orientation="Horizontal" Margin="10,12">
+                                <Image Source="{Binding IconSource}" Width="32" Height="32" Margin="0,0,12,0"/>
+                                <TextBlock Text="{Binding Title}" VerticalAlignment="Center"/>
                             </StackPanel>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
@@ -88,12 +93,12 @@
                     <TextBlock Text="Detail panel" Foreground="Gray" HorizontalAlignment="Center" Margin="0,20,0,0"/>
                 </Grid>
             </Expander>
-            
+
             <GridSplitter Grid.Column="1" HorizontalAlignment="Right" Width="1" Background="#EEE"/>
         </Grid>
 
         <!-- Bottom Bar -->
-        <Border Grid.Row="2" Background="#FAFAFA" BorderBrush="#EEE" BorderThickness="0,1,0,0">
+        <Border Grid.Row="2" Background="#FAFAFA" BorderBrush="#EEE" BorderThickness="0,1,0,0" Grid.ColumnSpan="3">
             <StatusBar Background="Transparent">
                 <StatusBarItem>
                     <TextBlock Text="Backend: localhost:8765" FontSize="12"/>

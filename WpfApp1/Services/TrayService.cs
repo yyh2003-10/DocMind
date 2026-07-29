@@ -11,8 +11,9 @@ public sealed class TrayService : IDisposable
 {
     private readonly TaskbarIcon _icon;
     private readonly Window _mainWindow;
+    private string _statusText = "DocMind - 离线";
 
-    /// <summary>托盘状态灯文案：在线 / 离线 / 启动中。</summary>
+    /// <summary>托盘状态灯文案。</summary>
     public string StatusText
     {
         get => _statusText;
@@ -26,7 +27,6 @@ public sealed class TrayService : IDisposable
             }
         }
     }
-    private string _statusText = "DocMind - 离线";
 
     /// <summary>状态变化通知。</summary>
     public event EventHandler<string>? StatusChanged;
@@ -37,30 +37,19 @@ public sealed class TrayService : IDisposable
         _icon = new TaskbarIcon
         {
             ToolTipText = StatusText,
-            IconSource = TryLoadIcon(),
+            IconSource = LoadIconImage(),
         };
 
         // 右键菜单
-        var contextMenu = new ContextMenu();
-        contextMenu.Items.Add(new MenuItem
-        {
-            Header = "显示主窗口",
-            Command = new RelayCommand(ShowMainWindow),
-        });
-        contextMenu.Items.Add(new Separator());
-        contextMenu.Items.Add(new MenuItem
-        {
-            Header = "退出",
-            Command = new RelayCommand(ExitApp),
-        });
-        _icon.ContextMenu = contextMenu;
-
-        // 双击托盘恢复
+        var menu = new ContextMenu();
+        menu.Items.Add(new MenuItem { Header = "显示主窗口", Command = new RelayCommand(ShowMainWindow) });
+        menu.Items.Add(new Separator());
+        menu.Items.Add(new MenuItem { Header = "退出", Command = new RelayCommand(ExitApp) });
+        _icon.ContextMenu = menu;
         _icon.DoubleClickCommand = new RelayCommand(ShowMainWindow);
         _icon.ForceCreate();
     }
 
-    /// <summary>更新状态灯文案（后端在线/离线时调）。</summary>
     public void UpdateStatus(BackendState state)
     {
         StatusText = state switch
@@ -72,13 +61,8 @@ public sealed class TrayService : IDisposable
         };
     }
 
-    /// <summary>隐藏主窗口到托盘（不显示在任务栏）。</summary>
-    public void HideToTray()
-    {
-        _mainWindow.Hide();
-    }
+    public void HideToTray() => _mainWindow.Hide();
 
-    /// <summary>从托盘恢复主窗口。</summary>
     public void ShowMainWindow()
     {
         _mainWindow.Show();
@@ -87,38 +71,32 @@ public sealed class TrayService : IDisposable
         _mainWindow.Focus();
     }
 
-    /// <summary>退出整个应用（触发 Application.Shutdown）。</summary>
-    private void ExitApp()
-    {
-        Application.Current.Shutdown();
-    }
+    private void ExitApp() => Application.Current.Shutdown();
 
-    /// <summary>尝试从嵌入资源加载 DocMind.ico；失败回 null。</summary>
-    private static System.Windows.Media.ImageSource? TryLoadIcon()
+    private static System.Windows.Media.ImageSource? LoadIconImage()
     {
-        try
+        var icoPath = System.IO.Path.Combine(
+            AppContext.BaseDirectory, "Assets/DocMind.ico");
+        if (System.IO.File.Exists(icoPath))
         {
-            var uri = new Uri("pack://application:,,,/Assets/DocMind.ico", UriKind.Absolute);
-            return new System.Windows.Media.Imaging.BitmapImage(uri);
+            try
+            {
+                return new System.Windows.Media.Imaging.BitmapImage(
+                    new Uri(icoPath, UriKind.Absolute));
+            }
+            catch { }
         }
-        catch
-        {
-            return null;
-        }
+        return null;
     }
 
-    public void Dispose()
-    {
-        _icon.Dispose();
-    }
-
-    /// <summary>简易 ICommand 实现（避免额外依赖）。</summary>
     private sealed class RelayCommand : System.Windows.Input.ICommand
     {
         private readonly Action _action;
-        public RelayCommand(Action action) => _action = action;
-        public bool CanExecute(object? parameter) => true;
-        public void Execute(object? parameter) => _action();
+        public RelayCommand(Action a) => _action = a;
+        public bool CanExecute(object? p) => true;
+        public void Execute(object? p) => _action();
         public event EventHandler? CanExecuteChanged { add { } remove { } }
     }
+
+    public void Dispose() => _icon.Dispose();
 }
