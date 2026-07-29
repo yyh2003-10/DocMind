@@ -7,76 +7,182 @@
              xmlns:m="clr-namespace:DocMind.Models"
              mc:Ignorable="d"
              d:DesignHeight="450" d:DesignWidth="800"
-             AllowDrop="True" Drop="View_Drop" DragOver="View_DragOver">
-    <UserControl.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis" />
-    </UserControl.Resources>
+             AllowDrop="True"
+             Drop="View_Drop"
+             DragOver="View_DragOver">
 
-    <Grid Margin="16">
+    <Grid Margin="0">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
+            <!-- 路径选择 + 拖拽区域 -->
+            <RowDefinition Height="Auto"/>
+            <!-- 进度条 -->
+            <RowDefinition Height="Auto"/>
+            <!-- 结果三栏 -->
+            <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <!-- 路径选择条 -->
-        <Grid Grid.Row="0" Margin="0,0,0,8">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <TextBox Grid.Column="0"
-                     Text="{Binding SelectedPath, UpdateSourceTrigger=PropertyChanged}"
-                     ToolTip="拖拽文件 / 文件夹到此处，或点「选择」"
-                     IsReadOnly="True" Padding="6" VerticalContentAlignment="Center"
-                     AllowDrop="True" />
-            <Button Grid.Column="1" Content="选择" Command="{Binding PickPathCommand}" Margin="8,0,4,0" Padding="10,4" />
-            <TextBox Grid.Column="2" Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
-                     Width="120" ToolTip="集合" Padding="6" Margin="4,0,8,0" />
-            <CheckBox Grid.Column="3" Content="递归" IsChecked="{Binding Recursive}" Margin="4,0,8,0" VerticalAlignment="Center" />
-            <StackPanel Grid.Column="4" Orientation="Horizontal">
-                <Button Content="导入" Command="{Binding ImportCommand}" Margin="0,0,4,0" Padding="10,4" />
-                <Button Content="重置" Command="{Binding ResetCommand}" Padding="10,4" />
+        <!-- ===== 路径选择卡片 ===== -->
+        <Border Grid.Row="0"
+                Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="16,14"
+                Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         Text="{Binding SelectedPath, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="拖拽文件/文件夹到此处，或点击「选择」"
+                         Style="{StaticResource ReadOnlyTextBoxStyle}"
+                         VerticalContentAlignment="Center"/>
+
+                <Button Grid.Column="1"
+                        Content="选择…"
+                        Command="{Binding PickPathCommand}"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Margin="8,0,0,0"/>
+
+                <TextBox Grid.Column="2"
+                         Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
+                         Width="110"
+                         ToolTip="目标集合名"
+                         Margin="8,0,0,0"/>
+
+                <CheckBox Grid.Column="3"
+                          Content="递归子目录"
+                          IsChecked="{Binding Recursive}"
+                          Margin="12,0,0,0"
+                          VerticalAlignment="Center"/>
+
+                <Button Grid.Column="4"
+                        Content="导入"
+                        Command="{Binding ImportCommand}"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Margin="12,0,6,0"/>
+
+                <Button Grid.Column="5"
+                        Content="重置"
+                        Command="{Binding ResetCommand}"
+                        Style="{StaticResource TextButtonStyle}"/>
+            </Grid>
+        </Border>
+
+        <!-- ===== 进度条 ===== -->
+        <Border Grid.Row="1"
+                Background="{StaticResource SurfaceBrush}"
+                CornerRadius="8"
+                Padding="12,8"
+                Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ProgressBar Grid.Column="0"
+                             Value="{Binding ProgressPercent}"
+                             Maximum="100"
+                             MinHeight="8"
+                             IsIndeterminate="{Binding IsBusy}"
+                             VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="1"
+                           Text="{Binding ProgressPercent, StringFormat={}{0}%}"
+                           Style="{StaticResource CaptionText}"
+                           Margin="12,0,0,0"
+                           VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
+
+        <!-- 空态拖拽引导（HasResults=false 时显示） -->
+        <Border Grid.Row="2"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="2"
+                CornerRadius="12"
+                Background="{StaticResource SurfaceBrush}">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding HasResults}" Value="False">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock Text="📂" FontSize="48" HorizontalAlignment="Center"/>
+                <TextBlock Text="拖拽文件或文件夹到此处"
+                           Style="{StaticResource SubtitleText}"
+                           Foreground="{StaticResource TextMutedBrush}"
+                           HorizontalAlignment="Center"
+                           Margin="0,12,0,4"/>
+                <TextBlock Text="或点击「选择」按钮浏览"
+                           Style="{StaticResource CaptionText}"
+                           HorizontalAlignment="Center"/>
             </StackPanel>
-        </Grid>
+        </Border>
 
-        <!-- 进度条 -->
-        <Grid Grid.Row="1" Margin="0,0,0,8">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <ProgressBar Grid.Column="0" Value="{Binding ProgressPercent}" Maximum="100" Height="16"
-                         IsIndeterminate="{Binding IsBusy}" />
-            <TextBlock Grid.Column="1" Text="{Binding ProgressPercent, StringFormat=\{0\}%}" Margin="8,0,0,0" VerticalAlignment="Center" />
-        </Grid>
-
-        <!-- 结果三栏：导入 / 跳过 / 失败 -->
+        <!-- 结果三栏（HasResults=true 时显示） -->
         <Grid Grid.Row="2">
+            <Grid.Style>
+                <Style TargetType="Grid">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding HasResults}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
             <!-- 导入成功 -->
-            <DockPanel Grid.Column="0" Margin="0,0,4,0">
-                <TextBlock DockPanel.Dock="Top" FontWeight="Bold" Margin="0,0,0,4">
-                    <Run Text="导入成功 (" /><Run Text="{Binding Results.Count, Mode=OneWay}" /><Run Text=")" />
-                </TextBlock>
+            <DockPanel Grid.Column="0" Margin="0,0,6,0">
+                <Border DockPanel.Dock="Top"
+                        Background="{StaticResource SuccessLightBrush}"
+                        CornerRadius="8"
+                        Padding="12,8"
+                        Margin="0,0,0,8">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="✓" Foreground="{StaticResource SuccessBrush}"
+                                   FontSize="18" FontWeight="Bold" Margin="0,0,8,0"/>
+                        <TextBlock Style="{StaticResource SubtitleText}"
+                                   Foreground="{StaticResource SuccessBrush}">
+                            <Run Text="导入成功 ("/>
+                            <Run Text="{Binding Results.Count, Mode=OneWay}"/>
+                            <Run Text=")"/>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
                 <ListBox ItemsSource="{Binding Results}" BorderThickness="1">
                     <ListBox.ItemTemplate>
                         <DataTemplate DataType="{x:Type m:IngestResult}">
-                            <StackPanel Margin="2">
-                                <TextBlock Text="{Binding Document.Name}" FontWeight="Bold" />
-                                <TextBlock FontSize="11" Foreground="#666">
-                                    <Run Text="chunks " /><Run Text="{Binding ChunksAdded}" />
-                                    <Run Text=" · dup " /><Run Text="{Binding DuplicatesSkipped}" />
-                                </TextBlock>
+                            <StackPanel Margin="4,4">
+                                <TextBlock Text="{Binding Document.Name}"
+                                           FontWeight="SemiBold"
+                                           Style="{StaticResource BodyText}"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                    <TextBlock Style="{StaticResource SmallText}">
+                                        <Run Text="chunks "/><Run Text="{Binding ChunksAdded}"/>
+                                    </TextBlock>
+                                    <TextBlock Style="{StaticResource SmallText}" Margin="12,0,0,0"
+                                               Foreground="{StaticResource WarningBrush}">
+                                        <Run Text="dup "/><Run Text="{Binding DuplicatesSkipped}"/>
+                                    </TextBlock>
+                                </StackPanel>
                             </StackPanel>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
@@ -84,38 +190,65 @@
             </DockPanel>
 
             <!-- 跳过 -->
-            <DockPanel Grid.Column="1" Margin="4,0,4,0">
-                <TextBlock DockPanel.Dock="Top" FontWeight="Bold" Margin="0,0,0,4">
-                    <Run Text="跳过 (" /><Run Text="{Binding Skipped.Count, Mode=OneWay}" /><Run Text=")" />
-                </TextBlock>
+            <DockPanel Grid.Column="1" Margin="6,0,6,0">
+                <Border DockPanel.Dock="Top"
+                        Background="{StaticResource SurfaceBrush}"
+                        CornerRadius="8"
+                        Padding="12,8"
+                        Margin="0,0,0,8">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="⏭" FontSize="18" Margin="0,0,8,0"/>
+                        <TextBlock Style="{StaticResource SubtitleText}">
+                            <Run Text="跳过 ("/>
+                            <Run Text="{Binding Skipped.Count, Mode=OneWay}"/>
+                            <Run Text=")"/>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
                 <ListBox ItemsSource="{Binding Skipped}" BorderThickness="1">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <TextBlock Text="{Binding}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding}"
+                                       Style="{StaticResource CaptionText}"
+                                       TextTrimming="CharacterEllipsis"
+                                       Margin="4,4"/>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
             </DockPanel>
 
             <!-- 失败 -->
-            <DockPanel Grid.Column="2" Margin="4,0,0,0">
-                <TextBlock DockPanel.Dock="Top" FontWeight="Bold" Margin="0,0,0,4" Foreground="#C53030">
-                    <Run Text="失败 (" /><Run Text="{Binding Failed.Count, Mode=OneWay}" /><Run Text=")" />
-                </TextBlock>
+            <DockPanel Grid.Column="2" Margin="6,0,0,0">
+                <Border DockPanel.Dock="Top"
+                        Background="{StaticResource DangerLightBrush}"
+                        CornerRadius="8"
+                        Padding="12,8"
+                        Margin="0,0,0,8">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="✗" Foreground="{StaticResource DangerBrush}"
+                                   FontSize="18" FontWeight="Bold" Margin="0,0,8,0"/>
+                        <TextBlock Style="{StaticResource SubtitleText}"
+                                   Foreground="{StaticResource DangerBrush}">
+                            <Run Text="失败 ("/>
+                            <Run Text="{Binding Failed.Count, Mode=OneWay}"/>
+                            <Run Text=")"/>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
                 <ListBox ItemsSource="{Binding Failed}" BorderThickness="1">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <TextBlock Text="{Binding}" FontSize="12" TextTrimming="CharacterEllipsis" Foreground="#C53030" />
+                            <TextBlock Text="{Binding}"
+                                       Style="{StaticResource CaptionText}"
+                                       Foreground="{StaticResource DangerBrush}"
+                                       TextTrimming="CharacterEllipsis"
+                                       Margin="4,4"/>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
             </DockPanel>
         </Grid>
-
-        <!-- 状态栏 -->
-        <DockPanel Grid.Row="3" Margin="0,8,0,0">
-            <TextBlock DockPanel.Dock="Left" Text="●" Foreground="#2B6CB0" Margin="0,0,4,0" />
-            <TextBlock Text="{Binding StatusMessage}" Foreground="#4A5560" />
-        </DockPanel>
     </Grid>
 </UserControl>

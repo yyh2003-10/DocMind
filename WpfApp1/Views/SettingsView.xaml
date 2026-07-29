@@ -6,48 +6,206 @@
              xmlns:vm="clr-namespace:DocMind.ViewModels"
              mc:Ignorable="d"
              d:DesignHeight="450" d:DesignWidth="800">
-    <UserControl.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis" />
-    </UserControl.Resources>
 
-    <Grid Margin="16">
+    <Grid Margin="0">
         <Grid.RowDefinitions>
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="0,0,0,8">
-            <StackPanel MaxWidth="540">
-                <TextBlock Text="后端连接" FontWeight="Bold" Margin="0,0,0,8" />
+        <!-- ===== 设置内容（可滚动） ===== -->
+        <ScrollViewer Grid.Row="0"
+                      VerticalScrollBarVisibility="Auto"
+                      Padding="0,0,0,12">
+            <StackPanel MaxWidth="560">
+                <!-- ===== 网络连接 ===== -->
+                <Border Background="{StaticResource BackgroundBrush}"
+                        BorderBrush="{StaticResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Padding="20,16"
+                        Margin="0,0,0,12"
+                        Effect="{StaticResource ShadowSm}">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                            <TextBlock Text="🌐" FontSize="20" Margin="0,0,10,0"/>
+                            <TextBlock Text="后端连接" Style="{StaticResource SubtitleText}"/>
+                        </StackPanel>
 
-                <TextBlock Text="后端地址" Foreground="#4A5560" Margin="0,0,0,2" />
-                <TextBox Text="{Binding BackendUrl, UpdateSourceTrigger=PropertyChanged}"
-                         ToolTip="http://127.0.0.1:8765" Padding="6" Margin="0,0,0,12" />
+                        <TextBlock Text="后端地址" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBox Text="{Binding BackendUrl, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="例如 http://127.0.0.1:8765"
+                                 Margin="0,0,0,16"/>
 
-                <TextBlock Text="任务轮询间隔（毫秒）" Foreground="#4A5560" Margin="0,0,0,2" />
-                <TextBox Text="{Binding PollIntervalMs, UpdateSourceTrigger=PropertyChanged}"
-                         Padding="6" Margin="0,0,0,12" />
+                        <TextBlock Text="启动超时（秒）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBox Text="{Binding StartupTimeoutSec, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="后端进程启动等待时间"
+                                 Margin="0,0,0,0"/>
+                    </StackPanel>
+                </Border>
 
-                <TextBlock Text="后端启动超时（秒）" Foreground="#4A5560" Margin="0,0,0,2" />
-                <TextBox Text="{Binding StartupTimeoutSec, UpdateSourceTrigger=PropertyChanged}"
-                         Padding="6" Margin="0,0,0,12" />
+                <!-- ===== 性能 ===== -->
+                <Border Background="{StaticResource BackgroundBrush}"
+                        BorderBrush="{StaticResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Padding="20,16"
+                        Margin="0,0,0,12"
+                        Effect="{StaticResource ShadowSm}">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                            <TextBlock Text="⚡" FontSize="20" Margin="0,0,10,0"/>
+                            <TextBlock Text="性能" Style="{StaticResource SubtitleText}"/>
+                        </StackPanel>
 
-                <TextBlock Foreground="#7C8B9A" FontSize="11" TextWrapping="Wrap"
-                           Text="提示：保存后写入 appsettings.json，重启客户端后生效。" />
+                        <TextBlock Text="任务轮询间隔（毫秒）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBox Text="{Binding PollIntervalMs, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="100-10000ms，值越小实时性越高但负载越大"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- ===== 外观 ===== -->
+                <Border Background="{StaticResource BackgroundBrush}"
+                        BorderBrush="{StaticResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Padding="20,16"
+                        Margin="0,0,0,12"
+                        Effect="{StaticResource ShadowSm}">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                            <TextBlock Text="🎨" FontSize="20" Margin="0,0,10,0"/>
+                            <TextBlock Text="外观" Style="{StaticResource SubtitleText}"/>
+                        </StackPanel>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Column="0" Text="主题"
+                                       Style="{StaticResource CaptionText}"
+                                       VerticalAlignment="Center"/>
+
+                            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                <Button Content="☀ 浅色"
+                                        Command="{Binding SetLightThemeCommand}"
+                                        Width="Auto" MinWidth="64"
+                                        Padding="12,6"
+                                        Margin="0,0,8,0">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
+                                            <Setter Property="Background" Value="Transparent"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SelectedTheme}" Value="Light">
+                                                    <Setter Property="Background" Value="{StaticResource PrimaryBrush}"/>
+                                                    <Setter Property="Foreground" Value="{StaticResource TextInverseBrush}"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                                <Button Content="🌙 深色"
+                                        Command="{Binding SetDarkThemeCommand}"
+                                        Width="Auto" MinWidth="64"
+                                        Padding="12,6">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
+                                            <Setter Property="Background" Value="Transparent"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SelectedTheme}" Value="Dark">
+                                                    <Setter Property="Background" Value="{StaticResource PrimaryBrush}"/>
+                                                    <Setter Property="Foreground" Value="{StaticResource TextInverseBrush}"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- ===== 关于 ===== -->
+                <Border Background="{StaticResource BackgroundBrush}"
+                        BorderBrush="{StaticResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Padding="20,16"
+                        Effect="{StaticResource ShadowSm}">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                            <TextBlock Text="ℹ" FontSize="20" Margin="0,0,10,0"/>
+                            <TextBlock Text="关于" Style="{StaticResource SubtitleText}"/>
+                        </StackPanel>
+
+                        <TextBlock Style="{StaticResource BodyText}">
+                            <Run Text="DocMind "/>
+                            <Run Text="v1.0.0"/>
+                        </TextBlock>
+                        <TextBlock Style="{StaticResource CaptionText}" Margin="0,4,0,0">
+                            <Run Text="后端 "/><Run Text="{Binding BackendUrl}"/>
+                        </TextBlock>
+
+                        <TextBlock Style="{StaticResource SmallText}"
+                                   Foreground="{StaticResource TextMutedBrush}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,8,0,0">
+                            提示：修改后端连接后保存配置，重启客户端使通信变更加载最新配置。
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
             </StackPanel>
         </ScrollViewer>
 
-        <!-- 工具条 + 状态 -->
-        <DockPanel Grid.Row="1" Margin="0,8,0,0">
-            <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
-                <Button Content="保存" Command="{Binding SaveCommand}" Padding="10,4" Margin="0,0,4,0" />
-                <Button Content="恢复" Command="{Binding RevertCommand}" Padding="10,4" />
-            </StackPanel>
-            <TextBlock VerticalAlignment="Center" Foreground="#4A5560" Text="{Binding StatusMessage}" Margin="8,0,0,0" />
-            <Border DockPanel.Dock="Right" Visibility="{Binding IsDirty, Converter={StaticResource BoolToVis}}"
-                    CornerRadius="8" Background="#FED7D7" Padding="8,2" VerticalAlignment="Center" Margin="8,0,0,0">
-                <TextBlock Text="未保存" Foreground="#C53030" FontSize="11" />
-            </Border>
-        </DockPanel>
+        <!-- ===== 底部工具条 ===== -->
+        <Border Grid.Row="1"
+                Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="0,8,0,0">
+            <Grid Margin="0,0,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <Button Content="保存"
+                            Command="{Binding SaveCommand}"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Margin="0,0,8,0"/>
+                    <Button Content="恢复默认"
+                            Command="{Binding RevertCommand}"
+                            Style="{StaticResource TextButtonStyle}"/>
+                </StackPanel>
+
+                <TextBlock Grid.Column="1"
+                           Text="{Binding StatusMessage}"
+                           Style="{StaticResource CaptionText}"
+                           VerticalAlignment="Center"
+                           Margin="12,0,12,0"/>
+
+                <Border Grid.Column="2"
+                        CornerRadius="10"
+                        Background="{StaticResource WarningLightBrush}"
+                        Padding="10,4"
+                        VerticalAlignment="Center"
+                        Visibility="{Binding IsDirty, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse Width="6" Height="6"
+                                 Fill="{StaticResource WarningBrush}"
+                                 VerticalAlignment="Center"
+                                 Margin="0,0,6,0"/>
+                        <TextBlock Text="有未保存的修改"
+                                   Style="{StaticResource SmallText}"
+                                   Foreground="{StaticResource WarningBrush}"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
     </Grid>
 </UserControl>

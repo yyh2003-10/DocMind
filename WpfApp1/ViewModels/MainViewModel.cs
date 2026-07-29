@@ -1,16 +1,19 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Windows;
+using CommunityToolkit.Mvvm.Input;
 using DocMind.Services;
 
 namespace DocMind.ViewModels;
 
-public class MainViewModel : ViewModelBase
+public partial class MainViewModel : ViewModelBase
 {
     public IDoc2kbApiService ApiService { get; }
     private ViewModelBase? _currentPage;
     private NavigationItem? _selectedNavigationItem;
     private string _statusMessage = "就绪";
+    private bool _isSidebarCollapsed;
 
-    /// <summary>顶栏状态消息（后端启动 / 健康检查等）。</summary>
     public string StatusMessage
     {
         get => _statusMessage;
@@ -54,7 +57,26 @@ public class MainViewModel : ViewModelBase
     public ViewModelBase? CurrentPage
     {
         get => _currentPage;
-        private set => SetProperty(ref _currentPage, value);
+        private set
+        {
+            // 取消订阅旧页面
+            if (_currentPage != null)
+                _currentPage.PropertyChanged -= OnPagePropertyChanged;
+
+            if (SetProperty(ref _currentPage, value))
+            {
+                OnPropertyChanged(nameof(CurrentStatusText));
+                OnPropertyChanged(nameof(CurrentIsBusy));
+                OnPropertyChanged(nameof(IsSearchActive));
+                OnPropertyChanged(nameof(IsImportActive));
+                OnPropertyChanged(nameof(SelectedHitInfo));
+                OnPropertyChanged(nameof(ImportSummary));
+
+                // 订阅新页面
+                if (_currentPage != null)
+                    _currentPage.PropertyChanged += OnPagePropertyChanged;
+            }
+        }
     }
 
     public NavigationItem? SelectedNavigationItem
@@ -77,5 +99,146 @@ public class MainViewModel : ViewModelBase
                 _ => _searchViewModel
             };
         }
+    }
+
+    // ===================== 侧栏折叠 =====================
+
+    /// <summary>侧栏是否折叠（仅图标模式）。</summary>
+    public bool IsSidebarCollapsed
+    {
+        get => _isSidebarCollapsed;
+        set
+        {
+            if (SetProperty(ref _isSidebarCollapsed, value))
+            {
+                OnPropertyChanged(nameof(SidebarWidth));
+                OnPropertyChanged(nameof(SidebarToggleIcon));
+                OnPropertyChanged(nameof(SidebarToggleTooltip));
+            }
+        }
+    }
+
+    /// <summary>侧栏当前宽度（GridLength）。</summary>
+    public System.Windows.GridLength SidebarWidth =>
+        IsSidebarCollapsed ? new System.Windows.GridLength(48) : new System.Windows.GridLength(160);
+
+    /// <summary>折叠按钮图标：◀ / ▶</summary>
+    public string SidebarToggleIcon => IsSidebarCollapsed ? "▶" : "◀";
+
+    public string SidebarToggleTooltip => IsSidebarCollapsed ? "展开侧栏" : "折叠侧栏";
+
+    [RelayCommand]
+    private void ToggleSidebar() => IsSidebarCollapsed = !IsSidebarCollapsed;
+
+    // ===================== 顶栏指令 =====================
+
+    [RelayCommand]
+    private void NavigateToSettings()
+    {
+        var settingsItem = NavigationItems.FirstOrDefault(n => n.ViewModelType == typeof(SettingsViewModel));
+        if (settingsItem != null)
+            SelectedNavigationItem = settingsItem;
+    }
+
+    [RelayCommand]
+    private void NavigateToSearch()
+    {
+        var item = NavigationItems.FirstOrDefault(n => n.ViewModelType == typeof(SearchViewModel));
+        if (item != null) SelectedNavigationItem = item;
+    }
+
+    [RelayCommand]
+    private void NavigateToImport()
+    {
+        var item = NavigationItems.FirstOrDefault(n => n.ViewModelType == typeof(ImportViewModel));
+        if (item != null) SelectedNavigationItem = item;
+    }
+
+    [RelayCommand]
+    private void NavigateToConvert()
+    {
+        var item = NavigationItems.FirstOrDefault(n => n.ViewModelType == typeof(ConvertViewModel));
+        if (item != null) SelectedNavigationItem = item;
+    }
+
+    [RelayCommand]
+    private void NavigateToQuality()
+    {
+        var item = NavigationItems.FirstOrDefault(n => n.ViewModelType == typeof(QualityViewModel));
+        if (item != null) SelectedNavigationItem = item;
+    }
+
+    [RelayCommand]
+    private void MinimizeToTray()
+    {
+        Application.Current.MainWindow!.Hide();
+    }
+
+    // ===================== 统一状态栏 =====================
+
+    /// <summary>当前页面的状态文本。</summary>
+    public string CurrentStatusText
+    {
+        get
+        {
+            if (CurrentPage == _searchViewModel) return _searchViewModel.StatusMessage;
+            if (CurrentPage == _importViewModel) return _importViewModel.StatusMessage;
+            if (CurrentPage == _convertViewModel) return _convertViewModel.StatusMessage;
+            if (CurrentPage == _qualityViewModel) return _qualityViewModel.StatusMessage;
+            if (CurrentPage == _settingsViewModel) return _settingsViewModel.StatusMessage;
+            return "就绪";
+        }
+    }
+
+    /// <summary>当前页面是否忙碌。</summary>
+    public bool CurrentIsBusy
+    {
+        get
+        {
+            if (CurrentPage == _searchViewModel) return _searchViewModel.IsBusy;
+            if (CurrentPage == _importViewModel) return _importViewModel.IsBusy;
+            if (CurrentPage == _convertViewModel) return _convertViewModel.IsBusy;
+            if (CurrentPage == _qualityViewModel) return _qualityViewModel.IsBusy;
+            return false;
+        }
+    }
+
+    // ===================== 详情面板 =====================
+
+    public bool IsSearchActive => CurrentPage == _searchViewModel;
+    public bool IsImportActive => CurrentPage == _importViewModel;
+
+    public string? SelectedHitInfo
+    {
+        get
+        {
+            if (CurrentPage != _searchViewModel) return null;
+            var hit = _searchViewModel.SelectedHit;
+            return hit != null
+                ? $"文档: {hit.Chunk?.DocumentId ?? "—"}\n相似度: {hit.Score:F4}"
+                : "未选中结果";
+        }
+    }
+
+    public string? ImportSummary
+    {
+        get
+        {
+            if (CurrentPage != _importViewModel) return null;
+            return $"已导入: {_importViewModel.Results.Count}\n跳过: {_importViewModel.Skipped.Count}\n失败: {_importViewModel.Failed.Count}";
+        }
+    }
+
+    private void OnPagePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        // 当前页面子 VM 的属性变化 → 同步到 MainWindow 的绑定
+        if (e.PropertyName == "StatusMessage")
+            OnPropertyChanged(nameof(CurrentStatusText));
+        else if (e.PropertyName == "IsBusy")
+            OnPropertyChanged(nameof(CurrentIsBusy));
+        else if (sender == _searchViewModel && e.PropertyName == nameof(SearchViewModel.SelectedHit))
+            OnPropertyChanged(nameof(SelectedHitInfo));
+        else if (sender == _importViewModel && e.PropertyName == nameof(ImportViewModel.HasResults))
+            OnPropertyChanged(nameof(ImportSummary));
     }
 }

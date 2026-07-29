@@ -7,102 +7,231 @@
              xmlns:m="clr-namespace:DocMind.Models"
              mc:Ignorable="d"
              d:DesignHeight="450" d:DesignWidth="800">
-    <UserControl.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis" />
-    </UserControl.Resources>
 
-    <Grid Margin="16">
+    <Grid Margin="0">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto"/>   <!-- 工具条 -->
+            <RowDefinition Height="Auto"/>   <!-- 概览卡片 -->
+            <RowDefinition Height="*"/>      <!-- 分布 + 警告 -->
         </Grid.RowDefinitions>
 
-        <!-- 工具条 -->
-        <DockPanel Grid.Row="0" Margin="0,0,0,8">
-            <TextBox DockPanel.Dock="Left" Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
-                     Width="140" ToolTip="集合（可选）" Padding="6"
-                     VerticalContentAlignment="Center" Margin="0,0,8,0" />
-            <Button DockPanel.Dock="Right" Content="刷新" Command="{Binding RefreshCommand}" Padding="10,4" />
-            <StackPanel Orientation="Horizontal" />
-        </DockPanel>
+        <!-- ===== 工具条 ===== -->
+        <Border Grid.Row="0"
+                Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="12,10"
+                Margin="0,0,0,12">
+            <DockPanel>
+                <TextBox DockPanel.Dock="Left"
+                         Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
+                         Width="140"
+                         ToolTip="集合名（可选，留空为全部）"
+                         Margin="0,0,8,0"/>
+                <Button DockPanel.Dock="Right"
+                        Content="刷新"
+                        Command="{Binding RefreshCommand}"
+                        Style="{StaticResource PrimaryButtonStyle}"/>
+                <TextBlock DockPanel.Dock="Left"
+                           Text="集合过滤"
+                           Style="{StaticResource CaptionText}"
+                           VerticalAlignment="Center"
+                           Margin="0,0,8,0"/>
+                <StackPanel Orientation="Horizontal"/>
+            </DockPanel>
+        </Border>
 
-        <!-- 概览卡片 -->
-        <UniformGrid Grid.Row="1" Rows="1" Columns="4" Margin="0,0,8,0">
-            <Border Padding="10" Margin="0,0,6,0" Background="#F0F4F8" CornerRadius="6">
+        <!-- ===== 概览卡片 ===== -->
+        <UniformGrid Grid.Row="1" Rows="1" Columns="4"
+                     Margin="0,0,0,16">
+
+            <!-- 文档总数 -->
+            <Border Padding="16,14" Margin="0,0,8,0"
+                    Background="{StaticResource BackgroundBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Effect="{StaticResource ShadowSm}">
                 <StackPanel>
-                    <TextBlock Text="文档总数" Foreground="#7C8B9A" FontSize="11" />
-                    <TextBlock Text="{Binding Stats.TotalDocuments}" FontSize="22" FontWeight="Bold" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="📄" FontSize="20" Margin="0,0,8,0"/>
+                        <TextBlock Text="文档总数" Style="{StaticResource CaptionText}"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <TextBlock Text="{Binding Stats.TotalDocuments}"
+                               Style="{StaticResource TitleText}"
+                               Margin="0,8,0,0"/>
                 </StackPanel>
             </Border>
-            <Border Padding="10" Margin="0,0,6,0" Background="#F0F4F8" CornerRadius="6">
+
+            <!-- Chunk 总数 -->
+            <Border Padding="16,14" Margin="0,0,8,0"
+                    Background="{StaticResource BackgroundBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Effect="{StaticResource ShadowSm}">
                 <StackPanel>
-                    <TextBlock Text="Chunk 总数" Foreground="#7C8B9A" FontSize="11" />
-                    <TextBlock Text="{Binding Stats.TotalChunks}" FontSize="22" FontWeight="Bold" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="🧩" FontSize="20" Margin="0,0,8,0"/>
+                        <TextBlock Text="Chunk 总数" Style="{StaticResource CaptionText}"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <TextBlock Text="{Binding Stats.TotalChunks}"
+                               Style="{StaticResource TitleText}"
+                               Margin="0,8,0,0"/>
                 </StackPanel>
             </Border>
-            <Border Padding="10" Margin="0,0,6,0" Background="#F0F4F8" CornerRadius="6">
+
+            <!-- 重复率 -->
+            <Border Padding="16,14" Margin="0,0,8,0"
+                    Background="{StaticResource BackgroundBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Effect="{StaticResource ShadowSm}">
                 <StackPanel>
-                    <TextBlock Text="重复率" Foreground="#7C8B9A" FontSize="11" />
-                    <TextBlock Text="{Binding Report.DuplicateRate, StringFormat=\{0:P2\}}" FontSize="22" FontWeight="Bold" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="🔁" FontSize="20" Margin="0,0,8,0"/>
+                        <TextBlock Text="重复率" Style="{StaticResource CaptionText}"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <TextBlock Text="{Binding Report.DuplicateRate, StringFormat={}{0:P1}}"
+                               Style="{StaticResource TitleText}"
+                               Foreground="{StaticResource WarningBrush}"
+                               Margin="0,8,0,0"/>
                 </StackPanel>
             </Border>
-            <Border Padding="10" Background="#F0F4F8" CornerRadius="6">
+
+            <!-- 元数据缺失率 -->
+            <Border Padding="16,14" Margin="0,0,0,0"
+                    Background="{StaticResource BackgroundBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Effect="{StaticResource ShadowSm}">
                 <StackPanel>
-                    <TextBlock Text="元数据缺失率" Foreground="#7C8B9A" FontSize="11" />
-                    <TextBlock Text="{Binding Report.MissingMetadataRate, StringFormat=\{0:P2\}}" FontSize="22" FontWeight="Bold" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="📋" FontSize="20" Margin="0,0,8,0"/>
+                        <TextBlock Text="元数据缺失" Style="{StaticResource CaptionText}"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <TextBlock Text="{Binding Report.MissingMetadataRate, StringFormat={}{0:P1}}"
+                               Style="{StaticResource TitleText}"
+                               Foreground="{StaticResource InfoBrush}"
+                               Margin="0,8,0,0"/>
                 </StackPanel>
             </Border>
         </UniformGrid>
 
-        <!-- 集合分布 + 警告 -->
+        <!-- ===== 集合分布 + 警告 ===== -->
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="1.4*" />
-                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="1.4*"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <DockPanel Grid.Column="0" Margin="0,0,8,0">
-                <TextBlock DockPanel.Dock="Top" Text="集合分布"
-                           FontWeight="Bold" Margin="0,0,0,6" />
-                <ListBox ItemsSource="{Binding Collections}" BorderThickness="1">
-                    <ListBox.ItemTemplate>
-                        <DataTemplate DataType="{x:Type m:CollectionStats}">
-                            <DockPanel Margin="2">
-                                <TextBlock Text="{Binding Name}" FontWeight="Bold" DockPanel.Dock="Top" />
-                                <TextBlock FontSize="11" Foreground="#666">
-                                    <Run Text="docs " /><Run Text="{Binding Documents}" />
-                                    <Run Text=" · chunks " /><Run Text="{Binding Chunks}" />
-                                    <Run Text=" · " /><Run Text="{Binding SizeBytes, StringFormat=\{0:N0\} B}" />
-                                </TextBlock>
-                            </DockPanel>
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
-            </DockPanel>
+            <!-- 集合分布 -->
+            <Border Grid.Column="0"
+                    Background="{StaticResource BackgroundBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Padding="12"
+                    Effect="{StaticResource ShadowSm}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top"
+                               Text="集合分布"
+                               Style="{StaticResource SubtitleText}"
+                               Margin="0,0,0,12"/>
 
-            <DockPanel Grid.Column="1">
-                <TextBlock DockPanel.Dock="Top" Text="警告"
-                           FontWeight="Bold" Foreground="#C53030" Margin="0,0,0,6" />
-                <ListBox ItemsSource="{Binding Warnings}" BorderThickness="1">
-                    <ListBox.ItemTemplate>
-                        <DataTemplate>
-                            <TextBlock Text="{Binding}" TextWrapping="Wrap" Foreground="#C53030" />
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
-            </DockPanel>
+                    <ListBox ItemsSource="{Binding Collections}"
+                             BorderThickness="0"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate DataType="{x:Type m:CollectionStats}">
+                                <Border Background="{StaticResource SurfaceBrush}"
+                                        CornerRadius="6"
+                                        Padding="10,8"
+                                        Margin="0,0,0,6">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+
+                                        <TextBlock Grid.Row="0"
+                                                   Text="{Binding Name}"
+                                                   FontWeight="SemiBold"
+                                                   Style="{StaticResource BodyText}"/>
+
+                                        <StackPanel Grid.Row="1" Orientation="Horizontal"
+                                                    Margin="0,4,0,0">
+                                            <TextBlock Style="{StaticResource SmallText}">
+                                                <Run Text="文档 " FontWeight="SemiBold"/>
+                                                <Run Text="{Binding Documents}"/>
+                                            </TextBlock>
+                                            <TextBlock Style="{StaticResource SmallText}" Margin="16,0,0,0">
+                                                <Run Text="Chunks " FontWeight="SemiBold"/>
+                                                <Run Text="{Binding Chunks}"/>
+                                            </TextBlock>
+                                            <TextBlock Style="{StaticResource SmallText}" Margin="16,0,0,0">
+                                                <Run Text="{Binding SizeBytes, StringFormat={}{0:N0} B}"/>
+                                            </TextBlock>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+
+            <!-- 警告 -->
+            <Border Grid.Column="2"
+                    Background="{StaticResource DangerLightBrush}"
+                    BorderBrush="{StaticResource DangerBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Padding="12"
+                    Effect="{StaticResource ShadowSm}">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,12">
+                        <TextBlock Text="⚠" FontSize="16" Margin="0,0,8,0"
+                                   VerticalAlignment="Center"/>
+                        <TextBlock Text="警告"
+                                   Style="{StaticResource SubtitleText}"
+                                   Foreground="{StaticResource DangerBrush}"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <ListBox ItemsSource="{Binding Warnings}"
+                             BorderThickness="0"
+                             Background="Transparent">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="{StaticResource DangerLightBrush}"
+                                        CornerRadius="4"
+                                        Padding="8,6"
+                                        Margin="0,0,0,4">
+                                    <TextBlock Text="{Binding}"
+                                               Style="{StaticResource CaptionText}"
+                                               Foreground="{StaticResource DangerBrush}"
+                                               TextWrapping="Wrap"/>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <!-- 空态 -->
+                    <TextBlock Text="暂无警告"
+                               Style="{StaticResource SmallText}"
+                               HorizontalAlignment="Center"
+                               Margin="0,20,0,0"/>
+                </DockPanel>
+            </Border>
         </Grid>
-
-        <!-- 状态栏 -->
-        <DockPanel Grid.Row="3" Margin="0,8,0,0">
-            <TextBlock DockPanel.Dock="Left" Text="●" Foreground="#2B6CB0" Margin="0,0,4,0" />
-            <TextBlock Text="{Binding StatusMessage}" Foreground="#4A5560" />
-            <ProgressBar DockPanel.Dock="Right"
-                        IsIndeterminate="True" Width="120" Height="14"
-                        Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
-                        Margin="8,0,0,0" />
-        </DockPanel>
     </Grid>
 </UserControl>

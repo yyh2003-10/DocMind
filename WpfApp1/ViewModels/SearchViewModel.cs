@@ -29,8 +29,15 @@ public partial class SearchViewModel : ViewModelBase
     public string Query
     {
         get => _query;
-        set => SetProperty(ref _query, value);
+        set
+        {
+            if (SetProperty(ref _query, value))
+                OnPropertyChanged(nameof(HasQuery));
+        }
     }
+
+    /// <summary>是否有搜索词（用于 UI 显示清除按钮等）。</summary>
+    public bool HasQuery => !string.IsNullOrWhiteSpace(Query);
 
     /// <summary>集合名（可选）。</summary>
     public string? Collection
@@ -70,15 +77,29 @@ public partial class SearchViewModel : ViewModelBase
     public SearchResponse? LastResponse
     {
         get => _lastResponse;
-        set => SetProperty(ref _lastResponse, value);
+        set
+        {
+            if (SetProperty(ref _lastResponse, value))
+                OnPropertyChanged(nameof(HasResults));
+        }
     }
+
+    /// <summary>是否有搜索结果（用于统计栏可见性）。</summary>
+    public bool HasResults => LastResponse != null;
 
     /// <summary>当前选中 hit，详情区显示。</summary>
     public SearchHit? SelectedHit
     {
         get => _selectedHit;
-        set => SetProperty(ref _selectedHit, value);
+        set
+        {
+            if (SetProperty(ref _selectedHit, value))
+                OnPropertyChanged(nameof(HasSelectedHit));
+        }
     }
+
+    /// <summary>是否有选中的搜索结果（用于详情区可见性）。</summary>
+    public bool HasSelectedHit => SelectedHit != null;
 
     /// <summary>搜索结果列表。</summary>
     public ObservableCollection<SearchHit> Hits { get; }

@@ -5,115 +5,329 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:vm="clr-namespace:DocMind.ViewModels"
              xmlns:m="clr-namespace:DocMind.Models"
+             xmlns:cc="clr-namespace:DocMind.Controls"
              mc:Ignorable="d"
              d:DesignHeight="450" d:DesignWidth="800">
     <UserControl.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis" />
-        <Style x:Key="HitScore" TargetType="TextBlock">
-            <Setter Property="FontWeight" Value="Bold" />
-            <Setter Property="Foreground" Value="#2B6CB0" />
-            <Setter Property="Margin" Value="0,0,8,0" />
+        <!-- 评分颜色: 高→绿, 中→蓝, 低→灰 -->
+        <Style x:Key="ScoreBadge" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="6,2"/>
+            <Setter Property="Margin" Value="0,0,8,0"/>
+            <Setter Property="VerticalAlignment" Value="Top"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Score}" Value="0">
+                    <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
+
+        <!-- 结果卡片模板 -->
+        <DataTemplate x:Key="HitCardTemplate" DataType="{x:Type m:SearchHit}">
+            <Border Background="{StaticResource BackgroundBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="12"
+                    Margin="0,0,0,8"
+                    Effect="{StaticResource ShadowSm}"
+                    SnapsToDevicePixels="True">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Effect" Value="{StaticResource ShadowMd}"/>
+                                <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- 第一行：评分 + 文档 ID -->
+                    <Grid Grid.Row="0" Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- 评分徽章 -->
+                        <Border Grid.Column="0" Style="{StaticResource ScoreBadge}">
+                            <TextBlock Text="{Binding Score, StringFormat={}{0:F4}}"
+                                       FontSize="12" FontWeight="SemiBold"
+                                       Foreground="{StaticResource PrimaryBrush}"/>
+                        </Border>
+
+                        <!-- 文档 ID -->
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding Chunk.DocumentId}"
+                                   Style="{StaticResource CaptionText}"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"/>
+
+                        <!-- 来源集合标记 -->
+                        <Border Grid.Column="2" CornerRadius="3"
+                                Background="{StaticResource SurfaceBrush}"
+                                Padding="4,1" Margin="4,0,0,0">
+                            <TextBlock Text="{Binding Chunk.Collection}"
+                                       Style="{StaticResource SmallText}"/>
+                        </Border>
+                    </Grid>
+
+                    <!-- 第二行：内容摘要（含高亮） -->
+                    <TextBlock Grid.Row="1"
+                               Text="{Binding Chunk.Content}"
+                               Style="{StaticResource BodyText}"
+                               TextWrapping="Wrap"
+                               MaxHeight="60"
+                               TextTrimming="CharacterEllipsis"
+                               LineHeight="20"/>
+
+                    <!-- 第三行：元数据信息 -->
+                    <StackPanel Grid.Row="2" Orientation="Horizontal"
+                                Margin="0,6,0,0">
+                        <TextBlock Style="{StaticResource SmallText}">
+                            <Run Text="chunk "/><Run Text="{Binding Chunk.ChunkIndex}"/>
+                        </TextBlock>
+                        <TextBlock Style="{StaticResource SmallText}" Margin="12,0,0,0">
+                            <Run Text="tokens "/><Run Text="{Binding Chunk.TokenCount}"/>
+                        </TextBlock>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </DataTemplate>
     </UserControl.Resources>
 
-    <Grid Margin="16">
+    <Grid Margin="0">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
+            <!-- 搜索条 -->
+            <RowDefinition Height="Auto"/>
+            <!-- 统计 -->
+            <RowDefinition Height="Auto"/>
+            <!-- 结果 + 详情 -->
+            <RowDefinition Height="*"/>
+            <!-- 状态栏由 MainWindow 统一接管 -->
         </Grid.RowDefinitions>
 
-        <!-- 搜索条 -->
-        <Grid Grid.Row="0" Margin="0,0,0,8">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <TextBox Grid.Column="0"
-                     Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
-                     ToolTip="输入搜索词，回车开始搜索"
-                     Margin="0,0,8,0" Padding="6" VerticalContentAlignment="Center"
-                     KeyUp="QueryBox_KeyUp" />
-            <TextBox Grid.Column="1"
-                     Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
-                     Width="120" ToolTip="集合" Padding="6" Margin="0,0,8,0" />
-            <ComboBox Grid.Column="2" SelectedValue="{Binding TopK}" Width="80" Margin="0,0,8,0">
-                <ComboBoxItem Content="5"  />
-                <ComboBoxItem Content="10" />
-                <ComboBoxItem Content="20" />
-                <ComboBoxItem Content="50" />
-            </ComboBox>
-            <StackPanel Grid.Column="3" Orientation="Horizontal">
-                <Button Content="搜索" Command="{Binding SearchCommand}" Margin="0,0,4,0" Padding="10,4" />
-                <Button Content="清空" Command="{Binding ClearCommand}" Padding="10,4" />
+        <!-- ===== 搜索条 ===== -->
+        <Border Grid.Row="0"
+                Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="12,10"
+                Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <Grid Grid.Column="0" Margin="0,0,8,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox Grid.Column="0" x:Name="QueryBox"
+                             Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="输入搜索词，回车开始搜索"
+                             VerticalContentAlignment="Center"
+                             KeyUp="QueryBox_KeyUp"/>
+                    <Button Grid.Column="1"
+                            Content="×"
+                            Style="{StaticResource TextButtonStyle}"
+                            Command="{Binding ClearCommand}"
+                            Visibility="{Binding HasQuery}"
+                            FontSize="16"
+                            Padding="4,0"
+                            Margin="-28,0,0,0"/>
+                </Grid>
+
+                <TextBox Grid.Column="1"
+                         Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
+                         Width="110"
+                         ToolTip="集合（可选）"
+                         Margin="0,0,8,0"/>
+
+                <ComboBox Grid.Column="2"
+                          SelectedValue="{Binding TopK}"
+                          Width="72"
+                          Margin="0,0,8,0">
+                    <ComboBoxItem Content="5"/>
+                    <ComboBoxItem Content="10" IsSelected="True"/>
+                    <ComboBoxItem Content="20"/>
+                    <ComboBoxItem Content="50"/>
+                </ComboBox>
+
+                <Button Grid.Column="3"
+                        Content="搜索"
+                        Command="{Binding SearchCommand}"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Margin="0,0,6,0"/>
+
+                <Button Grid.Column="4"
+                        Content="清空"
+                        Command="{Binding ClearCommand}"
+                        Style="{StaticResource SecondaryButtonStyle}"/>
+            </Grid>
+        </Border>
+
+        <!-- ===== 结果统计条 ===== -->
+        <Border Grid.Row="1"
+                Background="{StaticResource SurfaceBrush}"
+                CornerRadius="6"
+                Padding="12,6"
+                Margin="0,0,0,8"
+                Visibility="{Binding HasResults}">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Style="{StaticResource CaptionText}">
+                    <Run Text="共 "/><Run Text="{Binding LastResponse.Total, Mode=OneWay}"/><Run Text=" 条结果"/>
+                </TextBlock>
+                <TextBlock Style="{StaticResource CaptionText}" Margin="16,0,0,0">
+                    <Run Text="耗时 "/><Run Text="{Binding LastResponse.ElapsedMs, StringFormat={}{0:F0}}"/><Run Text="ms"/>
+                </TextBlock>
             </StackPanel>
-        </Grid>
+        </Border>
 
-        <!-- 结果统计条 -->
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,4"
-                    Visibility="{Binding LastResponse, Converter={StaticResource BoolToVis}}">
-            <TextBlock Text="{Binding LastResponse.Total, StringFormat=共 {0} 条}" Margin="0,0,16,0" />
-            <TextBlock Text="{Binding LastResponse.ElapsedMs, StringFormat=耗时 {0:F0}ms}" />
-        </StackPanel>
-
-        <!-- 结果列表 + 详情 -->
+        <!-- ===== 结果列表 + 详情 ===== -->
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="1.4*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="1.6*" />
+                <ColumnDefinition Width="1.4*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="1.6*"/>
             </Grid.ColumnDefinitions>
 
-            <ListBox Grid.Column="0"
-                      ItemsSource="{Binding Hits}"
-                      SelectedItem="{Binding SelectedHit}"
-                      HorizontalContentAlignment="Stretch"
-                      BorderThickness="1">
-                <ListBox.ItemTemplate>
-                    <DataTemplate DataType="{x:Type m:SearchHit}">
-                        <StackPanel Margin="2">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Style="{StaticResource HitScore}"
-                                           Text="{Binding Score, StringFormat=\{0:F4\}}" />
-                                <TextBlock Text="{Binding Chunk.DocumentId}"
-                                           Foreground="#666" FontSize="11" />
-                            </StackPanel>
-                            <TextBlock Text="{Binding Chunk.Content}"
-                                       TextTrimming="CharacterEllipsis"
-                                       MaxHeight="48" TextWrapping="Wrap" />
+            <!-- 结果列表 + 骨架屏 -->
+            <Grid Grid.Column="0">
+                <!-- 骨架屏（加载中显示） -->
+                <StackPanel Margin="0,0,0,8"
+                            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
+                    <Border Background="{StaticResource BorderBrush}"
+                            CornerRadius="8" Height="90" Margin="0,0,0,8"
+                            Effect="{StaticResource ShadowSm}">
+                        <StackPanel Margin="12">
+                            <cc:SkeletonControl CornerRadius="4" Height="14" Width="120" Margin="0,0,0,8"/>
+                            <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
+                            <cc:SkeletonControl CornerRadius="4" Height="12" Width="80"/>
                         </StackPanel>
-                    </DataTemplate>
-                </ListBox.ItemTemplate>
-            </ListBox>
+                    </Border>
+                    <Border Background="{StaticResource BorderBrush}"
+                            CornerRadius="8" Height="80" Margin="0,0,0,8"
+                            Effect="{StaticResource ShadowSm}">
+                        <StackPanel Margin="12">
+                            <cc:SkeletonControl CornerRadius="4" Height="14" Width="100" Margin="0,0,0,8"/>
+                            <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
+                            <cc:SkeletonControl CornerRadius="4" Height="12" Width="60"/>
+                        </StackPanel>
+                    </Border>
+                    <Border Background="{StaticResource BorderBrush}"
+                            CornerRadius="8" Height="80"
+                            Effect="{StaticResource ShadowSm}">
+                        <StackPanel Margin="12">
+                            <cc:SkeletonControl CornerRadius="4" Height="14" Width="90" Margin="0,0,0,8"/>
+                            <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
+                            <cc:SkeletonControl CornerRadius="4" Height="12" Width="70"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
 
-            <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center" Background="#E2E8F0" />
+                <!-- 实际结果列表 -->
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              BorderThickness="0">
+                    <ItemsControl ItemsSource="{Binding Hits}"
+                                  ItemTemplate="{StaticResource HitCardTemplate}"
+                                  VirtualizingPanel.IsVirtualizing="True"
+                                  VirtualizingPanel.VirtualizationMode="Recycling"
+                                  Focusable="False"/>
+                </ScrollViewer>
+            </Grid>
 
-            <Border Grid.Column="2" Padding="8" BorderBrush="#E2E8F0" BorderThickness="1,0,0,0">
+            <!-- 分隔线 -->
+            <GridSplitter Grid.Column="1"
+                          Width="4"
+                          HorizontalAlignment="Center"
+                          Background="{StaticResource BorderBrush}"/>
+
+            <!-- 详情区 -->
+            <Border Grid.Column="2"
+                    Padding="12,0,0,0"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1,0,0,0">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="详情"
-                               FontWeight="Bold" Margin="0,0,0,6" />
+                    <TextBlock DockPanel.Dock="Top"
+                               Text="详情"
+                               Style="{StaticResource SubtitleText}"
+                               Margin="0,0,0,12"/>
+
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <TextBlock
-                            Text="{Binding SelectedHit.Chunk.Content}"
-                            TextWrapping="Wrap" FontSize="14"
-                            Visibility="{Binding SelectedHit, Converter={StaticResource BoolToVis}}"
-                            xml:space="preserve" />
+                        <StackPanel>
+                            <!-- 选中文档详情 -->
+                            <Border Background="{StaticResource SurfaceBrush}"
+                                    CornerRadius="8"
+                                    Padding="12"
+                                    Margin="0,0,0,8"
+                                    Visibility="{Binding HasSelectedHit}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource CaptionText}" Margin="0,0,0,8">
+                                        <Run Text="文档 "/><Run Text="{Binding SelectedHit.Chunk.DocumentId}"/>
+                                    </TextBlock>
+
+                                    <!-- 评分进度条 -->
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="相似度"
+                                                   Style="{StaticResource SmallText}"
+                                                   Margin="0,0,8,0"/>
+                                        <ProgressBar Grid.Column="1"
+                                                     Value="{Binding SelectedHit.Score}"
+                                                     Maximum="1.0"
+                                                     Height="6"
+                                                     Foreground="{StaticResource PrimaryBrush}"/>
+                                    </Grid>
+
+                                    <!-- 元数据 -->
+                                    <TextBlock Style="{StaticResource SmallText}" Margin="0,0,0,4">
+                                        <Run Text="集合: "/><Run Text="{Binding SelectedHit.Chunk.Collection}"/>
+                                    </TextBlock>
+                                    <TextBlock Style="{StaticResource SmallText}" Margin="0,0,0,4">
+                                        <Run Text="Chunk 索引: "/><Run Text="{Binding SelectedHit.Chunk.ChunkIndex}"/>
+                                    </TextBlock>
+                                    <TextBlock Style="{StaticResource SmallText}">
+                                        <Run Text="Token 数: "/><Run Text="{Binding SelectedHit.Chunk.TokenCount}"/>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 完整内容 -->
+                            <TextBlock x:Name="DetailContentText"
+                                       Text="{Binding SelectedHit.Chunk.Content}"
+                                       Style="{StaticResource BodyText}"
+                                       TextWrapping="Wrap"
+                                       xml:space="preserve"/>
+
+                            <!-- 空态 -->
+                            <TextBlock Text="选择左侧一条结果查看详情"
+                                       Style="{StaticResource SmallText}"
+                                       HorizontalAlignment="Center"
+                                       Margin="0,20,0,0"/>
+                        </StackPanel>
                     </ScrollViewer>
                 </DockPanel>
             </Border>
         </Grid>
-
-        <!-- 状态栏 -->
-        <DockPanel Grid.Row="3" Margin="0,8,0,0">
-            <TextBlock DockPanel.Dock="Left" Text="●" Foreground="#2B6CB0" Margin="0,0,4,0" />
-            <TextBlock Text="{Binding StatusMessage}" Foreground="#4A5560" />
-            <ProgressBar DockPanel.Dock="Right"
-                        IsIndeterminate="True" Width="120" Height="14"
-                        Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
-                        Margin="8,0,0,0" />
-        </DockPanel>
     </Grid>
 </UserControl>

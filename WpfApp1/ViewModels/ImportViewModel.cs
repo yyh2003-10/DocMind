@@ -9,6 +9,7 @@ namespace DocMind.ViewModels;
 public partial class ImportViewModel : ViewModelBase
 {
     private readonly IDoc2kbApiService _apiService;
+    private readonly NotificationService _notifications;
 
     private string _selectedPath = string.Empty;
     private string? _collection;
@@ -17,14 +18,23 @@ public partial class ImportViewModel : ViewModelBase
     private string _statusMessage = "就绪";
     private int _progressPercent;
 
-    public ImportViewModel(IDoc2kbApiService apiService)
+    public ImportViewModel(IDoc2kbApiService apiService, NotificationService notifications)
     {
         _apiService = apiService;
+        _notifications = notifications;
         Title = "导入";
         Results = new ObservableCollection<IngestResult>();
         Skipped = new ObservableCollection<string>();
         Failed = new ObservableCollection<string>();
+
+        // 监听集合变化以通知 HasResults
+        Results.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasResults));
+        Skipped.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasResults));
+        Failed.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasResults));
     }
+
+    /// <summary>是否有任何导入结果（用于切换空态/结果态显示）。</summary>
+    public bool HasResults => Results.Count > 0 || Skipped.Count > 0 || Failed.Count > 0;
 
     /// <summary>待导入的本地路径（文件或目录）。</summary>
     public string SelectedPath
@@ -158,9 +168,17 @@ public partial class ImportViewModel : ViewModelBase
             }
 
             ProgressPercent = 100;
-            StatusMessage = resp.TotalDocuments > 0
-                ? $"完成：导入 {resp.Ingested.Count} · 跳过 {resp.Skipped.Count} · 失败 {resp.Failed.Count}"
+            var importCount = resp.Ingested.Count;
+            var skipCount = resp.Skipped.Count;
+            var failCount = resp.Failed.Count;
+            StatusMessage = importCount > 0
+                ? $"完成：导入 {importCount} · 跳过 {skipCount} · 失败 {failCount}"
                 : "完成：无新增文档（全部跳过或失败）";
+
+            if (importCount > 0)
+                _notifications.Success($"成功导入 {importCount} 个文档");
+            if (failCount > 0)
+                _notifications.Warning($"{failCount} 个文档导入失败");
         }
         catch (ApiException ex)
         {

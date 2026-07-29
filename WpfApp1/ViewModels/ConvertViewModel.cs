@@ -8,6 +8,7 @@ namespace DocMind.ViewModels;
 public partial class ConvertViewModel : ViewModelBase
 {
     private readonly IDoc2kbApiService _apiService;
+    private readonly NotificationService _notifications;
 
     private string _inputPath = string.Empty;
     private string _outputPath = string.Empty;
@@ -23,9 +24,10 @@ public partial class ConvertViewModel : ViewModelBase
         "md", "json", "txt", "html",
     };
 
-    public ConvertViewModel(IDoc2kbApiService apiService)
+    public ConvertViewModel(IDoc2kbApiService apiService, NotificationService notifications)
     {
         _apiService = apiService;
+        _notifications = notifications;
         Title = "格式转换";
     }
 
@@ -38,9 +40,13 @@ public partial class ConvertViewModel : ViewModelBase
             if (SetProperty(ref _inputPath, value))
             {
                 ConvertCommand.NotifyCanExecuteChanged();
+                OnPropertyChanged(nameof(HasInputPath));
             }
         }
     }
+
+    /// <summary>是否已选择输入文件。</summary>
+    public bool HasInputPath => !string.IsNullOrWhiteSpace(InputPath);
 
     /// <summary>输出文件路径（本地）。空表示仅预览不落盘。</summary>
     public string OutputPath
@@ -170,11 +176,13 @@ public partial class ConvertViewModel : ViewModelBase
                     PreviewContent = resp.Message ?? "转换成功，但未返回可预览内容。";
                 }
                 StatusMessage = $"完成 → {actualOut}";
+                _notifications.Success($"转换完成：{System.IO.Path.GetFileName(actualOut)}");
             }
             else
             {
                 PreviewContent = resp.Message ?? "转换失败。";
                 StatusMessage = $"失败：{resp.Message ?? "未知原因"}";
+                _notifications.Error(resp.Message ?? "转换失败");
             }
         }
         catch (ApiException ex)

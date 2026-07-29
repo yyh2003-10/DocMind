@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.Input;
+using DocMind.Services;
 using Microsoft.Extensions.Configuration;
 
 namespace DocMind.ViewModels;
@@ -8,6 +9,8 @@ namespace DocMind.ViewModels;
 public partial class SettingsViewModel : ViewModelBase
 {
     private readonly AppSettings _appSettings;
+    private readonly NotificationService _notifications;
+    private readonly ThemeService _themeService;
 
     private string _backendUrl;
     private int _pollIntervalMs;
@@ -15,15 +18,31 @@ public partial class SettingsViewModel : ViewModelBase
     private string _statusMessage = "就绪";
     private bool _isDirty;
 
-    public SettingsViewModel(AppSettings appSettings)
+    public SettingsViewModel(AppSettings appSettings, NotificationService notifications, ThemeService themeService)
     {
         _appSettings = appSettings;
+        _notifications = notifications;
+        _themeService = themeService;
         Title = "设置";
 
         // 加载当前值到可编辑字段
         _backendUrl = _appSettings.BackendUrl;
         _pollIntervalMs = _appSettings.PollIntervalMs;
         _startupTimeoutSec = _appSettings.StartupTimeoutSec;
+    }
+
+    /// <summary>当前主题（选择即切换）。</summary>
+    public ThemeMode SelectedTheme
+    {
+        get => _themeService.CurrentTheme;
+        set
+        {
+            if (value != _themeService.CurrentTheme)
+            {
+                _themeService.ApplyTheme(value);
+                OnPropertyChanged();
+            }
+        }
     }
 
     /// <summary>后端 FastAPI 地址（含端口）。</summary>
@@ -111,10 +130,12 @@ public partial class SettingsViewModel : ViewModelBase
 
             IsDirty = false;
             StatusMessage = "已保存（重启后端通信变更生效）";
+            _notifications.Success("设置已保存");
         }
         catch (Exception ex)
         {
             StatusMessage = $"保存失败：{ex.Message}";
+            _notifications.Error($"保存失败：{ex.Message}");
         }
     }
 
@@ -128,4 +149,10 @@ public partial class SettingsViewModel : ViewModelBase
         IsDirty = false;
         StatusMessage = "已恢复";
     }
+
+    [RelayCommand]
+    private void SetLightTheme() => SelectedTheme = ThemeMode.Light;
+
+    [RelayCommand]
+    private void SetDarkTheme() => SelectedTheme = ThemeMode.Dark;
 }

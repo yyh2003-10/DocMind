@@ -40,6 +40,12 @@ namespace DocMind
         {
             services.AddSingleton(settings);
 
+            // 通知服务
+            services.AddSingleton<NotificationService>();
+
+            // 主题服务
+            services.AddSingleton<ThemeService>();
+
             // ViewModels
             services.AddSingleton<MainViewModel>();
             services.AddTransient<SearchViewModel>();
@@ -67,6 +73,10 @@ namespace DocMind
         protected override async void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
+
+            // 加载已保存的主题（覆盖 App.xaml 默认 Theme.xaml）
+            var themeService = _serviceProvider.GetRequiredService<ThemeService>();
+            themeService.LoadInitialTheme();
 
             var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
             mainWindow.DataContext = _serviceProvider.GetRequiredService<MainViewModel>();

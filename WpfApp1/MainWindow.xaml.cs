@@ -1,24 +1,19 @@
-﻿using System.Text;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
+using DocMind.Services;
 
 namespace DocMind
 {
-    /// <summary>
-    /// Interaction logic for MainWindow.xaml
-    /// </summary>
     public partial class MainWindow : Window
     {
-        public MainWindow()
+        public MainWindow(NotificationService notificationService)
         {
             InitializeComponent();
+
+            // 订阅通知服务 → Toast 层显示
+            notificationService.NotificationAdded += notification =>
+            {
+                Dispatcher.Invoke(() => ToastLayer.Show(notification));
+            };
         }
     }
 }
