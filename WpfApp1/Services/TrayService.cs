@@ -1,6 +1,5 @@
-using System.ComponentModel;
-using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Controls;
 using H.NotifyIcon;
 
 namespace DocMind.Services;
@@ -17,7 +16,15 @@ public sealed class TrayService : IDisposable
     public string StatusText
     {
         get => _statusText;
-        private set => SetField(ref _statusText, value);
+        private set
+        {
+            if (_statusText != value)
+            {
+                _statusText = value;
+                _icon.ToolTipText = value;
+                StatusChanged?.Invoke(this, value);
+            }
+        }
     }
     private string _statusText = "DocMind - 离线";
 
@@ -30,22 +37,25 @@ public sealed class TrayService : IDisposable
         _icon = new TaskbarIcon
         {
             ToolTipText = StatusText,
-            // 嵌入资源图标（无 .ico 时退到系统信息图标，避免硬崩）
             IconSource = TryLoadIcon(),
-            ContextMenuStripItems = new[]
-            {
-                new ToolStripMenuItemInfo
-                {
-                    Text = "显示主窗口",
-                    Click = (s, e) => ShowMainWindow(),
-                },
-                new ToolStripMenuItemInfo
-                {
-                    Text = "退出",
-                    Click = (s, e) => ExitApp(),
-                },
-            },
         };
+
+        // 右键菜单
+        var contextMenu = new ContextMenu();
+        contextMenu.Items.Add(new MenuItem
+        {
+            Header = "显示主窗口",
+            Command = new RelayCommand(ShowMainWindow),
+        });
+        contextMenu.Items.Add(new Separator());
+        contextMenu.Items.Add(new MenuItem
+        {
+            Header = "退出",
+            Command = new RelayCommand(ExitApp),
+        });
+        _icon.ContextMenu = contextMenu;
+
+        // 双击托盘恢复
         _icon.DoubleClickCommand = new RelayCommand(ShowMainWindow);
         _icon.ForceCreate();
     }
@@ -60,8 +70,6 @@ public sealed class TrayService : IDisposable
             BackendState.Stopping => "DocMind - 退出中…",
             _ => "DocMind - 离线",
         };
-        _icon.ToolTipText = StatusText;
-        StatusChanged?.Invoke(this, StatusText);
     }
 
     /// <summary>隐藏主窗口到托盘（不显示在任务栏）。</summary>
@@ -85,7 +93,7 @@ public sealed class TrayService : IDisposable
         Application.Current.Shutdown();
     }
 
-    /// <summary>尝试从嵌入资源加载 DocMind.ico；失败回 null（H.NotifyIcon 会用默认）。</summary>
+    /// <summary>尝试从嵌入资源加载 DocMind.ico；失败回 null。</summary>
     private static System.Windows.Media.ImageSource? TryLoadIcon()
     {
         try
@@ -104,18 +112,7 @@ public sealed class TrayService : IDisposable
         _icon.Dispose();
     }
 
-    // --- 简易 INPC 与 RelayCommand（避免新增依赖） ---
-    private bool SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
-    {
-        if (EqualityComparer<T>.Default.Equals(field, value))
-        {
-            return false;
-        }
-        field = value;
-        StatusChanged?.Invoke(this, StatusText);
-        return true;
-    }
-
+    /// <summary>简易 ICommand 实现（避免额外依赖）。</summary>
     private sealed class RelayCommand : System.Windows.Input.ICommand
     {
         private readonly Action _action;

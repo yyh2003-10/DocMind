@@ -87,9 +87,12 @@ namespace DocMind
             var backend = _serviceProvider.GetRequiredService<BackendProcessService>();
             backend.StateChanged += (_, state) => _trayService.UpdateStatus(state);
             _ = backend.StartAsync(progress: new Progress<string>(msg =>
-                mainWindow.DataContext is MainViewModel vm
-                    ? vm.StatusMessage = msg
-                    : null));
+            {
+                if (mainWindow.DataContext is MainViewModel vm)
+                {
+                    vm.StatusMessage = msg;
+                }
+            }));
         }
 
         protected override async void OnExit(ExitEventArgs e)

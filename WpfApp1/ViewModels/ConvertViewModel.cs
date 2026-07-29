@@ -149,7 +149,7 @@ public partial class ConvertViewModel : ViewModelBase
                 new ConvertRequest
                 {
                     InputPath = InputPath.Trim(),
-                    OutputPath = string.IsNullOrWhiteSpace(OutputPath) ? null : OutputPath.Trim(),
+                    OutputPath = string.IsNullOrWhiteSpace(OutputPath) ? string.Empty : OutputPath.Trim(),
                     Format = Format,
                 });
 

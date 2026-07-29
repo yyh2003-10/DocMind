@@ -66,7 +66,7 @@
             <!-- 导入成功 -->
             <DockPanel Grid.Column="0" Margin="0,0,4,0">
                 <TextBlock DockPanel.Dock="Top" FontWeight="Bold" Margin="0,0,0,4">
-                    <Run Text="导入成功 (" /><Run Text="{Binding Results.Count}" /><Run Text=")" />
+                    <Run Text="导入成功 (" /><Run Text="{Binding Results.Count, Mode=OneWay}" /><Run Text=")" />
                 </TextBlock>
                 <ListBox ItemsSource="{Binding Results}" BorderThickness="1">
                     <ListBox.ItemTemplate>
@@ -86,7 +86,7 @@
             <!-- 跳过 -->
             <DockPanel Grid.Column="1" Margin="4,0,4,0">
                 <TextBlock DockPanel.Dock="Top" FontWeight="Bold" Margin="0,0,0,4">
-                    <Run Text="跳过 (" /><Run Text="{Binding Skipped.Count}" /><Run Text=")" />
+                    <Run Text="跳过 (" /><Run Text="{Binding Skipped.Count, Mode=OneWay}" /><Run Text=")" />
                 </TextBlock>
                 <ListBox ItemsSource="{Binding Skipped}" BorderThickness="1">
                     <ListBox.ItemTemplate>
@@ -100,7 +100,7 @@
             <!-- 失败 -->
             <DockPanel Grid.Column="2" Margin="4,0,0,0">
                 <TextBlock DockPanel.Dock="Top" FontWeight="Bold" Margin="0,0,0,4" Foreground="#C53030">
-                    <Run Text="失败 (" /><Run Text="{Binding Failed.Count}" /><Run Text=")" />
+                    <Run Text="失败 (" /><Run Text="{Binding Failed.Count, Mode=OneWay}" /><Run Text=")" />
                 </TextBlock>
                 <ListBox ItemsSource="{Binding Failed}" BorderThickness="1">
                     <ListBox.ItemTemplate>
