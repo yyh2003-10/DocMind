@@ -174,7 +174,7 @@ class Retriever:
                     tokens=s.tokens,
                     chunk_index=s.chunk_index,
                     collection=s.collection,
-                    extra=s.extra,
+                    extra=s.extra_metadata,
                 )
                 match_type = _match_type(v_score, b_score)
                 hits.append(

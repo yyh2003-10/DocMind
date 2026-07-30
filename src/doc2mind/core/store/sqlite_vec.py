@@ -31,6 +31,50 @@ class StoreError(Exception):
     """存储异常。"""
 
 
+# --- FTS5 MATCH 表达式构造（中文友好）---
+import re as _re
+
+# CJK 统一表意文字范围（中日韩常用汉字）
+_CJK_RE = _re.compile(r"[\u4e00-\u9fff]+")
+
+
+def _build_fts5_match(query: str) -> str:
+    """把用户 query 转成 FTS5 MATCH 表达式（配合 `trigram` tokenizer）。
+
+    trigram tokenizer 入库时把任意文本切成 3-char 子串存储，
+    查询时 FTS5 会自动对 ≥3 chars 的 token 做子串匹配。
+    策略：
+    - 按空格切分为独立 token，整体用 OR 连接（任一命中即加分）
+    - 中文段：≥3 chars 直接整段引号包裹（trigram 自子串匹配）
+      <3 chars 用前缀 `token*` 走子串
+    - 英文 token：≥3 chars 直接引号包裹；<3 chars 用前缀 `token*`
+    - 全空返回 ""（调用方据此跳过 BM25）
+
+    例：
+        "向量存储架构" → '"向量存储架构"'
+        "向量 存储" → '"向量存储" OR "存储"'
+        "vector storage" → '"vector" OR "storage"'
+        "向" → '"向*"'
+    """
+    if not query or not query.strip():
+        return ""
+
+    tokens: list[str] = []
+    for chunk in query.split():
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if len(chunk) >= 3:
+            # trigram tokenizer 对 ≥3 chars 的 token 自动做子串匹配
+            tokens.append(f'"{chunk}"')
+        else:
+            # <3 chars：trigram 无法精确 MATCH，用前缀走子串
+            tokens.append(f'"{chunk}*"')
+
+    # 各 split token 整体用 OR 连接（更宽松，任一命中即返回）
+    return " OR ".join(tokens) if tokens else ""
+
+
 # --- 数据类型 ---
 @dataclass(frozen=True)
 class StoredChunk:
@@ -120,11 +164,13 @@ CREATE INDEX IF NOT EXISTS idx_chunks_source       ON chunks_meta(source);
 
 _FTS_SQL = """
 -- FTS5 全文索引（BM25 用）
+-- trigram tokenizer：把任意文本（含中文）切成 3-char 子串，
+-- 中文 BM25 评估不再触发 datatype mismatch。
 CREATE VIRTUAL TABLE IF NOT EXISTS bm25_index USING fts5(
     content,
     collection UNINDEXED,
     chunk_id UNINDEXED,
-    tokenize = 'unicode61'    -- 中文走 trigram？暂用 unicode61，配合大 token
+    tokenize = 'trigram'
 );
 """
 
@@ -147,6 +193,8 @@ class VectorStore:
         self.embedding_dim = int(embedding_dim)
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
+        # FTS5 查询独立 connection（避开 vec0 扩展与 trigram BM25 评估冲突）
+        self._fts_conn: sqlite3.Connection | None = None
         self._fts_available = False
 
     # --- 生命周期 ---
@@ -178,6 +226,16 @@ class VectorStore:
                 try:
                     conn.executescript(_FTS_SQL)
                     self._fts_available = True
+                    # 独立 connection 跑 BM25 查询：
+                    # vec0 扩展与 trigram tokenizer 在同 connection 上
+                    # 评估中文 bm25() 时会触发 IntegrityError: datatype mismatch
+                    fts_conn = sqlite3.connect(
+                        str(self.db_path),
+                        check_same_thread=False,
+                        isolation_level=None,
+                    )
+                    fts_conn.execute("PRAGMA journal_mode=WAL")
+                    self._fts_conn = fts_conn
                 except sqlite3.OperationalError:
                     # FTS5 缺失，关闭 BM25
                     self._fts_available = False
@@ -194,6 +252,9 @@ class VectorStore:
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
+            if self._fts_conn is not None:
+                self._fts_conn.close()
+                self._fts_conn = None
 
     def __enter__(self) -> "VectorStore":
         self.open()
@@ -205,23 +266,34 @@ class VectorStore:
     # --- sqlite-vec 扩展加载 ---
     @staticmethod
     def _load_vec_extension(conn: sqlite3.Connection) -> None:
-        """加载 sqlite-vec 扩展（auto-load 失败时尝试手动 load_extension）。"""
-        # 路径 1: sqlite_vec 模块的自动加载
+        """加载 sqlite-vec 扩展。
+
+        策略：
+        1. 调用 `sqlite_vec.load(conn)`（需要先 enable_load_extension）
+        2. 若 sqlite_vec 模块不可用，用 `loadable_path()` 直接加载
+        """
         try:
             import sqlite_vec  # type: ignore
 
+            conn.enable_load_extension(True)  # type: ignore[attr-defined]
             sqlite_vec.load(conn)
             return
         except ImportError:
-            pass  # 走路径 2
+            pass  # sqlite_vec 未安装，走路径 2
         except Exception:  # noqa: BLE001
             pass  # 走路径 2
 
-        # 路径 2: enable_extension + load
+        # 路径 2: 通过 loadable_path 直接加载
         try:
+            import sqlite_vec
+
             conn.enable_load_extension(True)  # type: ignore[attr-defined]
-            conn.load_extension("vec0")  # type: ignore[attr-defined]
+            conn.load_extension(sqlite_vec.loadable_path())  # type: ignore[attr-defined]
             return
+        except ImportError:
+            raise StoreError(
+                "sqlite-vec 未安装。请运行：pip install sqlite-vec"
+            )
         except Exception as e:  # noqa: BLE001
             raise StoreError(
                 "sqlite-vec 扩展加载失败。请运行：pip install sqlite-vec"
@@ -484,29 +556,41 @@ class VectorStore:
         """BM25 关键词检索，返回 [(chunk_id, bm25_score), ...]。
 
         score 越大越相关。
+
+        注意：用独立 `_fts_conn` 跑查询，避开 vec0 扩展与 trigram tokenizer
+        在同 connection 上评估中文 bm25() 时的 IntegrityError: datatype mismatch。
         """
         if not self._fts_available:
             return []
+        # 构造中文友好的 MATCH 表达式
+        match_expr = _build_fts5_match(query)
+        if not match_expr:
+            return []
         with self._lock:
             self._require_open()
+            if self._fts_conn is None:
+                return []
             try:
                 col_filter = ""
-                params: list[Any] = [query, top_k * 4]
+                params: list[Any] = [match_expr]
                 if collection:
                     col_filter = "AND collection = ?"
-                    params = [query, top_k * 4, collection]
-                cur = self._conn.execute(
+                    params = [match_expr, collection]
+                # LIMIT 用字符串拼接（int 已强类型校验，无注入风险）：
+                # FTS5 trigram + LIMIT ? placeholder 触发 IntegrityError: datatype mismatch
+                cur = self._fts_conn.execute(
                     f"""
                     SELECT chunk_id, bm25(bm25_index) AS score
                     FROM bm25_index
                     WHERE bm25_index MATCH ? {col_filter}
                     ORDER BY score DESC
-                    LIMIT ?
+                    LIMIT {int(top_k * 4)}
                     """,
                     params,
                 )
                 rows = cur.fetchall()
-                return [(int(r[0]), float(r[1])) for r in rows][:top_k]
+                # chunk_id 在 FTS5 UNINDEXED 列中存为 TEXT，需 cast
+                return [(int(str(r[0])), float(r[1])) for r in rows][:top_k]
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"BM25 检索失败: {e}") from e
 
@@ -520,11 +604,12 @@ class VectorStore:
                 placeholders = ",".join("?" * len(chunk_ids))
                 cur = self._conn.execute(
                     f"""
-                    SELECT id, content, source, format, doc_type, page,
-                           heading, file_hash, collection, created_at,
-                           tokens, chunk_index, extra, sheet, slide, language
-                    FROM chunks_meta
-                    WHERE id IN ({placeholders})
+                    SELECT cm.id, cm.content, cm.source, cm.format, cm.doc_type, cm.page,
+                           cm.heading, d.file_hash, cm.collection, d.created_at,
+                           cm.tokens, cm.chunk_index, cm.extra, cm.sheet, cm.slide, cm.language
+                    FROM chunks_meta cm
+                    LEFT JOIN documents d ON d.id = cm.document_id
+                    WHERE cm.id IN ({placeholders})
                     """,
                     list(chunk_ids),
                 )
@@ -540,9 +625,9 @@ class VectorStore:
                         StoredChunk(
                             id=r[0], content=r[1], source=r[2], format=r[3],
                             doc_type=r[4], page=r[5], heading=r[6],
-                            file_hash=r[7], collection=r[8], created_at=r[9],
+                            file_hash=r[7] or "", collection=r[8], created_at=r[9],
                             tokens=r[10], chunk_index=r[11],
-                            extra=json.loads(r[12]) if r[12] else {},
+                            extra_metadata=json.loads(r[12]) if r[12] else {},
                         )
                     )
                 return result
