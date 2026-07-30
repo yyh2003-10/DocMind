@@ -49,7 +49,11 @@
     </None>
   </ItemGroup>
 
-  <!-- 图表库（质量看板用）—— 阶段 6 再加，避免现在拉大依赖 -->
-  <!-- <PackageReference Include="LiveChartsCore.SkiaSharpView.WPF" Version="2.0.0-rc4.5" /> -->
+  <!-- 图表库（质量看板用）：LiveChartsCore.SkiaSharpView.WPF 2.0.0-rc4.5
+       当前未启用——QualityView.XAML 尚未使用图表控件，list 展示已完整。
+       后续需要时取消注释即可。-->
+  <!--<ItemGroup>
+    <PackageReference Include="LiveChartsCore.SkiaSharpView.WPF" Version="2.0.0-rc4.5" />
+  </ItemGroup>-->
 
 </Project>

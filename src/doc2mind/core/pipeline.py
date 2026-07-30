@@ -1,6 +1,6 @@
 """摄入流水线 — 把 loader→chunker→embedder→store 串起来。
 
-入口：`ingest(path, settings, collection, force)` 返回 `IngestResult`
+入口：`ingest_path(path, settings, collection, force)` 返回 `IngestResult`
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ class IngestResult:
     document_id: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class IngestSummary:
     """批量摄入汇总。"""
 
