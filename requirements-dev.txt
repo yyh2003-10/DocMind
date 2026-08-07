@@ -1,0 +1,7 @@
+# DocMind 开发依赖（测试 / 静态检查 / 打包）
+# 用法：pip install -r requirements-dev.txt
+pytest==9.0.3
+pytest-cov==7.1.0
+ruff==0.12.4
+mypy==1.19.0
+build==1.2.2

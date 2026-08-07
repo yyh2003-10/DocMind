@@ -117,7 +117,8 @@ class StoreStats:
 
     total_documents: int
     total_chunks: int
-    collections: dict[str, tuple[int, int]]  # name -> (doc_count, chunk_count)
+    # name -> (doc_count, chunk_count, size_bytes)
+    collections: dict[str, tuple[int, int, int]]
 
 
 # --- SQL 建表 ---
@@ -438,11 +439,22 @@ class VectorStore:
 
     # --- 删除 ---
     def delete_document(self, document_id: str) -> int:
-        """删除文档及其所有分块与向量。"""
+        """删除文档及其所有分块与向量。
+
+        Returns:
+            删除的 chunk 数；-1 表示文档不存在（哨兵值，调用方据此返回 404）。
+        """
         with self._lock:
             self._require_open()
             conn = self._conn
             try:
+                # 先查文档是否存在（避免误删孤儿 chunk）
+                exists = conn.execute(
+                    "SELECT 1 FROM documents WHERE id = ?", (document_id,)
+                ).fetchone()
+                if exists is None:
+                    return -1
+
                 conn.execute("BEGIN")
                 # 取该文档所有 chunk_id
                 rows = conn.execute(
@@ -634,22 +646,170 @@ class VectorStore:
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"获取分块失败: {e}") from e
 
+    def list_chunks_by_document(
+        self, document_id: str, limit: int = 100
+    ) -> list[StoredChunk]:
+        """按文档取分块（文档详情预览用），按 chunk_index 排序。"""
+        if limit <= 0:
+            return []
+        with self._lock:
+            self._require_open()
+            try:
+                cur = self._conn.execute(
+                    """
+                    SELECT cm.id, cm.content, cm.source, cm.format, cm.doc_type, cm.page,
+                           cm.heading, d.file_hash, cm.collection, d.created_at,
+                           cm.tokens, cm.chunk_index, cm.extra, cm.sheet, cm.slide, cm.language
+                    FROM chunks_meta cm
+                    LEFT JOIN documents d ON d.id = cm.document_id
+                    WHERE cm.document_id = ?
+                    ORDER BY cm.chunk_index ASC
+                    LIMIT ?
+                    """,
+                    (document_id, limit),
+                )
+                rows = cur.fetchall()
+                return [
+                    StoredChunk(
+                        id=r[0], content=r[1], source=r[2], format=r[3],
+                        doc_type=r[4], page=r[5], heading=r[6],
+                        file_hash=r[7] or "", collection=r[8], created_at=r[9],
+                        tokens=r[10], chunk_index=r[11],
+                        extra_metadata=json.loads(r[12]) if r[12] else {},
+                    )
+                    for r in rows
+                ]
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"获取文档分块失败: {e}") from e
+
+    def list_chunk_contents(
+        self, collection: str | None = None
+    ) -> list[tuple[int, str]]:
+        """按集合列出 (chunk_id, content)，重建索引（重新嵌入）用。"""
+        with self._lock:
+            self._require_open()
+            try:
+                sql = "SELECT id, content FROM chunks_meta"
+                params: list[Any] = []
+                if collection:
+                    sql += " WHERE collection = ?"
+                    params.append(collection)
+                rows = self._conn.execute(sql, params).fetchall()
+                return [(int(r[0]), str(r[1])) for r in rows]
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"列出分块内容失败: {e}") from e
+
+    def update_embeddings(
+        self, chunk_id_emb_pairs: Sequence[tuple[int, object]]
+    ) -> int:
+        """批量更新已有 chunk 的向量（重建索引用）。
+
+        Args:
+            chunk_id_emb_pairs: [(chunk_id, embedding), ...]
+
+        Returns:
+            实际更新的行数
+        """
+        if not chunk_id_emb_pairs:
+            return 0
+        with self._lock:
+            self._require_open()
+            conn = self._conn
+            try:
+                conn.execute("BEGIN")
+                updated = 0
+                for cid, emb in chunk_id_emb_pairs:
+                    emb_bytes = _vector_to_bytes(emb)
+                    cur = conn.execute(
+                        "UPDATE vec_chunks SET embedding = ? WHERE id = ?",
+                        (emb_bytes, int(cid)),
+                    )
+                    updated += cur.rowcount
+                conn.execute("COMMIT")
+                return updated
+            except Exception as e:  # noqa: BLE001
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise StoreError(f"更新向量失败: {e}") from e
+
+    def rebuild_chunk_embeddings(
+        self,
+        chunk_id_emb_pairs: Sequence[tuple[int, object]],
+        new_dim: int,
+    ) -> int:
+        """按新维度重建向量表并回填全部向量（换模型且维度变化时调用）。
+
+        Args:
+            chunk_id_emb_pairs: [(chunk_id, embedding), ...]，该集合全部 chunk；
+                空列表时仅重建空表结构（切换模型后首次摄入前的对齐）。
+            new_dim: 新模型向量维度。
+
+        Returns:
+            实际插入的行数
+        """
+        with self._lock:
+            self._require_open()
+            conn = self._conn
+            try:
+                conn.execute("BEGIN")
+                conn.execute("DROP TABLE IF EXISTS vec_chunks")
+                conn.execute(_VEC_SQL_TEMPLATE.format(dim=int(new_dim)))
+                inserted = 0
+                for cid, emb in chunk_id_emb_pairs:
+                    emb_bytes = _vector_to_bytes(emb)
+                    conn.execute(
+                        "INSERT INTO vec_chunks(id, embedding) VALUES (?, ?)",
+                        (int(cid), emb_bytes),
+                    )
+                    inserted += 1
+                conn.execute("COMMIT")
+                # 同步存储维度，供后续表结构操作保持一致
+                self.embedding_dim = int(new_dim)
+                return inserted
+            except Exception as e:  # noqa: BLE001
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise StoreError(f"重建向量表失败: {e}") from e
+
+    # sort 白名单 → SQL 片段（避免任意列名注入）
+    SORT_CLAUSES: dict[str, str] = {
+        "created_at_desc": "created_at DESC",
+        "created_at_asc": "created_at ASC",
+        "updated_at_desc": "updated_at DESC",
+        "updated_at_asc": "updated_at ASC",
+        "name_asc": "source COLLATE NOCASE ASC",
+        "name_desc": "source COLLATE NOCASE DESC",
+    }
+
     def list_documents(
         self,
         collection: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        format: str | None = None,
+        sort: str = "created_at_desc",
     ) -> list[StoredDocument]:
-        """列出文档。"""
+        """列出文档（可按 collection / format 过滤，sort 白名单排序）。"""
         with self._lock:
             self._require_open()
             try:
                 sql = "SELECT id, source, collection, format, file_hash, size_bytes, page_count, chunk_count, created_at, updated_at FROM documents"
                 params: list[Any] = []
+                conds: list[str] = []
                 if collection:
-                    sql += " WHERE collection = ?"
+                    conds.append("collection = ?")
                     params.append(collection)
-                sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+                if format:
+                    conds.append("format = ?")
+                    params.append(format)
+                if conds:
+                    sql += " WHERE " + " AND ".join(conds)
+                order = self.SORT_CLAUSES.get(sort, "created_at DESC")
+                sql += f" ORDER BY {order} LIMIT ? OFFSET ?"
                 params.extend([limit, offset])
                 cur = self._conn.execute(sql, params)
                 rows = cur.fetchall()
@@ -664,6 +824,74 @@ class VectorStore:
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"列出文档失败: {e}") from e
 
+    def count_documents(
+        self, collection: str | None = None, format: str | None = None
+    ) -> int:
+        """统计文档数（可按 collection / format 过滤）。"""
+        with self._lock:
+            self._require_open()
+            try:
+                conds: list[str] = []
+                params: list[Any] = []
+                if collection:
+                    conds.append("collection = ?")
+                    params.append(collection)
+                if format:
+                    conds.append("format = ?")
+                    params.append(format)
+                sql = "SELECT COUNT(*) FROM documents"
+                if conds:
+                    sql += " WHERE " + " AND ".join(conds)
+                row = self._conn.execute(sql, params).fetchone()
+                return int(row[0]) if row else 0
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"统计文档失败: {e}") from e
+
+    def get_document_by_id(self, document_id: str) -> StoredDocument | None:
+        """按主键取单条文档（避免全表扫描）。"""
+        with self._lock:
+            self._require_open()
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT id, source, collection, format, file_hash,
+                           size_bytes, page_count, chunk_count,
+                           created_at, updated_at
+                    FROM documents WHERE id = ?
+                    """,
+                    (document_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                return StoredDocument(
+                    id=row[0], source=row[1], collection=row[2], format=row[3],
+                    file_hash=row[4], size_bytes=row[5], page_count=row[6],
+                    chunk_count=row[7], created_at=row[8], updated_at=row[9],
+                )
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"获取文档失败: {e}") from e
+
+    def find_document_id_by_hash(
+        self, file_hash: str, collection: str
+    ) -> str | None:
+        """按 file_hash 找已存在的文档 ID（增量去重用）。
+
+        必须走 self._lock：store 可能是跨线程共享的单例（HTTP 服务），
+        裸访问 _conn 会与其它线程的写操作并发，触发
+        `Recursive use of cursors not allowed` / SQLITE_BUSY。
+        """
+        with self._lock:
+            if self._conn is None:
+                return None
+            try:
+                row = self._conn.execute(
+                    "SELECT id FROM documents WHERE file_hash = ? AND collection = ?",
+                    (file_hash, collection),
+                ).fetchone()
+                return row[0] if row else None
+            except sqlite3.Error:
+                return None
+
     def get_stats(self) -> StoreStats:
         """获取存储统计。"""
         with self._lock:
@@ -675,19 +903,20 @@ class VectorStore:
                 chunk_total = self._conn.execute(
                     "SELECT COUNT(*) FROM chunks_meta"
                 ).fetchone()[0]
-                # 各集合 (doc_count, chunk_count)
+                # 各集合 (doc_count, chunk_count, size_bytes)
                 rows = self._conn.execute(
                     """
                     SELECT d.collection,
                            COUNT(DISTINCT d.id),
-                           COUNT(c.id)
+                           COUNT(c.id),
+                           COALESCE(SUM(d.size_bytes), 0)
                     FROM documents d
                     LEFT JOIN chunks_meta c ON c.document_id = d.id
                     GROUP BY d.collection
                     """
                 ).fetchall()
                 collections = {
-                    r[0]: (int(r[1]), int(r[2])) for r in rows
+                    r[0]: (int(r[1]), int(r[2]), int(r[3])) for r in rows
                 }
                 return StoreStats(
                     total_documents=doc_total,
