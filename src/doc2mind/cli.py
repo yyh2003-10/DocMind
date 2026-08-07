@@ -595,7 +595,6 @@ def serve(
             "[bold]pip install doc2mind[server][/bold]"
         )
         raise typer.Exit(code=1) from None
-    # 阶段 8 实现：uvicorn.run(app, host=host, port=port)
     from doc2mind.server.http import create_app
 
     # 首次使用引导：模型未下载时提示（新手友好）
@@ -605,8 +604,50 @@ def serve(
     if hint:
         rprint(f"[yellow]提示:[/yellow]\n{hint}")
 
-    rprint(f"[bold green]启动 HTTP 服务[/bold green] http://{host}:{port}")
-    uvicorn.run(create_app(), host=host, port=port)
+    # 端口冲突处理：目标端口被占用时自动 +1 探测空闲端口（最多 +100），
+    # 并把实际端口写入 server.port 状态文件，供 WPF 客户端读取跟随。
+    actual_port = _find_free_port(host, port)
+    if actual_port != port:
+        rprint(
+            f"[yellow]端口 {port} 被占用，自动改用 {actual_port}[/yellow]"
+        )
+    _write_server_port(actual_port)
+
+    rprint(f"[bold green]启动 HTTP 服务[/bold green] http://{host}:{actual_port}")
+    uvicorn.run(create_app(), host=host, port=actual_port)
+
+
+def _find_free_port(host: str, port: int, max_tries: int = 100) -> int:
+    """探测一个可监听的端口：从 `port` 起 +1 依次 bind 测试，返回第一个空闲端口。
+
+    目的：8765 被其它程序占用时，后端不至于启动失败，而是顺延到 8766/8767…
+    """
+    import socket
+
+    for candidate in range(port, port + max_tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind((host, candidate))
+                return candidate
+            except OSError:
+                continue
+    raise typer.Exit(
+        code=1,
+        message=f"[red]error[/red] 端口 {port}~{port + max_tries - 1} 均被占用，无法启动服务。",
+    )
+
+
+def _write_server_port(port: int) -> None:
+    """把实际监听端口写入状态文件（WPF 客户端据此跟随端口变化）。失败静默。"""
+    try:
+        from doc2mind.core.config import server_port_file_path
+
+        p = server_port_file_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(str(port), encoding="utf-8")
+    except OSError:
+        # 写失败不影响服务启动（WPF 仍会先探测默认端口）
+        pass
 
 
 @app.command()

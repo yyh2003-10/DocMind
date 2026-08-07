@@ -4,6 +4,9 @@ namespace DocMind.Services;
 
 public interface IDoc2kbApiService
 {
+    /// <summary>更新后端 BaseAddress（端口被占用顺延时由 BackendProcessService 触发）。</summary>
+    void UpdateBaseAddress(string baseUrl);
+
     Task<HealthStatus> GetHealthAsync(CancellationToken ct = default);
     Task<BackendConfig> GetConfigAsync(CancellationToken ct = default);
     Task<BackendConfig> UpdateConfigAsync(BackendConfigUpdate req, CancellationToken ct = default);

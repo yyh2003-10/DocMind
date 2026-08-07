@@ -361,3 +361,17 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# ===== DocMind 项目专属 =====
+# Python 虚拟环境：不可入仓库（机器特定、体积大），换设备用 scripts/setup.ps1 重建
+.venv/
+# 本地 site-packages 冗余拷贝（调试遗留），换设备以 requirements-*.txt 安装为准
+pylibs/
+# 测试/调试残留
+.pytest_cache/
+.diag_page0.png
+_ocr_test_p1.png
+_ocr_test_p2.png
+pip_*.log
+# 端口状态文件（运行时由 doc2mind serve 写入）
+server.port

@@ -142,6 +142,12 @@ namespace DocMind
             // 订阅 StateChanged 而非直接 await StartAsync，因为 StartAsync 是 fire-and-forget，
             // 且 AutoStartBackend=false 时由 RefreshStateAsync 探测到外部后端 Online 也会触发。
             var api = _serviceProvider.GetRequiredService<IDoc2kbApiService>();
+            // 后端端口被占用顺延时（serve 自动 +1），API 客户端 BaseAddress 跟随实际端口
+            backend.BackendUrlChanged += (_, url) =>
+            {
+                api.UpdateBaseAddress(url);
+                DebugLog.Info($"后端地址变更，API 客户端已同步: {url}", "App");
+            };
             var autoIngestDone = false;
             backend.StateChanged += async (_, state) =>
             {

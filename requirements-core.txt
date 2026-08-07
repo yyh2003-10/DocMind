@@ -1,0 +1,26 @@
+# DocMind core 依赖锁定（本机 RTX 2060 + Python 3.11 已验证组合，2026-08-07）
+# 生成方式：pip freeze 中提取本项目 pyproject.toml core 直接依赖的精确版本。
+# 换设备安装：pip install -r requirements-core.txt
+# CLI
+typer==0.24.1
+rich==13.9.4
+# 文档加载
+pdfminer.six==20260107
+python-docx==1.2.0
+openpyxl==3.1.5
+python-pptx==1.0.2
+markdown-it-py==4.0.0
+beautifulsoup4==4.15.0
+lxml==6.0.4
+# 嵌入引擎 (ONNX)
+fastembed==0.8.0
+# 向量存储
+sqlite-vec==0.1.9
+# 混合检索
+rank-bm25==0.2.2
+# 工具
+tiktoken==0.12.0
+httpx==0.28.1
+# MCP Server
+mcp==1.26.0
+pydantic==2.13.4

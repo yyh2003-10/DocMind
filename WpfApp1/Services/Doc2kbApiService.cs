@@ -30,6 +30,20 @@ public class Doc2kbApiService : IDoc2kbApiService
         _logger = logger;
     }
 
+    /// <summary>更新后端 BaseAddress（端口被占用顺延时跟随实际端口）。</summary>
+    public void UpdateBaseAddress(string baseUrl)
+    {
+        try
+        {
+            _httpClient.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
+            DebugLog.Info($"API 客户端 BaseAddress 已更新: {_httpClient.BaseAddress}", "API");
+        }
+        catch (UriFormatException ex)
+        {
+            DebugLog.Error($"无效的后端地址: {baseUrl}", "API", ex);
+        }
+    }
+
     public Task<HealthStatus> GetHealthAsync(CancellationToken ct = default)
         => SendAsync<HealthStatus>(HttpMethod.Get, "v1/health", null, ct);
 

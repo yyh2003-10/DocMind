@@ -24,6 +24,9 @@ public sealed class BackendProcessService : IDisposable
     /// <summary>状态变化事件（供 UI 状态灯订阅）。</summary>
     public event EventHandler<BackendState>? StateChanged;
 
+    /// <summary>实际后端地址变化事件（端口被占用顺延后触发，供 API 客户端同步 BaseAddress）。</summary>
+    public event EventHandler<string>? BackendUrlChanged;
+
     public BackendProcessService(
         AppSettings settings,
         ILogger<BackendProcessService>? logger = null)
@@ -397,10 +400,53 @@ public sealed class BackendProcessService : IDisposable
             {
                 // 启动中，端口未就绪 → 继续
             }
+
+            // 默认端口探测失败 → 尝试读取后端写的 server.port（端口被占用顺延时生效）
+            var actualPort = TryResolveActualPort();
+            if (actualPort is not null && actualPort != ExtractPort())
+            {
+                SwitchBackendUrl(actualPort.Value);
+                url = $"{_settings.BackendUrl.TrimEnd('/')}/v1/health";
+            }
+
             progress?.Report("等待后端就绪…");
             await Task.Delay(delay, ct);
         }
         return false;
+    }
+
+    /// <summary>读取后端 server.port 状态文件（%LOCALAPPDATA%\doc2mind\server.port），
+    /// 返回实际监听端口；文件不存在/损坏时返回 null。</summary>
+    private int? TryResolveActualPort()
+    {
+        try
+        {
+            var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            var portFile = Path.Combine(baseDir, "doc2mind", "server.port");
+            if (!File.Exists(portFile))
+            {
+                return null;
+            }
+            var text = File.ReadAllText(portFile).Trim();
+            return int.TryParse(text, out var port) && port > 0 ? port : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>切换后端地址到新端口（仅运行时，不持久化），并广播事件供 API 客户端同步。</summary>
+    private void SwitchBackendUrl(int port)
+    {
+        var baseUrl = _settings.BackendUrl.TrimEnd('/');
+        if (Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) && uri.Port != port)
+        {
+            var newUrl = $"{uri.Scheme}://{uri.Host}:{port}";
+            DebugLog.Info($"后端端口顺延：{uri.Port} → {port}，客户端已跟随", "Backend");
+            _settings.BackendUrl = newUrl;
+            BackendUrlChanged?.Invoke(this, newUrl);
+        }
     }
 
     private async Task MonitorAsync(CancellationToken ct)
