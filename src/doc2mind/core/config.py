@@ -161,6 +161,15 @@ def config_file_path() -> Path:
     return _user_config_dir() / "config.toml"
 
 
+def server_port_file_path() -> Path:
+    """后端实际监听端口状态文件：Windows %LOCALAPPDATA%\\doc2mind\\server.port。
+
+    `doc2mind serve` 在端口被占用自动 +1 探测后写入，供 WPF 客户端
+    读取以跟随实际端口（默认 8765 被占时后端会在 8766/8767… 上服务）。
+    """
+    return _user_data_dir() / "server.port"
+
+
 def load_config_file() -> dict[str, object]:
     """读取 config.toml（若存在），返回字段字典；缺失/损坏时返回空 dict。
 
@@ -170,7 +179,10 @@ def load_config_file() -> dict[str, object]:
     if not path.is_file():
         return {}
     try:
-        import tomllib  # Python 3.11+
+        try:
+            import tomllib  # Python 3.11+
+        except ImportError:  # pragma: no cover — Python 3.10 回退
+            import tomli as tomllib  # type: ignore[no-redef]
 
         with open(path, "rb") as f:
             data = tomllib.load(f)
