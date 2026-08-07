@@ -51,7 +51,7 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <!-- 第一行：评分 + 文档 ID -->
+                    <!-- 第一行：评分 + 来源 -->
                     <Grid Grid.Row="0" Margin="0,0,0,6">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
@@ -61,30 +61,30 @@
 
                         <!-- 评分徽章 -->
                         <Border Grid.Column="0" Style="{StaticResource ScoreBadge}">
-                            <TextBlock Text="{Binding Score, StringFormat={}{0:F4}}"
+                            <TextBlock Text="{Binding Score, Mode=OneWay, StringFormat={}{0:F4}}"
                                        FontSize="12" FontWeight="SemiBold"
                                        Foreground="{StaticResource PrimaryBrush}"/>
                         </Border>
 
-                        <!-- 文档 ID -->
+                        <!-- 来源文件名 -->
                         <TextBlock Grid.Column="1"
-                                   Text="{Binding Chunk.DocumentId}"
+                                   Text="{Binding Source, Mode=OneWay}"
                                    Style="{StaticResource CaptionText}"
                                    VerticalAlignment="Center"
                                    TextTrimming="CharacterEllipsis"/>
 
-                        <!-- 来源集合标记 -->
+                        <!-- 格式标记 -->
                         <Border Grid.Column="2" CornerRadius="3"
                                 Background="{StaticResource SurfaceBrush}"
                                 Padding="4,1" Margin="4,0,0,0">
-                            <TextBlock Text="{Binding Chunk.Collection}"
+                            <TextBlock Text="{Binding Format, Mode=OneWay}"
                                        Style="{StaticResource SmallText}"/>
                         </Border>
                     </Grid>
 
-                    <!-- 第二行：内容摘要（含高亮） -->
+                    <!-- 第二行：内容摘要 -->
                     <TextBlock Grid.Row="1"
-                               Text="{Binding Chunk.Content}"
+                               Text="{Binding Content, Mode=OneWay}"
                                Style="{StaticResource BodyText}"
                                TextWrapping="Wrap"
                                MaxHeight="60"
@@ -95,10 +95,10 @@
                     <StackPanel Grid.Row="2" Orientation="Horizontal"
                                 Margin="0,6,0,0">
                         <TextBlock Style="{StaticResource SmallText}">
-                            <Run Text="chunk "/><Run Text="{Binding Chunk.ChunkIndex}"/>
+                            <Run Text="page "/><Run Text="{Binding Page, Mode=OneWay, TargetNullValue=—}"/>
                         </TextBlock>
                         <TextBlock Style="{StaticResource SmallText}" Margin="12,0,0,0">
-                            <Run Text="tokens "/><Run Text="{Binding Chunk.TokenCount}"/>
+                            <Run Text="type "/><Run Text="{Binding MatchType, Mode=OneWay}"/>
                         </TextBlock>
                     </StackPanel>
                 </Grid>
@@ -148,7 +148,7 @@
                             Content="×"
                             Style="{StaticResource TextButtonStyle}"
                             Command="{Binding ClearCommand}"
-                            Visibility="{Binding HasQuery}"
+                            Visibility="{Binding HasQuery, Converter={StaticResource BoolToVis}}"
                             FontSize="16"
                             Padding="4,0"
                             Margin="-28,0,0,0"/>
@@ -157,7 +157,7 @@
                 <TextBox Grid.Column="1"
                          Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
                          Width="110"
-                         ToolTip="集合（可选）"
+                         ToolTip="集合名（可选，留空=搜索全部集合）。集合是把文档分组，导入时可指定"
                          Margin="0,0,8,0"/>
 
                 <ComboBox Grid.Column="2"
@@ -170,13 +170,20 @@
                     <ComboBoxItem Content="50"/>
                 </ComboBox>
 
-                <Button Grid.Column="3"
+                <TextBox Grid.Column="3"
+                         Text="{Binding MinScore, UpdateSourceTrigger=PropertyChanged}"
+                         Width="64"
+                         ToolTip="最低相似度（可选，0-1；如 0.3 表示只保留相似度 ≥0.3 的结果）"
+                         VerticalContentAlignment="Center"
+                         Margin="0,0,8,0"/>
+
+                <Button Grid.Column="4"
                         Content="搜索"
                         Command="{Binding SearchCommand}"
                         Style="{StaticResource PrimaryButtonStyle}"
                         Margin="0,0,6,0"/>
 
-                <Button Grid.Column="4"
+                <Button Grid.Column="5"
                         Content="清空"
                         Command="{Binding ClearCommand}"
                         Style="{StaticResource SecondaryButtonStyle}"/>
@@ -189,13 +196,13 @@
                 CornerRadius="6"
                 Padding="12,6"
                 Margin="0,0,0,8"
-                Visibility="{Binding HasResults}">
+                Visibility="{Binding HasResults, Converter={StaticResource BoolToVis}}">
             <StackPanel Orientation="Horizontal">
                 <TextBlock Style="{StaticResource CaptionText}">
                     <Run Text="共 "/><Run Text="{Binding LastResponse.Total, Mode=OneWay}"/><Run Text=" 条结果"/>
                 </TextBlock>
                 <TextBlock Style="{StaticResource CaptionText}" Margin="16,0,0,0">
-                    <Run Text="耗时 "/><Run Text="{Binding LastResponse.ElapsedMs, StringFormat={}{0:F0}}"/><Run Text="ms"/>
+                    <Run Text="耗时 "/><Run Text="{Binding LastResponse.ElapsedMs, Mode=OneWay, StringFormat={}{0:F0}}"/><Run Text="ms"/>
                 </TextBlock>
             </StackPanel>
         </Border>
@@ -242,15 +249,36 @@
                     </Border>
                 </StackPanel>
 
-                <!-- 实际结果列表 -->
-                <ScrollViewer VerticalScrollBarVisibility="Auto"
-                              BorderThickness="0">
-                    <ItemsControl ItemsSource="{Binding Hits}"
-                                  ItemTemplate="{StaticResource HitCardTemplate}"
-                                  VirtualizingPanel.IsVirtualizing="True"
-                                  VirtualizingPanel.VirtualizationMode="Recycling"
-                                  Focusable="False"/>
-                </ScrollViewer>
+                <!-- 实际结果列表 + 空态引导（叠放） -->
+                <Grid>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  BorderThickness="0">
+                        <ItemsControl ItemsSource="{Binding Hits}"
+                                      ItemTemplate="{StaticResource HitCardTemplate}"
+                                      VirtualizingPanel.IsVirtualizing="True"
+                                      VirtualizingPanel.VirtualizationMode="Recycling"
+                                      Focusable="False"/>
+                    </ScrollViewer>
+
+                    <!-- 空态引导：无结果且非忙碌时显示，告诉用户下一步该干嘛 -->
+                    <Border Background="{StaticResource SurfaceBrush}"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="10"
+                            Padding="24"
+                            VerticalAlignment="Center"
+                            Visibility="{Binding ShowEmptyGuide, Converter={StaticResource BoolToVis}}">
+                        <StackPanel>
+                            <TextBlock Text="🔍" FontSize="40" HorizontalAlignment="Center"/>
+                            <TextBlock Text="{Binding EmptyGuideText, Mode=OneWay}"
+                                       Style="{StaticResource BodyText}"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       TextWrapping="Wrap"
+                                       TextAlignment="Center"
+                                       Margin="0,12,0,0"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
             </Grid>
 
             <!-- 分隔线 -->
@@ -277,10 +305,10 @@
                                     CornerRadius="8"
                                     Padding="12"
                                     Margin="0,0,0,8"
-                                    Visibility="{Binding HasSelectedHit}">
+                                    Visibility="{Binding HasSelectedHit, Converter={StaticResource BoolToVis}}">
                                 <StackPanel>
                                     <TextBlock Style="{StaticResource CaptionText}" Margin="0,0,0,8">
-                                        <Run Text="文档 "/><Run Text="{Binding SelectedHit.Chunk.DocumentId}"/>
+                                        <Run Text="文档 "/><Run Text="{Binding SelectedHit.Source, Mode=OneWay}"/>
                                     </TextBlock>
 
                                     <!-- 评分进度条 -->
@@ -293,7 +321,7 @@
                                                    Style="{StaticResource SmallText}"
                                                    Margin="0,0,8,0"/>
                                         <ProgressBar Grid.Column="1"
-                                                     Value="{Binding SelectedHit.Score}"
+                                                     Value="{Binding SelectedHit.Score, Mode=OneWay}"
                                                      Maximum="1.0"
                                                      Height="6"
                                                      Foreground="{StaticResource PrimaryBrush}"/>
@@ -301,20 +329,20 @@
 
                                     <!-- 元数据 -->
                                     <TextBlock Style="{StaticResource SmallText}" Margin="0,0,0,4">
-                                        <Run Text="集合: "/><Run Text="{Binding SelectedHit.Chunk.Collection}"/>
+                                        <Run Text="格式: "/><Run Text="{Binding SelectedHit.Format, Mode=OneWay}"/>
                                     </TextBlock>
                                     <TextBlock Style="{StaticResource SmallText}" Margin="0,0,0,4">
-                                        <Run Text="Chunk 索引: "/><Run Text="{Binding SelectedHit.Chunk.ChunkIndex}"/>
+                                        <Run Text="标题: "/><Run Text="{Binding SelectedHit.Heading, Mode=OneWay}"/>
                                     </TextBlock>
                                     <TextBlock Style="{StaticResource SmallText}">
-                                        <Run Text="Token 数: "/><Run Text="{Binding SelectedHit.Chunk.TokenCount}"/>
+                                        <Run Text="匹配类型: "/><Run Text="{Binding SelectedHit.MatchType, Mode=OneWay}"/>
                                     </TextBlock>
                                 </StackPanel>
                             </Border>
 
                             <!-- 完整内容 -->
                             <TextBlock x:Name="DetailContentText"
-                                       Text="{Binding SelectedHit.Chunk.Content}"
+                                       Text="{Binding SelectedHit.Content, Mode=OneWay}"
                                        Style="{StaticResource BodyText}"
                                        TextWrapping="Wrap"
                                        xml:space="preserve"/>

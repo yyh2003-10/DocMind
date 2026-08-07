@@ -27,7 +27,7 @@
                 <TextBox DockPanel.Dock="Left"
                          Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
                          Width="140"
-                         ToolTip="集合名（可选，留空为全部）"
+                         ToolTip="集合名（可选，留空=全部集合）。集合是把文档分组：导入时给文件指定分组，搜索/看板可按分组过滤"
                          Margin="0,0,8,0"/>
                 <Button DockPanel.Dock="Right"
                         Content="刷新"
@@ -59,7 +59,7 @@
                         <TextBlock Text="文档总数" Style="{StaticResource CaptionText}"
                                    VerticalAlignment="Center"/>
                     </StackPanel>
-                    <TextBlock Text="{Binding Stats.TotalDocuments}"
+                    <TextBlock Text="{Binding Stats.TotalDocuments, Mode=OneWay}"
                                Style="{StaticResource TitleText}"
                                Margin="0,8,0,0"/>
                 </StackPanel>
@@ -78,13 +78,13 @@
                         <TextBlock Text="Chunk 总数" Style="{StaticResource CaptionText}"
                                    VerticalAlignment="Center"/>
                     </StackPanel>
-                    <TextBlock Text="{Binding Stats.TotalChunks}"
+                    <TextBlock Text="{Binding Stats.TotalChunks, Mode=OneWay}"
                                Style="{StaticResource TitleText}"
                                Margin="0,8,0,0"/>
                 </StackPanel>
             </Border>
 
-            <!-- 重复率 -->
+            <!-- 格式分布：知识库内出现的文档格式种数（真实数据） -->
             <Border Padding="16,14" Margin="0,0,8,0"
                     Background="{StaticResource BackgroundBrush}"
                     BorderBrush="{StaticResource BorderBrush}"
@@ -94,17 +94,17 @@
                 <StackPanel>
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="🔁" FontSize="20" Margin="0,0,8,0"/>
-                        <TextBlock Text="重复率" Style="{StaticResource CaptionText}"
+                        <TextBlock Text="格式分布" Style="{StaticResource CaptionText}"
                                    VerticalAlignment="Center"/>
                     </StackPanel>
-                    <TextBlock Text="{Binding Report.DuplicateRate, StringFormat={}{0:P1}}"
+                    <TextBlock Text="{Binding Report.FormatDistribution.Count, Mode=OneWay, StringFormat={}{0} 种}"
                                Style="{StaticResource TitleText}"
                                Foreground="{StaticResource WarningBrush}"
                                Margin="0,8,0,0"/>
                 </StackPanel>
             </Border>
 
-            <!-- 元数据缺失率 -->
+            <!-- 质量警告：后端 quality 接口基于真实库内数据计算 -->
             <Border Padding="16,14" Margin="0,0,0,0"
                     Background="{StaticResource BackgroundBrush}"
                     BorderBrush="{StaticResource BorderBrush}"
@@ -113,13 +113,13 @@
                     Effect="{StaticResource ShadowSm}">
                 <StackPanel>
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="📋" FontSize="20" Margin="0,0,8,0"/>
-                        <TextBlock Text="元数据缺失" Style="{StaticResource CaptionText}"
+                        <TextBlock Text="⚠" FontSize="20" Margin="0,0,8,0"/>
+                        <TextBlock Text="质量警告" Style="{StaticResource CaptionText}"
                                    VerticalAlignment="Center"/>
                     </StackPanel>
-                    <TextBlock Text="{Binding Report.MissingMetadataRate, StringFormat={}{0:P1}}"
+                    <TextBlock Text="{Binding Report.Warnings.Count, Mode=OneWay}"
                                Style="{StaticResource TitleText}"
-                               Foreground="{StaticResource InfoBrush}"
+                               Foreground="{StaticResource DangerBrush}"
                                Margin="0,8,0,0"/>
                 </StackPanel>
             </Border>
@@ -163,7 +163,7 @@
                                         </Grid.RowDefinitions>
 
                                         <TextBlock Grid.Row="0"
-                                                   Text="{Binding Name}"
+                                                   Text="{Binding Name, Mode=OneWay}"
                                                    FontWeight="SemiBold"
                                                    Style="{StaticResource BodyText}"/>
 
@@ -171,14 +171,14 @@
                                                     Margin="0,4,0,0">
                                             <TextBlock Style="{StaticResource SmallText}">
                                                 <Run Text="文档 " FontWeight="SemiBold"/>
-                                                <Run Text="{Binding Documents}"/>
+                                                <Run Text="{Binding Documents, Mode=OneWay}"/>
                                             </TextBlock>
                                             <TextBlock Style="{StaticResource SmallText}" Margin="16,0,0,0">
                                                 <Run Text="Chunks " FontWeight="SemiBold"/>
-                                                <Run Text="{Binding Chunks}"/>
+                                                <Run Text="{Binding Chunks, Mode=OneWay}"/>
                                             </TextBlock>
                                             <TextBlock Style="{StaticResource SmallText}" Margin="16,0,0,0">
-                                                <Run Text="{Binding SizeBytes, StringFormat={}{0:N0} B}"/>
+                                                <Run Text="{Binding SizeBytes, Mode=OneWay, StringFormat={}{0:N0} B}"/>
                                             </TextBlock>
                                         </StackPanel>
                                     </Grid>

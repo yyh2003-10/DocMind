@@ -1,0 +1,82 @@
+<UserControl x:Class="DocMind.Views.DebugLogView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="450" d:DesignWidth="800">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- ===== 顶部工具条 ===== -->
+        <Border Grid.Row="0"
+                Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="0,8,0,8">
+            <Grid Margin="0,0,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0" Content="清空缓冲"
+                        Command="{Binding ClearCommand}"
+                        Style="{StaticResource TextButtonStyle}"
+                        Margin="0,0,8,0"/>
+
+                <Button Grid.Column="1" Content="打开日志文件"
+                        Command="{Binding OpenLogFileCommand}"
+                        Style="{StaticResource TextButtonStyle}"
+                        Margin="0,0,8,0"/>
+
+                <Button Grid.Column="2" Content="打开日志文件夹"
+                        Command="{Binding OpenLogFolderCommand}"
+                        Style="{StaticResource TextButtonStyle}"
+                        Margin="0,0,12,0"/>
+
+                <TextBlock Grid.Column="4"
+                           Style="{StaticResource SmallText}"
+                           Foreground="{StaticResource TextMutedBrush}"
+                           VerticalAlignment="Center"
+                           TextWrapping="Wrap"
+                           Margin="0,0,0,0">
+                    <Run Text="日志文件: "/><Run Text="{Binding LogFilePath, Mode=OneWay}"/>
+                </TextBlock>
+            </Grid>
+        </Border>
+
+        <!-- ===== 日志内容 ===== -->
+        <ListBox Grid.Row="1"
+                 x:Name="LogList"
+                 ItemsSource="{Binding Lines}"
+                 BorderThickness="0"
+                 Background="{StaticResource BackgroundBrush}"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto">
+            <ListBox.ItemContainerStyle>
+                <Style TargetType="ListBoxItem">
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                    <Setter Property="Padding" Value="4,1"/>
+                    <Setter Property="Focusable" Value="False"/>
+                </Style>
+            </ListBox.ItemContainerStyle>
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <TextBlock Text="{Binding}"
+                               Foreground="{Binding Converter={StaticResource LogLevelToBrush}}"
+                               FontFamily="Consolas"
+                               FontSize="12"
+                               TextWrapping="Wrap"/>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+    </Grid>
+</UserControl>

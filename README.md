@@ -92,7 +92,8 @@ WPF  ┘        │
               └─ Converter (格式互转)
 ```
 
-WPF 桌面客户端源码在 [`wpf/`](wpf/)，HTTP API 文档在 [`docs/api.md`](docs/api.md)，
+WPF 桌面客户端源码在 [`WpfApp1/`](WpfApp1/)，HTTP API 文档在 [`docs/api.md`](docs/api.md)，
+使用说明在 [`docs/使用说明-每个页面在干嘛.md`](docs/使用说明-每个页面在干嘛.md)，
 MCP 接入文档在 [`docs/mcp.md`](docs/mcp.md)。
 
 ## 配置

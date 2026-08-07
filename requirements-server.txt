@@ -1,0 +1,4 @@
+# DocMind FastAPI HTTP 服务依赖（本机已验证组合）
+# 与 requirements-core.txt 一起安装：pip install -r requirements-core.txt -r requirements-server.txt
+fastapi==0.124.4
+uvicorn[standard]==0.48.0

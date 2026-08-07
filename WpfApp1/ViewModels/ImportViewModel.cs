@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Text;
 using CommunityToolkit.Mvvm.Input;
 using DocMind.Models;
 using DocMind.Services;
@@ -45,9 +46,118 @@ public partial class ImportViewModel : ViewModelBase
             if (SetProperty(ref _selectedPath, value))
             {
                 ImportCommand.NotifyCanExecuteChanged();
+                UpdateSelectedPathInfo();
             }
         }
     }
+
+    /// <summary>是否已选择路径（控制预览面板显示）。</summary>
+    public bool HasSelectedPath => !string.IsNullOrWhiteSpace(SelectedPath);
+
+    /// <summary>选中项摘要：名称 · 类型 · 大小。</summary>
+    public string SelectedPathSummary => BuildPathSummary();
+
+    /// <summary>选中项预览：文本类文件显示开头内容，其他显示提示。</summary>
+    public string SelectedPathPreview => BuildPathPreview();
+
+    private static readonly string[] PreviewTextExtensions = new[]
+    {
+        ".md", ".txt", ".json", ".html", ".htm", ".csv", ".xml", ".log",
+        ".yaml", ".yml", ".py", ".cs", ".c", ".cpp", ".h", ".java", ".js", ".ts",
+    };
+
+    private void UpdateSelectedPathInfo()
+    {
+        OnPropertyChanged(nameof(HasSelectedPath));
+        OnPropertyChanged(nameof(SelectedPathSummary));
+        OnPropertyChanged(nameof(SelectedPathPreview));
+    }
+
+    private string BuildPathSummary()
+    {
+        var path = SelectedPath?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        if (Directory.Exists(path))
+        {
+            // 目录：统计文件数（上限 500，避免大目录卡 UI）+ 总大小
+            int count = 0;
+            long total = 0;
+            try
+            {
+                var opt = Recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+                foreach (var f in Directory.EnumerateFiles(path, "*", opt))
+                {
+                    if (++count > 500)
+                    {
+                        break;
+                    }
+                    try { total += new FileInfo(f).Length; }
+                    catch { /* 忽略无法访问的文件 */ }
+                }
+            }
+            catch { /* 目录不可读时忽略 */ }
+
+            var name = Path.GetFileName(path.TrimEnd('\\', '/'));
+            var countText = count > 500 ? "500+ 个" : $"{count} 个";
+            var recText = Recursive ? "（递归）" : "";
+            return $"📁 {name} — 文件夹{recText} · {countText}文件 · {FormatSize(total)}";
+        }
+
+        if (File.Exists(path))
+        {
+            try
+            {
+                var fi = new FileInfo(path);
+                return $"📄 {fi.Name} — {FormatSize(fi.Length)} · 修改于 {fi.LastWriteTime:yyyy-MM-dd HH:mm}";
+            }
+            catch
+            {
+                return $"📄 {Path.GetFileName(path)}";
+            }
+        }
+
+        return $"{Path.GetFileName(path)} — 路径不存在";
+    }
+
+    private string BuildPathPreview()
+    {
+        var path = SelectedPath?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return string.Empty;
+        }
+
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        if (!PreviewTextExtensions.Contains(ext))
+        {
+            return "非文本格式：可用「格式转换」预览内容，或直接导入后查看分块。";
+        }
+
+        try
+        {
+            using var reader = new StreamReader(path, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            var buf = new char[2000];
+            var read = reader.Read(buf, 0, buf.Length);
+            var text = new string(buf, 0, read);
+            return text.Length > 0 && read == buf.Length
+                ? text + "\n…（预览截断）"
+                : text;
+        }
+        catch (Exception ex)
+        {
+            return $"无法读取预览：{ex.Message}";
+        }
+    }
+
+    private static string FormatSize(long bytes)
+        => bytes >= 1L << 30 ? $"{bytes / (double)(1L << 30):F2} GB"
+         : bytes >= 1L << 20 ? $"{bytes / (double)(1L << 20):F1} MB"
+         : bytes >= 1L << 10 ? $"{bytes / (double)(1L << 10):F0} KB"
+         : $"{bytes} B";
 
     /// <summary>目标集合名（可选，默认 default）。</summary>
     public string? Collection
@@ -144,36 +254,63 @@ public partial class ImportViewModel : ViewModelBase
         Failed.Clear();
         ProgressPercent = 0;
 
+        DebugLog.Info($"开始导入: Path='{SelectedPath.Trim()}' Collection='{(string.IsNullOrWhiteSpace(Collection) ? "default" : Collection.Trim())}' Recursive={Recursive}", "Import");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         try
         {
             var resp = await _apiService.IngestAsync(
                 new IngestRequest
                 {
                     Path = SelectedPath.Trim(),
-                    Collection = string.IsNullOrWhiteSpace(Collection) ? null : Collection.Trim(),
+                    // 后端 collection 非 Optional，传 null 会 422；空时发 "default"
+                    Collection = string.IsNullOrWhiteSpace(Collection) ? "default" : Collection.Trim(),
                     Recursive = Recursive,
                 });
 
+            sw.Stop();
             foreach (var r in resp.Ingested)
             {
                 Results.Add(r);
             }
-            foreach (var s in resp.Skipped)
+
+            // 后端 IngestResponse：ingested 明细 + skipped/failed 计数 + failed_details 失败明细。
+            // 失败栏优先展示真实文件与原因；后端无明细时才用计数占位。
+            if (resp.Skipped > 0)
             {
-                Skipped.Add(s);
+                Skipped.Add($"已跳过 {resp.Skipped} 个重复文件");
             }
-            foreach (var f in resp.Failed)
+            if (resp.FailedDetails is { Count: > 0 })
             {
-                Failed.Add(f);
+                foreach (var f in resp.FailedDetails)
+                {
+                    Failed.Add($"{f.Source}：{f.Error ?? "未知原因"}");
+                }
+            }
+            else if (resp.Failed > 0)
+            {
+                Failed.Add($"导入失败 {resp.Failed} 个文件（详见后端日志）");
             }
 
             ProgressPercent = 100;
             var importCount = resp.Ingested.Count;
-            var skipCount = resp.Skipped.Count;
-            var failCount = resp.Failed.Count;
+            var skipCount = resp.Skipped;
+            var failCount = resp.Failed;
             StatusMessage = importCount > 0
                 ? $"完成：导入 {importCount} · 跳过 {skipCount} · 失败 {failCount}"
                 : "完成：无新增文档（全部跳过或失败）";
+
+            DebugLog.Info(
+                $"导入完成: ingested={importCount} skipped={skipCount} failed={failCount} " +
+                $"totalDocuments={resp.TotalDocuments} totalChunks={resp.TotalChunks} 耗时{sw.ElapsedMilliseconds}ms",
+                "Import");
+            foreach (var r in resp.Ingested)
+            {
+                DebugLog.Info(
+                    $"  文档: source='{r.Source}' collection='{r.Collection}' format='{r.Format}' " +
+                    $"size={r.SizeBytes}B chunks={r.ChunkCount} status='{r.Status}' docId='{r.DocumentId}'",
+                    "Import");
+            }
 
             if (importCount > 0)
                 _notifications.Success($"成功导入 {importCount} 个文档");
@@ -182,19 +319,28 @@ public partial class ImportViewModel : ViewModelBase
         }
         catch (ApiException ex)
         {
-            StatusMessage = $"API 错误：{ex.Message}";
+            sw.Stop();
+            StatusMessage = ex.Code == "TIMEOUT"
+                ? "导入超时：后端处理时间过长（OCR/嵌入耗时任务），已自动取消本次请求，可稍后重试或到「日志」页查看后端进度"
+                : $"API 错误：{ex.Message}";
+            DebugLog.Error($"导入 API 错误: code={ex.Code} message={ex.Message} detail={ex.Detail} 耗时{sw.ElapsedMilliseconds}ms", "Import", ex);
         }
         catch (BackendConnectionException ex)
         {
+            sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
+            DebugLog.Error($"导入后端不可达: {ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Import", ex);
         }
         catch (Exception ex)
         {
+            sw.Stop();
             StatusMessage = $"错误：{ex.Message}";
+            DebugLog.Error($"导入未知异常 耗时{sw.ElapsedMilliseconds}ms", "Import", ex);
         }
         finally
         {
             IsBusy = false;
+            DebugLog.Info($"导入流程结束，总耗时{sw.ElapsedMilliseconds}ms", "Import");
         }
     }
 

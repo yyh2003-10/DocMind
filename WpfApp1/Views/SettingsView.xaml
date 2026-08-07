@@ -64,6 +64,135 @@
                     </StackPanel>
                 </Border>
 
+                <!-- ===== 模型与分块 ===== -->
+                <Border Background="{StaticResource BackgroundBrush}"
+                        BorderBrush="{StaticResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Padding="20,16"
+                        Margin="0,0,0,12"
+                        Effect="{StaticResource ShadowSm}">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                            <TextBlock Text="🧠" FontSize="20" Margin="0,0,10,0"/>
+                            <TextBlock Text="模型与分块" Style="{StaticResource SubtitleText}"/>
+                        </StackPanel>
+
+                        <TextBlock Text="嵌入模型" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <ComboBox ItemsSource="{Binding SupportedEmbedModels}"
+                                  SelectedItem="{Binding EmbedModel}"
+                                  ToolTip="向量化用模型；更换模型后需在后端重启后到「文档库」页重建索引"
+                                  Margin="0,0,0,8"/>
+
+                        <TextBlock Text="本地模型目录（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBox Text="{Binding EmbedModelPath, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="填本地 ONNX 模型目录（含 model.onnx / model_optimized.onnx + tokenizer.json）；留空则用上面的模型联网下载"
+                                 Margin="0,0,0,8"/>
+                        <TextBlock Style="{StaticResource SmallText}"
+                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Margin="0,0,0,12">
+                            留空 = 使用上方下拉的推荐模型（首次自动下载，之后用本地缓存）；填本地目录 = 完全离线使用自己的模型。
+                        </TextBlock>
+
+                        <TextBlock Style="{StaticResource SmallText}"
+                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Margin="0,0,0,12">
+                            以下参数修改后重启客户端生效（注入后端环境变量），留空使用后端默认值。
+                        </TextBlock>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="分块最大 token 数" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <TextBox Text="{Binding ChunkMaxTokens, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="默认 1500；越大分块越粗"
+                                         Margin="0,0,0,12"/>
+                                <TextBlock Text="分块最小字符数" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <TextBox Text="{Binding ChunkMinChars, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="默认 50；低于此长度的块被丢弃"
+                                         Margin="0,0,0,0"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="分块重叠字符数" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <TextBox Text="{Binding ChunkOverlapChars, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="默认 200；相邻块重叠量，越大上下文越连贯"
+                                         Margin="0,0,0,12"/>
+                                <TextBlock Text="分块最大字符数" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <TextBox Text="{Binding ChunkMaxChars, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="默认 4000；单块字符上限"
+                                         Margin="0,0,0,0"/>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- ===== 启动选项 ===== -->
+                <Border Background="{StaticResource BackgroundBrush}"
+                        BorderBrush="{StaticResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Padding="20,16"
+                        Margin="0,0,0,12"
+                        Effect="{StaticResource ShadowSm}">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                            <TextBlock Text="🚀" FontSize="20" Margin="0,0,10,0"/>
+                            <TextBlock Text="启动选项" Style="{StaticResource SubtitleText}"/>
+                        </StackPanel>
+
+                        <!-- 自动拉起后端 -->
+                        <CheckBox IsChecked="{Binding AutoStartBackend}"
+                                  Margin="0,0,0,8">
+                            <TextBlock Text="启动客户端时自动拉起后端"
+                                       Style="{StaticResource BodyText}"/>
+                        </CheckBox>
+                        <TextBlock Style="{StaticResource SmallText}"
+                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Margin="0,0,0,12">
+                            取消勾选则仅连接外部已运行的后端（手动 doc2mind serve）
+                        </TextBlock>
+
+                        <!-- 退出联动终止 -->
+                        <CheckBox IsChecked="{Binding StopBackendOnExit}"
+                                  Margin="0,0,0,8">
+                            <TextBlock Text="退出客户端时联动终止后端"
+                                       Style="{StaticResource BodyText}"/>
+                        </CheckBox>
+                        <TextBlock Style="{StaticResource SmallText}"
+                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Margin="0,0,0,12">
+                            取消勾选则退出后保留后端继续运行
+                        </TextBlock>
+
+                        <!-- 后端命令路径 -->
+                        <TextBlock Text="后端命令路径（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBox Text="{Binding BackendCommand, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="绝对路径优先；空走自动探测 doc2mind / python -m doc2mind"
+                                 Margin="0,0,0,16"/>
+
+                        <!-- 自动导入 -->
+                        <TextBlock Text="启动时自动导入的目录（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBox Text="{Binding AutoIngestPath, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="空表示不自动导入；填目录或文件路径"
+                                 Margin="0,0,0,8"/>
+                        <TextBlock Text="目标集合名" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBox Text="{Binding AutoIngestCollection, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="默认 default"
+                                 Margin="0,0,0,8"/>
+                        <CheckBox IsChecked="{Binding AutoIngestRecursive}"
+                                  Margin="0,0,0,0">
+                            <TextBlock Text="目录时递归子目录"
+                                       Style="{StaticResource BodyText}"/>
+                        </CheckBox>
+                    </StackPanel>
+                </Border>
+
                 <!-- ===== 外观 ===== -->
                 <Border Background="{StaticResource BackgroundBrush}"
                         BorderBrush="{StaticResource BorderBrush}"
@@ -178,13 +307,13 @@
                             Command="{Binding SaveCommand}"
                             Style="{StaticResource PrimaryButtonStyle}"
                             Margin="0,0,8,0"/>
-                    <Button Content="恢复默认"
+                    <Button Content="恢复上次保存"
                             Command="{Binding RevertCommand}"
                             Style="{StaticResource TextButtonStyle}"/>
                 </StackPanel>
 
                 <TextBlock Grid.Column="1"
-                           Text="{Binding StatusMessage}"
+                           Text="{Binding StatusMessage, Mode=OneWay}"
                            Style="{StaticResource CaptionText}"
                            VerticalAlignment="Center"
                            Margin="12,0,12,0"/>

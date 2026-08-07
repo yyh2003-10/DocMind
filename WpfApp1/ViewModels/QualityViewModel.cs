@@ -86,39 +86,62 @@ public partial class QualityViewModel : ViewModelBase
         Warnings.Clear();
         Collections.Clear();
 
+        DebugLog.Info($"开始拉取质量报告: Collection='{(string.IsNullOrWhiteSpace(Collection) ? "(全部)" : Collection.Trim())}'", "Quality");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         try
         {
             var col = string.IsNullOrWhiteSpace(Collection) ? null : Collection.Trim();
             Report = await _apiService.GetQualityAsync(col);
-            Stats = await _apiService.GetStatsAsync(null);
+            Stats = await _apiService.GetStatsAsync(col);
 
+            sw.Stop();
             foreach (var w in Report.Warnings)
             {
                 Warnings.Add(w);
             }
-            foreach (var c in Stats.Collections)
+            // 后端 Stats.collections 是 dict[str, [doc_count, chunk_count, size_bytes]]；
+            // 网络边界反序列化数据，数组长度可能 <3（脏数据/版本差异），先校验再取下标。
+            foreach (var kv in Stats.Collections)
             {
-                Collections.Add(c);
+                var v = kv.Value;
+                Collections.Add(new CollectionStats
+                {
+                    Name = kv.Key,
+                    Documents = v.Length > 0 ? v[0] : 0,
+                    Chunks = v.Length > 1 ? v[1] : 0,
+                    SizeBytes = v.Length > 2 ? v[2] : 0,
+                });
             }
 
-            var generated = Stats.GeneratedAt?.LocalDateTime;
-            StatusMessage = $"更新于 {(generated is null ? "—" : generated.Value.ToString("G"))}";
+            StatusMessage = "已更新";
+            DebugLog.Info(
+                $"质量报告拉取完成: collections={Stats.Collections.Count} " +
+                $"totalDocuments={Stats.TotalDocuments} totalChunks={Stats.TotalChunks} warnings={Report.Warnings.Count} 耗时{sw.ElapsedMilliseconds}ms",
+                "Quality");
         }
         catch (ApiException ex)
         {
+            sw.Stop();
             StatusMessage = $"API 错误：{ex.Message}";
+            DebugLog.Error($"质量报告 API 错误: code={ex.Code} message={ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Quality", ex);
         }
         catch (BackendConnectionException ex)
         {
+            sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
+            DebugLog.Error($"质量报告后端不可达: {ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Quality", ex);
         }
         catch (Exception ex)
         {
+            sw.Stop();
             StatusMessage = $"错误：{ex.Message}";
+            DebugLog.Error($"质量报告未知异常 耗时{sw.ElapsedMilliseconds}ms", "Quality", ex);
         }
         finally
         {
             IsBusy = false;
+            DebugLog.Info($"质量报告流程结束，总耗时{sw.ElapsedMilliseconds}ms", "Quality");
         }
     }
 }

@@ -1,0 +1,9 @@
+# DocMind 图片 OCR 依赖（PaddleOCR，本机已验证组合）
+# 本机使用 paddlepaddle-gpu 3.3.1 (cu126) 实现 GPU OCR；无 NVIDIA 显卡或
+# 不想用 GPU 的设备可去掉 paddlepaddle-gpu 行（pip 会自动装 CPU 版 paddlepaddle）。
+# 注意：paddlepaddle-gpu 的 whl 较大（~300MB），国内网络建议用 curl -C - 断点续传
+# 从阿里云/清华镜像下载后 pip install <whl>，详见 docs/部署指南。
+# 用法：pip install -r requirements-core.txt -r requirements-ocr.txt
+paddleocr==3.7.0
+paddlepaddle-gpu==3.3.1
+pillow==12.2.0

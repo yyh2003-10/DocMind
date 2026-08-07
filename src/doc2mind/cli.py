@@ -45,6 +45,17 @@ app = typer.Typer(
 console = Console()
 
 
+def _fmt_size(n: int) -> str:
+    """把字节数格式化为人类可读单位。"""
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    if n < 1024 * 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f} MB"
+    return f"{n / (1024 * 1024 * 1024):.2f} GB"
+
+
 def _version_callback(value: bool) -> None:
     if value:
         rprint(f"doc2mind [bold]{__version__}[/bold]")
@@ -141,12 +152,23 @@ def search(
     ),
 ) -> None:
     """混合检索：BM25 + 向量余弦，RRF 融合 Top-K。"""
+    from doc2mind.core.embedder.base import EmbedderError
+    from doc2mind.core.embedder.fastembed_impl import first_run_hint
+    from doc2mind.core.retriever.search import RetrievalError
+
     store, embedder = _open_store()
     try:
         retriever = Retriever(store=store, embedder=embedder)
         hits, stats = retriever.search(
             query=query, collection=collection, top_k=top_k
         )
+    except (EmbedderError, RetrievalError) as e:
+        # 嵌入模型未就绪 / 检索失败：给出可操作提示，而不是裸堆栈
+        rprint(f"[red]检索失败:[/red] {e}")
+        hint = first_run_hint()
+        if hint:
+            rprint(f"[yellow]提示:[/yellow]\n{hint}")
+        raise typer.Exit(code=1) from None
     finally:
         store.close()
 
@@ -290,8 +312,12 @@ def stats(
         table.add_column("集合", style="cyan")
         table.add_column("文档数", justify="right")
         table.add_column("分块数", justify="right")
-        for name, (dc, cc) in sorted(s.collections.items()):
-            table.add_row(name, str(dc), str(cc))
+        table.add_column("大小", justify="right")
+        # collections 值可能是 (doc, chunk) 或 (doc, chunk, size_bytes)，兼容两种
+        for name, val in sorted(s.collections.items()):
+            dc, cc = val[0], val[1]
+            size = val[2] if len(val) > 2 else 0
+            table.add_row(name, str(dc), str(cc), _fmt_size(size))
         console.print(table)
 
 
@@ -361,6 +387,201 @@ def convert(
 
 
 @app.command()
+def models() -> None:
+    """列出可选的嵌入模型（含维度/语言/适用场景说明）。"""
+    from doc2mind.core.embedder.catalog import (
+        default_model,
+        get_model_info,
+        render_catalog_table,
+    )
+
+    rprint(render_catalog_table())
+    current = get_settings().embed_model
+    info = get_model_info(current)
+    rprint(f"\n当前模型: [bold green]{current}[/bold green]"
+           + (f"（{info.dim} 维）" if info else "（自定义模型）"))
+    if info and not info.recommended:
+        rprint(f"[dim]提示: 推荐 {default_model()}，中英文效果均衡且资源占用低。[/dim]")
+
+
+# --- 模型管理子命令组：doc2mind model <list|download|use|add-local> ---
+model_app = typer.Typer(
+    help="嵌入模型管理：下载推荐模型 / 切换模型 / 登记本地模型",
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+)
+app.add_typer(model_app, name="model")
+
+
+@model_app.command("list")
+def model_list() -> None:
+    """列出推荐模型与当前配置（等价 `doc2mind models`）。"""
+    from doc2mind.core.embedder.catalog import (
+        default_model,
+        get_model_info,
+        render_catalog_table,
+    )
+
+    rprint(render_catalog_table())
+    s = get_settings()
+    current = s.embed_model
+    info = get_model_info(current)
+    rprint(f"\n当前模型: [bold green]{current}[/bold green]"
+           + (f"（{info.dim} 维）" if info else "（自定义模型）"))
+    if s.embed_model_path:
+        rprint(f"本地模型目录: [bold cyan]{s.embed_model_path}[/bold cyan]")
+    if info and not info.recommended:
+        rprint(f"[dim]提示: 推荐 {default_model()}，中英文效果均衡且资源占用低。[/dim]")
+
+
+@model_app.command("download")
+def model_download(
+    name: str = typer.Argument(
+        ..., help="推荐清单里的模型名（如 BAAI/bge-small-zh-v1.5）。"
+    ),
+) -> None:
+    """下载推荐模型到本地缓存（首次联网，之后直接用缓存）。"""
+    from doc2mind.core.embedder.catalog import download_recommended_model
+
+    with console.status("[bold green]正在下载/校验模型...[/bold green]"):
+        result = download_recommended_model(name)
+    rprint(result)
+
+
+@model_app.command("use")
+def model_use(
+    name: str = typer.Argument(..., help="要切换的模型名（推荐清单或 fastembed 支持的模型）。"),
+) -> None:
+    """切换嵌入模型并持久化（等价 `doc2mind config --set-model`）。"""
+    from doc2mind.core.config import save_settings
+    from doc2mind.core.embedder.catalog import get_model_info
+
+    info = get_model_info(name)
+    if info is None:
+        rprint(
+            f"[yellow]注意:[/yellow] {name} 不在内置清单里，"
+            "请确认该模型已被 fastembed 支持，否则加载会失败。"
+        )
+    settings = get_settings()
+    settings.embed_model = name
+    settings.embed_model_path = None  # 切换网络模型时清除本地模型指向
+    save_settings(settings)
+    rprint(f"[green]已切换嵌入模型:[/green] {name}")
+    if info and info.dim != settings.embed_dim:
+        rprint(
+            "[yellow]提示:[/yellow] 新模型维度与旧模型不同，"
+            "请对已有集合执行 `doc2mind reindex` 重建索引，否则检索会报错。"
+        )
+
+
+@model_app.command("add-local")
+def model_add_local(
+    path: Path = typer.Argument(..., help="本地 ONNX 模型目录（含 model.onnx + tokenizer.json）。"),
+    model_name: str = typer.Option(
+        None,
+        "--model-name",
+        "-n",
+        help="对应的内置模型名（决定 tokenizer 结构与 model_file 文件名），"
+             "默认用当前模型名。",
+    ),
+) -> None:
+    """登记本地模型目录：直接用本地 ONNX 文件，无需联网下载。"""
+    from doc2mind.core.config import save_settings
+    from doc2mind.core.embedder.catalog import validate_local_model_dir
+
+    ok, message = validate_local_model_dir(path)
+    if not ok:
+        rprint(f"[red]本地模型不可用:[/red] {message}")
+        raise typer.Exit(code=1)
+    rprint(f"[green]{message}[/green]")
+
+    settings = get_settings()
+    settings.embed_model_path = str(path)
+    if model_name:
+        settings.embed_model = model_name
+    save_settings(settings)
+    rprint(f"[green]已登记本地模型目录:[/green] {path}")
+    rprint(
+        "[dim]说明: 使用本地模型时不再联网下载；若该模型与之前用的模型维度不同，"
+        "请对已有集合执行 `doc2mind reindex` 重建索引。[/dim]"
+    )
+
+
+@app.command()
+def config(
+    show: bool = typer.Option(
+        False, "--show", "-s", help="显示当前生效配置。"
+    ),
+    set_model: Optional[str] = typer.Option(
+        None, "--set-model", "-m", help="切换嵌入模型并持久化（下次启动仍生效）。"
+    ),
+    model: Optional[str] = typer.Option(
+        None, "--model", "-M", help="临时指定嵌入模型（仅本次进程，不持久化）。"
+    ),
+) -> None:
+    """查看 / 切换嵌入模型配置。
+
+    示例：
+        doc2mind config --show               # 查看当前配置
+        doc2mind config --set-model BAAI/bge-small-en-v1.5   # 切换模型（持久化）
+        doc2mind config --model <名称>       # 临时用某个模型跑一次
+    """
+    from doc2mind.core.embedder.catalog import get_model_info, render_catalog_table
+    from doc2mind.core.config import save_settings
+
+    if model:
+        # 临时覆盖：仅本次进程
+        set_settings_for_model(model)
+        rprint(f"[green]已临时切换模型:[/green] {model}（仅本次进程，不持久化）")
+        info = get_model_info(model)
+        if info:
+            rprint(f"[dim]{info.desc}[/dim]")
+        return
+
+    if set_model:
+        # 校验模型是否在清单内（自定义模型放行，但提示）
+        info = get_model_info(set_model)
+        if info is None:
+            rprint(
+                f"[yellow]注意:[/yellow] {set_model} 不在内置清单里，"
+                "请确认该模型已被 fastembed 支持，否则加载会失败。"
+            )
+        settings = get_settings()
+        settings.embed_model = set_model
+        save_settings(settings)
+        rprint(f"[green]已保存嵌入模型:[/green] {set_model}")
+        if info and info.dim != settings.embed_dim:
+            rprint(
+                "[yellow]提示:[/yellow] 新模型维度与旧模型不同，"
+                "请对已有集合执行 `doc2mind reindex` 重建索引，否则检索会报错。"
+            )
+        return
+
+    # 默认/--show：显示当前配置
+    s = get_settings()
+    rprint(f"[bold]嵌入模型:[/bold] {s.embed_model}")
+    info = get_model_info(s.embed_model)
+    if info:
+        rprint(f"[bold]维度:[/bold] {info.dim}   [bold]大小:[/bold] {info.size_gb}G")
+        rprint(f"[bold]说明:[/bold] {info.desc}")
+    rprint(f"[bold]嵌入批大小:[/bold] {s.embed_batch_size}")
+    rprint(f"[bold]分块参数:[/bold] max_tokens={s.chunk_max_tokens} "
+           f"min_chars={s.chunk_min_chars} overlap={s.chunk_overlap_chars} "
+           f"max_chars={s.chunk_max_chars}")
+    rprint(f"[bold]检索:[/bold] top_k={s.search_top_k} rrf_k={s.rrf_k}")
+    rprint(f"[bold]知识库文件:[/bold] {s.db_path}")
+    rprint(f"[bold]模型缓存目录:[/bold] {s.embed_cache_dir}")
+    rprint("\n可用模型清单：")
+    rprint(render_catalog_table())
+
+
+def set_settings_for_model(model: str) -> None:
+    """临时覆盖全局配置中的嵌入模型（仅本次进程）。"""
+    settings = get_settings()
+    settings.embed_model = model
+
+
+@app.command()
 def serve(
     host: str = typer.Option("127.0.0.1", "--host", help="监听地址。"),
     port: int = typer.Option(8765, "--port", "-p", help="监听端口。"),
@@ -376,6 +597,13 @@ def serve(
         raise typer.Exit(code=1) from None
     # 阶段 8 实现：uvicorn.run(app, host=host, port=port)
     from doc2mind.server.http import create_app
+
+    # 首次使用引导：模型未下载时提示（新手友好）
+    from doc2mind.core.embedder.fastembed_impl import first_run_hint
+
+    hint = first_run_hint()
+    if hint:
+        rprint(f"[yellow]提示:[/yellow]\n{hint}")
 
     rprint(f"[bold green]启动 HTTP 服务[/bold green] http://{host}:{port}")
     uvicorn.run(create_app(), host=host, port=port)

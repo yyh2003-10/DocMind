@@ -70,6 +70,8 @@
     <SolidColorBrush x:Key="TextMutedBrush" Color="{StaticResource TextMutedColor}"/>
     <SolidColorBrush x:Key="TextInverseBrush" Color="{StaticResource TextInverseColor}"/>
     <SolidColorBrush x:Key="LinkBrush" Color="{StaticResource LinkColor}"/>
+    <!-- 正文文本（DebugLog 等页面使用） -->
+    <SolidColorBrush x:Key="BodyBrush" Color="{StaticResource TextPrimaryColor}"/>
 
     <!-- ==================== 2. 间距体系 ==================== -->
     <sys:Double x:Key="SpaceXs">4</sys:Double>
@@ -704,6 +706,7 @@
                     <Border Background="{TemplateBinding Background}"
                             SnapsToDevicePixels="True">
                         <Track x:Name="PART_Track"
+                               IsDirectionReversed="True"
                                Orientation="{TemplateBinding Orientation}">
                             <Track.Thumb>
                                 <Thumb x:Name="Thumb"
@@ -743,6 +746,7 @@
                         <Trigger Property="Orientation" Value="Horizontal">
                             <Setter Property="Width" Value="Auto"/>
                             <Setter Property="Height" Value="8"/>
+                            <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>

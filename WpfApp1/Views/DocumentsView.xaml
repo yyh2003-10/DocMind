@@ -1,0 +1,300 @@
+<UserControl x:Class="DocMind.Views.DocumentsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="clr-namespace:DocMind.ViewModels"
+             xmlns:m="clr-namespace:DocMind.Models"
+             mc:Ignorable="d"
+             d:DesignHeight="450" d:DesignWidth="800">
+
+    <Grid Margin="0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>   <!-- 工具条 -->
+            <RowDefinition Height="*"/>      <!-- 列表 + 详情 -->
+        </Grid.RowDefinitions>
+
+        <!-- ===== 工具条 ===== -->
+        <Border Grid.Row="0"
+                Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="12,10"
+                Margin="0,0,0,12">
+            <DockPanel>
+                <TextBox DockPanel.Dock="Left"
+                         Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
+                         Width="140"
+                         ToolTip="集合名（可选，留空=全部集合）。集合是把文档分组：导入时给文件指定分组，搜索/看板可按分组过滤"
+                         Margin="0,0,8,0"/>
+                <Button DockPanel.Dock="Right"
+                        Content="刷新"
+                        Command="{Binding RefreshCommand}"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Margin="8,0,0,0"/>
+                <Button DockPanel.Dock="Right"
+                        Content="删除选中"
+                        Command="{Binding DeleteCommand}"
+                        Style="{StaticResource DangerButtonStyle}"
+                        Margin="0,0,0,0"/>
+                <Button DockPanel.Dock="Right"
+                        Content="重建索引"
+                        Command="{Binding ReindexCommand}"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Margin="0,0,8,0"/>
+                <TextBlock DockPanel.Dock="Left"
+                           Text="集合过滤"
+                           Style="{StaticResource CaptionText}"
+                           VerticalAlignment="Center"
+                           Margin="0,0,8,0"/>
+                <StackPanel Orientation="Horizontal"
+                            DockPanel.Dock="Right"
+                            Margin="0,0,8,0">
+                    <Button Content="◀"
+                            Command="{Binding PrevPageCommand}"
+                            Style="{StaticResource TextButtonStyle}"
+                            VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding PageInfo, Mode=OneWay}"
+                               Style="{StaticResource CaptionText}"
+                               VerticalAlignment="Center"
+                               Margin="8,0"/>
+                    <Button Content="▶"
+                            Command="{Binding NextPageCommand}"
+                            Style="{StaticResource TextButtonStyle}"
+                            VerticalAlignment="Center"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- ===== 重建索引进度条（忙碌时显示） ===== -->
+        <Border Grid.Row="0"
+                Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="12,8"
+                Margin="0,0,0,12"
+                Visibility="{Binding IsReindexing, Converter={StaticResource BoolToVis}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ProgressBar Grid.Column="0"
+                             Value="{Binding ReindexProgressPercent, Mode=OneWay}"
+                             Maximum="100"
+                             MinHeight="8"
+                             VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="1"
+                           Text="{Binding ReindexProgressPercent, Mode=OneWay, StringFormat={}{0}%}"
+                           Style="{StaticResource CaptionText}"
+                           Margin="12,0,0,0"
+                           VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
+
+        <!-- ===== 列表 + 详情 ===== -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.6*"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="1.2*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 文档列表 -->
+            <Border Grid.Column="0"
+                    Background="{StaticResource BackgroundBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Padding="12"
+                    Effect="{StaticResource ShadowSm}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top"
+                               Text="文档列表"
+                               Style="{StaticResource SubtitleText}"
+                               Margin="0,0,0,12"/>
+
+                    <ListBox ItemsSource="{Binding Documents}"
+                             SelectedItem="{Binding SelectedDocument}"
+                             BorderThickness="0"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate DataType="{x:Type m:Document}">
+                                <Border Background="{StaticResource SurfaceBrush}"
+                                        CornerRadius="6"
+                                        Padding="10,8"
+                                        Margin="0,0,0,6">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+
+                                        <StackPanel Grid.Row="0" Orientation="Horizontal">
+                                            <TextBlock Text="{Binding Source, Mode=OneWay}"
+                                                       FontWeight="SemiBold"
+                                                       Style="{StaticResource BodyText}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       MaxWidth="280"/>
+                                            <Border Background="{StaticResource PrimaryLightBrush}"
+                                                    CornerRadius="4"
+                                                    Padding="6,2"
+                                                    Margin="8,0,0,0"
+                                                    VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding Format, Mode=OneWay}"
+                                                           Style="{StaticResource SmallText}"/>
+                                            </Border>
+                                        </StackPanel>
+
+                                        <StackPanel Grid.Row="1" Orientation="Horizontal"
+                                                    Margin="0,4,0,0">
+                                            <TextBlock Style="{StaticResource SmallText}">
+                                                <Run Text="集合 " FontWeight="SemiBold"/>
+                                                <Run Text="{Binding Collection, Mode=OneWay}"/>
+                                            </TextBlock>
+                                            <TextBlock Style="{StaticResource SmallText}" Margin="16,0,0,0">
+                                                <Run Text="Chunks " FontWeight="SemiBold"/>
+                                                <Run Text="{Binding ChunkCount, Mode=OneWay}"/>
+                                            </TextBlock>
+                                            <TextBlock Style="{StaticResource SmallText}" Margin="16,0,0,0">
+                                                <Run Text="{Binding SizeBytes, Mode=OneWay, StringFormat={}{0:N0} B}"/>
+                                            </TextBlock>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <!-- 空态 -->
+                    <TextBlock Text="暂无文档，请先在「导入」页摄入内容"
+                               Style="{StaticResource SmallText}"
+                               HorizontalAlignment="Center"
+                               Margin="0,20,0,0"/>
+                </DockPanel>
+            </Border>
+
+            <!-- 详情面板 -->
+            <Border Grid.Column="2"
+                    Background="{StaticResource BackgroundBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Padding="12"
+                    Effect="{StaticResource ShadowSm}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top"
+                               Text="文档详情"
+                               Style="{StaticResource SubtitleText}"
+                               Margin="0,0,0,12"/>
+
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <!-- 未选中提示 -->
+                            <TextBlock Text="选择左侧文档查看详情与分块预览"
+                                       Style="{StaticResource SmallText}"
+                                       Visibility="{Binding HasNoDetail, Converter={StaticResource BoolToVis}}"/>
+
+                            <!-- 详情内容 -->
+                            <StackPanel Visibility="{Binding HasDetail, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="{Binding Detail.Document.Source, Mode=OneWay}"
+                                           FontWeight="SemiBold"
+                                           Style="{StaticResource BodyText}"
+                                           TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding Detail.Document.Collection, Mode=OneWay, StringFormat=集合: {0}}"
+                                           Style="{StaticResource SmallText}"
+                                           Margin="0,4,0,0"/>
+                                <TextBlock Text="{Binding Detail.Document.CreatedAt, Mode=OneWay, StringFormat=创建于 {0}}"
+                                           Style="{StaticResource SmallText}"
+                                           Margin="0,2,0,0"/>
+
+                                <Grid Margin="0,16,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Style="{StaticResource CaptionText}"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center">
+                                        <Run Text="分块预览 "/>
+                                        <Run Text="{Binding ChunkInfoText, Mode=OneWay}"
+                                             Foreground="{StaticResource TextMutedBrush}"/>
+                                    </TextBlock>
+                                    <Button Grid.Column="1"
+                                            Content="加载更多分块"
+                                            Command="{Binding LoadMoreChunksCommand}"
+                                            Style="{StaticResource TextButtonStyle}"
+                                            FontSize="11"
+                                            ToolTip="递增加载更多分块预览"
+                                            Visibility="{Binding CanLoadMoreChunks, Converter={StaticResource BoolToVis}}"/>
+                                </Grid>
+
+                                <ItemsControl ItemsSource="{Binding Detail.ChunksPreview}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type m:Chunk}">
+                                            <Border Background="{StaticResource SurfaceBrush}"
+                                                    CornerRadius="6"
+                                                    Padding="10,8"
+                                                    Margin="0,0,0,8">
+                                                <StackPanel>
+                                                    <Grid Margin="0,0,0,4">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding ChunkIndex, Mode=OneWay, StringFormat=#{0}}"
+                                                                       FontWeight="SemiBold"
+                                                                       Style="{StaticResource SmallText}"/>
+                                                            <TextBlock Text="{Binding DocType, Mode=OneWay}"
+                                                                       Style="{StaticResource SmallText}"
+                                                                       Margin="12,0,0,0"/>
+                                                            <TextBlock Text="{Binding Tokens, Mode=OneWay, StringFormat={}{0} tokens}"
+                                                                       Style="{StaticResource SmallText}"
+                                                                       Margin="12,0,0,0"/>
+                                                        </StackPanel>
+                                                        <Button Grid.Column="1"
+                                                                Content="🔍 定位"
+                                                                Command="{Binding DataContext.SearchChunkCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                CommandParameter="{Binding}"
+                                                                Style="{StaticResource TextButtonStyle}"
+                                                                FontSize="11"
+                                                                ToolTip="跳转到搜索页定位该分块原文"/>
+                                                    </Grid>
+                                                    <TextBlock Text="{Binding Heading, Mode=OneWay}"
+                                                               TextTrimming="CharacterEllipsis">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock" BasedOn="{StaticResource SmallText}">
+                                                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/>
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding Heading}" Value="{x:Null}">
+                                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Heading}" Value="">
+                                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                    <TextBlock Text="{Binding Content, Mode=OneWay}"
+                                                               Style="{StaticResource SmallText}"
+                                                               TextWrapping="Wrap"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

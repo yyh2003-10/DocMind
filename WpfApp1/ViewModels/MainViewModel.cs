@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Media;
 using CommunityToolkit.Mvvm.Input;
 using DocMind.Services;
 
@@ -9,15 +10,49 @@ namespace DocMind.ViewModels;
 public partial class MainViewModel : ViewModelBase
 {
     public IDoc2kbApiService ApiService { get; }
+    public AppSettings Settings { get; }
     private ViewModelBase? _currentPage;
     private NavigationItem? _selectedNavigationItem;
     private string _statusMessage = "就绪";
     private bool _isSidebarCollapsed;
+    private string _backendStatusText = "连接后端…";
+    private Brush _backendStatusBrush = Brushes.Gray;
 
     public string StatusMessage
     {
         get => _statusMessage;
         set => SetProperty(ref _statusMessage, value);
+    }
+
+    // ===================== 后端状态（顶栏/底栏状态灯） =====================
+
+    /// <summary>后端状态文案（顶栏显示）。</summary>
+    public string BackendStatusText
+    {
+        get => _backendStatusText;
+        private set => SetProperty(ref _backendStatusText, value);
+    }
+
+    /// <summary>后端状态灯颜色（绿=在线，黄=启动/退出中，红=离线）。</summary>
+    public Brush BackendStatusBrush
+    {
+        get => _backendStatusBrush;
+        private set => SetProperty(ref _backendStatusBrush, value);
+    }
+
+    /// <summary>后端地址（底栏显示）。</summary>
+    public string BackendUrl => Settings.BackendUrl;
+
+    /// <summary>由 App 的后端进程服务状态事件回调，刷新顶栏/底栏状态灯。</summary>
+    public void UpdateBackendState(BackendState state)
+    {
+        (BackendStatusText, BackendStatusBrush) = state switch
+        {
+            BackendState.Online => ("后端在线", Brushes.Green),
+            BackendState.Starting => ("后端启动中…", Brushes.Goldenrod),
+            BackendState.Stopping => ("后端退出中…", Brushes.Goldenrod),
+            _ => ("后端离线", Brushes.Red),
+        };
     }
 
     public ObservableCollection<NavigationItem> NavigationItems { get; } = new();
@@ -26,22 +61,33 @@ public partial class MainViewModel : ViewModelBase
     private readonly ImportViewModel _importViewModel;
     private readonly ConvertViewModel _convertViewModel;
     private readonly QualityViewModel _qualityViewModel;
+    private readonly DocumentsViewModel _documentsViewModel;
     private readonly SettingsViewModel _settingsViewModel;
+    private readonly DebugLogViewModel _debugLogViewModel;
 
     public MainViewModel(
         IDoc2kbApiService apiService,
+        AppSettings settings,
         SearchViewModel searchViewModel,
         ImportViewModel importViewModel,
         ConvertViewModel convertViewModel,
         QualityViewModel qualityViewModel,
-        SettingsViewModel settingsViewModel)
+        DocumentsViewModel documentsViewModel,
+        SettingsViewModel settingsViewModel,
+        DebugLogViewModel debugLogViewModel)
     {
         ApiService = apiService;
+        Settings = settings;
         _searchViewModel = searchViewModel;
         _importViewModel = importViewModel;
         _convertViewModel = convertViewModel;
         _qualityViewModel = qualityViewModel;
+        _documentsViewModel = documentsViewModel;
         _settingsViewModel = settingsViewModel;
+        _debugLogViewModel = debugLogViewModel;
+
+        // 文档详情「分块定位」→ 跳转搜索页执行搜索
+        _documentsViewModel.ChunkSearchRequested += OnChunkSearchRequested;
 
         Title = "DocMind";
 
@@ -49,7 +95,10 @@ public partial class MainViewModel : ViewModelBase
         NavigationItems.Add(new NavigationItem { Title = "导入", Icon = "📥", IconPath = "Assets/nav-import.png", ViewModelType = typeof(ImportViewModel) });
         NavigationItems.Add(new NavigationItem { Title = "转换", Icon = "🔄", IconPath = "Assets/nav-convert.png", ViewModelType = typeof(ConvertViewModel) });
         NavigationItems.Add(new NavigationItem { Title = "质量看板", Icon = "📊", IconPath = "Assets/nav-quality.png", ViewModelType = typeof(QualityViewModel) });
+        // 文档库/调试日志无独立 PNG 图标：IconPath 置空，由侧栏模板回退显示 emoji 字符
+        NavigationItems.Add(new NavigationItem { Title = "文档库", Icon = "🗂️", ViewModelType = typeof(DocumentsViewModel) });
         NavigationItems.Add(new NavigationItem { Title = "设置", Icon = "⚙️", IconPath = "Assets/nav-settings.png", ViewModelType = typeof(SettingsViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "调试日志", Icon = "📋", ViewModelType = typeof(DebugLogViewModel) });
 
         SelectedNavigationItem = NavigationItems[0];
     }
@@ -95,7 +144,9 @@ public partial class MainViewModel : ViewModelBase
                 var type when type == typeof(ImportViewModel) => _importViewModel,
                 var type when type == typeof(ConvertViewModel) => _convertViewModel,
                 var type when type == typeof(QualityViewModel) => _qualityViewModel,
+                var type when type == typeof(DocumentsViewModel) => _documentsViewModel,
                 var type when type == typeof(SettingsViewModel) => _settingsViewModel,
+                var type when type == typeof(DebugLogViewModel) => _debugLogViewModel,
                 _ => _searchViewModel
             };
         }
@@ -147,6 +198,13 @@ public partial class MainViewModel : ViewModelBase
         if (item != null) SelectedNavigationItem = item;
     }
 
+    /// <summary>文档详情分块点击 → 设置搜索词并跳转搜索页。</summary>
+    private void OnChunkSearchRequested(string query)
+    {
+        _searchViewModel.SearchWithQuery(query);
+        NavigateToSearch();
+    }
+
     [RelayCommand]
     private void NavigateToImport()
     {
@@ -185,6 +243,7 @@ public partial class MainViewModel : ViewModelBase
             if (CurrentPage == _importViewModel) return _importViewModel.StatusMessage;
             if (CurrentPage == _convertViewModel) return _convertViewModel.StatusMessage;
             if (CurrentPage == _qualityViewModel) return _qualityViewModel.StatusMessage;
+            if (CurrentPage == _documentsViewModel) return _documentsViewModel.StatusMessage;
             if (CurrentPage == _settingsViewModel) return _settingsViewModel.StatusMessage;
             return "就绪";
         }
@@ -199,6 +258,7 @@ public partial class MainViewModel : ViewModelBase
             if (CurrentPage == _importViewModel) return _importViewModel.IsBusy;
             if (CurrentPage == _convertViewModel) return _convertViewModel.IsBusy;
             if (CurrentPage == _qualityViewModel) return _qualityViewModel.IsBusy;
+            if (CurrentPage == _documentsViewModel) return _documentsViewModel.IsBusy || _documentsViewModel.IsReindexing;
             return false;
         }
     }
@@ -215,7 +275,7 @@ public partial class MainViewModel : ViewModelBase
             if (CurrentPage != _searchViewModel) return null;
             var hit = _searchViewModel.SelectedHit;
             return hit != null
-                ? $"文档: {hit.Chunk?.DocumentId ?? "—"}\n相似度: {hit.Score:F4}"
+                ? $"文档: {hit.Source ?? "—"}\n相似度: {hit.Score:F4}"
                 : "未选中结果";
         }
     }

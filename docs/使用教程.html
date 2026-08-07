@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DocMind 使用教程 · 每个页面在干嘛</title>
+<style>
+  :root {
+    --bg: #f5f6fa;
+    --surface: #ffffff;
+    --border: #e3e6ee;
+    --text: #24292f;
+    --muted: #6b7280;
+    --primary: #2563eb;
+    --primary-light: #eff4ff;
+    --success: #16a34a;
+    --success-light: #ecfdf3;
+    --warning: #b45309;
+    --warning-light: #fef3c7;
+    --danger: #dc2626;
+    --danger-light: #fef2f2;
+    --radius: 10px;
+    --shadow: 0 1px 3px rgba(16,24,40,.08), 0 1px 2px rgba(16,24,40,.04);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding-bottom: 80px;
+  }
+
+  /* ===== 顶栏 ===== */
+  header {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(255,255,255,.92);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--border);
+  }
+  header .inner {
+    max-width: 960px; margin: 0 auto; padding: 14px 24px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }
+  header .logo { font-size: 20px; font-weight: 700; color: var(--primary); }
+  header .logo small { font-weight: 400; color: var(--muted); font-size: 13px; margin-left: 8px; }
+  nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  nav a {
+    color: var(--muted); text-decoration: none; font-size: 13px;
+    padding: 6px 10px; border-radius: 8px; white-space: nowrap;
+  }
+  nav a:hover { background: var(--primary-light); color: var(--primary); }
+
+  /* ===== 主体 ===== */
+  main { max-width: 960px; margin: 0 auto; padding: 28px 24px; }
+  h1 { font-size: 28px; margin-bottom: 8px; }
+  .lead { color: var(--muted); font-size: 15px; margin-bottom: 28px; }
+
+  h2 {
+    font-size: 21px; margin: 40px 0 16px;
+    padding-bottom: 8px; border-bottom: 2px solid var(--border);
+  }
+  h3 { font-size: 16px; margin: 20px 0 8px; }
+  p { margin-bottom: 10px; }
+  ul, ol { margin: 0 0 12px 22px; }
+  li { margin-bottom: 4px; }
+  code {
+    background: #eef1f6; border-radius: 4px; padding: 1px 6px;
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 13px;
+  }
+  a { color: var(--primary); }
+
+  /* ===== 卡片 ===== */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+    padding: 20px 22px; margin-bottom: 16px;
+  }
+  .card h3 { margin-top: 0; }
+  .card .tag {
+    display: inline-block; font-size: 12px; font-weight: 600;
+    padding: 2px 10px; border-radius: 20px; margin-bottom: 10px;
+  }
+  .tag-blue   { background: var(--primary-light); color: var(--primary); }
+  .tag-green  { background: var(--success-light); color: var(--success); }
+  .tag-orange { background: var(--warning-light); color: var(--warning); }
+  .tag-red    { background: var(--danger-light);  color: var(--danger); }
+
+  .card .what, .card .do, .card .after {
+    margin: 10px 0; padding: 10px 14px; border-radius: 8px; font-size: 14px;
+  }
+  .card .what  { background: var(--primary-light); border-left: 3px solid var(--primary); }
+  .card .do    { background: #f0fdf4; border-left: 3px solid var(--success); }
+  .card .after { background: #fff7ed; border-left: 3px solid var(--warning); }
+  .card .label { font-weight: 700; font-size: 13px; display: block; margin-bottom: 2px; }
+
+  /* ===== 流程条 ===== */
+  .flow {
+    display: flex; align-items: stretch; gap: 0; margin: 16px 0 24px;
+    flex-wrap: wrap;
+  }
+  .flow .step {
+    flex: 1; min-width: 120px; text-align: center; position: relative;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 10px; margin-right: 8px;
+  }
+  .flow .step:last-child { margin-right: 0; }
+  .flow .step .num {
+    width: 26px; height: 26px; line-height: 26px; margin: 0 auto 6px;
+    background: var(--primary); color: #fff; border-radius: 50%;
+    font-size: 13px; font-weight: 700;
+  }
+  .flow .step .name { font-weight: 600; font-size: 14px; }
+  .flow .step .desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .flow .arrow {
+    align-self: center; color: var(--muted); font-size: 18px; margin-right: 8px;
+  }
+
+  /* ===== 表格 ===== */
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: #f0f2f8; font-weight: 600; }
+  tr:nth-child(even) td { background: #fafbfe; }
+
+  /* ===== 提示框 ===== */
+  .note {
+    border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 14px;
+  }
+  .note.info    { background: var(--primary-light); border: 1px solid #bcd3ff; }
+  .note.warn    { background: var(--warning-light); border: 1px solid #f3d9a4; }
+  .note.tip     { background: var(--success-light); border: 1px solid #b7e4c7; }
+
+  /* ===== FAQ ===== */
+  details {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 16px; margin-bottom: 10px;
+  }
+  details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+  details p { margin: 10px 0 0; font-size: 14px; color: #374151; }
+
+  footer { text-align: center; color: var(--muted); font-size: 13px; margin-top: 40px; }
+
+  @media (max-width: 640px) {
+    header .inner { flex-direction: column; align-items: flex-start; }
+    .flow .step { min-width: 100%; margin: 0 0 8px; }
+    .flow .arrow { display: none; }
+    h1 { font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="inner">
+    <div class="logo">📚 DocMind <small>本地向量知识库 · 使用教程</small></div>
+    <nav>
+      <a href="#intro">软件是干嘛的</a>
+      <a href="#flow">使用流程</a>
+      <a href="#pages">逐页说明</a>
+      <a href="#terms">术语表</a>
+      <a href="#faq">常见问题</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1 id="intro">DocMind 使用教程</h1>
+  <p class="lead">打开软件不知道该干什么？点完按钮不知道发生了什么？看这一篇就够 —— 每个页面"有什么、该做什么、点了之后发生什么"，全部讲清楚。</p>
+
+  <!-- ================= 一、软件是干嘛的 ================= -->
+  <h2>一、软件是干什么的（一句话）</h2>
+  <div class="card">
+    <span class="tag tag-blue">核心概念</span>
+    <p><strong>DocMind 是一个本地向量知识库</strong>：把你电脑里的文档（PDF / Word / Excel / PPT / Markdown / HTML / 图片 / 代码）导入后，自动切成小块（<em>分块</em>）、转成向量（<em>嵌入</em>）存进本地数据库。之后你可以用<strong>自然语言提问搜索</strong>，软件会从这些文档里找出最相关的内容，按相似度排序给你。</p>
+    <ul>
+      <li>全部计算在<strong>本地</strong>完成，文档不会上传到任何服务器。</li>
+      <li>搜索 = <strong>向量相似度 + 关键词（BM25）混合检索</strong>，两路结果融合排序（RRF）。</li>
+      <li>"后端"是指软件自动启动的一个本地 Python 服务（<code>localhost:8765</code>），所有操作都通过它读写知识库。状态灯在窗口左上角，绿色=在线，黄色=启动中，红色=离线。</li>
+    </ul>
+  </div>
+
+  <!-- ================= 二、使用流程 ================= -->
+  <h2 id="flow">二、推荐使用流程</h2>
+  <div class="flow">
+    <div class="step"><div class="num">1</div><div class="name">⚙️ 设置</div><div class="desc">确认后端地址，可选调模型</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="num">2</div><div class="name">📥 导入</div><div class="desc">把文档拖进来，建立索引</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="num">3</div><div class="name">🔍 搜索</div><div class="desc">用自然语言提问，找答案</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="num">4</div><div class="name">🗂️ 文档库 / 📊 看板</div><div class="desc">管理、检查知识库</div></div>
+  </div>
+  <div class="note warn">
+    ⚠️ <strong>第 2 步是第 3 步的前提：没导入文档，搜索是搜不出东西的。</strong>
+    如果搜索一直"无匹配结果"，先到【导入】页确认文档是否已成功导入。
+  </div>
+
+  <!-- ================= 三、逐页说明 ================= -->
+  <h2 id="pages">三、逐页说明</h2>
+
+  <!-- 搜索页 -->
+  <div class="card">
+    <span class="tag tag-blue">默认首页 · 最常用的功能</span>
+    <h3>🔍 搜索页</h3>
+    <div class="what"><span class="label">界面有什么</span>
+      搜索框、集合输入框（可选）、结果条数下拉（5/10/20/50）、最低相似度输入框（可选）、"搜索"和"清空"按钮、左侧结果列表、右侧详情面板。</div>
+    <div class="do"><span class="label">你该做什么</span>
+      输入一段话（可以是一个问题，也可以是一句话），点"搜索"或按回车（Ctrl+K 也可快速回到本页）。</div>
+    <div class="after"><span class="label">点了之后后台发生什么</span>
+      <ol>
+        <li>后端把搜索词转成向量，在知识库所有分块里找语义最接近的；</li>
+        <li>同时做关键词匹配（BM25）；</li>
+        <li>两路结果融合排序，返回相似度最高的若干条。</li>
+      </ol></div>
+    <p><strong>怎么看结果：</strong></p>
+    <ul>
+      <li>每条结果左上角是<strong>相似度分数</strong>（0~1，越高越相关；<code>hybrid</code> 表示向量和关键词都命中了，<code>vector</code>/<code>bm25</code> 表示只有一路命中）。</li>
+      <li>点击某条结果，右侧显示该分块的完整原文、来源文件、格式、标题、匹配类型。</li>
+      <li>"最低相似度"填 0~1 的小数（如 <code>0.3</code>），可以过滤掉相似度太低的结果。</li>
+      <li>"集合"填导入时的分组名，就只在那一组文档里搜；留空搜索全部。</li>
+    </ul>
+    <div class="note tip">💡 觉得结果不准？试试：换更具体的关键词、调低最低相似度、或选更大的 Top-K（50 条）。</div>
+  </div>
+
+  <!-- 导入页 -->
+  <div class="card">
+    <span class="tag tag-green">建立知识库的关键步骤</span>
+    <h3>📥 导入页</h3>
+    <div class="what"><span class="label">界面有什么</span>
+      路径输入框（支持直接拖拽文件/文件夹进来）、"选择…"按钮、集合名输入框、"递归子目录"勾选框、"导入"和"重置"按钮、进度条、结果三栏（成功 / 跳过 / 失败）。</div>
+    <div class="do"><span class="label">你该做什么</span>
+      选择或拖入一个<strong>文件或文件夹</strong>，可选填集合名（分组名），点"导入"。支持 8 种格式：PDF / Word / Excel / PPT / Markdown / HTML / 图片 / 代码。</div>
+    <div class="after"><span class="label">点了之后后台发生什么（这是全软件最"重"的一步）</span>
+      <ol>
+        <li>后端逐文件读取内容（PDF 逐页解析、Word/Excel/PPT 解析、图片 OCR 等）；</li>
+        <li>按语义把内容切成小块（分块），表格和代码块会被整块保护；</li>
+        <li>每个分块转成向量（嵌入）；</li>
+        <li>写入本地向量库；<strong>已导入过的文件（内容没变）自动跳过</strong>（MD5 去重）。</li>
+      </ol></div>
+    <p><strong>怎么看结果三栏：</strong></p>
+    <ul>
+      <li><strong>✅ 成功</strong>：每个文件的文件名 + 分块数 + 大小 + 格式。</li>
+      <li><strong>⏭ 跳过</strong>：内容与已导入的相同，不会重复入库。</li>
+      <li><strong>❌ 失败</strong>：显示具体是哪个文件、为什么失败（如"加载失败 / 分块失败 / 嵌入失败"）。</li>
+    </ul>
+    <div class="note info">📌 <strong>集合是什么</strong>：给这批文档起的<strong>分组名</strong>。留空则归入 <code>default</code>。搜索时填同一个集合名，就只在那一组文档里搜 —— 相当于给知识库分区。例如"合同"、"论文"、"说明书"各一个集合。</div>
+    <div class="note warn">⏳ 首次导入可能较慢：首次用某个嵌入模型要下载（国内走镜像）；扫描型 PDF 要逐页 OCR。进度条转圈时请耐心等待，不要关软件。</div>
+  </div>
+
+  <!-- 转换页 -->
+  <div class="card">
+    <span class="tag tag-orange">格式互转 · 不进知识库</span>
+    <h3>🔄 转换页</h3>
+    <div class="what"><span class="label">界面有什么</span>
+      源文件输入框 + "选择文件…"、输出位置输入框 + "另存为…"、格式下拉（md / json / txt / html）、"转换"和"重置"按钮、预览区。</div>
+    <div class="do"><span class="label">你该做什么</span>
+      选一个源文件（PDF / DOCX / XLSX / PPTX / MD / HTML 等），选目标格式，点"转换"。</div>
+    <div class="after"><span class="label">点了之后后台发生什么</span>
+      后端解析该文件 → 转成目标格式文本 → 返回内容；<strong>如果指定了输出位置，会直接写文件到那个路径</strong>（完成后状态栏会显示"已写入：路径"）；没指定输出位置则只在右侧预览，不落盘。</div>
+    <div class="note warn">⚠️ <strong>重要区别：转换只是改格式，不进入知识库</strong> —— 转换结果不会出现在搜索结果里。想把文件加入知识库，请走【导入】页。</div>
+  </div>
+
+  <!-- 质量看板 -->
+  <div class="card">
+    <span class="tag tag-blue">整体健康度体检</span>
+    <h3>📊 质量看板页</h3>
+    <div class="what"><span class="label">界面有什么</span>
+      集合过滤框 + "刷新"按钮；四张概览卡片；左侧集合分布列表；右侧警告列表。</div>
+    <div class="do"><span class="label">你该做什么</span>
+      点"刷新"，查看知识库整体健康度。</div>
+    <p><strong>四张卡片分别是什么：</strong></p>
+    <table>
+      <tr><th>卡片</th><th>含义</th></tr>
+      <tr><td>📄 文档总数</td><td>知识库里有多少个文档</td></tr>
+      <tr><td>🧩 分块总数</td><td>所有文档被切成多少块</td></tr>
+      <tr><td>🔁 格式分布</td><td>出现过几种文档格式（如 pdf / docx / md）</td></tr>
+      <tr><td>⚠ 质量警告</td><td>后端基于真实数据算出的问题条数</td></tr>
+    </table>
+    <p><strong>集合分布</strong>：每个集合（分组）各有多少文档、多少分块、占用多大空间。<strong>警告列表</strong>会给出具体问题，例如：</p>
+    <ul>
+      <li>"文档「xxx」分块数为 0，可能无法被检索到" → 该文档可能内容是纯图片/扫描件，建议检查原文件。</li>
+      <li>"文档「xxx」体积较大，建议拆分后导入" → 超过 50MB 的文档建议拆分。</li>
+    </ul>
+  </div>
+
+  <!-- 文档库 -->
+  <div class="card">
+    <span class="tag tag-blue">管理已导入的文档</span>
+    <h3>🗂️ 文档库页</h3>
+    <div class="what"><span class="label">界面有什么</span>
+      集合过滤框、分页按钮（◀ ▶）、"刷新"、"删除选中"、"重建索引"按钮；左侧文档列表（分页，每页 20 条）；右侧选中文档的分块预览。</div>
+    <div class="do"><span class="label">你该做什么</span>
+      浏览已导入的文档；选中一个文档看它的分块内容；删除不要的文档；或重建索引。</div>
+    <div class="after"><span class="label">几个操作的说明</span>
+      <ul>
+        <li><strong>删除选中</strong>：弹窗确认后，删除该文档及其<strong>全部分块和向量</strong>（不可恢复）。</li>
+        <li><strong>🔍 定位</strong>：在分块预览里点"定位"，会跳转到搜索页，用该分块内容作为搜索词，帮你找到相关知识。</li>
+        <li><strong>重建索引</strong>：把现有分块<strong>重新用嵌入模型计算一遍向量</strong>。什么时候用？
+          <ul>
+            <li>在设置页<strong>换了嵌入模型</strong>之后；</li>
+            <li>怀疑向量数据损坏，想整体刷新。</li>
+          </ul>
+          点"重建索引"会提交一个后台任务，进度条显示处理进度（如"重建中 100/500 分块"）。<strong>重建期间不要关软件。</strong></li>
+      </ul></div>
+  </div>
+
+  <!-- 设置页 -->
+  <div class="card">
+    <span class="tag tag-orange">一般不用改</span>
+    <h3>⚙️ 设置页</h3>
+    <div class="what"><span class="label">界面有什么</span>
+      后端连接（地址、启动超时）、性能（轮询间隔）、模型与分块（嵌入模型、分块参数）、启动选项（自动拉起后端、退出联动终止、后端命令路径、自动导入目录）、外观（浅色/深色主题）、关于；底部"保存"和"恢复上次保存"按钮。</div>
+    <div class="do"><span class="label">你该做什么</span>
+      <strong>一般不用改，默认值就能用。</strong>需要时才调整，改完记得点"保存"。</div>
+    <table>
+      <tr><th>配置</th><th>作用</th><th>何时改</th></tr>
+      <tr><td>后端地址</td><td>后端服务地址</td><td>后端端口变了，或改用远程后端</td></tr>
+      <tr><td>启动超时（秒）</td><td>等待后端启动的最长时间</td><td>机器很慢、首次下载模型时可能超时</td></tr>
+      <tr><td>任务轮询间隔</td><td>后台任务进度刷新频率</td><td>一般不用动</td></tr>
+      <tr><td>嵌入模型</td><td>向量化用的模型（small / base / large）</td><td>想提高检索精度（模型越大越慢、越占内存）</td></tr>
+      <tr><td>分块参数</td><td>分块的大小 / 重叠量</td><td>检索粒度不合适时微调</td></tr>
+      <tr><td>自动拉起后端</td><td>启动客户端时自动启动后端</td><td>想自己手动启动后端（取消勾选）</td></tr>
+      <tr><td>退出联动终止</td><td>退出客户端时关掉后端</td><td>想退出后后端继续运行（如让 MCP/CLI 继续用）</td></tr>
+      <tr><td>启动自动导入</td><td>启动后自动导入某个目录</td><td>常用目录想"开机即用"</td></tr>
+      <tr><td>主题</td><td>浅色 / 深色</td><td>按喜好切换（切换后会自动重启应用生效）</td></tr>
+    </table>
+    <div class="note warn">⚠️ 修改模型 / 分块 / 后端地址后：模型和分块参数保存后<strong>实时生效</strong>；但换了嵌入模型后，旧文档的向量还是旧模型算的 —— 记得去【文档库】页点"重建索引"重新计算，否则搜索结果会不准。</div>
+  </div>
+
+  <!-- 调试日志 -->
+  <div class="card">
+    <span class="tag tag-red">排错专用</span>
+    <h3>📋 调试日志页</h3>
+    <div class="what"><span class="label">界面有什么</span>
+      实时滚动的日志行、"清空缓冲"、"打开日志文件"、"打开日志目录"按钮。</div>
+    <div class="do"><span class="label">你该做什么</span>
+      平时不用看。<strong>当某个操作出错、状态栏提示"详见后端日志"时</strong>，来这里查原因；或点"打开日志文件"用文本编辑器打开完整日志文件。</div>
+    <div class="note info">📌 日志会记录每次搜索 / 导入 / 转换的请求与响应摘要（含耗时），排查"为什么慢"也很有用。</div>
+  </div>
+
+  <!-- ================= 四、术语表 ================= -->
+  <h2 id="terms">四、术语速查表</h2>
+  <table>
+    <tr><th style="width:180px">术语</th><th>含义</th></tr>
+    <tr><td>集合 (Collection)</td><td>文档的分组名。导入时指定，搜索/看板可按组过滤；留空归入 <code>default</code></td></tr>
+    <tr><td>分块 (Chunk)</td><td>文档被切开的一个个小片段，是搜索的最小单位</td></tr>
+    <tr><td>嵌入 / 向量 (Embedding)</td><td>把文本转成数字向量，让计算机能算"语义相似度"</td></tr>
+    <tr><td>相似度分数</td><td>0~1，搜索结果与搜索词的匹配程度，越高越相关</td></tr>
+    <tr><td>混合检索</td><td>向量相似度 + 关键词（BM25）两路结果融合排序（RRF）</td></tr>
+    <tr><td>Top-K</td><td>一次搜索最多返回多少条结果（5/10/20/50）</td></tr>
+    <tr><td>重建索引 (Reindex)</td><td>用嵌入模型重新计算所有分块的向量（换模型后必做）</td></tr>
+    <tr><td>后端 (Backend)</td><td>本地 Python 服务（默认 <code>localhost:8765</code>），负责解析/分块/嵌入/检索/存储</td></tr>
+    <tr><td>MD5 去重</td><td>内容相同的文件只入库一次，重复导入会被"跳过"</td></tr>
+  </table>
+
+  <!-- ================= 五、FAQ ================= -->
+  <h2 id="faq">五、常见问题</h2>
+
+  <details>
+    <summary>Q：搜索没有结果，为什么？</summary>
+    <p>先到【导入】页确认文档已成功导入（没有全在"失败"栏）；再看集合是否匹配（搜索页集合要留空或与导入时一致）；最后可降低"最低相似度"、加大 Top-K 或换关键词。</p>
+  </details>
+
+  <details>
+    <summary>Q：导入很慢 / 进度条一直转？</summary>
+    <p>首次用某个模型需要下载（国内走镜像，几分钟）；PDF 扫描件要逐页 OCR；大文档耗时正常。进度条在等待后端完成整批处理，完成后会显示成功/跳过/失败明细。</p>
+  </details>
+
+  <details>
+    <summary>Q：改了设置好像没生效？</summary>
+    <p>模型和分块参数保存后实时生效；换了模型后记得去【文档库】重建索引。其余变更（如后端地址、自动导入目录）重启客户端后生效。</p>
+  </details>
+
+  <details>
+    <summary>Q：左上角状态灯是红色 / 托盘图标显示"离线"？</summary>
+    <p>后端没起来或连不上。若勾选了"启动时自动拉起后端"，稍等片刻（首次会下载模型，可能 1~2 分钟）；若取消了该选项，请手动运行 <code>doc2mind serve</code> 后再打开客户端。</p>
+  </details>
+
+  <details>
+    <summary>Q：删除文档会怎样？</summary>
+    <p>会同时删除该文档的全部分块和向量（释放空间），<strong>不可恢复</strong>。删除前有确认弹窗，请看清再点确认。</p>
+  </details>
+
+  <details>
+    <summary>Q：重新导入同一个文件会重复吗？</summary>
+    <p>不会。后端按文件内容 MD5 去重：内容没变的文件会被"跳过"，只有内容变化过才会重新入库（新版本会替换旧版本）。想强制重新导入，可先到文档库删除旧文档再导入。</p>
+  </details>
+
+  <footer>DocMind · 本地向量知识库 · 使用教程 · 本文档由项目 docs/使用说明-每个页面在干嘛.md 生成</footer>
+
+</main>
+</body>
+</html>

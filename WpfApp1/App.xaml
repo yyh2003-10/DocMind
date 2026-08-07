@@ -1,9 +1,11 @@
 ﻿<Application x:Class="DocMind.App"
 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-xmlns:local="clr-namespace:DocMind">
+xmlns:local="clr-namespace:DocMind"
+xmlns:helpers="clr-namespace:DocMind.Helpers">
     <Application.Resources>
         <ResourceDictionary>
+            <helpers:LogLevelToBrushConverter x:Key="LogLevelToBrush"/>
             <ResourceDictionary.MergedDictionaries>
                 <!-- 初始主题由 ThemeService.LoadInitialTheme() 在 OnStartup 中覆盖 -->
                 <ResourceDictionary Source="Styles/Theme.xaml"/>

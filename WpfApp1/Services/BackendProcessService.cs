@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
 using System.Threading;
 using Microsoft.Extensions.Logging;
@@ -15,6 +16,7 @@ public sealed class BackendProcessService : IDisposable
     private readonly HttpClient _healthClient;
     private Process? _python;
     private CancellationTokenSource? _monitorCts;
+    private CancellationTokenSource? _healthMonitorCts;
 
     /// <summary>后端当前状态（离线 / 启动中 / 在线 / 退出中）。</summary>
     public BackendState State { get; private set; } = BackendState.Offline;
@@ -49,6 +51,18 @@ public sealed class BackendProcessService : IDisposable
         if (_python is { HasExited: true })
         {
             _python = null;
+        }
+
+        // 先探测 URL 上是否已有健康后端（外部实例 / 上次会话遗留的后端仍在线）。
+        // 有则直接复用，不再拉起新进程——否则新进程因端口占用立即退出，
+        // MonitorAsync 会把状态灯翻回离线，造成"后端明明在线却显示离线"。
+        if (await ProbeHealthOnceAsync(ct))
+        {
+            SetState(BackendState.Online);
+            progress?.Report("检测到后端已在线，复用现有实例");
+            // 持续健康监控：该实例退出时状态灯翻离线
+            StartHealthMonitor();
+            return true;
         }
 
         SetState(BackendState.Starting);
@@ -100,50 +114,217 @@ public sealed class BackendProcessService : IDisposable
         SetState(BackendState.Stopping);
         _monitorCts?.Cancel();
         _monitorCts = null;
+        _healthMonitorCts?.Cancel();
+        _healthMonitorCts = null;
 
         await TryCleanupAsync(ct);
         SetState(BackendState.Offline);
     }
 
-    /// <summary>对外暴露当前状态；若未就绪则触发一次健康检查自动更新状态。</summary>
+    /// <summary>对外暴露当前状态；若未就绪则触发一次健康检查自动更新状态。
+    /// 之后启动持续健康轮询：AutoStartBackend=false 接外部后端时，
+    /// 外部后端中途退出也能把状态灯翻回离线，而不是永远卡在 Online。</summary>
     public async Task RefreshStateAsync(CancellationToken ct = default)
     {
-        if (_python is null or { HasExited: true })
-        {
-            SetState(BackendState.Offline);
-            return;
-        }
+        // 无论是否拥有子进程都探测健康：
+        // AutoStartBackend=false 时 _python 恒为 null（从未 StartAsync），
+        // 但仍需探测外部已运行的后端，否则状态灯永远 Offline。
         try
         {
             using var resp = await _healthClient.GetAsync(
                 $"{_settings.BackendUrl.TrimEnd('/')}/v1/health", ct);
             SetState(resp.IsSuccessStatusCode
                 ? BackendState.Online
-                : BackendState.Starting);
+                : BackendState.Offline);
         }
         catch
         {
-            SetState(BackendState.Starting);
+            SetState(BackendState.Offline);
+        }
+
+        // 持续监控：每 PollIntervalMs 探测一次，外部后端崩溃/重启都能反映到状态灯。
+        // 自拉子进程模式由 MonitorAsync 监控进程退出，此处仅外部模式需要；
+        // 统一启动无副作用（重复调用会被字段判重跳过）。
+        StartHealthMonitor();
+    }
+
+    private void StartHealthMonitor()
+    {
+        if (_healthMonitorCts is not null)
+        {
+            return;
+        }
+        _healthMonitorCts = new CancellationTokenSource();
+        _ = HealthMonitorLoopAsync(_healthMonitorCts.Token);
+    }
+
+    /// <summary>周期探测后端健康，持续更新状态（Offline/Online 双向联动）。</summary>
+    private async Task HealthMonitorLoopAsync(CancellationToken ct)
+    {
+        var url = $"{_settings.BackendUrl.TrimEnd('/')}/v1/health";
+        var interval = TimeSpan.FromMilliseconds(Math.Max(1000, _settings.PollIntervalMs));
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    using var resp = await _healthClient.GetAsync(url, ct);
+                    SetState(resp.IsSuccessStatusCode
+                        ? BackendState.Online
+                        : BackendState.Offline);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch
+                {
+                    SetState(BackendState.Offline);
+                }
+                await Task.Delay(interval, ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 主动取消 → 正常退出
         }
     }
 
     private Process StartPythonProcess()
     {
-        // 优先环境变量覆盖；其次假设 doc2mind 已在 PATH
-        var cmd = Environment.GetEnvironmentVariable("DOC2MIND_CMD") ?? "doc2mind";
+        // 解析后端命令优先级：
+        //   1) 环境变量 DOC2MIND_CMD（绝对路径或命令名）
+        //   2) appsettings.BackendCommand（用户在设置页填的绝对路径）
+        //   3) 自动探测：where doc2mind → python -m doc2mind → 裸命令名 doc2mind
+        var (fileName, argsPrefix) = ResolveBackendCommand();
         var psi = new ProcessStartInfo
         {
-            FileName = cmd,
-            // 从 BackendUrl 提取 host/port
-            Arguments = $"serve --host {ExtractHost()} --port {ExtractPort()}",
+            FileName = fileName,
+            // 从 BackendUrl 提取 host/port；argsPrefix 用于 `python -m doc2mind` 形式
+            Arguments = $"{argsPrefix}serve --host {ExtractHost()} --port {ExtractPort()}",
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = true,
         };
+        // 国内网络：HuggingFace 直连超时，嵌入模型下载必须走 hf-mirror 镜像。
+        // 只在未显式配置时注入默认值，避免覆盖用户自定义的 HF_ENDPOINT。
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HF_ENDPOINT")))
+        {
+            psi.Environment["HF_ENDPOINT"] = "https://hf-mirror.com";
+        }
+
+        // 设置页的模型/分块参数 → 后端 DOC2MIND_* 环境变量（重启后端生效）。
+        // 只在非空时注入，留空让后端用内置默认值。
+        if (!string.IsNullOrWhiteSpace(_settings.EmbedModel))
+            psi.Environment["DOC2MIND_EMBED_MODEL"] = _settings.EmbedModel.Trim();
+        if (_settings.ChunkMaxTokens is > 0)
+            psi.Environment["DOC2MIND_CHUNK_MAX_TOKENS"] = _settings.ChunkMaxTokens.Value.ToString();
+        if (_settings.ChunkMinChars is > 0)
+            psi.Environment["DOC2MIND_CHUNK_MIN_CHARS"] = _settings.ChunkMinChars.Value.ToString();
+        if (_settings.ChunkOverlapChars is > 0)
+            psi.Environment["DOC2MIND_CHUNK_OVERLAP_CHARS"] = _settings.ChunkOverlapChars.Value.ToString();
+        if (_settings.ChunkMaxChars is > 0)
+            psi.Environment["DOC2MIND_CHUNK_MAX_CHARS"] = _settings.ChunkMaxChars.Value.ToString();
+
         _logger?.LogInformation("启动后端：{Cmd} {Args}", psi.FileName, psi.Arguments);
         return Process.Start(psi) ?? throw new InvalidOperationException("Process.Start 返回 null");
+    }
+
+    /// <summary>解析后端命令：返回 (fileName, argsPrefix)。
+    /// argsPrefix 非空时用于 `python -m doc2mind` 形式（argsPrefix = "-m doc2mind "）。</summary>
+    private (string fileName, string argsPrefix) ResolveBackendCommand()
+    {
+        // 1) 环境变量覆盖
+        var envCmd = Environment.GetEnvironmentVariable("DOC2MIND_CMD");
+        if (!string.IsNullOrWhiteSpace(envCmd))
+        {
+            return (envCmd.Trim(), string.Empty);
+        }
+
+        // 2) appsettings.BackendCommand 用户配置
+        if (!string.IsNullOrWhiteSpace(_settings.BackendCommand))
+        {
+            return (_settings.BackendCommand!.Trim(), string.Empty);
+        }
+
+        // 3) 项目自带 .venv 优先：从应用目录向上找 .venv，避免命中 PATH 里失效的全局 doc2mind 安装
+        var venv = TryResolveProjectVenv();
+        if (venv is not null)
+        {
+            return venv.Value;
+        }
+
+        // 4) 自动探测：where doc2mind（Windows 上 where / Git Bash 上 which）
+        var resolved = TryResolveFromWhere("doc2mind");
+        if (resolved is not null)
+        {
+            return (resolved, string.Empty);
+        }
+
+        // 5) 回退：尝试 python.exe（PATH 里）+ -m doc2mind
+        var pythonExe = TryResolveFromWhere("python") ?? "python";
+        return (pythonExe, "-m doc2mind ");
+    }
+
+    /// <summary>从应用所在目录逐级向上查找项目自带 .venv（最多 6 层），
+    /// 命中返回 (fileName, argsPrefix)；找不到返回 null。</summary>
+    private static (string fileName, string argsPrefix)? TryResolveProjectVenv()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        for (int i = 0; i < 6 && dir is not null; i++, dir = dir.Parent)
+        {
+            if (dir is null)
+            {
+                break;
+            }
+            var scripts = Path.Combine(dir.FullName, ".venv", "Scripts");
+            if (!Directory.Exists(scripts))
+            {
+                continue;
+            }
+
+            var doc2mindExe = Path.Combine(scripts, "doc2mind.exe");
+            if (File.Exists(doc2mindExe))
+            {
+                return (doc2mindExe, string.Empty);
+            }
+
+            var pythonExe = Path.Combine(scripts, "python.exe");
+            if (File.Exists(pythonExe))
+            {
+                return (pythonExe, "-m doc2mind ");
+            }
+        }
+        return null;
+    }
+
+    /// <summary>用 where 命令查可执行文件绝对路径；找不到返回 null。</summary>
+    private static string? TryResolveFromWhere(string command)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "where",
+                Arguments = Uri.EscapeDataString(command),
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+            };
+            using var p = Process.Start(psi);
+            if (p is null) return null;
+            p.WaitForExit(milliseconds: 2000);
+            if (p.ExitCode != 0) return null;
+            var line = p.StandardOutput.ReadLine();
+            return string.IsNullOrWhiteSpace(line) ? null : line.Trim();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private string ExtractHost()
@@ -170,6 +351,25 @@ public sealed class BackendProcessService : IDisposable
         catch
         {
             return 8765;
+        }
+    }
+
+    /// <summary>单次健康探测：URL 上是否已有可用的后端实例（外部/遗留实例）。</summary>
+    private async Task<bool> ProbeHealthOnceAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var resp = await _healthClient.GetAsync(
+                $"{_settings.BackendUrl.TrimEnd('/')}/v1/health", ct);
+            return resp.IsSuccessStatusCode;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -215,9 +415,20 @@ public sealed class BackendProcessService : IDisposable
             await proc.WaitForExitAsync(ct);
             if (!ct.IsCancellationRequested)
             {
-                // 非主动退出 → 标记离线
-                _logger?.LogWarning("后端子进程意外退出 (code {ExitCode})", proc.ExitCode);
-                SetState(BackendState.Offline);
+                // 自拉子进程退出。先探测 URL 上是否仍有健康实例在服务：
+                // 端口被外部/遗留实例占用时，自拉进程会立即退出，但后端其实在线；
+                // 此时保持 Online 并转入健康轮询，而不是盲设 Offline。
+                _logger?.LogWarning("后端子进程退出 (code {ExitCode})，重新探测健康状态", proc.ExitCode);
+                _python = null;
+                if (await ProbeHealthOnceAsync(ct))
+                {
+                    SetState(BackendState.Online);
+                    StartHealthMonitor();
+                }
+                else
+                {
+                    SetState(BackendState.Offline);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -271,9 +482,16 @@ public sealed class BackendProcessService : IDisposable
 
     public void Dispose()
     {
+        // 注意：这里绝不终止后端子进程。
+        // 是否停止后端由调用方依据 StopBackendOnExit 显式调用 StopAsync 决定；
+        // Dispose 只释放本服务的监控与网络资源，避免 StopBackendOnExit=false
+        // （退出后保留后端继续运行）时，fire-and-forget 的 StopAsync 仍非确定性地杀掉后端。
         _monitorCts?.Cancel();
         _monitorCts?.Dispose();
-        _ = StopAsync(CancellationToken.None);
+        _monitorCts = null;
+        _healthMonitorCts?.Cancel();
+        _healthMonitorCts?.Dispose();
+        _healthMonitorCts = null;
         _healthClient.Dispose();
     }
 }

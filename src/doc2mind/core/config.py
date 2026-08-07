@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,6 +60,10 @@ class Settings:
     embed_dim: int = 512  # bge-small-zh-v1.5 输出维度
     embed_batch_size: int = 32
 
+    # 本地模型目录（可选）：指向一个含 ONNX 模型文件的目录，优先于 embed_model
+    # 使用（fastembed specific_model_path）。留空则用 embed_model 从网络下载。
+    embed_model_path: str | None = None
+
     # --- 分块 ---
     chunk_max_tokens: int = 1500
     chunk_min_chars: int = 50
@@ -82,16 +87,35 @@ class Settings:
     server_host: str = "127.0.0.1"
     server_port: int = 8765
 
+    # --- 嵌入模型下载 ---
+    # HuggingFace 端点/镜像。国内网络直连 HF 常超时，设为
+    # `https://hf-mirror.com` 可正常下载模型（fastembed 首次使用约 90MB）。
+    # 环境变量 `DOC2MIND_HF_ENDPOINT` 可覆盖；留空时自动使用镜像
+    # hf-mirror.com，无需手动配置。
+    hf_endpoint: str | None = None
+
+    # 嵌入模型缓存目录（持久化，避免放 Temp 被系统清理后反复重新下载）。
+    # 默认与知识库同目录：%LOCALAPPDATA%\doc2mind\fastembed_cache
+    embed_cache_dir: Path = field(
+        default_factory=lambda: _user_data_dir() / "fastembed_cache"
+    )
+
     @classmethod
     def from_env(cls) -> Settings:
-        """从环境变量加载配置（覆盖默认值）。
+        """从配置文件 + 环境变量加载配置（覆盖默认值）。
 
-        环境变量命名：`DOC2MIND_<UPPER_FIELD>`，例如：
+        优先级（高 → 低）：
+        1. 环境变量 `DOC2MIND_<UPPER_FIELD>`
+        2. 配置文件 `config.toml`（用户目录，`doc2mind config --set-model` 写入）
+        3. 内置默认值
+
+        例如：
         - `DOC2MIND_EMBED_MODEL`
         - `DOC2MIND_DB_PATH`
         - `DOC2MIND_SERVER_PORT`
         """
-        kwargs: dict[str, object] = {}
+        # 先读 config.toml（低优先级），再用环境变量覆盖（高优先级）
+        kwargs: dict[str, object] = dict(load_config_file())
         for f in cls.__dataclass_fields__.values():
             env_key = f"DOC2MIND_{f.name.upper()}"
             if (raw := os.environ.get(env_key)) is None:
@@ -114,6 +138,79 @@ class Settings:
     def ensure_dirs(self) -> None:
         """确保数据目录存在。"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+# --- config.toml 持久化 ---
+# 允许写入 config.toml 的字段（其余字段由环境变量 / 默认值决定）
+_PERSIST_FIELDS: tuple[str, ...] = (
+    "embed_model",
+    "embed_model_path",
+    "embed_batch_size",
+    "chunk_max_tokens",
+    "chunk_min_chars",
+    "chunk_overlap_chars",
+    "chunk_max_chars",
+    "search_top_k",
+    "rrf_k",
+    "hf_endpoint",
+)
+
+
+def config_file_path() -> Path:
+    """用户配置文件路径：Windows %APPDATA%\\doc2mind\\config.toml。"""
+    return _user_config_dir() / "config.toml"
+
+
+def load_config_file() -> dict[str, object]:
+    """读取 config.toml（若存在），返回字段字典；缺失/损坏时返回空 dict。
+
+    支持顶层 `[doc2mind]` 小节（推荐），也兼容平铺键值。
+    """
+    path = config_file_path()
+    if not path.is_file():
+        return {}
+    try:
+        import tomllib  # Python 3.11+
+
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+        root = data.get("doc2mind", data) if isinstance(data, dict) else {}
+        return {k: v for k, v in root.items() if k in _PERSIST_FIELDS}
+    except Exception:  # noqa: BLE001 — 配置损坏时回退默认值
+        return {}
+
+
+def _toml_repr(value: object) -> str:
+    """把 Python 值渲染为 TOML 字面量。"""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def save_settings(settings: Settings) -> None:
+    """把当前配置持久化到 config.toml（下次启动自动生效）。"""
+    path = config_file_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    lines = [
+        "# DocMind 配置文件（`doc2mind config` 命令写入）",
+        "# 可用 `doc2mind models` 查看可选嵌入模型",
+        "",
+        "[doc2mind]",
+    ]
+    for name in _PERSIST_FIELDS:
+        value = getattr(settings, name, None)
+        if value is None:
+            continue
+        lines.append(f"{name} = {_toml_repr(value)}")
+    try:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 # --- 全局单例（惰性）---

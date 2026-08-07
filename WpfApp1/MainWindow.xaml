@@ -37,8 +37,14 @@
         <DataTemplate DataType="{x:Type vm:QualityViewModel}">
             <v:QualityView/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:DocumentsViewModel}">
+            <v:DocumentsView/>
+        </DataTemplate>
         <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
             <v:SettingsView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:DebugLogViewModel}">
+            <v:DebugLogView/>
         </DataTemplate>
 
         <!-- 侧栏折叠宽度转换器 -->
@@ -71,10 +77,10 @@
                                Foreground="{StaticResource PrimaryBrush}"
                                VerticalAlignment="Center"/>
                     <Ellipse Width="8" Height="8"
-                             Fill="{StaticResource SuccessBrush}"
+                             Fill="{Binding BackendStatusBrush, Mode=OneWay}"
                              Margin="16,0,6,0"
                              VerticalAlignment="Center"/>
-                    <TextBlock Text="Backend Connected"
+                    <TextBlock Text="{Binding BackendStatusText, Mode=OneWay}"
                                Style="{StaticResource CaptionText}"
                                VerticalAlignment="Center"/>
                 </StackPanel>
@@ -127,12 +133,40 @@
                         <ListBox.ItemTemplate>
                             <DataTemplate DataType="{x:Type vm:NavigationItem}">
                                 <StackPanel Orientation="Horizontal">
-                                    <!-- 图标 -->
+                                    <!-- emoji 字符图标（无 PNG 时回退显示） -->
+                                    <TextBlock Text="{Binding Icon}"
+                                               FontSize="16"
+                                               Width="24" Height="24"
+                                               VerticalAlignment="Center"
+                                               TextAlignment="Center">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IconSource}" Value="{x:Null}">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <!-- PNG 图标 -->
                                     <Image Source="{Binding IconSource}"
                                            Width="24" Height="24"
-                                           VerticalAlignment="Center"/>
+                                           VerticalAlignment="Center">
+                                        <Image.Style>
+                                            <Style TargetType="Image">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IconSource}" Value="{x:Null}">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Image.Style>
+                                    </Image>
                                     <!-- 标题（折叠时隐藏） -->
-                                    <TextBlock Text="{Binding Title}"
+                                    <TextBlock Text="{Binding Title, Mode=OneWay}"
                                                VerticalAlignment="Center"
                                                Margin="12,0,0,0"
                                                FontSize="14">
@@ -160,7 +194,7 @@
                             Height="32" Margin="0,0,0,4"
                             HorizontalAlignment="Center"
                             ToolTip="{Binding SidebarToggleTooltip}">
-                        <TextBlock Text="{Binding SidebarToggleIcon}"
+                        <TextBlock Text="{Binding SidebarToggleIcon, Mode=OneWay}"
                                    FontSize="12"/>
                     </Button>
                 </Grid>
@@ -205,7 +239,7 @@
                             <!-- 搜索详情 -->
                             <StackPanel Visibility="{Binding IsSearchActive, Converter={StaticResource BoolToVis}}">
                                 <TextBlock Text="当前选中" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
-                                <TextBlock Text="{Binding SelectedHitInfo}"
+                                <TextBlock Text="{Binding SelectedHitInfo, Mode=OneWay}"
                                            Style="{StaticResource BodyText}"
                                            TextWrapping="Wrap"/>
                             </StackPanel>
@@ -213,7 +247,7 @@
                             <!-- 导入详情 -->
                             <StackPanel Visibility="{Binding IsImportActive, Converter={StaticResource BoolToVis}}">
                                 <TextBlock Text="导入进度" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
-                                <TextBlock Text="{Binding ImportSummary}"
+                                <TextBlock Text="{Binding ImportSummary, Mode=OneWay}"
                                            Style="{StaticResource BodyText}"
                                            TextWrapping="Wrap"/>
                             </StackPanel>
@@ -246,16 +280,16 @@
                 <!-- 后端连接信息 -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                     <Ellipse Width="6" Height="6"
-                             Fill="{StaticResource SuccessBrush}"
+                             Fill="{Binding BackendStatusBrush, Mode=OneWay}"
                              VerticalAlignment="Center"/>
-                    <TextBlock Text="localhost:8765"
+                    <TextBlock Text="{Binding BackendUrl, Mode=OneWay}"
                                Style="{StaticResource SmallText}"
                                Margin="6,0,16,0"/>
                 </StackPanel>
 
                 <!-- 当前页面状态 -->
                 <TextBlock Grid.Column="1"
-                           Text="{Binding CurrentStatusText}"
+                           Text="{Binding CurrentStatusText, Mode=OneWay}"
                            Style="{StaticResource SmallText}"
                            VerticalAlignment="Center"/>
 

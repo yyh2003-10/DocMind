@@ -1,0 +1,6 @@
+# DocMind 全功能依赖（core + server + ocr + gpu，本机已验证组合）
+# 用法：pip install -r requirements-all.txt
+-r requirements-core.txt
+-r requirements-server.txt
+-r requirements-ocr.txt
+-r requirements-gpu.txt

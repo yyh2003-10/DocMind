@@ -129,7 +129,7 @@
                             Background="{StaticResource SurfaceBrush}"
                             CornerRadius="4"
                             Padding="8,2"
-                            Visibility="{Binding HasInputPath}">
+                            Visibility="{Binding HasInputPath, Converter={StaticResource BoolToVis}}">
                         <TextBlock Style="{StaticResource SmallText}">
                             <Run Text="{Binding Format, Mode=OneWay, StringFormat={}.{0}}"/>
                         </TextBlock>

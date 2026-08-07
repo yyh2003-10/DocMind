@@ -114,6 +114,11 @@ public partial class ConvertViewModel : ViewModelBase
             var dir = System.IO.Path.GetDirectoryName(InputPath) ?? string.Empty;
             var stem = System.IO.Path.GetFileNameWithoutExtension(InputPath);
             OutputPath = System.IO.Path.Combine(dir, $"{stem}.{Format}");
+            DebugLog.Info($"已选择输入文件: {InputPath}，默认输出: {OutputPath}", "Convert");
+        }
+        else
+        {
+            DebugLog.Info("用户取消选择输入文件", "Convert");
         }
     }
 
@@ -149,57 +154,76 @@ public partial class ConvertViewModel : ViewModelBase
         PreviewContent = string.Empty;
         LastResult = null;
 
+        DebugLog.Info($"开始转换: InputPath='{InputPath.Trim()}' OutputPath='{(string.IsNullOrWhiteSpace(OutputPath) ? "(空,仅预览)" : OutputPath.Trim())}' Format='{Format}'", "Convert");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         try
         {
             var resp = await _apiService.ConvertAsync(
                 new ConvertRequest
                 {
                     InputPath = InputPath.Trim(),
-                    OutputPath = string.IsNullOrWhiteSpace(OutputPath) ? string.Empty : OutputPath.Trim(),
+                    // 后端 output_path: str | None；空时发 null 避免后端误判落盘
+                    OutputPath = string.IsNullOrWhiteSpace(OutputPath) ? null : OutputPath.Trim(),
                     Format = Format,
                 });
 
+            sw.Stop();
             LastResult = resp;
             if (resp.Success)
             {
-                // 后端返回 outputPath 时优先用之
-                var actualOut = resp.OutputPath ?? OutputPath;
-                if (!string.IsNullOrWhiteSpace(actualOut) && File.Exists(actualOut))
-                {
-                    var text = await File.ReadAllTextAsync(actualOut);
-                    PreviewContent = text.Length > 10_000
-                        ? text[..10_000] + "\n\n…（预览截断，共 " + text.Length + " 字符）"
-                        : text;
-                }
-                else
-                {
-                    PreviewContent = resp.Message ?? "转换成功，但未返回可预览内容。";
-                }
-                StatusMessage = $"完成 → {actualOut}";
-                _notifications.Success($"转换完成：{System.IO.Path.GetFileName(actualOut)}");
+                // 后端 convert 行为：指定 output_path 时会落盘写文件（见 http.py）；
+                // 未指定时仅返回 Content 供预览。此处两种情况分别提示。
+                var content = resp.Content;
+                PreviewContent = content.Length > 10_000
+                    ? content[..10_000] + "\n\n…（预览截断，共 " + content.Length + " 字符）"
+                    : content;
+
+                var wroteFile = !string.IsNullOrWhiteSpace(OutputPath);
+                StatusMessage = wroteFile
+                    ? $"完成 → 已写入：{OutputPath.Trim()}"
+                    : $"完成 → 格式 {resp.OutputFormat}（未指定输出位置，仅预览）";
+                _notifications.Success(wroteFile
+                    ? $"转换完成，已写入：{OutputPath.Trim()}"
+                    : $"转换完成：{resp.OutputFormat}（仅预览）");
+                DebugLog.Info(
+                    $"转换成功: input='{resp.Input}' format='{resp.OutputFormat}' elements={resp.ElementsCount} " +
+                    $"contentLen={content.Length} 耗时{sw.ElapsedMilliseconds}ms",
+                    "Convert");
             }
             else
             {
+                sw.Stop();
                 PreviewContent = resp.Message ?? "转换失败。";
                 StatusMessage = $"失败：{resp.Message ?? "未知原因"}";
                 _notifications.Error(resp.Message ?? "转换失败");
+                DebugLog.Error($"转换失败(Success=false): message='{resp.Message}' 耗时{sw.ElapsedMilliseconds}ms", "Convert");
             }
         }
         catch (ApiException ex)
         {
-            StatusMessage = $"API 错误：{ex.Message}";
+            sw.Stop();
+            StatusMessage = ex.Code == "TIMEOUT"
+                ? "转换超时：后端处理时间过长（OCR/嵌入耗时任务），已自动取消本次请求，可稍后重试或到「日志」页查看后端进度"
+                : $"API 错误：{ex.Message}";
+            DebugLog.Error($"转换 API 错误: code={ex.Code} message={ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Convert", ex);
         }
         catch (BackendConnectionException ex)
         {
+            sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
+            DebugLog.Error($"转换后端不可达: {ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Convert", ex);
         }
         catch (Exception ex)
         {
+            sw.Stop();
             StatusMessage = $"错误：{ex.Message}";
+            DebugLog.Error($"转换未知异常 耗时{sw.ElapsedMilliseconds}ms", "Convert", ex);
         }
         finally
         {
             IsBusy = false;
+            DebugLog.Info($"转换流程结束，总耗时{sw.ElapsedMilliseconds}ms", "Convert");
         }
     }
 

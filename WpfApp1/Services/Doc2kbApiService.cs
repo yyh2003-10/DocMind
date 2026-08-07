@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using DocMind.Models;
 using Microsoft.Extensions.Logging;
 
@@ -9,10 +10,15 @@ namespace DocMind.Services;
 
 public class Doc2kbApiService : IDoc2kbApiService
 {
+    /// <summary>snake_case 命名策略：发 POST body 时把 CamelCase 字段名转 snake_case，
+    /// 与后端 pydantic DTO 字段对齐（避免 422）。</summary>
+    private static readonly JsonNamingPolicy SnakeCasePolicy = new SnakeCaseNamingPolicy();
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        // 输出（发往后端）用 snake_case；输入（解析后端响应）仍 case-insensitive
+        PropertyNamingPolicy = SnakeCasePolicy,
     };
 
     private readonly HttpClient _httpClient;
@@ -27,14 +33,20 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task<HealthStatus> GetHealthAsync(CancellationToken ct = default)
         => SendAsync<HealthStatus>(HttpMethod.Get, "v1/health", null, ct);
 
+    public Task<BackendConfig> GetConfigAsync(CancellationToken ct = default)
+        => SendAsync<BackendConfig>(HttpMethod.Get, "v1/config", null, ct);
+
+    public Task<BackendConfig> UpdateConfigAsync(BackendConfigUpdate req, CancellationToken ct = default)
+        => SendAsync<BackendConfig>(HttpMethod.Post, "v1/config", req, ct);
+
     public Task<IngestResponse> IngestAsync(IngestRequest req, CancellationToken ct = default)
         => SendAsync<IngestResponse>(HttpMethod.Post, "v1/ingest", req, ct);
 
     public Task<SearchResponse> SearchAsync(SearchRequest req, CancellationToken ct = default)
         => SendAsync<SearchResponse>(HttpMethod.Post, "v1/search", req, ct);
 
-    public Task<PagedResult<Document>> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", CancellationToken ct = default)
-        => SendAsync<PagedResult<Document>>(HttpMethod.Get, BuildUri("v1/documents", new Dictionary<string, string?>
+    public Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", CancellationToken ct = default)
+        => SendAsync<DocumentListResponse>(HttpMethod.Get, BuildUri("v1/documents", new Dictionary<string, string?>
         {
             ["collection"] = collection,
             ["page"] = page.ToString(),
@@ -98,12 +110,21 @@ public class Doc2kbApiService : IDoc2kbApiService
 
     private async Task<T> SendAsync<T>(HttpMethod method, string uri, object? payload, CancellationToken ct)
     {
+        // 调试日志：请求出参
+        string? reqBody = null;
+        if (payload is not null)
+        {
+            reqBody = JsonSerializer.Serialize(payload, JsonOptions);
+        }
+        DebugLog.Info($"→ {method} {uri}" + (reqBody is null ? "" : "\n  req: " + Truncate(reqBody, 800)), "API");
+
         using var request = new HttpRequestMessage(method, uri);
         if (payload is not null)
         {
             request.Content = System.Net.Http.Json.JsonContent.Create(payload, options: JsonOptions);
         }
 
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         HttpResponseMessage response;
         try
         {
@@ -111,32 +132,71 @@ public class Doc2kbApiService : IDoc2kbApiService
         }
         catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
         {
+            sw.Stop();
+            DebugLog.Error($"✗ {method} {uri} TIMEOUT after {sw.ElapsedMilliseconds}ms", "API", ex);
             throw new ApiException("TIMEOUT", "Request timed out.", innerException: ex);
         }
         catch (HttpRequestException ex)
         {
+            sw.Stop();
+            DebugLog.Error($"✗ {method} {uri} unreachable after {sw.ElapsedMilliseconds}ms", "API", ex);
             _logger.LogWarning(ex, "Backend connection failed for {Uri}", uri);
             throw new BackendConnectionException("Backend is unreachable.", ex);
         }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            DebugLog.Error($"✗ {method} {uri} unexpected error after {sw.ElapsedMilliseconds}ms", "API", ex);
+            throw;
+        }
+
+        sw.Stop();
+        var status = (int)response.StatusCode;
 
         using (response)
         {
             if (!response.IsSuccessStatusCode)
             {
-                throw await CreateApiExceptionAsync(response).ConfigureAwait(false);
+                var errBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                DebugLog.Error(
+                    $"✗ {method} {uri} -> {status} ({response.ReasonPhrase}) in {sw.ElapsedMilliseconds}ms"
+                    + (string.IsNullOrWhiteSpace(errBody) ? "" : "\n  resp: " + Truncate(errBody, 800)),
+                    "API");
+                var ex = await CreateApiExceptionAsync(response).ConfigureAwait(false);
+                throw ex;
             }
+
+            // 成功路径：读取 raw body 用于日志，再反序列化
+            string rawBody;
+            try
+            {
+                rawBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                rawBody = "<unreadable>";
+            }
+
+            DebugLog.Info(
+                $"✓ {method} {uri} -> {status} in {sw.ElapsedMilliseconds}ms"
+                + (string.IsNullOrWhiteSpace(rawBody) ? "" : "\n  resp: " + Truncate(rawBody, 800)),
+                "API");
 
             try
             {
-                var result = await response.Content.ReadFromJsonAsync<T>(JsonOptions, ct).ConfigureAwait(false);
+                var result = JsonSerializer.Deserialize<T>(rawBody, JsonOptions);
                 return result ?? throw new ApiException("PARSE_ERROR", "Response body was empty.");
             }
             catch (JsonException ex)
             {
+                DebugLog.Error($"JSON parse failed for {method} {uri}: {ex.Message}\n  raw: {Truncate(rawBody, 800)}", "API", ex);
                 throw new ApiException("PARSE_ERROR", "Failed to parse response body.", innerException: ex);
             }
         }
     }
+
+    private static string Truncate(string s, int max)
+        => s.Length > max ? s[..max] + "…(truncated)" : s;
 
     private static async Task<ApiException> CreateApiExceptionAsync(HttpResponseMessage response)
     {

@@ -1,0 +1,7 @@
+# DocMind GPU 加速嵌入依赖（本机已验证组合：RTX 2060 6GB，驱动 595.79 / CUDA 13.2）
+# 注意：本机 onnxruntime-gpu 1.28.0 为 CUDA 13 构建（cu13），且与 paddle 的
+# cu12 运行时共存（nvidia/*/bin 目录）。普通设备（CUDA 12.x 驱动）安装官方
+# onnxruntime-gpu==1.28.0 即可；驱动高于 13.x 的 cu13 构建需按部署指南提供
+# 本地 wheel（onnxruntime_gpu-1.28.0-cp311-cp311-win_amd64.whl）。
+# 用法：pip install -r requirements-core.txt -r requirements-gpu.txt
+onnxruntime-gpu==1.28.0

@@ -15,6 +15,8 @@
         <Grid.RowDefinitions>
             <!-- 路径选择 + 拖拽区域 -->
             <RowDefinition Height="Auto"/>
+            <!-- 选中项信息 + 预览 -->
+            <RowDefinition Height="Auto"/>
             <!-- 进度条 -->
             <RowDefinition Height="Auto"/>
             <!-- 结果三栏 -->
@@ -76,8 +78,31 @@
             </Grid>
         </Border>
 
-        <!-- ===== 进度条 ===== -->
+        <!-- ===== 选中项信息 + 预览（选择/拖拽后显示） ===== -->
         <Border Grid.Row="1"
+                Visibility="{Binding HasSelectedPath, Converter={StaticResource BoolToVis}}"
+                Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="16,10"
+                Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="{Binding SelectedPathSummary, Mode=OneWay}"
+                           Style="{StaticResource SmallText}"
+                           FontWeight="SemiBold"
+                           TextTrimming="CharacterEllipsis"/>
+                <TextBlock Text="{Binding SelectedPathPreview, Mode=OneWay}"
+                           Style="{StaticResource CaptionText}"
+                           Foreground="{StaticResource TextMutedBrush}"
+                           TextWrapping="Wrap"
+                           MaxHeight="96"
+                           Margin="0,6,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- ===== 进度条 ===== -->
+        <Border Grid.Row="2"
                 Background="{StaticResource SurfaceBrush}"
                 CornerRadius="8"
                 Padding="12,8"
@@ -88,13 +113,13 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <ProgressBar Grid.Column="0"
-                             Value="{Binding ProgressPercent}"
+                             Value="{Binding ProgressPercent, Mode=OneWay}"
+                             IsIndeterminate="{Binding IsBusy}"
                              Maximum="100"
                              MinHeight="8"
-                             IsIndeterminate="{Binding IsBusy}"
                              VerticalAlignment="Center"/>
                 <TextBlock Grid.Column="1"
-                           Text="{Binding ProgressPercent, StringFormat={}{0}%}"
+                           Text="{Binding ProgressPercent, Mode=OneWay, StringFormat={}{0}%}"
                            Style="{StaticResource CaptionText}"
                            Margin="12,0,0,0"
                            VerticalAlignment="Center"/>
@@ -102,7 +127,7 @@
         </Border>
 
         <!-- 空态拖拽引导（HasResults=false 时显示） -->
-        <Border Grid.Row="2"
+        <Border Grid.Row="3"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="2"
                 CornerRadius="12"
@@ -131,7 +156,7 @@
         </Border>
 
         <!-- 结果三栏（HasResults=true 时显示） -->
-        <Grid Grid.Row="2">
+        <Grid Grid.Row="3">
             <Grid.Style>
                 <Style TargetType="Grid">
                     <Setter Property="Visibility" Value="Collapsed"/>
@@ -171,16 +196,19 @@
                     <ListBox.ItemTemplate>
                         <DataTemplate DataType="{x:Type m:IngestResult}">
                             <StackPanel Margin="4,4">
-                                <TextBlock Text="{Binding Document.Name}"
+                                <TextBlock Text="{Binding Source, Mode=OneWay}"
                                            FontWeight="SemiBold"
                                            Style="{StaticResource BodyText}"/>
                                 <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
                                     <TextBlock Style="{StaticResource SmallText}">
-                                        <Run Text="chunks "/><Run Text="{Binding ChunksAdded}"/>
+                                        <Run Text="chunks "/><Run Text="{Binding ChunkCount, Mode=OneWay}"/>
+                                    </TextBlock>
+                                    <TextBlock Style="{StaticResource SmallText}" Margin="12,0,0,0">
+                                        <Run Text="size "/><Run Text="{Binding SizeBytes, Mode=OneWay, StringFormat={}{0:N0} B}"/>
                                     </TextBlock>
                                     <TextBlock Style="{StaticResource SmallText}" Margin="12,0,0,0"
-                                               Foreground="{StaticResource WarningBrush}">
-                                        <Run Text="dup "/><Run Text="{Binding DuplicatesSkipped}"/>
+                                               Foreground="{StaticResource TextMutedBrush}">
+                                        <Run Text="{Binding Format, Mode=OneWay}"/>
                                     </TextBlock>
                                 </StackPanel>
                             </StackPanel>
