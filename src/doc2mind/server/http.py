@@ -131,6 +131,10 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     version: str
     uptime_seconds: int
+    # 嵌入推理能力上报（WPF 据此判断是否提示 GPU 加速）
+    gpu_available: bool = False
+    gpu_provider: str | None = None
+    embed_providers: list[str] | None = None
 
 
 class ConfigResponse(BaseModel):
@@ -309,9 +313,20 @@ def create_app() -> Any:
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
         uptime = int((datetime.now(timezone.utc) - state.started_at).total_seconds())
+        # 探测嵌入实际使用的 providers（不加载模型，轻量）
+        try:
+            from doc2mind.core.embedder.fastembed_impl import get_embed_providers
+
+            providers = get_embed_providers()
+        except Exception:  # noqa: BLE001 — 探测失败按 CPU 处理，不阻断健康检查
+            providers = ["CPUExecutionProvider"]
+        gpu = [p for p in providers if "CUDA" in p or "DML" in p]
         return HealthResponse(
             version="0.1.0",
             uptime_seconds=uptime,
+            gpu_available=bool(gpu),
+            gpu_provider=gpu[0] if gpu else None,
+            embed_providers=providers,
         )
 
     # --- GET/POST /v1/config（设置页：嵌入模型 + 分块 + 检索参数）---
