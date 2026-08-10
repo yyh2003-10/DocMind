@@ -1,3 +1,0 @@
-- DocMindY 环境：RTX 2060 6GB，驱动 595.79（CUDA 13.2），Python 3.11；venv 同时装 onnxruntime-gpu 1.28(cu13) + paddlepaddle-gpu 3.3.1(cu126)，两套 nvidia cu12/cu13 运行时共存于 .venv/Lib/site-packages/nvidia/，cudnn 等目录会被后装包覆盖
-- DocMindY 国内网络：HuggingFace 直连超时，嵌入模型下载必须 HF_ENDPOINT=https://hf-mirror.com；pip 下载大包（nvidia/paddle whl）会停滞，需用 curl -C - 断点续传 + 阿里云/清华镜像
-- DocMindY GPU 化：image_loader.py 已内置 _register_nvidia_dll_dirs()（Windows 下自动注册 site-packages/nvidia/*/bin 到 DLL 搜索路径），_detect_ocr_device 依赖它才返回 gpu:0；fastembed 嵌入走 CUDA 需 onnxruntime/capi 下有 nvidia DLL 或 PATH 含 nvidia 目录
