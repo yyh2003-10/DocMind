@@ -29,6 +29,9 @@ public class AppSettings
     /// <summary>分块最大字符数（DOC2MIND_CHUNK_MAX_CHARS）。</summary>
     public int? ChunkMaxChars { get; set; }
 
+    /// <summary>HuggingFace 镜像端点（注入 HF_ENDPOINT 环境变量；空 = 用内置默认值 hf-mirror.com）。</summary>
+    public string? HfEndpoint { get; set; }
+
     // ===== 启动选项 =====
     /// <summary>启动 WPF 时自动拉起后端子进程（false = 仅轮询外部已运行的后端）。</summary>
     public bool AutoStartBackend { get; set; } = true;
@@ -41,16 +44,33 @@ public class AppSettings
     /// <summary>自动 ingest 目录时是否递归子目录。</summary>
     public bool AutoIngestRecursive { get; set; } = false;
 
-    /// <summary>持久化当前设置到 appsettings.json。</summary>
+    /// <summary>用户是否已选择"不再提示 GPU 加速"（持久化，避免每次启动都弹）。</summary>
+    public bool DismissGpuWarning { get; set; } = false;
+
+    // ===== 配置文件路径 =====
+
+    /// <summary>用户级配置目录（%LOCALAPPDATA%\DocMind\）。</summary>
+    public static string ConfigDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DocMind");
+
+    /// <summary>用户级配置文件路径。</summary>
+    public static string ConfigPath => Path.Combine(ConfigDir, "appsettings.json");
+
+    /// <summary>确保配置目录存在。</summary>
+    public static void EnsureConfigDir()
+    {
+        Directory.CreateDirectory(ConfigDir);
+    }
+
+    /// <summary>持久化当前设置到用户级目录（%LOCALAPPDATA%\DocMind\appsettings.json）。</summary>
     public void Save()
     {
-        var path = System.IO.Path.Combine(
-            AppContext.BaseDirectory, "appsettings.json");
+        EnsureConfigDir();
         var json = JsonSerializer.Serialize(this, new JsonSerializerOptions
         {
             WriteIndented = true,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         });
-        File.WriteAllText(path, json);
+        File.WriteAllText(ConfigPath, json);
     }
 }

@@ -85,6 +85,18 @@ def _select_providers() -> list[str] | None:
     return None
 
 
+def get_embed_providers() -> list[str]:
+    """返回实际可用的嵌入 providers（不加载模型，供 /v1/health 上报）。
+
+    返回形如 ``["CUDAExecutionProvider"]`` / ``["DmlExecutionProvider"]`` /
+    ``["CPUExecutionProvider"]``。WPF 端据此判断是否启用 GPU 加速。
+    """
+    selected = _select_providers()
+    if selected:
+        return selected
+    return ["CPUExecutionProvider"]
+
+
 # 国内网络直连 HuggingFace 常超时，下载失败后自动用该镜像重试一次
 HF_MIRROR = "https://hf-mirror.com"
 

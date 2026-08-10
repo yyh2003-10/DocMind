@@ -13,6 +13,7 @@ public partial class SettingsViewModel : ViewModelBase
     private readonly NotificationService _notifications;
     private readonly ThemeService _themeService;
     private readonly IDoc2kbApiService _apiService;
+    private readonly GpuWarningViewModel _gpuWarning;
 
     private string _backendUrl;
     private int _pollIntervalMs;
@@ -25,6 +26,7 @@ public partial class SettingsViewModel : ViewModelBase
     private bool _autoIngestRecursive;
     private string _embedModel;
     private string? _embedModelPath;
+    private string? _hfEndpoint;
     private int? _chunkMaxTokens;
     private int? _chunkMinChars;
     private int? _chunkOverlapChars;
@@ -36,12 +38,14 @@ public partial class SettingsViewModel : ViewModelBase
         AppSettings appSettings,
         NotificationService notifications,
         ThemeService themeService,
-        IDoc2kbApiService apiService)
+        IDoc2kbApiService apiService,
+        GpuWarningViewModel gpuWarning)
     {
         _appSettings = appSettings;
         _notifications = notifications;
         _themeService = themeService;
         _apiService = apiService;
+        _gpuWarning = gpuWarning;
         Title = "设置";
 
         // 加载当前值到可编辑字段
@@ -56,11 +60,15 @@ public partial class SettingsViewModel : ViewModelBase
         _autoIngestRecursive = _appSettings.AutoIngestRecursive;
         _embedModel = _appSettings.EmbedModel;
         _embedModelPath = _appSettings.EmbedModelPath;
+        _hfEndpoint = _appSettings.HfEndpoint;
         _chunkMaxTokens = _appSettings.ChunkMaxTokens;
         _chunkMinChars = _appSettings.ChunkMinChars;
         _chunkOverlapChars = _appSettings.ChunkOverlapChars;
         _chunkMaxChars = _appSettings.ChunkMaxChars;
     }
+
+    /// <summary>GPU 加速状态（警告条 + 关于区显示）。</summary>
+    public GpuWarningViewModel GpuWarning => _gpuWarning;
 
     /// <summary>当前主题（选择即切换）。</summary>
     public ThemeMode SelectedTheme
@@ -151,6 +159,13 @@ public partial class SettingsViewModel : ViewModelBase
     {
         get => _embedModelPath;
         set => SetDirty(ref _embedModelPath, value);
+    }
+
+    /// <summary>HuggingFace 镜像端点（注入 HF_ENDPOINT 环境变量）；空 = 用内置默认值 hf-mirror.com。</summary>
+    public string? HfEndpoint
+    {
+        get => _hfEndpoint;
+        set => SetDirty(ref _hfEndpoint, value);
     }
 
     /// <summary>分块最大 token 数（后端 DOC2MIND_CHUNK_MAX_TOKENS）。</summary>
@@ -254,14 +269,15 @@ public partial class SettingsViewModel : ViewModelBase
             _appSettings.AutoIngestRecursive = AutoIngestRecursive;
             _appSettings.EmbedModel = EmbedModel;
             _appSettings.EmbedModelPath = EmbedModelPath;
+            _appSettings.HfEndpoint = HfEndpoint;
             _appSettings.ChunkMaxTokens = ChunkMaxTokens;
             _appSettings.ChunkMinChars = ChunkMinChars;
             _appSettings.ChunkOverlapChars = ChunkOverlapChars;
             _appSettings.ChunkMaxChars = ChunkMaxChars;
 
-            // 落盘 appsettings.json（与 exe 同目录）
-            var settingsPath = System.IO.Path.Combine(
-                AppContext.BaseDirectory, "appsettings.json");
+            // 落盘到用户级目录（%LOCALAPPDATA%\DocMind\appsettings.json）
+            var settingsPath = AppSettings.ConfigPath;
+            AppSettings.EnsureConfigDir();
 
             var json = JsonSerializer.Serialize(new
             {
@@ -276,11 +292,13 @@ public partial class SettingsViewModel : ViewModelBase
                 AutoIngestRecursive = AutoIngestRecursive,
                 EmbedModel = EmbedModel,
                 EmbedModelPath = EmbedModelPath,
+                HfEndpoint = HfEndpoint,
                 ChunkMaxTokens = ChunkMaxTokens,
                 ChunkMinChars = ChunkMinChars,
                 ChunkOverlapChars = ChunkOverlapChars,
                 ChunkMaxChars = ChunkMaxChars,
                 Theme = _appSettings.Theme,
+                DismissGpuWarning = _gpuWarning.Dismissed,
             }, new JsonSerializerOptions { WriteIndented = true });
 
             await File.WriteAllTextAsync(settingsPath, json);
@@ -344,6 +362,7 @@ public partial class SettingsViewModel : ViewModelBase
         AutoIngestRecursive = _appSettings.AutoIngestRecursive;
         EmbedModel = _appSettings.EmbedModel;
         EmbedModelPath = _appSettings.EmbedModelPath;
+        HfEndpoint = _appSettings.HfEndpoint;
         ChunkMaxTokens = _appSettings.ChunkMaxTokens;
         ChunkMinChars = _appSettings.ChunkMinChars;
         ChunkOverlapChars = _appSettings.ChunkOverlapChars;

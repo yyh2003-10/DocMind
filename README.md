@@ -2,7 +2,11 @@
 
 > 轻量向量知识库工具 — 本地 ONNX 嵌入 + sqlite-vec 混合检索 + MCP 工具接口
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+> ## ⚠️ 许可证声明
+> **本软件仅供个人 / 非商业用途使用。商业使用（包括任何形式的盈利、企业内部分发、SaaS 服务）需获得作者书面授权。**
+> 详见 [LICENSE](LICENSE)（CC BY-NC-SA 4.0）。
+
+[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://docs.astral.sh/ruff/)
 
@@ -10,7 +14,33 @@ DocMind 把任意文档（PDF / Word / Excel / PPT / Markdown / HTML / 图片 / 
 转成语义分块、向量索引和可检索的知识库。全部计算在本地完成，
 默认嵌入模型 ~35MB，向量库 ~5MB，无需 PyTorch / ChromaDB / Java。
 
-## 特性
+## 🚀 快速开始（推荐：下载安装包）
+
+普通用户最简单的方式是**直接下载安装包**（见 [GitHub Releases](https://github.com/yyh2003-10/DocMind/releases)）：
+
+1. **下载** `DocMind-Setup-<版本>.exe`（约 150MB，含 CPU 核心运行时）
+2. **双击安装**，按提示选择是否勾选「GPU 加速」「OCR」扩展（可选，需联网）
+3. **启动 DocMind**
+4. **导入文档**：到【导入】页选择文件或文件夹，点击导入
+5. **搜索**：到【搜索】页输入问题，回车即可检索
+
+> 基础包已内置 Python 环境，**无需**单独安装 Python。
+> 首次使用会自动下载嵌入模型（~35MB / 90MB，走国内镜像）。
+
+### 可选扩展（安装时勾选，或以后在设置页操作）
+
+| 扩展 | 作用 | 体积 | 硬件要求 |
+|------|------|------|---------|
+| **GPU 加速** | 嵌入推理提速（快 5-10 倍） | ~2GB | NVIDIA 显卡 |
+| **OCR** | 扫描件 / 图片文字识别 | ~1.5GB | 无特殊要求 |
+
+> 未安装 GPU / OCR 不影响核心功能，软件会自动使用 CPU 模式并在设置页提示。
+
+---
+
+## 开发者 / 源码方式安装
+
+如果你需要从源码构建或二次开发：
 
 - **8 种文档格式** 解析，保留标题 / 表格 / 代码块结构
 - **智能语义分块**，表格整块保护、代码按函数切分
@@ -110,5 +140,5 @@ MCP 接入文档在 [`docs/mcp.md`](docs/mcp.md)。
 
 ## 许可证
 
-[Apache License 2.0](LICENSE)。
+[CC BY-NC-SA 4.0](LICENSE) — 非商业用途可自由使用，商业使用需获得书面授权。
 默认嵌入模型 BAAI/bge-small-zh-v1.5 采用 MIT 许可证。

@@ -365,6 +365,14 @@ FodyWeavers.xsd
 # ===== DocMind 项目专属 =====
 # Python 虚拟环境：不可入仓库（机器特定、体积大），换设备用 scripts/setup.ps1 重建
 .venv/
+.venv-slim*/
+.venv-slim-new/
+# AI 助手工作记录（.zcode 目录），不入仓库
+.zcode/
+# 静态分析缓存
+.ruff_cache/
+# 编译输出：安装包走 GitHub Releases，不入仓库
+installer/Output/
 # 本地 site-packages 冗余拷贝（调试遗留），换设备以 requirements-*.txt 安装为准
 pylibs/
 # 测试/调试残留

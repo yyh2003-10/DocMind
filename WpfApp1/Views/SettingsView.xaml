@@ -84,6 +84,36 @@
                                   ToolTip="向量化用模型；更换模型后需在后端重启后到「文档库」页重建索引"
                                   Margin="0,0,0,8"/>
 
+                        <!-- GPU 加速警告条（精简版安装包无 onnxruntime-gpu 时显示） -->
+                        <Border Background="#FFF8E1"
+                                BorderBrush="#FFC107"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="12,8"
+                                Margin="0,0,0,12"
+                                Visibility="{Binding GpuWarning.ShowWarning, Converter={StaticResource BoolToVis}}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="⚠" FontSize="16" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="当前为 CPU 模式（嵌入推理较慢）" FontWeight="SemiBold"/>
+                                    <TextBlock Text="安装 GPU 加速包可显著提升性能" FontSize="12" Foreground="Gray"/>
+                                </StackPanel>
+                                <Button Content="安装 GPU 加速"
+                                        Command="{Binding GpuWarning.OpenGpuInstallCommand}"
+                                        Style="{StaticResource PrimaryButtonStyle}"
+                                        Padding="8,4"
+                                        Margin="12,0,0,0"
+                                        FontSize="12"
+                                        VerticalAlignment="Center"/>
+                                <Button Content="不再提示"
+                                        Command="{Binding GpuWarning.DismissGpuWarningCommand}"
+                                        Style="{StaticResource TextButtonStyle}"
+                                        Margin="8,0,0,0"
+                                        FontSize="12"
+                                        VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+
                         <TextBlock Text="本地模型目录（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
                         <TextBox Text="{Binding EmbedModelPath, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="填本地 ONNX 模型目录（含 model.onnx / model_optimized.onnx + tokenizer.json）；留空则用上面的模型联网下载"
@@ -276,6 +306,14 @@
                         </TextBlock>
                         <TextBlock Style="{StaticResource CaptionText}" Margin="0,4,0,0">
                             <Run Text="后端 "/><Run Text="{Binding BackendUrl}"/>
+                        </TextBlock>
+
+                        <!-- GPU 加速状态 -->
+                        <TextBlock Style="{StaticResource SmallText}"
+                                   Margin="0,8,0,0"
+                                   Foreground="{Binding GpuWarning.GpuStatusBrush}">
+                            <Run Text="GPU 加速："/>
+                            <Run Text="{Binding GpuWarning.GpuStatusText}"/>
                         </TextBlock>
 
                         <TextBlock Style="{StaticResource SmallText}"

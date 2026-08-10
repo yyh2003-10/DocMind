@@ -40,6 +40,13 @@
                                 <Setter Property="Effect" Value="{StaticResource ShadowMd}"/>
                                 <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
                             </Trigger>
+                            <!-- 选中高亮：跟随 ListBoxItem.IsSelected -->
+                            <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                         Value="True">
+                                <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                                <Setter Property="BorderThickness" Value="2"/>
+                                <Setter Property="Effect" Value="{StaticResource ShadowMd}"/>
+                            </DataTrigger>
                         </Style.Triggers>
                     </Style>
                 </Border.Style>
@@ -253,11 +260,35 @@
                 <Grid>
                     <ScrollViewer VerticalScrollBarVisibility="Auto"
                                   BorderThickness="0">
-                        <ItemsControl ItemsSource="{Binding Hits}"
-                                      ItemTemplate="{StaticResource HitCardTemplate}"
-                                      VirtualizingPanel.IsVirtualizing="True"
-                                      VirtualizingPanel.VirtualizationMode="Recycling"
-                                      Focusable="False"/>
+                        <!-- ListBox 支持选中 → 绑定 SelectedHit，点击卡片即可看详情 -->
+                        <ListBox ItemsSource="{Binding Hits}"
+                                 ItemTemplate="{StaticResource HitCardTemplate}"
+                                 SelectedItem="{Binding SelectedHit}"
+                                 SelectionMode="Single"
+                                 BorderThickness="0"
+                                 Background="Transparent"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 VirtualizingPanel.IsVirtualizing="True"
+                                 VirtualizingPanel.VirtualizationMode="Recycling"
+                                 Focusable="False">
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                    <Setter Property="Padding" Value="0"/>
+                                    <Setter Property="Margin" Value="0"/>
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="BorderThickness" Value="0"/>
+                                    <Setter Property="Focusable" Value="False"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ListBoxItem">
+                                                <ContentPresenter/>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                        </ListBox>
                     </ScrollViewer>
 
                     <!-- 空态引导：无结果且非忙碌时显示，告诉用户下一步该干嘛 -->

@@ -212,9 +212,13 @@ public sealed class BackendProcessService : IDisposable
             RedirectStandardError = true,
             RedirectStandardInput = true,
         };
-        // 国内网络：HuggingFace 直连超时，嵌入模型下载必须走 hf-mirror 镜像。
-        // 只在未显式配置时注入默认值，避免覆盖用户自定义的 HF_ENDPOINT。
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HF_ENDPOINT")))
+        // HuggingFace 镜像配置：优先用设置页的 HfEndpoint，其次保留系统环境变量，
+        // 都没配时注入默认 hf-mirror.com（国内网络必需）。
+        if (!string.IsNullOrWhiteSpace(_settings.HfEndpoint))
+        {
+            psi.Environment["HF_ENDPOINT"] = _settings.HfEndpoint.Trim();
+        }
+        else if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HF_ENDPOINT")))
         {
             psi.Environment["HF_ENDPOINT"] = "https://hf-mirror.com";
         }

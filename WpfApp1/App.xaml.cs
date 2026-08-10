@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Windows;
@@ -18,6 +19,7 @@ namespace DocMind
     {
         private readonly IServiceProvider _serviceProvider;
         private TrayService? _trayService;
+        private static Mutex? _mutex;
 
         public App()
         {
@@ -29,9 +31,15 @@ namespace DocMind
 
         private static AppSettings LoadSettings()
         {
+            // 优先读用户级配置（%LOCALAPPDATA%\DocMind\appsettings.json），
+            // 不存在时 fallback 读 exe 目录（兼容旧版安装）。
+            var userConfigPath = AppSettings.ConfigPath;
+            var exeConfigPath = System.IO.Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+
             var configuration = new ConfigurationBuilder()
                 .SetBasePath(AppContext.BaseDirectory)
-                .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
+                .AddJsonFile(exeConfigPath, optional: true, reloadOnChange: false)
+                .AddJsonFile(userConfigPath, optional: true, reloadOnChange: false)
                 .Build();
 
             return configuration.Get<AppSettings>() ?? new AppSettings();
@@ -57,6 +65,9 @@ namespace DocMind
             services.AddTransient<SettingsViewModel>();
             services.AddTransient<DebugLogViewModel>();
 
+            // GPU 加速状态（Singleton，供 App 检测 + 设置页显示）
+            services.AddSingleton<GpuWarningViewModel>();
+
             services.AddSingleton<BackendProcessService>();
 
             services.AddSingleton<Microsoft.Extensions.Logging.ILogger<Doc2kbApiService>>(NullLogger<Doc2kbApiService>.Instance);
@@ -78,6 +89,25 @@ namespace DocMind
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            // ===== 单实例互斥：防止多开争抢后端端口 =====
+            _mutex = new Mutex(true, "DocMind_SingleInstance_" + System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value, out bool createdNew);
+            if (!createdNew)
+            {
+                // 已有实例运行中——激活其窗口并退出当前进程
+                var current = Process.GetCurrentProcess();
+                foreach (var proc in Process.GetProcessesByName(current.ProcessName))
+                {
+                    if (proc.Id != current.Id && proc.MainWindowHandle != IntPtr.Zero)
+                    {
+                        NativeMethods.SetForegroundWindow(proc.MainWindowHandle);
+                        NativeMethods.ShowWindow(proc.MainWindowHandle, NativeMethods.SW_RESTORE);
+                        break;
+                    }
+                }
+                Current.Shutdown();
+                return;
+            }
+
             base.OnStartup(e);
 
             // ===== 全局异常捕获：所有未处理异常先落日志，事后可到「调试日志」页或日志文件排查 =====
@@ -122,6 +152,32 @@ namespace DocMind
                     vm.UpdateBackendState(state);
                 }
             };
+            // 后端启动失败时弹出引导弹窗（仅 AutoStart 模式下触发一次）
+            if (settings.AutoStartBackend)
+            {
+                var backendFailedShown = false;
+                backend.StateChanged += (_, state) =>
+                {
+                    if (backendFailedShown) return;
+                    // Starting → Offline 表示启动失败
+                    if (state == BackendState.Offline && backend.State == BackendState.Offline)
+                    {
+                        backendFailedShown = true;
+                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            MessageBox.Show(
+                                "后端服务启动失败，所有功能将不可用。\n\n" +
+                                "请按以下步骤操作：\n" +
+                                "1. 确认已运行 scripts\\setup.ps1 安装 Python 环境\n" +
+                                "2. 或在设置页配置「后端命令」指向 Python 路径\n\n" +
+                                "详细错误请查看「调试日志」页面。",
+                                "DocMind — 后端启动失败",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Warning);
+                        });
+                    }
+                };
+            }
             if (settings.AutoStartBackend)
             {
                 _ = backend.StartAsync(progress: new Progress<string>(msg =>
@@ -183,6 +239,42 @@ namespace DocMind
                     DebugLog.Error($"启动自动导入失败: {ex.Message}", "App", ex);
                 }
             };
+
+            // GPU 加速检测：后端就绪后查询 /v1/health，上报 GPU 状态到设置页。
+            // 用户已选择"不再提示"则跳过弹 toast，但仍更新状态行。
+            var gpuWarning = _serviceProvider.GetRequiredService<GpuWarningViewModel>();
+            var notifications = _serviceProvider.GetRequiredService<NotificationService>();
+            gpuWarning.Dismissed = settings.DismissGpuWarning;
+            // 用户点击"不再提示"时持久化到 appsettings.json
+            gpuWarning.OnDismissed = () =>
+            {
+                settings.DismissGpuWarning = true;
+                settings.Save();
+            };
+            var gpuCheckedOnce = false;
+            backend.StateChanged += async (_, state) =>
+            {
+                if (state != BackendState.Online || gpuCheckedOnce)
+                {
+                    return;
+                }
+                gpuCheckedOnce = true;
+                try
+                {
+                    var health = await api.GetHealthAsync();
+                    gpuWarning.UpdateFromHealth(health);
+                    if (!health.GpuAvailable && !settings.DismissGpuWarning)
+                    {
+                        notifications.Warning(
+                            "当前为 CPU 模式（嵌入推理较慢），可在设置页安装 GPU 加速包",
+                            "GPU 加速");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Warn($"GPU 状态检测失败: {ex.Message}", "App");
+                }
+            };
         }
 
         // ===================== 全局异常处理 =====================
@@ -225,8 +317,20 @@ namespace DocMind
             }
             catch { /* ignore on exit */ }
             _trayService?.Dispose();
+            _mutex?.ReleaseMutex();
             base.OnExit(e);
         }
     }
 
+    /// <summary>Win32 P/Invoke 用于激活已有实例窗口。</summary>
+    internal static class NativeMethods
+    {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        internal static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        internal const int SW_RESTORE = 9;
+    }
 }
