@@ -38,6 +38,77 @@ DocMind 把任意文档（PDF / Word / Excel / PPT / Markdown / HTML / 图片 / 
 
 ---
 
+## 🛠️ 安装器无效？手动安装教程
+
+如果安装包无法正常安装或运行，可按下面的步骤手动搭建环境。全程约 10 分钟，只需跟着命令逐条执行。
+
+### 第 1 步：安装 Python 3.11
+
+1. 打开 [Python 官网下载页](https://www.python.org/downloads/release/python-3119/)
+2. 下载 **Windows installer (64-bit)**
+3. 运行安装时，**务必勾选「Add python.exe to PATH」**，再点「Install Now」
+4. 验证：打开命令提示符（`Win+R` 输入 `cmd` 回车），输入 `python --version`，应显示 `Python 3.11.x`
+
+### 第 2 步：下载源码
+
+**无需 git**，直接下载 ZIP：
+
+1. 打开 [DocMind 仓库](https://github.com/yyh2003-10/DocMind)
+2. 点绿色按钮 **Code → Download ZIP**，解压到任意目录（如 `D:\DocMind`）
+
+### 第 3 步：创建虚拟环境并安装依赖
+
+在解压目录打开命令提示符，逐条执行：
+
+```bat
+cd /d D:\DocMind            :: 换成你的解压路径
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements-core.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+.venv\Scripts\python.exe -m pip install -e . --no-deps
+```
+
+> 国内网络建议加 `-i https://pypi.tuna.tsinghua.edu.cn/simple`（上例已加）。
+> 如需 GPU 加速，追加 `-r requirements-gpu.txt`；如需 OCR，追加 `-r requirements-ocr.txt`。
+
+### 第 4 步：验证安装
+
+```bat
+.venv\Scripts\doc2mind.exe --help
+```
+
+看到命令帮助即安装成功。首次使用会自动下载嵌入模型（~90MB，走国内镜像）。
+
+### 第 5 步：使用（二选一）
+
+**A. 只用命令行搜索：**
+```bat
+.venv\Scripts\doc2mind.exe ingest D:\你的文档目录
+.venv\Scripts\doc2mind.exe search "你想问的问题"
+```
+
+**B. 使用 WPF 桌面客户端：**
+```bat
+.venv\Scripts\doc2mind.exe serve        :: 先启动后端
+```
+再构建并启动客户端（需先安装 [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)）：
+```bat
+dotnet build WpfApp1\DocMind.csproj -c Release
+WpfApp1\bin\Release\net8.0-windows\win-x64\DocMind.exe
+```
+
+### 遇到问题？
+
+| 症状 | 解决 |
+|------|------|
+| `python` 不是内部命令 | 第 1 步没勾选 Add to PATH，重装 Python |
+| pip 下载慢 / 超时 | 加 `-i https://pypi.tuna.tsinghua.edu.cn/simple` |
+| 模型下载失败 | 设置环境变量 `HF_ENDPOINT=https://hf-mirror.com` 后重试 |
+| 后端启动失败 | 看 [部署指南](docs/部署指南.md) 的排查表 |
+
+> 更详细的部署说明（GPU 选择、离线部署、数据迁移）见 [部署指南](docs/部署指南.md)。
+
+---
+
 ## 开发者 / 源码方式安装
 
 如果你需要从源码构建或二次开发：
