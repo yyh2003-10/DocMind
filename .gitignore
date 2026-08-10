@@ -367,8 +367,11 @@ FodyWeavers.xsd
 .venv/
 .venv-slim*/
 .venv-slim-new/
-# AI 助手工作记录（.zcode 目录），不入仓库
+# 已归档的废弃文件（本地保留，不入仓库）
+_archive/
+# AI 助手工作记录（.zcode / .atomcode 目录），不入仓库
 .zcode/
+.atomcode/
 # 静态分析缓存
 .ruff_cache/
 # 编译输出：安装包走 GitHub Releases，不入仓库
