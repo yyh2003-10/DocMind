@@ -7,8 +7,8 @@
 - 表格不直接支持，依赖后续 chunker 做表格保护（连续 | 行视为表格）
 - 多栏布局用 `LAParams(detect_vertical=True)`
 - **扫描型 PDF 回退**：当 pdfminer 提取 0 元素（纯矢量图纸/扫描图）时，
-  用 PyMuPDF (fitz) 把每页渲成图片，调 ImageLoader (PaddleOCR) OCR；
-  OCR 未装则报结构化错误引导用户装 extras。
+  用 pdf2image（基于 poppler）把每页渲成图片，调 ImageLoader (PaddleOCR) OCR；
+  需系统安装 poppler，OCR 未装则报结构化错误引导用户装 extras。
 
 局限性：
 - 复杂表格 / 双栏论文需用 extras 的 opendataloader-pdf
@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import tempfile
 from pathlib import Path
 
@@ -100,7 +101,7 @@ class PdfLoader(Loader):
                     )
 
             # 扫描型 PDF 回退：pdfminer 提 0 元素 → 矢量图纸/扫描图，
-            # 用 PyMuPDF 渲每页为图片走 ImageLoader OCR
+            # 用 pdf2image 渲每页为图片走 ImageLoader OCR
             if not elements and page_no > 0:
                 elements = _ocr_fallback(path, page_no)
 
@@ -123,7 +124,15 @@ _OCR_RENDER_DPI = 200
 
 
 def _ocr_fallback(path: Path, page_count: int) -> list[DocumentElement]:
-    """扫描型 PDF 回退：PyMuPDF 渲每页为图片 → ImageLoader (PaddleOCR) OCR。
+    """扫描型 PDF 回退：pdf2image 把每页渲成图片 → ImageLoader (PaddleOCR) OCR。
+
+    使用 pdf2image（基于 poppler）替代 PyMuPDF，规避 AGPL-3.0 传染风险，
+    使项目可用于闭源商业分发。
+
+    自动探测 poppler 安装位置：
+    1. 系统 PATH 中的 pdftoppm（已加入 PATH）
+    2. 项目自带的 tools/poppler/（开发环境）
+    3. 常见安装目录（C:/tools/poppler、Program Files 等）
 
     Args:
         path: PDF 路径
@@ -133,14 +142,14 @@ def _ocr_fallback(path: Path, page_count: int) -> list[DocumentElement]:
         OCR 提取的元素列表（按页顺序）
 
     Raises:
-        LoaderError: PyMuPDF 缺失 / OCR 未装 / OCR 失败
+        LoaderError: pdf2image 缺失 / poppler 未装 / OCR 未装 / OCR 失败
     """
     try:
-        import fitz  # PyMuPDF（已装，非 extras 依赖）
+        from pdf2image import convert_from_path
     except ImportError as e:  # pragma: no cover
         raise LoaderError(
-            "扫描型 PDF（矢量图纸/扫描图）需 PyMuPDF 渲染回退，"
-            "但 PyMuPDF 未安装。请运行：pip install PyMuPDF"
+            "扫描型 PDF（矢量图纸/扫描图）需 pdf2image 渲染回退，"
+            "但 pdf2image 未安装。请运行：pip install pdf2image"
         ) from e
 
     # 惰性加载 ImageLoader（触发 PaddleOCR import 检查）
@@ -149,16 +158,27 @@ def _ocr_fallback(path: Path, page_count: int) -> list[DocumentElement]:
     ocr_loader = ImageLoader()
     elements: list[DocumentElement] = []
 
-    try:
-        doc = fitz.open(str(path))
-    except Exception as e:  # noqa: BLE001
-        raise LoaderError(f"PyMuPDF 打开 PDF 失败 ({path.name}): {e}") from e
+    # 自动探测 poppler 路径
+    poppler_path = _find_poppler()
 
     try:
-        for page_idx in range(doc.page_count):
-            page = doc[page_idx]
-            pix = page.get_pixmap(dpi=_OCR_RENDER_DPI)
-            png_bytes = pix.tobytes("png")
+        # pdf2image 返回 PIL Image 列表；需系统安装 poppler（pdfinfo/pdftoppm）
+        images = convert_from_path(str(path), dpi=_OCR_RENDER_DPI, poppler_path=poppler_path)
+    except Exception as e:  # noqa: BLE001 — pdf2image / poppler 异常类型众多
+        msg = str(e).lower()
+        if "poppler" in msg or "pdfinfo" in msg or "pdftoppm" in msg:
+            raise LoaderError(
+                f"pdf2image 渲染 PDF 失败 ({path.name})：未找到 poppler。"
+                "请安装 poppler 并将其 bin 目录加入 PATH，"
+                "Windows 用户可从 https://github.com/oschwartz10612/poppler-windows 下载。"
+            ) from e
+        raise LoaderError(f"pdf2image 渲染 PDF 失败 ({path.name}): {e}") from e
+
+    try:
+        for page_idx, img in enumerate(images):
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            png_bytes = buf.getvalue()
             ocr_elements = _ocr_png_bytes(
                 ocr_loader, png_bytes,
                 page_no=page_idx + 1,
@@ -166,7 +186,12 @@ def _ocr_fallback(path: Path, page_count: int) -> list[DocumentElement]:
             )
             elements.extend(ocr_elements)
     finally:
-        doc.close()
+        # 显式释放 PIL Image 占用的内存
+        for img in images:
+            try:
+                img.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     if not elements:
         raise LoaderError(
@@ -175,6 +200,77 @@ def _ocr_fallback(path: Path, page_count: int) -> list[DocumentElement]:
             "请检查图片清晰度，或安装更高级 OCR：pip install 'doc2mind[ocr]'"
         )
     return elements
+
+
+def _find_poppler() -> str | None:
+    """自动探测 poppler 安装位置。
+
+    Returns:
+        poppler bin 目录路径，或 None（让 pdf2image 从系统 PATH 查找）
+
+    查找顺序：
+    1. 系统 PATH 中的 pdftoppm（已加入 PATH 时直接返回 None）
+    2. 项目自带的 tools/poppler/（开发环境）
+    3. 常见安装目录
+    """
+    import shutil
+
+    # 1. 系统 PATH 中的 pdftoppm
+    if shutil.which("pdftoppm") is not None:
+        return None  # pdf2image 会从 PATH 自动查找
+
+    # 2. 项目自带的 tools/poppler/（相对于当前工作目录或项目根目录）
+    #    从 pdf_loader.py 位置向上找到项目根目录（包含 pyproject.toml）
+    current = Path(__file__).resolve().parent
+    project_root = None
+    for _ in range(10):  # 最多向上查 10 层
+        if (current / "pyproject.toml").exists():
+            project_root = current
+            break
+        parent = current.parent
+        if parent == current:  # 到达根目录
+            break
+        current = parent
+
+    # 如果找不到 pyproject.toml，用当前工作目录
+    if project_root is None:
+        project_root = Path.cwd()
+
+    poppler_candidates = [
+        project_root / "tools" / "poppler",
+    ]
+
+    # 递归搜索 poppler 子目录中的 bin/pdftoppm.exe
+    for base in poppler_candidates:
+        if not base.exists():
+            continue
+        for sub in sorted(base.iterdir(), reverse=True):  # 优先选版本高的
+            bin_dir = sub / "Library" / "bin"
+            if (bin_dir / "pdftoppm.exe").exists():
+                return str(bin_dir)
+            bin_dir = sub / "bin"
+            if (bin_dir / "pdftoppm.exe").exists():
+                return str(bin_dir)
+
+    # 3. 常见安装目录
+    common_paths = [
+        Path("C:/tools/poppler"),
+        Path("C:/Program Files/poppler"),
+        Path("C:/Program Files (x86)/poppler"),
+        Path.home() / "poppler",
+    ]
+    for base in common_paths:
+        if not base.exists():
+            continue
+        for sub in sorted(base.iterdir(), reverse=True):
+            bin_dir = sub / "Library" / "bin"
+            if (bin_dir / "pdftoppm.exe").exists():
+                return str(bin_dir)
+            bin_dir = sub / "bin"
+            if (bin_dir / "pdftoppm.exe").exists():
+                return str(bin_dir)
+
+    return None  # 未找到，让 pdf2image 从 PATH 查找并报错
 
 
 def _ocr_png_bytes(

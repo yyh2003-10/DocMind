@@ -82,6 +82,10 @@ Source: "{#ScriptsDir}\setup.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversio
 ; ===== 许可证 =====
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
+; ===== 第三方许可证声明 =====
+Source: "..\NOTICE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD_PARTY_LICENSES.md"; DestDir: "{app}"; Flags: ignoreversion
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"

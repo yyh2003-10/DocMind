@@ -1,0 +1,104 @@
+DocMind
+Copyright (c) 2026 DocMind Contributors
+License: GNU Affero General Public License v3.0 (AGPL-3.0)
+
+---
+
+This software includes third-party components under the following licenses.
+This document lists the required notices for Apache 2.0 licensed components
+(per Section 4 of the Apache License, Version 2.0).
+
+===============================================================================
+Apache License 2.0
+===============================================================================
+
+The following components are licensed under Apache License 2.0:
+
+1. fastembed (ONNX embedding engine)
+   Copyright (c) Qdrant
+   https://github.com/qdrant/fastembed
+   Licensed under Apache License 2.0
+
+2. rank-bm25 (BM25 retrieval)
+   Copyright (c) Dorian Azoulay
+   https://github.com/dorianbrown/rank_bm25
+   Licensed under Apache License 2.0
+
+3. PaddleOCR (OCR engine)
+   Copyright (c) Baidu, Inc.
+   https://github.com/PaddlePaddle/PaddleOCR
+   Licensed under Apache License 2.0
+
+4. PaddlePaddle (deep learning framework)
+   Copyright (c) Baidu, Inc.
+   https://github.com/PaddlePaddle/Paddle
+   Licensed under Apache License 2.0
+
+5. OpenAI Python SDK (extras: API embedding)
+   Copyright (c) OpenAI
+   https://github.com/openai/openai-python
+   Licensed under Apache License 2.0
+
+6. sqlite-vec (vector search extension)
+   Copyright (c) Alex Garcia
+   https://github.com/asg017/sqlite-vec
+   Dual-licensed under MIT / Apache License 2.0
+
+7. opendataloader-pdf (extras: Java PDF parser)
+   Copyright (c) opendataloader contributors
+   Licensed under Apache License 2.0
+
+===============================================================================
+MIT License
+===============================================================================
+
+The following components are licensed under MIT License:
+
+- typer (CLI framework) — Copyright (c) Typer contributors
+- rich (terminal formatting) — Copyright (c) Will McGugan
+- pdfminer.six (PDF parser) — Copyright (c) pdfminer.six contributors
+- python-docx (Word parser) — Copyright (c) python-docx contributors
+- openpyxl (Excel parser) — Copyright (c) openpyxl contributors
+- python-pptx (PPT parser) — Copyright (c) python-pptx contributors
+- markdown-it-py (Markdown parser) — Copyright (c) markdown-it-py contributors
+- beautifulsoup4 (HTML parser) — Copyright (c) Leonard Richardson
+- tiktoken (token counter) — Copyright (c) OpenAI
+- mcp (MCP Python SDK) — Copyright (c) Anthropic
+- pydantic (data validation) — Copyright (c) pydantic contributors
+- tomli (TOML parser, Python 3.10 fallback) — Copyright (c) tomli contributors
+- FastAPI (extras: HTTP server) — Copyright (c) FastAPI contributors
+- uvicorn (extras: ASGI server) — Copyright (c) uvicorn contributors
+- CommunityToolkit.Mvvm (WPF MVVM) — Copyright (c) .NET Foundation
+- H.NotifyIcon.Wpf (WPF tray icon) — Copyright (c) H.NotifyIcon contributors
+- Microsoft.Extensions.* (.NET libraries) — Copyright (c) .NET Foundation
+- LiveChartsCore.SkiaSharpView.WPF (WPF charts) — Copyright (c) LiveCharts contributors
+
+===============================================================================
+BSD 3-Clause License
+===============================================================================
+
+- lxml (XML/HTML parser) — Copyright (c) lxml contributors
+- httpx (HTTP client) — Copyright (c) httpx contributors
+
+===============================================================================
+GNU Affero General Public License v3.0
+===============================================================================
+
+- PyMuPDF (PDF rendering, used in _ocr_fallback for scanned PDFs)
+  Copyright (c) Artifex Software, Inc.
+  https://pymupdf.readthedocs.io/
+  Dual-licensed under AGPL-3.0 / Commercial License from Artifex
+
+===============================================================================
+Embedding Models
+===============================================================================
+
+- BAAI/bge-small-zh-v1.5 (default embedding model) — MIT License
+- BAAI/bge-base-zh-v1.5 (optional model) — MIT License
+- BAAI/bge-large-zh-v1.5 (optional model) — MIT License
+
+---
+
+For the full license texts of each component, please refer to the
+THIRD_PARTY_LICENSES.md file distributed with this software, or visit
+the respective projects' official repositories.

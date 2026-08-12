@@ -34,6 +34,13 @@ jobs:
       - name: 静态检查（ruff）
         run: ruff check src tests
 
+      - name: 许可证合规检查
+        run: |
+          pip install pip-licenses
+          pip-licenses --format=markdown --order=license \
+            --allow-only="Apache Software License;BSD License;MIT License;Python Software Foundation License;GNU Affero General Public License v3;Mozilla Public License 2.0 (MPL 2.0);Historical Permission Notice and Disclaimer (HPND);BSD 2-Clause " \
+            --ignore-packages="doc2mind"
+
   wpf-build:
     name: WPF 客户端构建
     runs-on: windows-latest

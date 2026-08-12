@@ -3,10 +3,11 @@
 > 轻量向量知识库工具 — 本地 ONNX 嵌入 + sqlite-vec 混合检索 + MCP 工具接口
 
 > ## ⚠️ 许可证声明
-> **本软件仅供个人 / 非商业用途使用。商业使用（包括任何形式的盈利、企业内部分发、SaaS 服务）需获得作者书面授权。**
-> 详见 [LICENSE](LICENSE)（CC BY-NC-SA 4.0）。
+> **AGPL-3.0 开源 + 商业授权** — 本软件开源版本使用 [AGPL-3.0](LICENSE) 许可证。
+> 允许个人和商业使用，但须遵守 AGPL-3.0 的源代码公开义务。
+> 如需闭源嵌入或获得企业级商业授权，请联系项目维护者。
 
-[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://docs.astral.sh/ruff/)
 
@@ -211,5 +212,15 @@ MCP 接入文档在 [`docs/mcp.md`](docs/mcp.md)。
 
 ## 许可证
 
-[CC BY-NC-SA 4.0](LICENSE) — 非商业用途可自由使用，商业使用需获得书面授权。
+**AGPL-3.0 开源 + 商业授权**
+
+本软件开源版本采用 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0）：
+- ✅ 允许个人和商业使用
+- ✅ 允许修改和再分发
+- ⚠️ **必须保持开源**：修改过的版本如通过网络提供服务，必须向用户提供对应源代码
+- ℹ️ 衍生作品必须以 AGPL-3.0 发布
+
+如需在**闭源或非 AGPL** 环境下使用本软件，可获取**商业授权**（请通过 GitHub Issues 联系）。
+
+项目依赖的第三方库许可证见 [NOTICE](NOTICE) 和 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。
 默认嵌入模型 BAAI/bge-small-zh-v1.5 采用 MIT 许可证。

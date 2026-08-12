@@ -1,6 +1,7 @@
 # 🏗️ DocMind — 项目交接报告
 
 > 生成日期：2026-07-28  
+> 许可证：AGPL-3.0（见根目录 LICENSE）  
 > 上一会话：技术方案讨论 + 架构设计  
 > 下一任务：进入 BUILD 模式，开始编码实现
 
@@ -324,6 +325,17 @@ result = ocr.ocr(image_path)  # ✅ 安全
 # 不要: ocr.ocr(pdf_path, type='pdf')  # ❌ AGPL
 ```
 
+> ✅ **已解决（2026-08-12）**：`pdf_loader.py` 的 `_ocr_fallback()` 已从 PyMuPDF (AGPL-3.0)
+> 替换为 `pdf2image`（基于 poppler，BSD 兼容）。扫描型 PDF 回退渲染不再依赖 AGPL 库。
+>
+> **poppler 安装方式**（三选一，代码自动探测优先级从高到低）：
+> 1. **项目自带**（推荐）：将 poppler 解压到 `tools/poppler/poppler-<版本>/`，代码自动探测
+> 2. **系统 PATH**：安装 poppler 后将 bin 目录加入系统 PATH
+> 3. **常见目录**：安装到 `C:/tools/poppler/`、`C:/Program Files/poppler/` 等
+>
+> 下载地址：https://github.com/oschwartz10612/poppler-windows/releases
+> 本项目已验证版本：v26.02.0-0（`tools/poppler/poppler-26.02.0/Library/bin/`）。
+
 ---
 
 ## 七、分块器设计 (`chunker/`)
@@ -562,7 +574,8 @@ doc2mind mcp                                      # 启动 MCP Server
 |------|------|---------|
 | Java 缺失 → opendataloader 不可用 | PDF 精度下降 | pdfminer.six 回退 + 引导安装 Java |
 | PaddlePaddle 包大 (~300MB) | 安装慢 | 放在 extras，用户按需安装 |
-| PyMuPDF AGPL 传染 | 许可证违规 | PaddleOCR 只对图片调用，不触发 PyMuPDF |
+| ~~PyMuPDF AGPL 传染~~ | ~~许可证违规~~ | **已解决**（2026-08-12）：`pdf_loader.py` 已从 `import fitz` (PyMuPDF, AGPL-3.0) 替换为 `from pdf2image import convert_from_path`（基于 poppler，BSD 兼容）。扫描型 PDF 回退渲染完全消除 AGPL 依赖。注意：pdf2image 需系统安装 poppler（`pdftoppm`/`pdfinfo`） |
+| PaddleOCR 误触 PyMuPDF | 许可证违规 | PaddleOCR 只对图片调用，不触发 PyMuPDF（已验证） |
 | sqlite-vec 编译问题 (Windows) | 无法安装 | 提供预编译 wheel 或纯 Python fallback |
 | 中文 token 计数 | 分块不准确 | 用 `tiktoken` 或按字符数估算 (~1 token ≈ 2-3 中文字符) |
 | 大文档 OOM | 处理中断 | 分页/分 sheet 流式处理，配置内存上限 |
