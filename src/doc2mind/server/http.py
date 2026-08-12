@@ -250,6 +250,8 @@ class JobStatus(BaseModel):
     started_at: str
     finished_at: str | None = None
     error: str | None = None
+    # 异步 job 完成后的详细结果列表（可选，向前兼容），由 job 线程在完成时填充。
+    results: list[IngestResultDTO] = []
 
 
 class ApiError(BaseModel):
@@ -498,6 +500,11 @@ def create_app() -> Any:
                     job.progress = 1.0
                     job.processed = summary.total_documents + summary.skipped + summary.failed
                     job.finished_at = _now_iso()
+                    # 结果明细：每个文件的最终状态（ingested / skipped / failed），
+                    # 供前端轮询完成后直接展示，无需二次同步请求。
+                    job.results = [
+                        IngestResultDTO(**r.__dict__) for r in summary.results
+                    ]
             except Exception as e:  # noqa: BLE001
                 with state._jobs_lock:
                     job.status = "failed"

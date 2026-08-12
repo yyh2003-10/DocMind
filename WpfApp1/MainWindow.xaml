@@ -215,14 +215,16 @@
             <!-- 详情分割线 -->
             <GridSplitter Grid.Column="3"
                           Width="1"
-                          Background="{StaticResource BorderBrush}"/>
+                          Background="{StaticResource BorderBrush}"
+                          Visibility="{Binding ShowDetailPanel, Converter={StaticResource BoolToVis}}"/>
 
             <!-- 详情面板 (Col 4)  -->
             <Border Grid.Column="4"
                     BorderBrush="{StaticResource BorderBrush}"
                     BorderThickness="1,0,0,0"
                     Background="{StaticResource SurfaceBrush}"
-                    Padding="12">
+                    Padding="12"
+                    Visibility="{Binding ShowDetailPanel, Converter={StaticResource BoolToVis}}">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>

@@ -1,6 +1,6 @@
 namespace DocMind.Models;
 
-/// <summary>对应后端 JobStatus：{job_id, type, status, progress, processed, total, started_at, finished_at, error}。</summary>
+/// <summary>对应后端 JobStatus：{job_id, type, status, progress, processed, total, started_at, finished_at, error, results}。</summary>
 public sealed record JobStatus
 {
     public string JobId { get; init; } = string.Empty;
@@ -13,4 +13,6 @@ public sealed record JobStatus
     public string? StartedAt { get; init; }
     public string? FinishedAt { get; init; }
     public string? Error { get; init; }
+    /// <summary>异步 job 完成后的详细结果列表（可选，向后兼容），由后端在完成时填充。</summary>
+    public IReadOnlyList<IngestResult> Results { get; init; } = [];
 }

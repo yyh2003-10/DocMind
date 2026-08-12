@@ -23,6 +23,21 @@ public partial class QualityViewModel : ViewModelBase
         Collections = new ObservableCollection<CollectionStats>();
     }
 
+    // ===================== 导航激活自动加载 =====================
+
+    private bool _hasLoadedOnce;
+
+    /// <summary>切换为该页面时触发一次加载（幂等：仅首次自动加载，避免重复请求）。</summary>
+    public async Task EnsureLoadedAsync()
+    {
+        if (_hasLoadedOnce)
+        {
+            return;
+        }
+        _hasLoadedOnce = true;
+        await RefreshAsync();
+    }
+
     /// <summary>集合名（可选，默认 default）。</summary>
     public string? Collection
     {

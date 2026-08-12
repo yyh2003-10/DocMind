@@ -11,6 +11,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>   <!-- 输入选择 -->
             <RowDefinition Height="Auto"/>   <!-- 输出 + 格式 -->
+            <RowDefinition Height="Auto"/>   <!-- 忙碌进度条 -->
             <RowDefinition Height="*"/>      <!-- 预览区 -->
         </Grid.RowDefinitions>
 
@@ -114,8 +115,32 @@
             </Grid>
         </Border>
 
-        <!-- ===== 预览区 ===== -->
+        <!-- ===== 忙碌进度条（转换进行中时显示） ===== -->
         <Border Grid.Row="2"
+                Background="{StaticResource SurfaceBrush}"
+                CornerRadius="8"
+                Padding="12,8"
+                Margin="0,0,0,12"
+                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ProgressBar Grid.Column="0"
+                             IsIndeterminate="True"
+                             MinHeight="8"
+                             VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="1"
+                           Text="转换中…"
+                           Style="{StaticResource CaptionText}"
+                           Margin="12,0,0,0"
+                           VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
+
+        <!-- ===== 预览区 ===== -->
+        <Border Grid.Row="3"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="1"
                 CornerRadius="8"

@@ -39,6 +39,8 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
                 <TextBox Grid.Column="0"
@@ -65,21 +67,27 @@
                           Margin="12,0,0,0"
                           VerticalAlignment="Center"/>
 
-                <CheckBox Grid.Column="3"
-                          Content="强制覆盖"
+                <CheckBox Grid.Column="4"
+                          Content="强制重新摄入（覆盖旧数据）"
                           IsChecked="{Binding Force}"
                           ToolTip="强制重新摄入已存在的文件（覆盖旧数据）"
                           Margin="12,0,0,0"
-                          VerticalAlignment="Center"
-                          HorizontalAlignment="Right"/>
+                          VerticalAlignment="Center"/>
 
-                <Button Grid.Column="4"
+                <Button Grid.Column="5"
                         Content="导入"
                         Command="{Binding ImportCommand}"
                         Style="{StaticResource PrimaryButtonStyle}"
                         Margin="12,0,6,0"/>
 
-                <Button Grid.Column="5"
+                <Button Grid.Column="6"
+                        Content="取消"
+                        Command="{Binding CancelImportCommand}"
+                        Style="{StaticResource DangerButtonStyle}"
+                        Margin="0,0,6,0"
+                        Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"/>
+
+                <Button Grid.Column="7"
                         Content="重置"
                         Command="{Binding ResetCommand}"
                         Style="{StaticResource TextButtonStyle}"/>
@@ -122,7 +130,6 @@
                 </Grid.ColumnDefinitions>
                 <ProgressBar Grid.Column="0"
                              Value="{Binding ProgressPercent, Mode=OneWay}"
-                             IsIndeterminate="{Binding IsBusy}"
                              Maximum="100"
                              MinHeight="8"
                              VerticalAlignment="Center"/>

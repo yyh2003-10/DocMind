@@ -19,6 +19,7 @@ public partial class ImportViewModel : ViewModelBase
     private bool _isBusy;
     private string _statusMessage = "就绪";
     private int _progressPercent;
+    private CancellationTokenSource? _importCts;
 
     public ImportViewModel(IDoc2kbApiService apiService, NotificationService notifications)
     {
@@ -190,6 +191,7 @@ public partial class ImportViewModel : ViewModelBase
             if (SetProperty(ref _isBusy, value))
             {
                 ImportCommand.NotifyCanExecuteChanged();
+                CancelImportCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -201,7 +203,7 @@ public partial class ImportViewModel : ViewModelBase
         set => SetProperty(ref _statusMessage, value);
     }
 
-    /// <summary>进度百分比（0-100），后端 PollJobUntilDoneAsync 推送。</summary>
+    /// <summary>进度百分比（0-100），由异步 job 轮询推送。</summary>
     public int ProgressPercent
     {
         get => _progressPercent;
@@ -218,6 +220,8 @@ public partial class ImportViewModel : ViewModelBase
     public ObservableCollection<string> Failed { get; }
 
     private bool CanImport => !IsBusy && !string.IsNullOrWhiteSpace(SelectedPath);
+
+    private bool CanCancel => IsBusy && _importCts is { IsCancellationRequested: false };
 
     /// <summary>触发文件/目录选择对话框。</summary>
     [RelayCommand]
@@ -246,7 +250,7 @@ public partial class ImportViewModel : ViewModelBase
         }
     }
 
-    /// <summary>执行导入。</summary>
+    /// <summary>执行导入：异步 job + 轮询真实进度，可从任务页取消。</summary>
     [RelayCommand(CanExecute = nameof(CanImport))]
     private async Task ImportAsync()
     {
@@ -255,6 +259,7 @@ public partial class ImportViewModel : ViewModelBase
             return;
         }
 
+        _importCts = new CancellationTokenSource();
         IsBusy = true;
         StatusMessage = "导入中…";
         Results.Clear();
@@ -267,7 +272,9 @@ public partial class ImportViewModel : ViewModelBase
 
         try
         {
-            var resp = await _apiService.IngestAsync(
+            // 提交异步摄入任务（POST /v1/ingest/job），后端后台线程逐文件处理，
+            // 前端轮询 GET /v1/jobs/{id} 获取真实进度。
+            var job = await _apiService.IngestJobAsync(
                 new IngestRequest
                 {
                     Path = SelectedPath.Trim(),
@@ -275,45 +282,82 @@ public partial class ImportViewModel : ViewModelBase
                     Collection = string.IsNullOrWhiteSpace(Collection) ? "default" : Collection.Trim(),
                     Recursive = Recursive,
                     Force = Force,
-                });
+                },
+                _importCts.Token);
+
+            DebugLog.Info($"导入任务已创建: jobId={job.JobId} status={job.Status}", "Import");
+
+            // 轮询直到完成：progress 0.0-1.0 → 百分比
+            var final = await _apiService.PollJobUntilDoneAsync(
+                job.JobId,
+                progress: new Progress<JobStatus>(j =>
+                {
+                    ProgressPercent = (int)Math.Round(j.Progress * 100);
+                    StatusMessage = j.Status.Equals("running", StringComparison.OrdinalIgnoreCase)
+                        ? $"导入中 {j.Processed}/{j.Total} 个文件"
+                        : $"任务状态：{j.Status}";
+                }),
+                pollInterval: TimeSpan.FromSeconds(1),
+                ct: _importCts.Token);
 
             sw.Stop();
-            foreach (var r in resp.Ingested)
+
+            if (final.Status.Equals("failed", StringComparison.OrdinalIgnoreCase))
             {
-                Results.Add(r);
+                StatusMessage = $"导入失败：{final.Error ?? "未知原因"}";
+                Failed.Add($"任务失败：{final.Error ?? "未知原因"}");
+                _notifications.Error($"导入失败：{final.Error ?? "未知原因"}");
+                DebugLog.Error($"导入任务失败: jobId={final.JobId} error={final.Error}", "Import");
+                return;
             }
 
-            // 后端 IngestResponse：ingested 明细 + skipped/failed 计数 + failed_details 失败明细。
-            // 失败栏优先展示真实文件与原因；后端无明细时才用计数占位。
-            if (resp.Skipped > 0)
+            // 后端 JobStatus.results：每个文件的最终状态（ingested / skipped / failed），
+            // 由后端在任务完成时填充，前端无需二次同步请求。
+            var ingested = 0;
+            var skipped = 0;
+            var failed = 0;
+            if (final.Results is { Count: > 0 })
             {
-                Skipped.Add($"已跳过 {resp.Skipped} 个重复文件");
-            }
-            if (resp.FailedDetails is { Count: > 0 })
-            {
-                foreach (var f in resp.FailedDetails)
+                foreach (var r in final.Results)
                 {
-                    Failed.Add($"{f.Source}：{f.Error ?? "未知原因"}");
+                    switch (r.Status)
+                    {
+                        case "ingested":
+                            ingested++;
+                            Results.Add(r);
+                            break;
+                        case "skipped":
+                            skipped++;
+                            Skipped.Add(r.Source);
+                            break;
+                        case "failed":
+                            failed++;
+                            Failed.Add($"{r.Source}：{r.Error ?? "未知原因"}");
+                            break;
+                    }
                 }
             }
-            else if (resp.Failed > 0)
+            else
             {
-                Failed.Add($"导入失败 {resp.Failed} 个文件（详见后端日志）");
+                // 旧后端无 results 字段（向前兼容）：用计数占位
+                ingested = final.Processed;
+            }
+
+            if (final.Results is { Count: > 0 } && skipped > 0)
+            {
+                Skipped.Add($"已跳过 {skipped} 个重复文件");
             }
 
             ProgressPercent = 100;
-            var importCount = resp.Ingested.Count;
-            var skipCount = resp.Skipped;
-            var failCount = resp.Failed;
-            StatusMessage = importCount > 0
-                ? $"完成：导入 {importCount} · 跳过 {skipCount} · 失败 {failCount}"
+            StatusMessage = ingested > 0
+                ? $"完成：导入 {ingested} · 跳过 {skipped} · 失败 {failed}"
                 : "完成：无新增文档（全部跳过或失败）";
 
             DebugLog.Info(
-                $"导入完成: ingested={importCount} skipped={skipCount} failed={failCount} " +
-                $"totalDocuments={resp.TotalDocuments} totalChunks={resp.TotalChunks} 耗时{sw.ElapsedMilliseconds}ms",
+                $"导入完成: ingested={ingested} skipped={skipped} failed={failed} " +
+                $"totalDocuments={final.Processed} 耗时{sw.ElapsedMilliseconds}ms",
                 "Import");
-            foreach (var r in resp.Ingested)
+            foreach (var r in final.Results)
             {
                 DebugLog.Info(
                     $"  文档: source='{r.Source}' collection='{r.Collection}' format='{r.Format}' " +
@@ -321,10 +365,17 @@ public partial class ImportViewModel : ViewModelBase
                     "Import");
             }
 
-            if (importCount > 0)
-                _notifications.Success($"成功导入 {importCount} 个文档");
-            if (failCount > 0)
-                _notifications.Warning($"{failCount} 个文档导入失败");
+            if (ingested > 0)
+                _notifications.Success($"成功导入 {ingested} 个文档");
+            if (failed > 0)
+                _notifications.Warning($"{failed} 个文档导入失败");
+        }
+        catch (OperationCanceledException) when (_importCts.IsCancellationRequested)
+        {
+            sw.Stop();
+            StatusMessage = "已取消导入（后台可能仍在处理未完成文件）";
+            _notifications.Info("导入已取消");
+            DebugLog.Info($"导入已取消，耗时{sw.ElapsedMilliseconds}ms", "Import");
         }
         catch (ApiException ex)
         {
@@ -349,8 +400,18 @@ public partial class ImportViewModel : ViewModelBase
         finally
         {
             IsBusy = false;
+            _importCts?.Dispose();
+            _importCts = null;
             DebugLog.Info($"导入流程结束，总耗时{sw.ElapsedMilliseconds}ms", "Import");
         }
+    }
+
+    /// <summary>取消正在进行的导入（仅停止前端轮询；后端线程仍会跑完）。</summary>
+    [RelayCommand(CanExecute = nameof(CanCancel))]
+    private void CancelImport()
+    {
+        StatusMessage = "正在取消…";
+        _importCts?.Cancel();
     }
 
     /// <summary>清空当前结果与状态。</summary>

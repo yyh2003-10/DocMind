@@ -118,8 +118,15 @@ public partial class MainViewModel : ViewModelBase
                 OnPropertyChanged(nameof(CurrentIsBusy));
                 OnPropertyChanged(nameof(IsSearchActive));
                 OnPropertyChanged(nameof(IsImportActive));
+                OnPropertyChanged(nameof(ShowDetailPanel));
                 OnPropertyChanged(nameof(SelectedHitInfo));
                 OnPropertyChanged(nameof(ImportSummary));
+
+                // 导航自动加载：文档库/质量看板首次进入时自动拉取数据
+                if (_currentPage is DocumentsViewModel dv)
+                    _ = dv.EnsureLoadedAsync();
+                if (_currentPage is QualityViewModel qv)
+                    _ = qv.EnsureLoadedAsync();
 
                 // 订阅新页面
                 if (_currentPage != null)
@@ -267,6 +274,12 @@ public partial class MainViewModel : ViewModelBase
 
     public bool IsSearchActive => CurrentPage == _searchViewModel;
     public bool IsImportActive => CurrentPage == _importViewModel;
+
+    /// <summary>右侧详情面板是否显示（仅搜索/导入/文档库页有详情内容）。</summary>
+    public bool ShowDetailPanel =>
+        CurrentPage == _searchViewModel
+        || CurrentPage == _importViewModel
+        || CurrentPage == _documentsViewModel;
 
     public string? SelectedHitInfo
     {

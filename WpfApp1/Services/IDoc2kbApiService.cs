@@ -11,6 +11,8 @@ public interface IDoc2kbApiService
     Task<BackendConfig> GetConfigAsync(CancellationToken ct = default);
     Task<BackendConfig> UpdateConfigAsync(BackendConfigUpdate req, CancellationToken ct = default);
     Task<IngestResponse> IngestAsync(IngestRequest req, CancellationToken ct = default);
+    /// <summary>异步摄入：提交任务并返回 JobStatus，供轮询真实进度（POST /v1/ingest/job）。</summary>
+    Task<JobStatus> IngestJobAsync(IngestRequest req, CancellationToken ct = default);
     Task<SearchResponse> SearchAsync(SearchRequest req, CancellationToken ct = default);
     Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", CancellationToken ct = default);
     Task<DocumentDetail> GetDocumentAsync(string id, int chunks = 5, int chunkContentLength = 200, string? collection = null, CancellationToken ct = default);

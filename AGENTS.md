@@ -39,3 +39,17 @@
 「这个问题值得沉淀：我建议用 `ingest_text` 把「xxx 的根因是 yyy，解法是 zzz」写入知识库（collection=docmindy），要写吗？」
 
 等用户确认后再调用 `mcp__doc2mind__ingest_text`（写入前先 `search` 查重，避免重复入库）。如用户多次无需确认可直接入库，可改用直接写入并简短告知。
+
+## Agent skills
+
+### Issue tracker
+
+Issues 与规格存于 GitHub Issues，用 `gh` CLI 操作。详见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+五个标准 triage 角色标签：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。详见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+单上下文布局：根目录 `CONTEXT.md` + `docs/adr/`。详见 `docs/agents/domain.md`。

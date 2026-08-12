@@ -56,6 +56,9 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task<IngestResponse> IngestAsync(IngestRequest req, CancellationToken ct = default)
         => SendAsync<IngestResponse>(HttpMethod.Post, "v1/ingest", req, ct);
 
+    public Task<JobStatus> IngestJobAsync(IngestRequest req, CancellationToken ct = default)
+        => SendAsync<JobStatus>(HttpMethod.Post, "v1/ingest/job", req, ct);
+
     public Task<SearchResponse> SearchAsync(SearchRequest req, CancellationToken ct = default)
         => SendAsync<SearchResponse>(HttpMethod.Post, "v1/search", req, ct);
 

@@ -32,6 +32,21 @@ public partial class DocumentsViewModel : ViewModelBase
         Documents = new ObservableCollection<Document>();
     }
 
+    // ===================== 导航激活自动加载 =====================
+
+    private bool _hasLoadedOnce;
+
+    /// <summary>切换为该页面时触发一次加载（幂等：仅首次自动加载，避免重复请求）。</summary>
+    public async Task EnsureLoadedAsync()
+    {
+        if (_hasLoadedOnce)
+        {
+            return;
+        }
+        _hasLoadedOnce = true;
+        await RefreshAsync();
+    }
+
     /// <summary>集合名（可选，留空为全部）。</summary>
     public string? Collection
     {
