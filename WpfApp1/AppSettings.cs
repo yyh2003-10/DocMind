@@ -8,8 +8,8 @@ public class AppSettings
     public string BackendUrl { get; set; } = "http://127.0.0.1:8765";
     public int PollIntervalMs { get; set; } = 1000;
     public int StartupTimeoutSec { get; set; } = 30;
-    /// <summary>后端请求超时（秒）。OCR/嵌入是耗时操作（扫描型 PDF 可达数分钟），默认 30 分钟。</summary>
-    public int RequestTimeoutSec { get; set; } = 1800;
+    /// <summary>后端请求超时（秒）。大文件 OCR/嵌入可能较慢，建议 60-300 秒。</summary>
+    public int RequestTimeoutSec { get; set; } = 60;
     public string Theme { get; set; } = "Light";
 
     /// <summary>拉起后端用的命令（绝对路径优先；空表示自动探测 doc2mind / python -m doc2mind）。</summary>

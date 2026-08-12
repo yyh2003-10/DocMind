@@ -69,15 +69,20 @@
 }
 ```
 
-### `SearchHit`（检索结果项 = Chunk + score + 命中原因）
+### `SearchHit`（检索结果项）
 
 ```jsonc
 {
-  "chunk": { /* Chunk */ },
+  "rank": 1,
   "score": 0.873,
   "match_type": "hybrid",          // vector|bm25|hybrid
   "vector_score": 0.91,
-  "bm25_score": 0.74
+  "bm25_score": 0.74,
+  "source": "report.pdf",
+  "format": "pdf",
+  "page": 5,                       // 无则 null
+  "heading": "第三节 注意力机制",   // 无则 null
+  "content": "Transformer 采用多头自注意力..."
 }
 ```
 
@@ -85,10 +90,15 @@
 
 ```jsonc
 {
-  "document": { /* Document */ },
-  "chunks_added": 47,
-  "duplicates_skipped": 0,
-  "status": "ingested"             // ingested|skipped|updated
+  "source": "report.pdf",          // 文件名或 note:标题
+  "collection": "papers",
+  "format": "pdf",                 // pdf|docx|xlsx|pptx|md|html|image|code
+  "size_bytes": 1048576,
+  "chunk_count": 47,
+  "elapsed_ms": 1234,
+  "status": "ingested",            // ingested|skipped|failed
+  "error": null,                   // status=failed 时有值
+  "document_id": "a1b2c3..."       // ingested/skipped 时有值
 }
 ```
 
@@ -96,15 +106,11 @@
 
 ```jsonc
 {
-  "collection": "papers",
+  "collection": "papers",          // null 表示跨所有集合
   "total_documents": 23,
   "total_chunks": 1089,
-  "avg_chunk_tokens": 287.4,
-  "empty_chunks": 0,
-  "oversized_chunks": 3,           // 超过 max_size 的分块数
-  "duplicate_ratio": 0.02,         // 0-1
   "format_distribution": { "pdf": 15, "docx": 8 },
-  "coverage_by_heading_level": { "h1": 23, "h2": 56, "h3": 0 }
+  "warnings": []                   // 质量警告信息
 }
 ```
 
@@ -112,20 +118,11 @@
 
 ```jsonc
 {
-  "collections": [
-    {
-      "name": "papers",
-      "document_count": 23,
-      "chunk_count": 1089,
-      "total_bytes": 45678901,
-      "last_ingest_at": "2026-07-28T..."
-    }
-  ],
   "total_documents": 23,
   "total_chunks": 1089,
-  "storage_bytes": 51200000,
-  "embedder": "fastembed/bge-small-zh-v1.5",
-  "uptime_seconds": 3600
+  "collections": {
+    "papers": [23, 1089, 45678901]   // [doc_count, chunk_count, total_bytes]
+  }
 }
 ```
 
@@ -139,7 +136,14 @@
 
 **响应 200：**
 ```json
-{ "status": "ok", "version": "0.1.0", "uptime_seconds": 3600 }
+{
+  "status": "ok",
+  "version": "0.1.0",
+  "uptime_seconds": 3600,
+  "gpu_available": true,
+  "gpu_provider": "cuda",
+  "embed_providers": ["cuda", "cpu"]
+}
 ```
 
 ---
@@ -163,8 +167,10 @@
 {
   "ingested": [ { /* IngestResult */ } ],
   "skipped": 0,
-  "failed": [],
-  "total_documents": 1
+  "failed": 0,
+  "failed_details": [],           // status=failed 的 IngestResult 明细
+  "total_documents": 1,
+  "total_chunks": 47
 }
 ```
 

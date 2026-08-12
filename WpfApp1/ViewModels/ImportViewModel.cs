@@ -15,6 +15,7 @@ public partial class ImportViewModel : ViewModelBase
     private string _selectedPath = string.Empty;
     private string? _collection;
     private bool _recursive;
+    private bool _force;
     private bool _isBusy;
     private string _statusMessage = "就绪";
     private int _progressPercent;
@@ -173,6 +174,13 @@ public partial class ImportViewModel : ViewModelBase
         set => SetProperty(ref _recursive, value);
     }
 
+    /// <summary>强制重新摄入已存在的文件（覆盖）。</summary>
+    public bool Force
+    {
+        get => _force;
+        set => SetProperty(ref _force, value);
+    }
+
     /// <summary>是否正在处理中。</summary>
     public bool IsBusy
     {
@@ -266,6 +274,7 @@ public partial class ImportViewModel : ViewModelBase
                     // 后端 collection 非 Optional，传 null 会 422；空时发 "default"
                     Collection = string.IsNullOrWhiteSpace(Collection) ? "default" : Collection.Trim(),
                     Recursive = Recursive,
+                    Force = Force,
                 });
 
             sw.Stop();
@@ -351,6 +360,7 @@ public partial class ImportViewModel : ViewModelBase
         SelectedPath = string.Empty;
         Collection = null;
         Recursive = false;
+        Force = false;
         Results.Clear();
         Skipped.Clear();
         Failed.Clear();

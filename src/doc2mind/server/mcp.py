@@ -313,17 +313,34 @@ def _tool_quality_check(collection: str = "default") -> str:
     store, _ = _open_store()
     try:
         docs = store.list_documents(collection=collection, limit=10000)
-        # 简化版质量报告
         format_dist: dict[str, int] = {}
         total_chunks = 0
         for d in docs:
             format_dist[d.format] = format_dist.get(d.format, 0) + 1
             total_chunks += d.chunk_count
+
+        # 质量告警：与 HTTP /v1/quality 对齐
+        warnings: list[str] = []
+        for d in docs:
+            if d.chunk_count == 0:
+                warnings.append(
+                    f"文档「{d.source}」分块数为 0，可能无法被检索到"
+                )
+            if d.size_bytes > 50 * 1024 * 1024:
+                warnings.append(
+                    f"文档「{d.source}」体积较大 "
+                    f"({d.size_bytes / (1024 * 1024):.1f} MB)，建议拆分后导入"
+                )
+        warnings = warnings[:20]
+        if not warnings and docs:
+            warnings.append("未发现质量问题")
+
         return _ok({
             "collection": collection,
             "total_documents": len(docs),
             "total_chunks": total_chunks,
             "format_distribution": format_dist,
+            "warnings": warnings,
         })
     finally:
         store.close()

@@ -65,6 +65,14 @@
                           Margin="12,0,0,0"
                           VerticalAlignment="Center"/>
 
+                <CheckBox Grid.Column="3"
+                          Content="强制覆盖"
+                          IsChecked="{Binding Force}"
+                          ToolTip="强制重新摄入已存在的文件（覆盖旧数据）"
+                          Margin="12,0,0,0"
+                          VerticalAlignment="Center"
+                          HorizontalAlignment="Right"/>
+
                 <Button Grid.Column="4"
                         Content="导入"
                         Command="{Binding ImportCommand}"
