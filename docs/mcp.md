@@ -98,7 +98,7 @@ doc2mind  →  command: doc2mind mcp
 | `search` | 混合检索（BM25 + 向量 RRF 融合），返回 Top-K 命中分块 | `query`（必填）、`collection`、`top_k` |
 | `list_docs` | 列出已摄入文档及元数据（分块数、大小、格式） | `collection`、`limit` |
 | `remove_doc` | 删除单个文档及其全部分块与向量 | `target`（文档 ID 或路径） |
-| `quality_check` | 知识库质量报告（集合分布、分块统计） | `collection` |
+| `quality_check` | 知识库质量报告（集合分布、分块统计 + `warnings` 质量告警，如 0 分块 / >50MB 大文档） | `collection` |
 | `convert_file` | 单个文档转 Markdown / JSON / TXT / HTML，返回内容 | `input_path`、`output_format` |
 | `reindex` | 重建指定集合的向量索引（可换嵌入模型），返回 `job_id` | `collection`、`model` |
 
