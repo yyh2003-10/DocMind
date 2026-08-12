@@ -320,6 +320,9 @@ __pycache__/
 # tools/**
 # !tools/packages.config
 
+# DocMind 工具依赖（本地 poppler 等第三方二进制，不提交）
+tools/
+
 # Tabs Studio
 *.tss
 
