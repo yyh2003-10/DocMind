@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterator, Sequence
+from collections.abc import Iterator, Sequence
 
 from doc2mind.core.chunker.base import Chunk
 
@@ -52,7 +52,7 @@ class Embedder(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def embed_query(self, text: str) -> "object":
+    def embed_query(self, text: str) -> object:
         """嵌入单条查询文本。
 
         Args:
@@ -73,6 +73,6 @@ class Embedder(ABC):
         fake_chunks = [Chunk(content=t, tokens=0) for t in texts]
         yield from self.embed(fake_chunks)
 
-    def embed_text(self, text: str) -> "object":
+    def embed_text(self, text: str) -> object:
         """嵌入单条文本（与 `embed_query` 等价，命名更直观）。"""
         return self.embed_query(text)

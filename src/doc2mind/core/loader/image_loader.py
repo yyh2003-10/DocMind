@@ -33,7 +33,6 @@ from doc2mind.core.models import (
     LoadedDocument,
 )
 
-
 # 单例 OCR 实例缓存（key: lang）
 # key: (lang, device) → PaddleOCR 实例；同一语言 GPU/CPU 各缓存一份，
 # 便于 GPU 推理失败时回退 CPU 复用实例
@@ -356,7 +355,7 @@ class ImageLoader(Loader):
                 ocr_kwargs["cls"] = True  # 旧版兼容
             try:
                 result = ocr.ocr(str_path, **ocr_kwargs)
-            except Exception as gpu_err:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 # 运行时 GPU 推理崩溃（CUDNN 版本不匹配 / 显存不足，见 _detect_ocr_device
                 # 与 _disable_paddle_pir 注释）→ 回退 CPU 实例重试一次，
                 # 并把 _OCR_GPU_INFERENCE_BROKEN 置位，后续请求直接走 CPU。

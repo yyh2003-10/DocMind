@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from doc2mind.core.config import Settings
-from doc2mind.core.embedder.base import Embedder, EmbedderError
+from doc2mind.core.embedder.base import Embedder
 
 
 def get_embedder(settings: Settings | None = None) -> Embedder:

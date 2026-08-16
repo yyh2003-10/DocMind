@@ -14,11 +14,10 @@
 from __future__ import annotations
 
 import os
-from typing import Iterator, Sequence
+from collections.abc import Iterator, Sequence
 
 from doc2mind.core.chunker.base import Chunk
 from doc2mind.core.embedder.base import Embedder, EmbedderError
-
 
 # 默认模型 → 维度
 _API_MODEL_DIM: dict[str, int] = {
@@ -83,7 +82,7 @@ class ApiEmbedder(Embedder):
         texts = [c.content for c in chunks]
         yield from self._embed_batched(texts)
 
-    def embed_query(self, text: str) -> "object":
+    def embed_query(self, text: str) -> object:
         self._ensure_client()
         try:
             resp = self._client.embeddings.create(model=self._model, input=text)

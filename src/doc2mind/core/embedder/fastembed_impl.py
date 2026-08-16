@@ -16,8 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
-from typing import Iterator, Sequence
+from collections.abc import Iterator, Sequence
 
 from doc2mind.core.chunker.base import Chunk
 from doc2mind.core.config import Settings
@@ -284,7 +283,7 @@ class FastEmbedEmbedder(Embedder):
         except Exception as e:  # noqa: BLE001
             raise EmbedderError(f"嵌入失败: {e}") from e
 
-    def embed_query(self, text: str) -> "object":
+    def embed_query(self, text: str) -> object:
         """嵌入单条查询。"""
         self._ensure_loaded()
         try:

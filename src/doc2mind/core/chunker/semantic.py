@@ -18,7 +18,6 @@ from doc2mind.core.chunker.base import Chunk, Chunker, ChunkerError
 from doc2mind.core.config import Settings
 from doc2mind.core.models import DocumentElement, ElementType
 
-
 # 需要保护的特殊元素类型：不参与语义滑窗
 _PROTECTED_TYPES = frozenset({ElementType.TABLE, ElementType.CODE})
 

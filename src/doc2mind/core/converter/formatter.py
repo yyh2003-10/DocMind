@@ -15,8 +15,7 @@ from __future__ import annotations
 
 import html as html_lib
 import json
-from dataclasses import asdict
-from typing import Sequence
+from collections.abc import Sequence
 
 from doc2mind.core.models import DocumentElement, LoadedDocument
 
@@ -98,10 +97,7 @@ def _to_markdown(elements: Sequence[DocumentElement]) -> str:
             level = max(1, min(6, level))
             lines.append(f"{'#' * level} {el.content}")
             lines.append("")
-        elif t == "paragraph":
-            lines.append(el.content)
-            lines.append("")
-        elif t == "table":
+        elif t == "paragraph" or t == "table":
             lines.append(el.content)
             lines.append("")
         elif t == "table_row":

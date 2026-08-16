@@ -26,7 +26,8 @@ class TestIngestPath:
     @pytest.mark.slow
     def test_unsupported_format(self) -> None:
         """不支持的格式应返回失败结果（需要 sqlite-vec）。"""
-        import tempfile, os
+        import os
+        import tempfile
         with tempfile.NamedTemporaryFile(suffix=".xyz", delete=False, mode="w") as f:
             f.write("test")
             tmp = f.name
