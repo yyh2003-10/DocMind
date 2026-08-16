@@ -23,7 +23,6 @@ from doc2mind.core.chunker.base import Chunk, Chunker, ChunkerError
 from doc2mind.core.config import Settings
 from doc2mind.core.models import DocumentElement, ElementType
 
-
 # 各语言"定义起点"正则（行首匹配，允许可选缩进）
 # 匹配整行，返回是否为"定义起点"
 _DEFINITION_PATTERNS: dict[str, re.Pattern[str]] = {

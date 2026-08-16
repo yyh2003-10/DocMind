@@ -23,7 +23,6 @@ from pathlib import Path
 from doc2mind.core.loader.base import Loader, UnsupportedFormatError
 from doc2mind.core.models import DocFormat
 
-
 # --- 扩展名 → DocFormat 映射 ---
 _EXTENSION_MAP: dict[str, DocFormat] = {
     # PDF

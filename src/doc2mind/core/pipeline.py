@@ -11,7 +11,6 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from doc2mind.core.chunker import chunk_document
 from doc2mind.core.config import Settings, get_settings
@@ -23,7 +22,6 @@ from doc2mind.core.models import (
     ElementType,
     LoadedDocument,
 )
-from doc2mind.core.retriever.search import StoredChunkMeta
 from doc2mind.core.store.sqlite_vec import (
     StoredDocument,
     VectorStore,
@@ -65,7 +63,7 @@ def ingest_path(
     recursive: bool = False,
     force: bool = False,
     store: VectorStore | None = None,
-    progress: "Callable[[int, int], None] | None" = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> IngestSummary:
     """摄入一个文件或目录。
 

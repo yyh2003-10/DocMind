@@ -27,7 +27,6 @@ from doc2mind.core.models import (
     LoadedDocument,
 )
 
-
 # --- 语言识别（扩展名 → 语言名） ---
 _LANGUAGE_BY_EXT: dict[str, str] = {
     "py": "python",
