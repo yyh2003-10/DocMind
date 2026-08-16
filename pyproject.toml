@@ -110,10 +110,10 @@ all = [
 doc2mind = "doc2mind.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/docmind/doc2mind"
-Repository = "https://github.com/docmind/doc2mind"
-Documentation = "https://github.com/docmind/doc2mind#readme"
-Issues = "https://github.com/docmind/doc2mind/issues"
+Homepage = "https://github.com/yyh2003-10/DocMind"
+Repository = "https://github.com/yyh2003-10/DocMind"
+Documentation = "https://github.com/yyh2003-10/DocMind#readme"
+Issues = "https://github.com/yyh2003-10/DocMind/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/doc2mind"]

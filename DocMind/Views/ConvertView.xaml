@@ -1,0 +1,181 @@
+<UserControl x:Class="DocMind.Views.ConvertView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="clr-namespace:DocMind.ViewModels"
+             mc:Ignorable="d"
+             d:DesignHeight="450" d:DesignWidth="800">
+
+    <Grid Margin="0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>   <!-- 输入选择 -->
+            <RowDefinition Height="Auto"/>   <!-- 输出 + 格式 -->
+            <RowDefinition Height="Auto"/>   <!-- 忙碌进度条 -->
+            <RowDefinition Height="*"/>      <!-- 预览区 -->
+        </Grid.RowDefinitions>
+
+        <!-- ===== 输入选择卡片 ===== -->
+        <Border Grid.Row="0"
+                Background="{StaticResource CardBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="14"
+                Padding="16,12"
+                Margin="0,0,0,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0"
+                           Text="源文件"
+                           Style="{StaticResource CaptionText}"
+                           VerticalAlignment="Center"
+                           Margin="0,0,12,0"/>
+
+                <TextBox Grid.Column="1"
+                         Text="{Binding InputPath, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="选择要转换的源文件（PDF / DOCX / XLSX / PPTX / MD / HTML …）"
+                         Style="{StaticResource ReadOnlyTextBoxStyle}"
+                         VerticalContentAlignment="Center"/>
+
+                <Button Grid.Column="2"
+                        Content="选择文件…"
+                        Command="{Binding PickInputCommand}"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Margin="8,0,0,0"/>
+            </Grid>
+        </Border>
+
+        <!-- ===== 输出 + 格式卡片 ===== -->
+        <Border Grid.Row="1"
+                Background="{StaticResource CardBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="14"
+                Padding="16,12"
+                Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0"
+                           Text="输出位置"
+                           Style="{StaticResource CaptionText}"
+                           VerticalAlignment="Center"
+                           Margin="0,0,12,0"/>
+
+                <TextBox Grid.Column="1"
+                         Text="{Binding OutputPath, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="输出文件位置（留空仅预览，不落盘）"
+                         VerticalContentAlignment="Center"
+                         Margin="0,0,8,0"/>
+
+                <Button Grid.Column="2"
+                        Content="另存为…"
+                        Command="{Binding PickOutputCommand}"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Margin="0,0,12,0"/>
+
+                <Border Grid.Column="3"
+                        Background="{StaticResource PrimaryLightBrush}"
+                        CornerRadius="4"
+                        Padding="8,4"
+                        Margin="0,0,8,0"
+                        VerticalAlignment="Center">
+                    <TextBlock Text="格式"
+                               Style="{StaticResource SmallText}"
+                               Foreground="{StaticResource PrimaryBrush}"/>
+                </Border>
+
+                <ComboBox Grid.Column="4"
+                          ItemsSource="{Binding SupportedFormats}"
+                          SelectedItem="{Binding Format}"
+                          Width="80"
+                          Margin="0,0,12,0"/>
+
+                <StackPanel Grid.Column="5" Orientation="Horizontal">
+                    <Button Content="转换"
+                            Command="{Binding ConvertCommand}"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Margin="0,0,6,0"/>
+                    <Button Content="重置"
+                            Command="{Binding ResetCommand}"
+                            Style="{StaticResource TextButtonStyle}"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ===== 忙碌进度条（转换进行中时显示） ===== -->
+        <Border Grid.Row="2"
+                Background="{StaticResource CardBrush}"
+                CornerRadius="10"
+                Padding="12,8"
+                Margin="0,0,0,12"
+                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ProgressBar Grid.Column="0"
+                             IsIndeterminate="True"
+                             MinHeight="8"
+                             VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="1"
+                           Text="转换中…"
+                           Style="{StaticResource CaptionText}"
+                           Margin="12,0,0,0"
+                           VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
+
+        <!-- ===== 预览区 ===== -->
+        <Border Grid.Row="3"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="12">
+            <DockPanel>
+                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                    <TextBlock Text="预览"
+                               Style="{StaticResource SubtitleText}"
+                               DockPanel.Dock="Left"/>
+                    <Border DockPanel.Dock="Right"
+                            Background="{StaticResource SurfaceBrush}"
+                            CornerRadius="4"
+                            Padding="8,2"
+                            Visibility="{Binding HasInputPath, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Style="{StaticResource SmallText}">
+                            <Run Text="{Binding Format, Mode=OneWay, StringFormat={}.{0}}"/>
+                        </TextBlock>
+                    </Border>
+                </DockPanel>
+
+                <Border Background="{StaticResource SurfaceBrush}"
+                        CornerRadius="6"
+                        Padding="8">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Auto">
+                        <TextBox Text="{Binding PreviewContent, Mode=OneWay}"
+                                 IsReadOnly="True"
+                                 BorderThickness="0"
+                                 TextWrapping="Wrap"
+                                 FontFamily="Cascadia Code, Consolas, monospace"
+                                 FontSize="13"
+                                 Background="Transparent"/>
+                    </ScrollViewer>
+                </Border>
+            </DockPanel>
+        </Border>
+    </Grid>
+</UserControl>

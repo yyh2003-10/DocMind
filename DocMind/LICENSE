@@ -1,0 +1,36 @@
+GNU AFFERO GENERAL PUBLIC LICENSE
+Version 3, 19 November 2007
+
+Copyright (C) 2026 DocMind Contributors
+
+This software (DocMind — WPF 桌面客户端) is licensed under the
+GNU Affero General Public License, version 3 (AGPL-3.0).
+
+Under the terms of the AGPL-3.0 you are free to:
+
+  - Use, copy, modify and redistribute the software
+  - Use it in commercial projects, provided you comply with the AGPL-3.0
+    source-code obligations (see below)
+
+The AGPL-3.0 requires you to:
+
+  - Provide the complete Corresponding Source when you distribute the
+    software or a modified version
+  - Make the source available to users who interact with a modified
+    version over a network (e.g. a server / SaaS deployment)
+  - Release any derivative works under the AGPL-3.0
+
+The full license text is identical to the root LICENSE file of this
+repository: https://github.com/yyh2003-10/DocMind/blob/main/LICENSE
+
+---
+
+商业使用声明（Commercial License）：
+
+开源版本采用 AGPL-3.0，允许商业使用但需遵守「源代码公开」义务。
+
+如需在**闭源 / 非 AGPL** 环境下使用本软件（例如将本软件嵌入到
+商业产品中但不公开你的源代码，或需要企业级支持与定制），请从
+项目维护者处获取**商业授权**。
+
+商业授权咨询：https://github.com/yyh2003-10/DocMind

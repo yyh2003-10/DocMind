@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>DocMind</RootNamespace>
+    <AssemblyName>DocMind</AssemblyName>
+
+    <!-- 单文件发布（仅 Release） -->
+    <PublishSingleFile Condition="'$(Configuration)' == 'Release'">true</PublishSingleFile>
+    <SelfContained Condition="'$(Configuration)' == 'Release'">true</SelfContained>
+    <RuntimeIdentifier Condition="'$(Configuration)' == 'Release'">win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract Condition="'$(Configuration)' == 'Release'">true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile Condition="'$(Configuration)' == 'Release'">true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="托盘图标D 单.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
+    <PackageReference Include="H.NotifyIcon.Wpf" Version="2.1.3" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="System.Text.Json" Version="8.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="托盘图标D 单.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Assets\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- 图表库（质量看板用）：LiveChartsCore.SkiaSharpView.WPF 2.0.0-rc4.5
+       当前未启用——QualityView.XAML 尚未使用图表控件，list 展示已完整。
+       后续需要时取消注释即可。-->
+  <!--<ItemGroup>
+    <PackageReference Include="LiveChartsCore.SkiaSharpView.WPF" Version="2.0.0-rc4.5" />
+  </ItemGroup>-->
+
+</Project>

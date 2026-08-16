@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # DocMind 一键部署脚本（Windows / PowerShell）
 #
 # 用法（普通用户即可，无需管理员）：
@@ -132,7 +132,7 @@ Write-Host "  .\.venv\Scripts\doc2mind.exe mcp          # MCP Server"
 Write-Host "  .\.venv\Scripts\doc2mind.exe ingest ./文档目录"
 Write-Host ""
 Write-Host "WPF 桌面客户端（可选）："
-Write-Host "  cd WpfApp1 && dotnet build -c Release    # 需要 .NET 8 SDK"
+Write-Host "  cd DocMind && dotnet build -c Release    # 需要 .NET 8 SDK"
 Write-Host "  运行后会自动从 .venv 拉起后端（BackendProcessService）"
 Write-Host ""
 if (-not $All) {

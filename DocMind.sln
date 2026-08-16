@@ -1,13 +1,13 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "WpfApp1", "WpfApp1", "{DF2FDEA5-A06A-8F51-91A4-1DB578565CAB}"
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "DocMind", "DocMind", "{DF2FDEA5-A06A-8F51-91A4-1DB578565CAB}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DocMind", "WpfApp1\DocMind.csproj", "{3F17E93A-C3FB-4BD6-98AC-B442E849202E}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DocMind", "DocMind\DocMind.csproj", "{3F17E93A-C3FB-4BD6-98AC-B442E849202E}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WpfApp1.Tests", "WpfApp1.Tests\WpfApp1.Tests.csproj", "{69709671-0B87-4747-BA37-06E498C25F76}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DocMind.Tests", "DocMind.Tests\DocMind.Tests.csproj", "{69709671-0B87-4747-BA37-06E498C25F76}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

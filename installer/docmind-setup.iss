@@ -3,7 +3,7 @@
 ;
 ; 使用方法：
 ;   1. 先用 dotnet publish 发布 Release 版本：
-;      dotnet publish WpfApp1/DocMind.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true
+;      dotnet publish DocMind/DocMind.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true
 ;   2. 确保 .venv 目录已就绪（通过 setup.ps1 创建）
 ;   3. 用 Inno Setup Compiler 打开本文件，点击编译即可生成安装包
 ;
@@ -17,10 +17,10 @@
 #define MyAppExeName "DocMind.exe"
 
 ; 源文件路径（相对于本 .iss 文件所在目录）
-#define WpfPublishDir "..\WpfApp1\bin\Release\net8.0-windows\win-x64\publish"
+#define WpfPublishDir "..\DocMind\bin\Release\net8.0-windows\win-x64\publish"
 #define VenvDir "..\.venv-slim-new"
 #define ScriptsDir "..\scripts"
-#define AssetsDir "..\WpfApp1\Assets"
+#define AssetsDir "..\DocMind\Assets"
 
 [Setup]
 AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
@@ -45,7 +45,7 @@ WizardSizePercent=110
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ; 图标
-SetupIconFile=..\WpfApp1\Assets\DocMind.ico
+SetupIconFile=..\DocMind\Assets\DocMind.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ; 其他
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -68,7 +68,7 @@ Name: "install_ocr"; Description: "安装 OCR 图片文字识别（需联网下�
 Source: "{#WpfPublishDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 ; ===== 配置文件 =====
-Source: "..\WpfApp1\appsettings.json"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist
+Source: "..\DocMind\appsettings.json"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist
 
 ; ===== 资源文件 =====
 Source: "{#AssetsDir}\*"; DestDir: "{app}\Assets"; Flags: ignoreversion recursesubdirs
