@@ -87,6 +87,22 @@ class Settings:
     server_host: str = "127.0.0.1"
     server_port: int = 8765
 
+    # --- LLM / RAG 对话 ---
+    # 大模型提供商：none（不启用）| openai（OpenAI 兼容 API）| ollama（本地 Ollama）
+    llm_provider: str = "none"
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
+    llm_model: str = ""
+    llm_temperature: float = 0.7
+    llm_max_tokens: int = 2048
+
+    # RAG 检索上下文参数
+    rag_top_k: int = 5
+    rag_min_score: float = 0.0
+
+    # LLM 调用超时（秒），0 = 使用默认值 120s
+    llm_timeout: float = 0.0
+
     # --- 嵌入模型下载 ---
     # HuggingFace 端点/镜像。国内网络直连 HF 常超时，设为
     # `https://hf-mirror.com` 可正常下载模型（fastembed 首次使用约 90MB）。
@@ -153,6 +169,16 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "search_top_k",
     "rrf_k",
     "hf_endpoint",
+    # LLM / RAG 对话
+    "llm_provider",
+    "llm_api_key",
+    "llm_base_url",
+    "llm_model",
+    "llm_temperature",
+    "llm_max_tokens",
+    "rag_top_k",
+    "rag_min_score",
+    "llm_timeout",
 )
 
 
