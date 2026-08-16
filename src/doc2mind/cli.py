@@ -3,6 +3,7 @@
 命令一览：
     doc2mind ingest ./docs/                       # 摄入文档
     doc2mind search "查询词"                      # 搜索
+    doc2mind chat "你的问题"                       # RAG 对话（支持交互模式）
     doc2mind list [--collection NAME]             # 列出文档
     doc2mind remove <path|doc_id>                 # 删除
     doc2mind stats [--collection NAME]            # 统计
@@ -16,7 +17,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 import typer
 from rich import print as rprint
@@ -77,7 +78,7 @@ def main_callback(
     return
 
 
-def _open_store() -> tuple[VectorStore, "object"]:
+def _open_store() -> tuple[VectorStore, object]:
     """打开 store + embedder，返回 (store, embedder)。"""
     from doc2mind.core.embedder import get_embedder
 
@@ -227,7 +228,7 @@ def search(
 
 @app.command(name="list")
 def list_docs(
-    collection: Optional[str] = typer.Option(
+    collection: str | None = typer.Option(
         None, "--collection", "-c", help="集合名称（默认全部）。"
     ),
     limit: int = typer.Option(50, "--limit", "-n", help="返回数量。"),
@@ -293,7 +294,7 @@ def remove(
 
 @app.command()
 def stats(
-    collection: Optional[str] = typer.Option(
+    collection: str | None = typer.Option(
         None, "--collection", "-c", help="集合名称（默认全部）。"
     ),
 ) -> None:
@@ -324,11 +325,11 @@ def stats(
 @app.command()
 def convert(
     input_path: Path = typer.Argument(..., help="输入文件或目录。"),
-    output: Optional[Path] = typer.Argument(
+    output: Path | None = typer.Argument(
         None, help="输出文件（省略则输出到 stdout）。"
     ),
     format: str = typer.Option("md", "--format", "-f", help="目标格式：md/json/txt/html。"),
-    out_dir: Optional[Path] = typer.Option(
+    out_dir: Path | None = typer.Option(
         None, "--out", "-o", help="批量转换输出目录。"
     ),
 ) -> None:
@@ -384,6 +385,101 @@ def convert(
             except Exception as e:  # noqa: BLE001
                 rprint(f"  [red]✗[/red] {f.name}: {e}")
         return
+
+
+@app.command()
+def chat(
+    query: str | None = typer.Argument(None, help="提问内容（不传则进入交互模式）。"),
+    collection: str = typer.Option("default", "--collection", "-c", help="检索集合。"),
+    top_k: int = typer.Option(5, "--top-k", "-k", help="引用 chunk 数。"),
+    chat_id: str | None = typer.Option(None, "--chat-id", help="会话 ID（多轮对话时传同一值）。"),
+    collections: list[str] | None = typer.Option(None, "--collections", help="多选知识库集合（逗号分隔或多次传）。"),
+) -> None:
+    """基于知识库的 RAG 对话：检索相关文档 → 调用 LLM 生成回答。
+
+    用法：
+        doc2mind chat "项目架构是什么？"           # 单次问答
+        doc2mind chat                              # 进入交互式多轮对话
+        doc2mind chat --collections prj-a prj-b     # 多集合对话
+    """
+    from doc2mind.core.rag import RagError, rag_answer
+
+    # 单次问答
+    if query:
+        _run_chat_once(query, collection, top_k, chat_id, collections)
+        return
+
+    # 交互式多轮对话
+    rprint("[bold green]DocMind RAG 对话[/bold green]（输入 exit / quit 退出）")
+    rprint("[dim]────────────────────────────────────────[/dim]")
+    current_chat_id: str | None = chat_id
+    while True:
+        try:
+            user_input = console.input("[bold cyan]你:[/bold cyan] ")
+        except (EOFError, KeyboardInterrupt):
+            rprint("\n[dim]已退出[/dim]")
+            break
+        user_input = user_input.strip()
+        if not user_input:
+            continue
+        if user_input.lower() in ("exit", "quit", "q"):
+            rprint("[dim]已退出[/dim]")
+            break
+
+        try:
+            result = rag_answer(
+                query=user_input, collection=collection, top_k=top_k,
+                chat_id=current_chat_id, collections=collections,
+            )
+        except RagError as e:
+            rprint(f"[red]对话失败:[/red] {e}")
+            continue
+
+        # 首次问答后锁定 chat_id
+        if current_chat_id is None:
+            current_chat_id = result.chat_id
+
+        _print_chat_result(result)
+
+
+def _run_chat_once(query: str, collection: str, top_k: int, chat_id: str | None = None, collections: list[str] | None = None) -> None:
+    """执行一次 RAG 对话并输出结果。"""
+    from doc2mind.core.rag import RagError, rag_answer
+
+    try:
+        result = rag_answer(
+            query=query, collection=collection, top_k=top_k, chat_id=chat_id,
+            collections=collections,
+        )
+    except RagError as e:
+        rprint(f"[red]对话失败:[/red] {e}")
+        raise typer.Exit(code=1) from None
+
+    _print_chat_result(result)
+
+
+def _print_chat_result(result: Any) -> None:
+    """打印 RAG 对话结果。"""
+    # 引用来源
+    if result.sources:
+        rprint("[bold magenta]引用来源:[/bold magenta]")
+        for s in result.sources:
+            loc = s.source
+            if s.page is not None:
+                loc += f" p.{s.page}"
+            if s.heading:
+                loc += f"（{s.heading}）"
+            rprint(f"  [{s.index}] {loc}  [dim]score={s.score}[/dim]")
+        rprint()
+
+    # 回答
+    rprint(f"[bold green]DocMind:[/bold green] {result.answer}")
+
+    # 元信息
+    rprint(
+        f"[dim]模型: {result.model} ({result.provider}) | "
+        f"引用 {result.total_chunks} 块 | {result.elapsed_ms}ms[/dim]"
+    )
 
 
 @app.command()
@@ -512,10 +608,10 @@ def config(
     show: bool = typer.Option(
         False, "--show", "-s", help="显示当前生效配置。"
     ),
-    set_model: Optional[str] = typer.Option(
+    set_model: str | None = typer.Option(
         None, "--set-model", "-m", help="切换嵌入模型并持久化（下次启动仍生效）。"
     ),
-    model: Optional[str] = typer.Option(
+    model: str | None = typer.Option(
         None, "--model", "-M", help="临时指定嵌入模型（仅本次进程，不持久化）。"
     ),
 ) -> None:
@@ -526,8 +622,8 @@ def config(
         doc2mind config --set-model BAAI/bge-small-en-v1.5   # 切换模型（持久化）
         doc2mind config --model <名称>       # 临时用某个模型跑一次
     """
-    from doc2mind.core.embedder.catalog import get_model_info, render_catalog_table
     from doc2mind.core.config import save_settings
+    from doc2mind.core.embedder.catalog import get_model_info, render_catalog_table
 
     if model:
         # 临时覆盖：仅本次进程
@@ -595,10 +691,9 @@ def serve(
             "[bold]pip install doc2mind[server][/bold]"
         )
         raise typer.Exit(code=1) from None
-    from doc2mind.server.http import create_app
-
     # 首次使用引导：模型未下载时提示（新手友好）
     from doc2mind.core.embedder.fastembed_impl import first_run_hint
+    from doc2mind.server.http import create_app
 
     hint = first_run_hint()
     if hint:
