@@ -3,7 +3,7 @@ using DocMind.Services;
 using DocMind.ViewModels;
 using CommunityToolkit.Mvvm.Input;
 
-namespace WpfApp1.Tests;
+namespace DocMind.Tests;
 
 /// <summary>
 /// ImportViewModel 异步 job 导入：真实进度递增、结果明细、取消行为。

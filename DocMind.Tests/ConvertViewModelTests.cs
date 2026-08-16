@@ -3,7 +3,7 @@ using DocMind.Services;
 using DocMind.ViewModels;
 using CommunityToolkit.Mvvm.Input;
 
-namespace WpfApp1.Tests;
+namespace DocMind.Tests;
 
 /// <summary>
 /// ConvertViewModel 基础状态：IsBusy 在转换前后正确翻转。

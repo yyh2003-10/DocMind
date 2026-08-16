@@ -1,4 +1,4 @@
-# AGENTS.md — DocMindY 项目约定
+# AGENTS.md — DocMind 项目约定
 
 ## DocMind 知识库 MCP 工具
 
@@ -23,7 +23,7 @@
 
 - **开工前先查**：接手任务前，先用 `search` 检索相关历史经验和资料，避免重复踩坑。
 - **摄入路径必须用绝对路径**（如 `E:/MyProject/src`），且进程有权限访问。
-- **按项目分集合**：跨项目内容用不同 `collection`（如 `docmindy`、`prj-x`），避免互相污染。
+- **按项目分集合**：跨项目内容用不同 `collection`（如 `docmind`、`prj-x`），避免互相污染。
 - 工具调用会触发权限确认，用户按 `A` 可在当前会话放行。
 
 ## 主动提入库建议（重要）
@@ -36,7 +36,7 @@
 - 用户明确给出了结论、规范或偏好
 
 做法：任务收尾时，用一句话向用户提出建议，例如：
-「这个问题值得沉淀：我建议用 `ingest_text` 把「xxx 的根因是 yyy，解法是 zzz」写入知识库（collection=docmindy），要写吗？」
+「这个问题值得沉淀：我建议用 `ingest_text` 把「xxx 的根因是 yyy，解法是 zzz」写入知识库（collection=docmind），要写吗？」
 
 等用户确认后再调用 `mcp__doc2mind__ingest_text`（写入前先 `search` 查重，避免重复入库）。如用户多次无需确认可直接入库，可改用直接写入并简短告知。
 

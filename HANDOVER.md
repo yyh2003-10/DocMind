@@ -81,7 +81,7 @@ bd040ba feat: WPF 对话页与设置页完善（ChatView + PasswordBox + 测试�
 | 命令 | 说明 |
 |---|---|
 | `python -m pytest tests/` | Python 后端（129 测试） |
-| `dotnet test WpfApp1.Tests` | WPF 客户端（47 测试） |
+| `dotnet test DocMind.Tests` | WPF 客户端（47 测试） |
 
 ---
 
@@ -100,11 +100,11 @@ bd040ba feat: WPF 对话页与设置页完善（ChatView + PasswordBox + 测试�
 
 ```bash
 # Python 后端
-cd /e/DocMindY
+cd /e/DocMind
 python -m pytest tests/ -q    # 129 tests
 
 # WPF 客户端
-dotnet test WpfApp1.Tests -v q    # 47 tests
+dotnet test DocMind.Tests -v q    # 47 tests
 
 # ruff（可选）
 ruff check src tests

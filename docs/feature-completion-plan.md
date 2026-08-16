@@ -87,6 +87,6 @@
 ## 四、接手建议
 
 1. 先 `git status` + `git diff HEAD` 熟悉本会话改动范围
-2. 重跑验证：`python -m pytest`（125 测试）+ `dotnet build WpfApp1.Tests && dotnet test WpfApp1.Tests --no-build`（47 测试）
+2. 重跑验证：`python -m pytest`（125 测试）+ `dotnet build DocMind.Tests && dotnet test DocMind.Tests --no-build`（47 测试）
 3. 冒烟 RAG：配置 LLM 后 `doc2mind chat "问题"` 或 WPF「对话」页
 4. 按 P0 → P3 顺序推进；每项完成后按 AGENTS.md 约定用 `doc2mind ingest_text` 沉淀经验

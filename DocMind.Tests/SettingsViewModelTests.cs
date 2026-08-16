@@ -3,7 +3,7 @@ using DocMind.Services;
 using DocMind.ViewModels;
 using DocMind;
 
-namespace WpfApp1.Tests;
+namespace DocMind.Tests;
 
 /// <summary>
 /// SettingsViewModel 单元测试：LLM 字段初始化、IsDirty 追踪、保存推送、Revert 恢复。
@@ -296,64 +296,85 @@ fake ??= new FakeDoc2kbApiService();
     {
         var fake = new FakeDoc2kbApiService();
         fake.OnGetHealth = _ => Task.FromResult(new HealthStatus { Status = "ok" });
-        fake.OnGetConfig = _ => Task.FromResult(new BackendConfig
-        {
-            LlmProvider = "none",
-            LlmApiKeyConfigured = false,
-        });
         var vm = CreateVm(new AppSettings(), fake);
 
         await vm.TestConnectionCommand.ExecuteAsync(null);
 
+        // AppSettings 默认 LlmProvider=none → 只测后端，不调 LLM 测试
         Assert.Contains("后端连接正常", vm.StatusMessage);
         Assert.False(vm.IsTestingConnection);
     }
 
     [Fact]
-    public async Task TestConnection_LlmConfigured_CallsChat()
+    public async Task TestConnection_LlmConfigured_CallsLlmTestWithUiValues()
     {
-        var chatCalled = false;
+        LlmTestRequest? captured = null;
         var fake = new FakeDoc2kbApiService();
         fake.OnGetHealth = _ => Task.FromResult(new HealthStatus { Status = "ok" });
-        fake.OnGetConfig = _ => Task.FromResult(new BackendConfig
+        fake.OnLlmTest = (req, _) =>
         {
-            LlmProvider = "openai",
-            LlmApiKeyConfigured = true,
-        });
-        fake.OnChat = (_, _) =>
-        {
-            chatCalled = true;
-            return Task.FromResult(new ChatResponse
+            captured = req;
+            return Task.FromResult(new LlmTestResult
             {
-                Answer = "连接成功",
-                Model = "test-model",
-                Provider = "mock",
+                Ok = true,
+                Provider = "openai",
+                Model = "deepseek-chat",
+                ReplyPreview = "pong",
+                ElapsedMs = 42,
             });
         };
         var vm = CreateVm(new AppSettings(), fake);
+        // 用户刚输入、尚未保存的值也应被测试到
+        vm.LlmProvider = "openai";
+        vm.LlmApiKey = "sk-fresh";
+        vm.LlmBaseUrl = "https://api.deepseek.com/v1";
+        vm.LlmModel = "deepseek-chat";
 
         await vm.TestConnectionCommand.ExecuteAsync(null);
 
-        Assert.Contains("连接成功", vm.StatusMessage);
-        Assert.True(chatCalled);
+        Assert.Contains("LLM 连接成功", vm.StatusMessage);
+        Assert.Contains("deepseek-chat", vm.StatusMessage);
+        Assert.NotNull(captured);
+        Assert.Equal("openai", captured.Provider);
+        Assert.Equal("sk-fresh", captured.ApiKey);
+        Assert.Equal("https://api.deepseek.com/v1", captured.BaseUrl);
+        Assert.Equal("deepseek-chat", captured.Model);
         Assert.False(vm.IsTestingConnection);
     }
 
     [Fact]
-    public async Task TestConnection_LlmChatFails_ShowsLlmError()
+    public async Task TestConnection_LlmTestReturnsFailure_ShowsClassifiedError()
     {
         var fake = new FakeDoc2kbApiService();
         fake.OnGetHealth = _ => Task.FromResult(new HealthStatus { Status = "ok" });
-        fake.OnGetConfig = _ => Task.FromResult(new BackendConfig
+        fake.OnLlmTest = (_, _) => Task.FromResult(new LlmTestResult
         {
-            LlmProvider = "openai",
-            LlmApiKeyConfigured = true,
+            Ok = false,
+            Provider = "anthropic",
+            Error = "Anthropic API API Key 无效 (HTTP 401): bad key",
         });
-        fake.OnChat = (_, _) => throw new ApiException("AUTH_ERROR", "API Key 无效");
         var vm = CreateVm(new AppSettings(), fake);
+        vm.LlmProvider = "anthropic";
 
         await vm.TestConnectionCommand.ExecuteAsync(null);
 
+        Assert.Contains("LLM 测试失败", vm.StatusMessage);
+        Assert.Contains("API Key 无效", vm.StatusMessage);
+        Assert.False(vm.IsTestingConnection);
+    }
+
+    [Fact]
+    public async Task TestConnection_LlmTestThrows_ShowsConnectionError()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnGetHealth = _ => Task.FromResult(new HealthStatus { Status = "ok" });
+        fake.OnLlmTest = (_, _) => throw new ApiException("AUTH_ERROR", "API Key 无效");
+        var vm = CreateVm(new AppSettings(), fake);
+        vm.LlmProvider = "openai";
+
+        await vm.TestConnectionCommand.ExecuteAsync(null);
+
+        Assert.Contains("连接失败", vm.StatusMessage);
         Assert.Contains("API Key 无效", vm.StatusMessage);
         Assert.False(vm.IsTestingConnection);
     }

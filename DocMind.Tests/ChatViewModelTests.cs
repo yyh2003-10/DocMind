@@ -2,7 +2,7 @@ using DocMind.Models;
 using DocMind.Services;
 using DocMind.ViewModels;
 
-namespace WpfApp1.Tests;
+namespace DocMind.Tests;
 
 /// <summary>
 /// ChatViewModel 单元测试：发送、多轮对话、集合、错误处理、加载状态。

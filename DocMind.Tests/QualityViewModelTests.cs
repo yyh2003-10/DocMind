@@ -2,7 +2,7 @@ using DocMind.Models;
 using DocMind.Services;
 using DocMind.ViewModels;
 
-namespace WpfApp1.Tests;
+namespace DocMind.Tests;
 
 /// <summary>
 /// QualityViewModel 导航自动加载：EnsureLoadedAsync 幂等性。

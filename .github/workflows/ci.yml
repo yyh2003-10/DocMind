@@ -53,7 +53,7 @@ jobs:
           dotnet-version: "8.0.x"
 
       - name: 构建 Debug
-        run: dotnet build WpfApp1/DocMind.csproj -c Debug --nologo
+        run: dotnet build DocMind/DocMind.csproj -c Debug --nologo
 
       - name: 发布 Release（单文件自包含）
-        run: dotnet publish WpfApp1/DocMind.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true
+        run: dotnet publish DocMind/DocMind.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true

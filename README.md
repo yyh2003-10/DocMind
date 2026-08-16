@@ -93,8 +93,8 @@ python -m venv .venv
 ```
 再构建并启动客户端（需先安装 [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)）：
 ```bat
-dotnet build WpfApp1\DocMind.csproj -c Release
-WpfApp1\bin\Release\net8.0-windows\win-x64\DocMind.exe
+dotnet build DocMind\DocMind.csproj -c Release
+DocMind\bin\Release\net8.0-windows\win-x64\DocMind.exe
 ```
 
 ### 遇到问题？
@@ -199,7 +199,7 @@ WPF  ┘        │
               └─ Converter (格式互转)
 ```
 
-WPF 桌面客户端源码在 [`WpfApp1/`](WpfApp1/)，HTTP API 文档在 [`docs/api.md`](docs/api.md)，
+WPF 桌面客户端源码在 [`DocMind/`](DocMind/)，HTTP API 文档在 [`docs/api.md`](docs/api.md)，
 使用说明在 [`docs/使用说明-每个页面在干嘛.md`](docs/使用说明-每个页面在干嘛.md)，
 MCP 接入文档在 [`docs/mcp.md`](docs/mcp.md)。
 
@@ -217,20 +217,31 @@ MCP 接入文档在 [`docs/mcp.md`](docs/mcp.md)。
 
 ### RAG 对话配置
 
-`doc2mind chat` 需要配置 LLM 才能使用：
+`doc2mind chat` 需要配置 LLM 才能使用。支持 4 种提供商（`DOC2MIND_LLM_PROVIDER`）：
 
 ```bash
-# OpenAI 兼容 API（DeepSeek/Qwen/OpenAI 通用）
+# OpenAI 兼容 API（DeepSeek/Qwen/Kimi/OpenAI 通用，可用 DOC2MIND_LLM_BASE_URL 切换服务商）
 set DOC2MIND_LLM_PROVIDER=openai
 set DOC2MIND_LLM_API_KEY=sk-your-api-key
 set DOC2MIND_LLM_MODEL=deepseek-chat
 
-# 本地 Ollama（完全离线）
+# Anthropic Claude
+set DOC2MIND_LLM_PROVIDER=anthropic
+set DOC2MIND_LLM_API_KEY=sk-ant-your-key
+set DOC2MIND_LLM_MODEL=claude-sonnet-4-5
+
+# Google Gemini
+set DOC2MIND_LLM_PROVIDER=gemini
+set DOC2MIND_LLM_API_KEY=your-key
+set DOC2MIND_LLM_MODEL=gemini-2.5-flash
+
+# 本地 Ollama（完全离线，无需 API Key）
 set DOC2MIND_LLM_PROVIDER=ollama
 set DOC2MIND_LLM_MODEL=llama3.2
 ```
 
-详见 [docs/mcp.md](docs/mcp.md) 的「RAG 对话配置」。
+WPF 桌面端在「设置 → 大模型对话」图形化配置（API Key 经 DPAPI 加密存储），
+支持「测试连接」一键验证。详见 [docs/mcp.md](docs/mcp.md) 的「RAG 对话配置」。
 
 ## 许可证
 

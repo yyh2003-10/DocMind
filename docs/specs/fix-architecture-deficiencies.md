@@ -1,11 +1,11 @@
-# 规格：DocMindY 架构缺陷修复
+# 规格：DocMind 架构缺陷修复
 
 > 状态：`ready-for-agent`
 > 生成自：架构审查报告（2026-08-12）
 
 ## Problem Statement
 
-DocMindY 经过架构审查，发现前后端模型不一致、API 规范与实现漂移、代码质量问题和功能缺失四类系统性缺陷。这些问题导致：
+DocMind 经过架构审查，发现前后端模型不一致、API 规范与实现漂移、代码质量问题和功能缺失四类系统性缺陷。这些问题导致：
 - 前端无法使用后端已支持的功能（如强制重新摄入）
 - API 文档误导第三方集成者
 - 存在潜在 bug（重复函数定义）
@@ -51,13 +51,13 @@ DocMindY 经过架构审查，发现前后端模型不一致、API 规范与实�
 
 - **后端** `src/doc2mind/core/pipeline.py`：删除重复的 `ingest_text` 函数定义（保留逻辑正确的版本）
 - **后端** `src/doc2mind/core/store/sqlite_vec.py`：`delete_document` / `delete_by_source` 后检查集合是否为空，空则级联删除
-- **前端** `WpfApp1/Models/IngestRequest.cs`：添加 `Force` 属性
-- **前端** `WpfApp1/Models/HealthStatus.cs`：移除 `Timestamp` 字段
-- **前端** `WpfApp1/Models/ConvertRequest.cs`：移除 `Collection` 字段
-- **前端** `WpfApp1/Models/QualityReport.cs`：添加 6 个缺失字段
-- **前端** `WpfApp1/AppSettings.cs`：`RequestTimeoutSec` 默认值改为 60
-- **前端** `WpfApp1/ViewModels/ImportViewModel.cs`：绑定 `Force` 参数到 UI
-- **前端** `WpfApp1/ViewModels/QualityViewModel.cs`：展示新增的质量指标
+- **前端** `DocMind/Models/IngestRequest.cs`：添加 `Force` 属性
+- **前端** `DocMind/Models/HealthStatus.cs`：移除 `Timestamp` 字段
+- **前端** `DocMind/Models/ConvertRequest.cs`：移除 `Collection` 字段
+- **前端** `DocMind/Models/QualityReport.cs`：添加 6 个缺失字段
+- **前端** `DocMind/AppSettings.cs`：`RequestTimeoutSec` 默认值改为 60
+- **前端** `DocMind/ViewModels/ImportViewModel.cs`：绑定 `Force` 参数到 UI
+- **前端** `DocMind/ViewModels/QualityViewModel.cs`：展示新增的质量指标
 - **文档** `docs/api.md`：对齐所有端点的实际实现字段
 
 ### API 合约变更

@@ -27,12 +27,12 @@ public static class SecretProtector
         return Prefix + Convert.ToBase64String(encrypted);
     }
 
-    /// <summary>解密；旧明文原样返回（迁移时机在保存），解密失败返回空串。</summary>
-    public static string Unprotect(string? value)
+    /// <summary>解密；null 保持 null（与未配置语义一致），旧明文原样返回（迁移时机在保存），解密失败返回空串。</summary>
+    public static string? Unprotect(string? value)
     {
         if (string.IsNullOrEmpty(value))
         {
-            return string.Empty;
+            return value;
         }
         if (!IsProtected(value))
         {

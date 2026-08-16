@@ -1,7 +1,7 @@
 using DocMind.Models;
 using DocMind.Services;
 
-namespace WpfApp1.Tests;
+namespace DocMind.Tests;
 
 /// <summary>
 /// Fake IDoc2kbApiService for ViewModel unit tests.
@@ -18,6 +18,7 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
 
     // ── Chat ──
     public Func<ChatRequest, CancellationToken, Task<ChatResponse>>? OnChat { get; set; }
+    public Func<ChatRequest, Action<string>, Action<ChatStreamResult>, CancellationToken, Task<ChatStreamResult>>? OnChatStream { get; set; }
 
     // ── Documents ──
     public Func<string?, int, int, string?, string, CancellationToken, Task<DocumentListResponse>>? OnListDocuments { get; set; }
@@ -41,6 +42,9 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Func<CancellationToken, Task<BackendConfig>>? OnGetConfig { get; set; }
     public Func<BackendConfigUpdate, CancellationToken, Task<BackendConfig>>? OnUpdateConfig { get; set; }
 
+    // ── LLM 连接测试 ──
+    public Func<LlmTestRequest, CancellationToken, Task<LlmTestResult>>? OnLlmTest { get; set; }
+
     public void UpdateBaseAddress(string baseUrl) { /* no-op */ }
 
     public Task<HealthStatus> GetHealthAsync(CancellationToken ct = default)
@@ -51,6 +55,9 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
 
     public Task<BackendConfig> UpdateConfigAsync(BackendConfigUpdate req, CancellationToken ct = default)
         => OnUpdateConfig?.Invoke(req, ct) ?? throw new NotImplementedException();
+
+    public Task<LlmTestResult> LlmTestAsync(LlmTestRequest req, CancellationToken ct = default)
+        => OnLlmTest?.Invoke(req, ct) ?? throw new NotImplementedException();
 
     public Task<IngestResponse> IngestAsync(IngestRequest req, CancellationToken ct = default)
         => OnIngest?.Invoke(req, ct) ?? throw new NotImplementedException();
@@ -63,6 +70,32 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
 
     public Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default)
         => OnChat?.Invoke(req, ct) ?? throw new NotImplementedException();
+
+    public async Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, CancellationToken ct = default)
+    {
+        if (OnChatStream is not null)
+        {
+            return await OnChatStream(req, onToken, onDone, ct);
+        }
+        // 兼容旧测试写法：未配置 OnChatStream 时回退到 OnChat（非流式），
+        // 把完整回答作为单 token 输出，终帧元数据从 ChatResponse 映射
+        var resp = await (OnChat?.Invoke(req, ct) ?? throw new NotImplementedException());
+        if (!string.IsNullOrEmpty(resp.Answer))
+        {
+            onToken?.Invoke(resp.Answer);
+        }
+        var result = new ChatStreamResult
+        {
+            ChatId = resp.ChatId,
+            Model = resp.Model,
+            Provider = resp.Provider,
+            TotalChunks = resp.TotalChunks,
+            ElapsedMs = resp.ElapsedMs,
+            Sources = resp.Sources,
+        };
+        onDone?.Invoke(result);
+        return result;
+    }
 
     public Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", CancellationToken ct = default)
         => OnListDocuments?.Invoke(collection, page, pageSize, format, sort, ct) ?? throw new NotImplementedException();
