@@ -133,7 +133,8 @@ doc2mind  →  command: doc2mind mcp
 
 ### RAG 对话配置
 
-`chat` 工具需要配置 LLM 才能使用。两种方式任选：
+`chat` 工具需要配置 LLM 才能使用。支持 4 种提供商（`llm_provider`）：
+`openai`（OpenAI 兼容：DeepSeek/Qwen/Kimi/OpenAI 等）、`anthropic`、`gemini`、`ollama`（本地离线）。
 
 **方式一：OpenAI 兼容 API（DeepSeek / Qwen / OpenAI 通用）**
 
@@ -143,24 +144,43 @@ set DOC2MIND_LLM_PROVIDER=openai
 set DOC2MIND_LLM_API_KEY=sk-your-api-key
 set DOC2MIND_LLM_MODEL=deepseek-chat
 set DOC2MIND_LLM_BASE_URL=https://api.deepseek.com/v1
-
-# 或持久化到 config.toml
-doc2mind config --set llm_provider=openai --set llm_api_key=sk-xxx --set llm_model=deepseek-chat
 ```
 
-**方式二：本地 Ollama（完全离线）**
+**方式二：Anthropic / Gemini**
+
+```bash
+set DOC2MIND_LLM_PROVIDER=anthropic
+set DOC2MIND_LLM_API_KEY=sk-ant-your-key
+set DOC2MIND_LLM_MODEL=claude-sonnet-4-5
+
+set DOC2MIND_LLM_PROVIDER=gemini
+set DOC2MIND_LLM_API_KEY=your-key
+set DOC2MIND_LLM_MODEL=gemini-2.5-flash
+```
+
+**方式三：本地 Ollama（完全离线）**
 
 ```bash
 # 1. 安装 Ollama 并拉取模型：ollama pull llama3.2
 # 2. 设置环境变量
 set DOC2MIND_LLM_PROVIDER=ollama
 set DOC2MIND_LLM_MODEL=llama3.2
-
-# 或持久化
-doc2mind config --set llm_provider=ollama --set llm_model=llama3.2
 ```
 
-支持的 `llm_model` 示例：`deepseek-chat`、`gpt-4o-mini`、`qwen-plus`、`llama3.2`、`qwen2.5` 等。
+**持久化**：手动编辑 `config.toml`（`%APPDATA%\doc2mind\config.toml`）写入
+`llm_provider` / `llm_base_url` / `llm_model` 等字段（注意：`llm_api_key` 出于
+安全考虑只从环境变量或 WPF 设置页注入，`save_settings` 不会把它写回文件）。
+WPF 用户推荐直接在「设置 → 大模型对话」配置并「测试连接」验证。
+
+支持的 `llm_model` 示例：`deepseek-chat`、`gpt-4o-mini`、`qwen-plus`、
+`claude-sonnet-4-5`、`gemini-2.5-flash`、`llama3.2` 等。
+
+验证配置是否可用（不落盘、不发真实对话）：
+
+```bash
+curl -X POST http://127.0.0.1:8765/v1/llm/test -H "Content-Type: application/json" ^
+  -d "{\"provider\":\"openai\",\"api_key\":\"sk-xxx\",\"model\":\"deepseek-chat\"}"
+```
 
 ## 七、常见问题
 
