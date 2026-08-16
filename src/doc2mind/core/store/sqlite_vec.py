@@ -17,18 +17,72 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
 import threading
+import time
+import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any
 
 from doc2mind.core.chunker.base import Chunk
 
 
 class StoreError(Exception):
     """存储异常。"""
+
+
+def _normalize_collections(
+    collection: str | Sequence[str] | None,
+) -> frozenset[str] | None:
+    """集合过滤参数归一化：str / 序列 → frozenset；None/空 → None（不过滤）。"""
+    if collection is None:
+        return None
+    items = [collection] if isinstance(collection, str) else list(collection)
+    cleaned = frozenset(c.strip() for c in items if isinstance(c, str) and c.strip())
+    return cleaned or None
+
+
+def _is_locked_error(exc: Exception) -> bool:
+    """判断异常链中是否包含 SQLite 锁冲突（database is locked / busy）。
+
+    跨进程并发写（HTTP 服务与 MCP 服务共用同一 db 文件）时，
+    WAL 下写-写互斥仍可能触发锁冲突，需有限重试。
+    """
+    while exc is not None:
+        if isinstance(exc, sqlite3.OperationalError):
+            msg = str(exc).lower()
+            if "locked" in msg or "busy" in msg:
+                return True
+        exc = exc.__cause__
+    return False
+
+
+def _retry_on_locked(func):
+    """装饰器：SQLite 写锁冲突时整体重试（最多 4 次，指数退避）。
+
+    方法内部把 OperationalError 包装成 StoreError（raise ... from e），
+    因此沿 __cause__ 链判断是否为锁冲突，命中则重跑整个方法（含事务）。
+    """
+
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        last_exc: Exception | None = None
+        for attempt in range(4):
+            try:
+                return func(self, *args, **kwargs)
+            except Exception as e:  # noqa: BLE001
+                if not _is_locked_error(e) or attempt == 3:
+                    raise
+                last_exc = e
+                time.sleep(0.1 * (attempt + 1))
+        # 理论不可达：最后一轮失败会直接 raise
+        raise last_exc  # type: ignore[misc]
+
+    return wrapper
 
 
 # --- FTS5 MATCH 表达式构造（中文友好）---
@@ -210,11 +264,13 @@ class VectorStore:
                     str(self.db_path),
                     check_same_thread=False,
                     isolation_level=None,  # 手动事务
+                    timeout=30,  # busy 等待上限（秒）：跨进程并发写时避免立即抛 database is locked
                 )
                 # WAL 提升并发读
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.execute("PRAGMA foreign_keys=ON")
+                conn.execute("PRAGMA busy_timeout=30000")
 
                 # 加载 sqlite-vec 扩展
                 self._load_vec_extension(conn)
@@ -234,8 +290,10 @@ class VectorStore:
                         str(self.db_path),
                         check_same_thread=False,
                         isolation_level=None,
+                        timeout=30,
                     )
                     fts_conn.execute("PRAGMA journal_mode=WAL")
+                    fts_conn.execute("PRAGMA busy_timeout=30000")
                     self._fts_conn = fts_conn
                 except sqlite3.OperationalError:
                     # FTS5 缺失，关闭 BM25
@@ -257,7 +315,7 @@ class VectorStore:
                 self._fts_conn.close()
                 self._fts_conn = None
 
-    def __enter__(self) -> "VectorStore":
+    def __enter__(self) -> VectorStore:
         self.open()
         return self
 
@@ -306,6 +364,43 @@ class VectorStore:
         return self._fts_available
 
     # --- 写入 ---
+    @_retry_on_locked
+    def ensure_collection(self, name: str) -> None:
+        """登记一个空集合（仅插入占位文档记录，chunk_count=0），使其出现在集合列表中。
+
+        若集合已存在（documents 表已有该 collection 记录）则幂等跳过。
+        """
+        with self._lock:
+            self._require_open()
+            try:
+                existing = self._conn.execute(
+                    "SELECT 1 FROM documents WHERE collection = ? LIMIT 1",
+                    (name,),
+                ).fetchone()
+                if existing is not None:
+                    return
+                now = _now_iso()
+                self._conn.execute(
+                    """
+                    INSERT INTO documents
+                        (id, source, collection, format, file_hash,
+                         size_bytes, page_count, chunk_count, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, ?)
+                    """,
+                    (
+                        _new_id(),
+                        "__collection_placeholder__",
+                        name,
+                        "placeholder",
+                        f"placeholder-{name}",
+                        now,
+                        now,
+                    ),
+                )
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"创建集合失败: {e}") from e
+
+    @_retry_on_locked
     def upsert_document(self, doc: StoredDocument) -> None:
         """插入或更新文档记录。"""
         with self._lock:
@@ -331,6 +426,7 @@ class VectorStore:
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"写入文档失败: {e}") from e
 
+    @_retry_on_locked
     def insert_chunks(
         self,
         document_id: str,
@@ -366,7 +462,7 @@ class VectorStore:
             try:
                 conn.execute("BEGIN")
                 inserted = 0
-                for chunk, emb in zip(chunks, embeddings):
+                for chunk, emb in zip(chunks, embeddings, strict=False):
                     # 序列化向量为 bytes（vec0 接受 BLOB）
                     emb_bytes = _vector_to_bytes(emb)
                     meta = chunk.metadata
@@ -417,9 +513,11 @@ class VectorStore:
                         )
                     inserted += 1
 
-                # 4. 更新文档 chunk_count
+                # 4. 更新文档 chunk_count。
+                # 绝对值写入：upsert_document 已把文档记录写成 chunk_count=len(chunks)，
+                # 若此处再累加（chunk_count + inserted）会造成双倍计数（2×len(chunks)）。
                 conn.execute(
-                    "UPDATE documents SET chunk_count = chunk_count + ?, updated_at = ? WHERE id = ?",
+                    "UPDATE documents SET chunk_count = ?, updated_at = ? WHERE id = ?",
                     (inserted, _now_iso(), document_id),
                 )
                 conn.execute("COMMIT")
@@ -438,6 +536,7 @@ class VectorStore:
                 raise StoreError(f"插入分块失败: {e}") from e
 
     # --- 删除 ---
+    @_retry_on_locked
     def delete_document(self, document_id: str) -> int:
         """删除文档及其所有分块与向量。
 
@@ -520,18 +619,20 @@ class VectorStore:
         self,
         query_vec,
         top_k: int = 10,
-        collection: str | None = None,
+        collection: str | Sequence[str] | None = None,
     ) -> list[tuple[int, float]]:
         """向量余弦检索，返回 [(chunk_id, distance), ...]。
 
         distance 越小越相似（vec0 cosine 距离），调用方自行转 score。
+        collection 支持单集合名或集合名列表（多选知识库）。
         """
         with self._lock:
             self._require_open()
             try:
                 # vec0 MATCH：embedding 字段 + k 参数
                 # 注意：collection 过滤在 chunks_meta 层做，需先取 top_k*N 再过滤
-                fetch_n = top_k * 4 if collection else top_k
+                cols = _normalize_collections(collection)
+                fetch_n = top_k * 4 if cols else top_k
                 cur = self._conn.execute(
                     """
                     SELECT id, distance
@@ -542,16 +643,16 @@ class VectorStore:
                     (_vector_to_bytes(query_vec), fetch_n),
                 )
                 rows = cur.fetchall()
-                if collection is None:
+                if not cols:
                     return [(int(r[0]), float(r[1])) for r in rows][:top_k]
-                # collection 过滤
+                # collection 过滤（支持多集合）
                 result: list[tuple[int, float]] = []
                 for cid, dist in rows:
                     meta = self._conn.execute(
                         "SELECT collection FROM chunks_meta WHERE id = ?",
                         (cid,),
                     ).fetchone()
-                    if meta and meta[0] == collection:
+                    if meta and meta[0] in cols:
                         result.append((int(cid), float(dist)))
                         if len(result) >= top_k:
                             break
@@ -563,11 +664,11 @@ class VectorStore:
         self,
         query: str,
         top_k: int = 10,
-        collection: str | None = None,
+        collection: str | Sequence[str] | None = None,
     ) -> list[tuple[int, float]]:
         """BM25 关键词检索，返回 [(chunk_id, bm25_score), ...]。
 
-        score 越大越相关。
+        score 越大越相关。collection 支持单集合名或集合名列表。
 
         注意：用独立 `_fts_conn` 跑查询，避开 vec0 扩展与 trigram tokenizer
         在同 connection 上评估中文 bm25() 时的 IntegrityError: datatype mismatch。
@@ -585,9 +686,11 @@ class VectorStore:
             try:
                 col_filter = ""
                 params: list[Any] = [match_expr]
-                if collection:
-                    col_filter = "AND collection = ?"
-                    params = [match_expr, collection]
+                cols = _normalize_collections(collection)
+                if cols:
+                    placeholders = ",".join("?" for _ in sorted(cols))
+                    col_filter = f"AND collection IN ({placeholders})"
+                    params.extend(sorted(cols))
                 # LIMIT 用字符串拼接（int 已强类型校验，无注入风险）：
                 # FTS5 trigram + LIMIT ? placeholder 触发 IntegrityError: datatype mismatch
                 cur = self._fts_conn.execute(
@@ -699,6 +802,7 @@ class VectorStore:
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"列出分块内容失败: {e}") from e
 
+    @_retry_on_locked
     def update_embeddings(
         self, chunk_id_emb_pairs: Sequence[tuple[int, object]]
     ) -> int:
@@ -734,6 +838,7 @@ class VectorStore:
                     pass
                 raise StoreError(f"更新向量失败: {e}") from e
 
+    @_retry_on_locked
     def rebuild_chunk_embeddings(
         self,
         chunk_id_emb_pairs: Sequence[tuple[int, object]],
@@ -948,3 +1053,8 @@ def _now_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _new_id() -> str:
+    """生成文档/占位记录主键（与 HTTP 层一致：uuid4 hex）。"""
+    return uuid.uuid4().hex

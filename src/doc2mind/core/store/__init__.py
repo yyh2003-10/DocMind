@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from doc2mind.core.store.sqlite_vec import VectorStore, StoreError, StoreStats
+from doc2mind.core.store.sqlite_vec import StoreError, StoreStats, VectorStore
 
 __all__ = [
     "VectorStore",
