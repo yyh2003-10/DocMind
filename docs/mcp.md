@@ -87,7 +87,7 @@ doc2mind  →  command: doc2mind mcp
 }
 ```
 
-## 四、工具清单（10 个）
+## 四、工具清单（11 个）
 
 | 工具 | 说明 | 关键参数 |
 |---|---|---|
@@ -96,11 +96,14 @@ doc2mind  →  command: doc2mind mcp
 | `ingest_text` | **文本直入**：把一段经验/笔记/结论直接写入知识库，不依赖文件 | `text`（必填）、`title`、`collection`、`force` |
 | `get_job` | 查询异步任务（ingest_job / reindex）进度 | `job_id` |
 | `search` | 混合检索（BM25 + 向量 RRF 融合），返回 Top-K 命中分块 | `query`（必填）、`collection`、`top_k` |
+| `chat` | **RAG 对话**：检索知识库 + 调用 LLM 生成回答，带来源引用，支持多轮对话 | `query`（必填）、`collection`、`top_k`、`chat_id` |
 | `list_docs` | 列出已摄入文档及元数据（分块数、大小、格式） | `collection`、`limit` |
 | `remove_doc` | 删除单个文档及其全部分块与向量 | `target`（文档 ID 或路径） |
 | `quality_check` | 知识库质量报告（集合分布、分块统计 + `warnings` 质量告警，如 0 分块 / >50MB 大文档） | `collection` |
 | `convert_file` | 单个文档转 Markdown / JSON / TXT / HTML，返回内容 | `input_path`、`output_format` |
 | `reindex` | 重建指定集合的向量索引（可换嵌入模型），返回 `job_id` | `collection`、`model` |
+
+> `chat` 工具需要先配置 LLM（`DOC2MIND_LLM_PROVIDER` + 相关密钥），详见下方「RAG 对话配置」。
 
 ## 五、给 agent 的提示词模板
 
@@ -127,6 +130,37 @@ doc2mind  →  command: doc2mind mcp
 | 嵌入模型 | 默认 `BAAI/bge-small-zh-v1.5`，可用 `DOC2MIND_EMBED_MODEL` 环境变量覆盖 |
 
 换嵌入模型后，旧向量与新模型维度不一致，需用 `reindex` 重建索引。
+
+### RAG 对话配置
+
+`chat` 工具需要配置 LLM 才能使用。两种方式任选：
+
+**方式一：OpenAI 兼容 API（DeepSeek / Qwen / OpenAI 通用）**
+
+```bash
+# 环境变量（临时）
+set DOC2MIND_LLM_PROVIDER=openai
+set DOC2MIND_LLM_API_KEY=sk-your-api-key
+set DOC2MIND_LLM_MODEL=deepseek-chat
+set DOC2MIND_LLM_BASE_URL=https://api.deepseek.com/v1
+
+# 或持久化到 config.toml
+doc2mind config --set llm_provider=openai --set llm_api_key=sk-xxx --set llm_model=deepseek-chat
+```
+
+**方式二：本地 Ollama（完全离线）**
+
+```bash
+# 1. 安装 Ollama 并拉取模型：ollama pull llama3.2
+# 2. 设置环境变量
+set DOC2MIND_LLM_PROVIDER=ollama
+set DOC2MIND_LLM_MODEL=llama3.2
+
+# 或持久化
+doc2mind config --set llm_provider=ollama --set llm_model=llama3.2
+```
+
+支持的 `llm_model` 示例：`deepseek-chat`、`gpt-4o-mini`、`qwen-plus`、`llama3.2`、`qwen2.5` 等。
 
 ## 七、常见问题
 

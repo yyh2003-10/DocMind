@@ -211,6 +211,48 @@
 
 ---
 
+### `POST /v1/chat`
+
+RAG 对话问答：从知识库检索相关文档，调用 LLM 生成回答并标注引用来源。支持多轮对话（传 `chatId` 延续会话）。
+
+需要先配置 LLM：`DOC2MIND_LLM_PROVIDER=openai` + `DOC2MIND_LLM_API_KEY` + `DOC2MIND_LLM_MODEL`，或 `DOC2MIND_LLM_PROVIDER=ollama`。
+
+**请求体：**
+```jsonc
+{
+  "query": "项目架构是什么？",
+  "collection": "papers",          // 默认 "default"
+  "topK": 5,                       // 引用 chunk 数，默认 5，上限 20
+  "chatId": "chat-abc123"          // 多轮对话时传同一值，不传则新建会话
+}
+```
+
+**响应 200：**
+```jsonc
+{
+  "answer": "根据资料，DocMind 采用分层架构...",
+  "chatId": "chat-abc123",         // 首次自动生成，后续追问传同一值
+  "model": "deepseek-chat",
+  "provider": "openai",
+  "totalChunks": 5,
+  "elapsedMs": 2340,
+  "sources": [                     // 引用来源列表
+    {
+      "index": 1,
+      "source": "report.pdf",
+      "format": "pdf",
+      "page": 3,
+      "heading": "架构概述",
+      "score": 0.8723
+    }
+  ]
+}
+```
+
+**响应 400 `RAG_ERROR`：** LLM 未配置或配置错误。
+
+---
+
 ### `GET /v1/documents`
 
 列出文档。支持分页与按集合过滤。
@@ -276,6 +318,21 @@
 - `collection` (string, 可选) — 限定单个集合，不传则全部
 
 **响应 200：** 见上文 `Stats` 模型。
+
+---
+
+### `POST /v1/collections`
+
+创建空知识库集合（占位登记，使集合出现在列表并可被检索/对话勾选）。幂等：集合已存在则跳过。
+
+**请求体：**
+```json
+{ "name": "my_kb" }
+```
+
+**约束：** `name` 仅允许中英文、数字、空格、下划线、连字符（空格会被替换为下划线），为空或含其他字符返回 400。
+
+**响应 200：** 见上文 `Stats` 模型（返回创建后的最新集合概览）。
 
 ---
 

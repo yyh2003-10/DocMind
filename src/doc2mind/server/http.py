@@ -4,6 +4,7 @@
     GET    /v1/health
     POST   /v1/ingest
     POST   /v1/search
+    POST   /v1/chat
     GET    /v1/documents         (列表 + 分页)
     GET    /v1/documents/{id}
     DELETE /v1/documents/{id}
@@ -38,9 +39,9 @@ from doc2mind.core.converter import (
 from doc2mind.core.embedder import get_embedder
 from doc2mind.core.loader.detect import get_loader, is_supported
 from doc2mind.core.pipeline import ingest_path, ingest_text
+from doc2mind.core.rag import RagError, rag_answer, rag_answer_stream
 from doc2mind.core.retriever.search import Retriever
 from doc2mind.core.store.sqlite_vec import VectorStore
-
 
 # --- Pydantic 模型（请求 / 响应）---
 try:
@@ -57,6 +58,21 @@ def _now_iso() -> str:
 
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+# 搜索结果单条 content 上限：防止超大 chunk 文本拖垮前端渲染/内存
+_SEARCH_CONTENT_MAX = 2000
+
+
+def _truncate_search_content(content: str, max_len: int = _SEARCH_CONTENT_MAX) -> str:
+    """截断搜索结果 content 到上限（避免超大文本块）。
+
+    chunk 可能高达数千 token，直接全量下发会导致 WPF 侧渲染与内存压力；
+    详情可后续通过 GET /v1/documents/{id}（chunk_content_length）取全文。
+    """
+    if content is None or len(content) <= max_len:
+        return content
+    return content[:max_len] + "…（内容过长，已截断）"
 
 
 # --- 请求体 ---
@@ -76,6 +92,13 @@ class IngestTextRequest(BaseModel):
     title: str | None = None
     collection: str | None = "default"
     force: bool = False
+
+    model_config = {"populate_by_name": True}
+
+
+class CreateCollectionRequest(BaseModel):
+    """创建知识库集合（空集合占位，使其出现在集合列表并可被检索/对话勾选）。"""
+    name: str
 
     model_config = {"populate_by_name": True}
 
@@ -110,7 +133,51 @@ class ReindexRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-# 设置页可调的后端运行参数（嵌入 + 分块 + 检索）。
+class ChatRequest(BaseModel):
+    """RAG 对话请求。"""
+    query: str
+    collection: str = "default"
+    top_k: int = Field(5, ge=1, le=20, validation_alias="topK")
+    chat_id: str | None = Field(None, validation_alias="chatId")
+    collections: list[str] | None = Field(None, validation_alias="collections")
+
+    model_config = {"populate_by_name": True}
+
+
+class SourceRefDTO(BaseModel):
+    """引用来源。"""
+    index: int
+    source: str
+    format: str
+    page: int | None = None
+    heading: str | None = None
+    score: float = 0.0
+
+
+class ChatResponse(BaseModel):
+    """RAG 对话响应。"""
+    answer: str
+    chat_id: str
+    model: str
+    provider: str
+    total_chunks: int = 0
+    elapsed_ms: int = 0
+    sources: list[SourceRefDTO] = []
+
+
+class StreamChunk(BaseModel):
+    """SSE 流式输出单元（token 或元数据）。"""
+    token: str | None = None
+    done: bool = False
+    chat_id: str | None = None
+    model: str | None = None
+    provider: str | None = None
+    total_chunks: int = 0
+    elapsed_ms: int = 0
+    sources: list[SourceRefDTO] = []
+
+
+# 设置页可调的后端运行参数（嵌入 + 分块 + 检索 + LLM）。
 class ConfigUpdate(BaseModel):
     embed_model: str | None = None
     # 本地模型目录（DOC2MIND_EMBED_MODEL_PATH）；空字符串 = 清除本地模型
@@ -122,6 +189,16 @@ class ConfigUpdate(BaseModel):
     chunk_max_chars: int | None = None
     search_top_k: int | None = None
     rrf_k: int | None = None
+    # --- LLM / RAG 对话 ---
+    llm_provider: str | None = None
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
+    llm_model: str | None = None
+    llm_temperature: float | None = None
+    llm_max_tokens: int | None = None
+    rag_top_k: int | None = None
+    rag_min_score: float | None = None
+    llm_timeout: float | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -146,6 +223,17 @@ class ConfigResponse(BaseModel):
     chunk_max_chars: int
     search_top_k: int
     rrf_k: int
+    # --- LLM / RAG 对话 ---
+    llm_provider: str = "none"
+    llm_base_url: str | None = None
+    llm_model: str = ""
+    llm_temperature: float = 0.7
+    llm_max_tokens: int = 2048
+    rag_top_k: int = 5
+    rag_min_score: float = 0.0
+    llm_timeout: float = 0.0
+    # API key 不回传明文（前端只显示是否已配置），避免泄露到 WPF 日志/响应体
+    llm_api_key_configured: bool = False
     # 可选提示（如切换模型后需要重建索引）；null 表示无提示
     notice: str | None = None
 
@@ -204,6 +292,8 @@ class SearchResponse(BaseModel):
     total: int
     elapsed_ms: int
     hits: list[SearchHitDTO]
+    # True = 嵌入服务不可用，本次结果为纯 BM25 降级检索
+    degraded: bool = False
 
 
 class ListDocumentsResponse(BaseModel):
@@ -274,6 +364,9 @@ class _AppState:
         self._lock = threading.Lock()
         # jobs 由 reindex 后台线程写、GET /v1/jobs 事件循环线程读，需独立锁
         self._jobs_lock = threading.Lock()
+        # 全局写锁：互斥 ingest / delete / reindex，防止 reindex 重建向量表
+        # （DROP vec_chunks + 回填）期间并发写落到不存在的表上。
+        self._write_lock = threading.Lock()
 
     def ensure_open(self) -> VectorStore:
         # 双检锁：避免并发首次请求重复创建 store/embedder
@@ -331,7 +424,7 @@ def create_app() -> Any:
             embed_providers=providers,
         )
 
-    # --- GET/POST /v1/config（设置页：嵌入模型 + 分块 + 检索参数）---
+    # --- GET/POST /v1/config（设置页：嵌入模型 + 分块 + 检索 + LLM）---
     @app.get("/v1/config", response_model=ConfigResponse)
     async def get_config() -> ConfigResponse:
         s = state.settings
@@ -344,6 +437,15 @@ def create_app() -> Any:
             chunk_max_chars=s.chunk_max_chars,
             search_top_k=s.search_top_k,
             rrf_k=s.rrf_k,
+            llm_provider=s.llm_provider,
+            llm_base_url=s.llm_base_url,
+            llm_model=s.llm_model,
+            llm_temperature=s.llm_temperature,
+            llm_max_tokens=s.llm_max_tokens,
+            rag_top_k=s.rag_top_k,
+            rag_min_score=s.rag_min_score,
+            llm_timeout=s.llm_timeout,
+            llm_api_key_configured=bool(s.llm_api_key),
         )
 
     @app.post("/v1/config", response_model=ConfigResponse)
@@ -389,6 +491,15 @@ def create_app() -> Any:
             chunk_max_chars=s.chunk_max_chars,
             search_top_k=s.search_top_k,
             rrf_k=s.rrf_k,
+            llm_provider=s.llm_provider,
+            llm_base_url=s.llm_base_url,
+            llm_model=s.llm_model,
+            llm_temperature=s.llm_temperature,
+            llm_max_tokens=s.llm_max_tokens,
+            rag_top_k=s.rag_top_k,
+            rag_min_score=s.rag_min_score,
+            llm_timeout=s.llm_timeout,
+            llm_api_key_configured=bool(s.llm_api_key),
             notice=notice,
         )
 
@@ -407,14 +518,19 @@ def create_app() -> Any:
         # 复用 _AppState 的单例 store，避免每次请求新建 sqlite 连接
         # 触发 WAL 锁冲突。嵌入是 CPU 密集，用线程避免阻塞事件循环。
         store = state.ensure_open()
-        summary = await asyncio.to_thread(
-            ingest_path,
-            path=p,
-            collection=collection,
-            recursive=req.recursive,
-            force=req.force,
-            store=store,
-        )
+
+        def _do_ingest():
+            # 写互斥：与 delete / reindex 串行，避免并发写冲突
+            with state._write_lock:
+                return ingest_path(
+                    path=p,
+                    collection=collection,
+                    recursive=req.recursive,
+                    force=req.force,
+                    store=store,
+                )
+
+        summary = await asyncio.to_thread(_do_ingest)
         return IngestResponse(
             ingested=[
                 IngestResultDTO(**r.__dict__) for r in summary.results
@@ -460,6 +576,30 @@ def create_app() -> Any:
             failed_details=failed_details,
         )
 
+    # --- POST /v1/collections（创建空知识库集合） ---
+    @app.post("/v1/collections", response_model=StatsResponse)
+    async def create_collection(req: CreateCollectionRequest) -> StatsResponse:
+        name = (req.name or "").strip()
+        if not name:
+            raise _api_error("BAD_REQUEST", "集合名不能为空", 400)
+        # 仅允许安全字符：字母/数字/下划线/连字符/中文，禁止路径与 SQL 注入风险字符
+        if not all(c.isalnum() or c in "_- " or ("\u4e00" <= c <= "\u9fff") for c in name):
+            raise _api_error(
+                "BAD_REQUEST",
+                "集合名仅允许中英文、数字、空格、下划线、连字符",
+                400,
+            )
+        name = name.replace(" ", "_")
+
+        store = state.ensure_open()
+        await asyncio.to_thread(store.ensure_collection, name)
+        stats = await asyncio.to_thread(store.get_stats)
+        return StatsResponse(
+            total_documents=stats.total_documents,
+            total_chunks=stats.total_chunks,
+            collections={k: list(v) for k, v in stats.collections.items()},
+        )
+
     # --- POST /v1/ingest/job（异步摄入：大目录不阻塞请求，返回 job_id 轮询进度） ---
     @app.post("/v1/ingest/job", response_model=JobStatus)
     async def ingest_job(req: IngestRequest) -> JobStatus:
@@ -487,14 +627,16 @@ def create_app() -> Any:
 
         def _run_ingest_job() -> None:
             try:
-                summary = ingest_path(
-                    path=p,
-                    collection=collection,
-                    recursive=req.recursive,
-                    force=req.force,
-                    store=store,
-                    progress=lambda done, total: _update_ingest_job(state, job, done, total),
-                )
+                # 写互斥：整个任务持锁，避免与 delete / reindex 并发写
+                with state._write_lock:
+                    summary = ingest_path(
+                        path=p,
+                        collection=collection,
+                        recursive=req.recursive,
+                        force=req.force,
+                        store=store,
+                        progress=lambda done, total: _update_ingest_job(state, job, done, total),
+                    )
                 with state._jobs_lock:
                     job.status = "completed"
                     job.progress = 1.0
@@ -534,6 +676,7 @@ def create_app() -> Any:
             query=req.query,
             total=len(hits),
             elapsed_ms=stats.elapsed_ms,
+            degraded=stats.degraded,
             hits=[
                 SearchHitDTO(
                     rank=h.rank,
@@ -545,11 +688,76 @@ def create_app() -> Any:
                     format=h.chunk.format,
                     page=h.chunk.page,
                     heading=h.chunk.heading,
-                    content=h.chunk.content,
+                    content=_truncate_search_content(h.chunk.content),
                 )
                 for h in hits
             ],
         )
+
+    # --- POST /v1/chat ---
+    @app.post("/v1/chat", response_model=ChatResponse)
+    async def chat(req: ChatRequest) -> ChatResponse:
+        """RAG 对话问答：检索知识库 + 调用 LLM 生成回答。"""
+        try:
+            answer = await asyncio.to_thread(
+                rag_answer,
+                req.query,
+                req.collection,
+                req.top_k,
+                req.chat_id,
+                collections=req.collections,
+            )
+        except RagError as e:
+            raise _api_error("RAG_ERROR", str(e), 400) from e
+        except Exception as e:  # noqa: BLE001
+            raise _api_error("INTERNAL", f"对话失败: {e}", 500) from e
+
+        return ChatResponse(
+            answer=answer.answer,
+            chat_id=answer.chat_id or "",
+            model=answer.model,
+            provider=answer.provider,
+            total_chunks=answer.total_chunks,
+            elapsed_ms=answer.elapsed_ms,
+            sources=[
+                SourceRefDTO(
+                    index=s.index,
+                    source=s.source,
+                    format=s.format,
+                    page=s.page,
+                    heading=s.heading,
+                    score=s.score,
+                )
+                for s in answer.sources
+            ],
+        )
+
+    # --- POST /v1/chat/stream (SSE) ---
+    @app.post("/v1/chat/stream")
+    async def chat_stream(req: ChatRequest) -> Any:
+        """RAG 流式对话：先检索，再 SSE 逐 token 输出 LLM 回答。"""
+        async def event_generator() -> Any:
+            loop = asyncio.get_event_loop()
+            try:
+                # 在独立线程中运行同步生成器，避免阻塞事件循环
+                tokens = await loop.run_in_executor(
+                    None, lambda: list(rag_answer_stream(
+                        req.query, req.collection, req.top_k, req.chat_id,
+                        collections=req.collections,
+                    )),
+                )
+                for chunk_json in tokens:
+                    yield f"data: {chunk_json}\n\n"
+            except RagError as e:
+                yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            except Exception as e:  # noqa: BLE001
+                yield f"data: {json.dumps({'error': f'对话失败: {e}'}, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
 
     # --- GET /v1/documents ---
     @app.get("/v1/documents", response_model=ListDocumentsResponse)
@@ -627,7 +835,13 @@ def create_app() -> Any:
     @app.delete("/v1/documents/{doc_id}", response_model=DeleteResponse)
     async def delete_document(doc_id: str) -> DeleteResponse:
         store = state.ensure_open()
-        n = store.delete_document(doc_id)
+
+        def _do_delete() -> int:
+            # 写互斥：与 ingest / reindex 串行
+            with state._write_lock:
+                return store.delete_document(doc_id)
+
+        n = await asyncio.to_thread(_do_delete)
         if n < 0:
             raise _api_error("NOT_FOUND", f"文档不存在: {doc_id}", 404)
         return DeleteResponse(id=doc_id, deleted_chunks=n)
@@ -709,7 +923,7 @@ def create_app() -> Any:
 
         # 同步的 loader.extract + convert_document 移到线程池，
         # 避免大 PDF 解析阻塞事件循环导致前端 HttpClient 超时误判"失败"
-        def _do_convert() -> tuple["LoadedDocument", str]:
+        def _do_convert() -> tuple[LoadedDocument, str]:
             try:
                 loader = get_loader(p)
                 doc = loader.extract(p)
@@ -789,65 +1003,67 @@ def create_app() -> Any:
             state.jobs[job_id] = job
 
         def _run_reindex() -> None:
-            try:
-                pairs = store.list_chunk_contents(collection)
-                total = len(pairs)
-                with state._jobs_lock:
-                    job.total = total
-                if total == 0:
+            # 写互斥：重建向量表（DROP + 回填）期间禁止 ingest/delete 并发写
+            with state._write_lock:
+                try:
+                    pairs = store.list_chunk_contents(collection)
+                    total = len(pairs)
+                    with state._jobs_lock:
+                        job.total = total
+                    if total == 0:
+                        with state._jobs_lock:
+                            job.status = "completed"
+                            job.progress = 1.0
+                            job.finished_at = _now_iso()
+                        return
+
+                    embedder = target_embedder
+                    if embedder is None:
+                        raise RuntimeError("嵌入器未初始化")
+                    # 分批重新嵌入，逐批更新向量，避免一次加载全部结果。
+                    # need_rebuild（维度变化）时不能原地 update_embeddings（表结构还是旧维度），
+                    # 先收集全部 (chunk_id, embedding)，最后一次性重建向量表并回填。
+                    BATCH = 32
+                    processed = 0
+                    rebuild_pairs: list[tuple[int, object]] = []
+                    for i in range(0, total, BATCH):
+                        batch = pairs[i : i + BATCH]
+                        texts = [content for _, content in batch]
+                        embeddings = list(embedder.embed_texts(texts))
+                        if len(embeddings) != len(batch):
+                            raise RuntimeError(
+                                f"嵌入数量 ({len(embeddings)}) 与批次 ({len(batch)}) 不一致"
+                            )
+                        new_pairs = [
+                            (cid, emb) for (cid, _), emb in zip(batch, embeddings, strict=False)
+                        ]
+                        if need_rebuild:
+                            rebuild_pairs.extend(new_pairs)
+                        else:
+                            store.update_embeddings(new_pairs)
+                        processed += len(batch)
+                        with state._jobs_lock:
+                            job.processed = processed
+                            job.progress = round(processed / total, 4)
+
+                    if need_rebuild:
+                        # 维度变化：重建向量表（drop + 按新维度建表）并回填全部向量
+                        store.rebuild_chunk_embeddings(rebuild_pairs, embedder.dimension)
+
                     with state._jobs_lock:
                         job.status = "completed"
                         job.progress = 1.0
                         job.finished_at = _now_iso()
-                    return
 
-                embedder = target_embedder
-                if embedder is None:
-                    raise RuntimeError("嵌入器未初始化")
-                # 分批重新嵌入，逐批更新向量，避免一次加载全部结果。
-                # need_rebuild（维度变化）时不能原地 update_embeddings（表结构还是旧维度），
-                # 先收集全部 (chunk_id, embedding)，最后一次性重建向量表并回填。
-                BATCH = 32
-                processed = 0
-                rebuild_pairs: list[tuple[int, object]] = []
-                for i in range(0, total, BATCH):
-                    batch = pairs[i : i + BATCH]
-                    texts = [content for _, content in batch]
-                    embeddings = list(embedder.embed_texts(texts))
-                    if len(embeddings) != len(batch):
-                        raise RuntimeError(
-                            f"嵌入数量 ({len(embeddings)}) 与批次 ({len(batch)}) 不一致"
-                        )
-                    new_pairs = [
-                        (cid, emb) for (cid, _), emb in zip(batch, embeddings)
-                    ]
-                    if need_rebuild:
-                        rebuild_pairs.extend(new_pairs)
-                    else:
-                        store.update_embeddings(new_pairs)
-                    processed += len(batch)
+                    # 换模型重建成功后，把全局 embedder 切换为目标模型，
+                    # 使后续搜索 / 导入也使用新模型。
+                    if target_embedder is not state.embedder:
+                        state.embedder = target_embedder
+                except Exception as e:  # noqa: BLE001
                     with state._jobs_lock:
-                        job.processed = processed
-                        job.progress = round(processed / total, 4)
-
-                if need_rebuild:
-                    # 维度变化：重建向量表（drop + 按新维度建表）并回填全部向量
-                    store.rebuild_chunk_embeddings(rebuild_pairs, embedder.dimension)
-
-                with state._jobs_lock:
-                    job.status = "completed"
-                    job.progress = 1.0
-                    job.finished_at = _now_iso()
-
-                # 换模型重建成功后，把全局 embedder 切换为目标模型，
-                # 使后续搜索 / 导入也使用新模型。
-                if target_embedder is not state.embedder:
-                    state.embedder = target_embedder
-            except Exception as e:  # noqa: BLE001
-                with state._jobs_lock:
-                    job.status = "failed"
-                    job.error = str(e)
-                    job.finished_at = _now_iso()
+                        job.status = "failed"
+                        job.error = str(e)
+                        job.finished_at = _now_iso()
 
         threading.Thread(target=_run_reindex, daemon=True).start()
         return job
@@ -889,7 +1105,6 @@ def create_app() -> Any:
 def _api_error(code: str, message: str, status: int) -> HTTPException:
     """构造统一错误响应。"""
     from fastapi import HTTPException
-    from fastapi.responses import JSONResponse
 
     return HTTPException(
         status_code=status,

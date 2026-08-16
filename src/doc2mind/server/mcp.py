@@ -1,4 +1,4 @@
-"""MCP Server — 暴露 7 个工具给 Cursor / Claude Desktop / Windsurf 等 AI 工具。
+"""MCP Server — 暴露 11 个工具给 Cursor / Claude Desktop / Windsurf 等 AI 工具。
 
 传输方式：stdio（MCP 默认）
 
@@ -10,6 +10,7 @@
     quality_check  collection="default"
     convert_file   input_path, output_format="md"
     reindex        collection="default", model=None
+    chat           query, collection="default", top_k=5, chat_id=None
 
 启动：
     doc2mind mcp
@@ -35,11 +36,10 @@ from doc2mind.core.converter import (
 )
 from doc2mind.core.embedder import get_embedder
 from doc2mind.core.loader.detect import get_loader, is_supported
-from doc2mind.core.models import LoadedDocument
 from doc2mind.core.pipeline import ingest_path, ingest_text
+from doc2mind.core.rag import RagError, rag_answer
 from doc2mind.core.retriever.search import Retriever
 from doc2mind.core.store.sqlite_vec import VectorStore
-
 
 # --- 模块级异步任务存储（MCP 进程内，供 ingest_job / reindex / get_job 用） ---
 _JOB_LOCK = threading.Lock()
@@ -441,7 +441,7 @@ def _tool_reindex(
                         f"嵌入数量 ({len(embeddings)}) 与批次 ({len(batch)}) 不一致"
                     )
                 new_pairs = [
-                    (cid, emb) for (cid, _), emb in zip(batch, embeddings)
+                    (cid, emb) for (cid, _), emb in zip(batch, embeddings, strict=False)
                 ]
                 if need_rebuild:
                     rebuild_pairs.extend(new_pairs)
@@ -470,6 +470,50 @@ def _tool_reindex(
         "job_id": job_id,
         "status": "running",
         "message": "重建索引任务已提交，用 get_job 查询进度。",
+    })
+
+
+def _tool_chat(
+    query: str,
+    collection: str = "default",
+    top_k: int = 5,
+    chat_id: str | None = None,
+    collections: list[str] | None = None,
+) -> str:
+    """RAG 对话问答：检索知识库 → 调用 LLM 生成回答，带来源引用。
+
+    chat_id 传同一值可多轮追问；不传则新建会话。
+    collections 支持多选知识库集合，优先于 collection。
+    """
+    try:
+        answer = rag_answer(
+            query=query,
+            collection=collection,
+            top_k=top_k,
+            chat_id=chat_id,
+            collections=collections,
+        )
+    except RagError as e:
+        return _error("RAG_ERROR", str(e))
+
+    return _ok({
+        "answer": answer.answer,
+        "chat_id": answer.chat_id,
+        "model": answer.model,
+        "provider": answer.provider,
+        "total_chunks": answer.total_chunks,
+        "elapsed_ms": answer.elapsed_ms,
+        "sources": [
+            {
+                "index": s.index,
+                "source": s.source,
+                "format": s.format,
+                "page": s.page,
+                "heading": s.heading,
+                "score": s.score,
+            }
+            for s in answer.sources
+        ],
     })
 
 
@@ -597,6 +641,21 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "chat",
+        "description": "RAG 对话问答：从知识库检索相关文档，结合多轮对话上下文，调用大模型生成回答并标注引用来源。需要先配置 LLM（DOC2MIND_LLM_PROVIDER + 相关密钥）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "用户的问题。"},
+                    "collection": {"type": "string", "default": "default", "description": "检索的集合名称，default 表示默认集合。"},
+                    "collections": {"type": "array", "items": {"type": "string"}, "description": "多选知识库集合名列表，优先于 collection。"},
+                    "top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": 20, "description": "检索引用的文档片段数量。"},
+                    "chat_id": {"type": "string", "description": "会话 ID（多轮对话时传同一值，不传则新建会话）。"},
+                },
+                "required": ["query"],
+            },
+    },
 ]
 
 
@@ -687,6 +746,7 @@ def _dispatch_tool(name: str, args: dict[str, Any]) -> str:
         "quality_check": _tool_quality_check,
         "convert_file": _tool_convert_file,
         "reindex": _tool_reindex,
+        "chat": _tool_chat,
     }
     handler = handlers.get(name)
     if handler is None:
@@ -724,7 +784,7 @@ def run_mcp_server() -> None:
         except Exception:  # noqa: BLE001 — 诊断钩子失败不影响主流程
             pass
 
-    req_queue: "queue.Queue[str | None]" = queue.Queue()
+    req_queue: queue.Queue[str | None] = queue.Queue()
 
     # 预热：主线程提前触发 embedder 构造（FastEmbedEmbedder.__init__ 里
     # _select_providers() 会 import onnxruntime/numpy）。若留到首个工具调用
