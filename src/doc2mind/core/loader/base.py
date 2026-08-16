@@ -16,6 +16,20 @@ class UnsupportedFormatError(LoaderError):
     """不支持的文件格式。"""
 
 
+def make_source(path: Path) -> str:
+    """生成文档的稳定 source 标识：解析后的绝对路径。
+
+    库内文档以 `UNIQUE(collection, source)` 做替换语义（重新导入同文件时
+    先删旧再写新）。历史上 source 只取文件名，导致不同目录的同名文件
+    （如 A/readme.md 与 B/readme.md）互相覆盖、旧内容静默丢失 —— 因此
+    改为包含完整路径。相对路径导入时 resolve() 保证同一文件得到同一 source。
+    """
+    try:
+        return str(path.resolve())
+    except OSError:  # 路径不可解析（如已删除）时退回 absolute()
+        return str(path.absolute())
+
+
 class Loader(ABC):
     """加载器抽象基类。
 

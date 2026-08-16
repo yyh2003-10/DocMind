@@ -22,7 +22,7 @@ import io
 import tempfile
 from pathlib import Path
 
-from doc2mind.core.loader.base import Loader, LoaderError
+from doc2mind.core.loader.base import Loader, LoaderError, make_source
 from doc2mind.core.models import (
     DocFormat,
     DocumentElement,
@@ -106,7 +106,7 @@ class PdfLoader(Loader):
                 elements = _ocr_fallback(path, page_no)
 
             return LoadedDocument(
-                source=path.name,
+                source=make_source(path),
                 format=DocFormat.PDF,
                 elements=elements,
                 page_count=page_no if page_no > 0 else None,

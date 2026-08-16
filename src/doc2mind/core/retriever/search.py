@@ -69,6 +69,10 @@ class SearchStats:
     vector_candidates: int
     bm25_candidates: int
     degraded: bool = False  # True = 嵌入服务不可用，已降级为纯 BM25
+    # 降级原因（面向用户的中文提示；degraded=True 时非空）
+    degraded_reason: str | None = None
+    # 其他提示（如 min_score 超出 RRF 分数范围被忽略）
+    message: str | None = None
 
 
 class Retriever:
@@ -113,15 +117,18 @@ class Retriever:
 
         t0 = time.perf_counter()
         degraded = False
+        degraded_reason: str | None = None
+        message: str | None = None
         try:
             # 1. 嵌入查询
             # 降级①：嵌入服务不可用（API key 缺失/网络失败/模型加载失败）时
             # 跳过向量路，仅用 BM25 全文检索，避免整个搜索 500。
-            # 由调用方通过 stats.degraded 提示用户当前为降级模式。
+            # 由调用方通过 stats.degraded / degraded_reason 提示用户降级原因。
             try:
                 query_vec = self.embedder.embed_query(query)
-            except EmbedderError:
+            except EmbedderError as e:
                 degraded = True
+                degraded_reason = f"嵌入服务不可用（{e}），本次为纯 BM25 检索，效果可能下降"
                 query_vec = None
 
             # 2. 向量检索（取 top_k * 3 候选）
@@ -138,8 +145,16 @@ class Retriever:
                     vec_scored = [
                         (cid, _distance_to_score(dist), dist) for cid, dist in vec_hits
                     ]
-                except StoreError:
+                except StoreError as e:
                     degraded = True
+                    low = str(e).lower()
+                    if "dim" in low or "dimension" in low or "维" in str(e):
+                        degraded_reason = (
+                            "向量维度与索引不一致（换嵌入模型后未重建索引），"
+                            "本次为纯 BM25 检索；请在设置页执行「重建索引」"
+                        )
+                    else:
+                        degraded_reason = f"向量检索不可用（{e}），本次为纯 BM25 检索"
                     vec_scored = []
 
             # 3. BM25 检索
@@ -159,6 +174,16 @@ class Retriever:
             )
 
             # 5. 取 top_k，过滤 min_score
+            # min_score 过滤的是 RRF 融合分（量纲 ≈ 2/(k+1)，k=60 时 ≈ 0.033），
+            # 用户直觉填 0.5 会过滤掉全部结果 —— 越界时忽略并提示，而不是静默清空。
+            rrf_ceiling = 2.0 / (self.rrf_k + 1)
+            if min_score > rrf_ceiling:
+                message = (
+                    f"min_score={min_score:g} 超出 RRF 融合分数范围"
+                    f"（0 ~ {rrf_ceiling:.4f}），已忽略该过滤条件；"
+                    "RRF 分数普遍很小，请参考结果里的 score 值设置"
+                )
+                min_score = 0.0
             fused.sort(key=lambda x: x[1], reverse=True)
             top_hits: list[tuple[int, float, float, float]] = []
             for cid, rrf_score, v_score, b_score in fused:
@@ -212,6 +237,8 @@ class Retriever:
                 vector_candidates=len(vec_scored),
                 bm25_candidates=len(bm25_scored),
                 degraded=degraded,
+                degraded_reason=degraded_reason,
+                message=message,
             )
             return hits, stats
 

@@ -11,6 +11,27 @@ from typing import Iterator
 # 默认 LLM 调用超时（秒），防 API 挂起阻塞请求线程
 DEFAULT_TIMEOUT = 120
 
+# 主流 LLM 网关对输出 token 上限的常见硬限制（sensenova 等严格校验网关
+# 实测 [1, 65536]）。超出时选择不传该参数，由服务端取模型默认上限。
+MAX_TOKENS_CEILING = 65536
+
+
+def sanitize_max_tokens(value: int | None) -> int | None:
+    """max_tokens 合法性归一：超上限返回 None（不传，由服务端取默认）。
+
+    用户常把「上下文窗口」（如 256000）误当输出上限填进 llm_max_tokens，
+    会被严格校验的网关 400 拒绝（field MaxTokens invalid）。返回 None 时
+    调用方应省略该参数；对必填该字段的 provider（如 Anthropic），应退回
+    一个该 provider 一定接受的安全默认值。
+    """
+    if value is None:
+        return None
+    if value < 1:
+        return 1
+    if value > MAX_TOKENS_CEILING:
+        return None
+    return value
+
 
 class LLMError(Exception):
     """LLM 调用异常。"""

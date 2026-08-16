@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from doc2mind.core.loader.base import Loader, LoaderError
+from doc2mind.core.loader.base import Loader, LoaderError, make_source
 from doc2mind.core.models import (
     DocFormat,
     DocumentElement,
@@ -402,7 +402,7 @@ class ImageLoader(Loader):
             elements.extend(_region_to_paragraph(regions))
 
             return LoadedDocument(
-                source=path.name,
+                source=make_source(path),
                 format=DocFormat.IMAGE,
                 elements=elements,
                 page_count=1,

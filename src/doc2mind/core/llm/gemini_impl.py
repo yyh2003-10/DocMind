@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Iterator
 
-from doc2mind.core.llm.base import LLMClient, LLMError
+from doc2mind.core.llm.base import LLMClient, LLMError, sanitize_max_tokens
 
 _DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"
 
@@ -88,12 +88,18 @@ class GeminiClient(LLMClient):
         max_tokens: int | None,
     ) -> dict:
         system, contents = _to_contents(messages)
+        gen_config: dict = {
+            "temperature": temperature if temperature is not None else self._temperature,
+        }
+        # 超上限（用户误填上下文窗口大小）时不传，由 Gemini 取模型默认上限
+        mt = sanitize_max_tokens(
+            max_tokens if max_tokens is not None else self._max_tokens
+        )
+        if mt is not None:
+            gen_config["maxOutputTokens"] = mt
         payload: dict = {
             "contents": contents,
-            "generationConfig": {
-                "temperature": temperature if temperature is not None else self._temperature,
-                "maxOutputTokens": max_tokens if max_tokens is not None else self._max_tokens,
-            },
+            "generationConfig": gen_config,
         }
         if system is not None:
             payload["systemInstruction"] = system

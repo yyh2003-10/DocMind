@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import logging
 import threading
 import time
 import uuid
@@ -33,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from doc2mind.core.config import get_settings
+from doc2mind.core.config import get_config_load_error, get_settings
 from doc2mind.core.converter import (
     SUPPORTED_FORMATS,
     ConversionError,
@@ -47,10 +48,13 @@ from doc2mind.core.llm import (
     get_llm_client,
 )
 from doc2mind.core.loader.detect import get_loader, is_supported
+from doc2mind.core.logging_setup import setup_logging
 from doc2mind.core.pipeline import ingest_path, ingest_text
 from doc2mind.core.rag import RagError, rag_answer, rag_answer_stream
 from doc2mind.core.retriever.search import Retriever
 from doc2mind.core.store.sqlite_vec import VectorStore
+
+logger = logging.getLogger(__name__)
 
 # --- Pydantic 模型（请求 / 响应）---
 try:
@@ -225,19 +229,25 @@ class LlmTestRequest(BaseModel):
     model: str | None = None
     # 测试超时秒数（连接测试宜短，避免长时间挂起）
     timeout: float = Field(15.0, gt=0, le=120)
+    # True = 走流式接口（stream_chat）测试：流式特有的问题（SSE 解析、
+    # chunk delta 格式）只有真流式路径才能暴露，对话页用的就是流式
+    stream: bool = False
 
     model_config = {"populate_by_name": True}
 
 
 # --- 响应体 ---
 class HealthResponse(BaseModel):
-    status: str = "ok"
+    status: str = "ok"  # ok | degraded（存储不可用时）
     version: str
     uptime_seconds: int
     # 嵌入推理能力上报（WPF 据此判断是否提示 GPU 加速）
     gpu_available: bool = False
     gpu_provider: str | None = None
     embed_providers: list[str] | None = None
+    # 真实健康探测：数据库连接 + sqlite-vec 扩展可用性
+    store_ok: bool = True
+    store_error: str | None = None
 
 
 class ConfigResponse(BaseModel):
@@ -263,6 +273,8 @@ class ConfigResponse(BaseModel):
     llm_api_key_configured: bool = False
     # 可选提示（如切换模型后需要重建索引）；null 表示无提示
     notice: str | None = None
+    # 启动时 config.toml 解析失败的告警（null = 配置文件正常）
+    config_error: str | None = None
 
 
 class LlmTestResponse(BaseModel):
@@ -334,6 +346,8 @@ class SearchResponse(BaseModel):
     hits: list[SearchHitDTO]
     # True = 嵌入服务不可用，本次结果为纯 BM25 降级检索
     degraded: bool = False
+    # 供前端直接展示的提示（空原因 / 降级原因 / min_score 误用提醒）；null = 无
+    message: str | None = None
 
 
 class ListDocumentsResponse(BaseModel):
@@ -436,6 +450,9 @@ def create_app() -> Any:
             "FastAPI 依赖未安装。请运行：pip install doc2mind[server]"
         ) from e
 
+    # 日志落盘（数据目录 logs/doc2mind.log，轮转）；失败退化 stderr 不阻断
+    setup_logging()
+
     app = FastAPI(
         title="DocMind",
         description="轻量向量知识库 HTTP API",
@@ -456,12 +473,29 @@ def create_app() -> Any:
         except Exception:  # noqa: BLE001 — 探测失败按 CPU 处理，不阻断健康检查
             providers = ["CPUExecutionProvider"]
         gpu = [p for p in providers if "CUDA" in p or "DML" in p]
+
+        # 真实健康探测：数据库连接 + vec0 扩展。此前只报 uptime，
+        # 数据库损坏 / sqlite-vec 缺失时依然绿灯 "ok"，用户"服务正常但全部报错"。
+        store_ok, store_error = True, None
+        try:
+            store = await asyncio.to_thread(state.ensure_open)
+            if not await asyncio.to_thread(store.ping):
+                store_ok = False
+                store_error = "数据库连接或 sqlite-vec 扩展不可用"
+        except Exception as e:  # noqa: BLE001
+            store_ok = False
+            store_error = f"存储打开失败: {e}"
+            logger.error("健康检查：存储探测失败：%s", e)
+
         return HealthResponse(
+            status="ok" if store_ok else "degraded",
             version="0.1.0",
             uptime_seconds=uptime,
             gpu_available=bool(gpu),
             gpu_provider=gpu[0] if gpu else None,
             embed_providers=providers,
+            store_ok=store_ok,
+            store_error=store_error,
         )
 
     # --- GET/POST /v1/config（设置页：嵌入模型 + 分块 + 检索 + LLM）---
@@ -487,6 +521,7 @@ def create_app() -> Any:
             rag_min_score=s.rag_min_score,
             llm_timeout=s.llm_timeout,
             llm_api_key_configured=bool(s.llm_api_key),
+            config_error=get_config_load_error(),
         )
 
     @app.post("/v1/config", response_model=ConfigResponse)
@@ -530,8 +565,9 @@ def create_app() -> Any:
                 s.embed_dim = new_dim
             if new_dim is not None and old_dim is not None and new_dim != old_dim:
                 notice = (
-                    f"嵌入模型维度由 {old_dim} 变为 {new_dim}，"
-                    "请对已有集合执行「重建索引」后检索才生效（设置页 → 文档管理）。"
+                    f"嵌入模型维度由 {old_dim} 变为 {new_dim}。必须先在设置页执行"
+                    "「重建索引」（reindex）才能继续导入和检索——在此之前新导入会"
+                    "因维度不匹配而失败，搜索会降级为纯 BM25。"
                 )
 
         # 持久化到 config.toml（下次启动自动生效）；失败不静默——写入
@@ -539,7 +575,9 @@ def create_app() -> Any:
         try:
             from doc2mind.core.config import save_settings
 
-            save_settings(s)
+            if not save_settings(s):
+                msg = "配置已生效，但写入 config.toml 失败（磁盘满/权限不足），重启后可能回退"
+                notice = f"{notice}；{msg}" if notice else msg
         except Exception as e:  # noqa: BLE001 — 持久化失败不影响本次运行时更新
             msg = f"配置已生效，但写入 config.toml 失败（重启后可能回退）：{e}"
             notice = f"{notice}；{msg}" if notice else msg
@@ -601,11 +639,25 @@ def create_app() -> Any:
             client = get_llm_client(tmp)
             if client is None:  # pragma: no cover — provider 已校验，防御分支
                 raise LLMError("LLM 客户端创建失败")
-            reply = client.chat(
-                [{"role": "user", "content": "ping"}],
-                max_tokens=16,
-                timeout=req.timeout,
-            )
+            if req.stream:
+                # 流式探测：逐 token 收集到 16 个字符即停（验证 SSE 链路即可，
+                # 不必等完整回复）
+                parts: list[str] = []
+                for tok in client.stream_chat(
+                    [{"role": "user", "content": "ping"}],
+                    max_tokens=16,
+                    timeout=req.timeout,
+                ):
+                    parts.append(tok)
+                    if sum(len(p) for p in parts) >= 16:
+                        break
+                reply = "".join(parts)
+            else:
+                reply = client.chat(
+                    [{"role": "user", "content": "ping"}],
+                    max_tokens=16,
+                    timeout=req.timeout,
+                )
             return client.provider, client.model_name, reply
 
         t0 = time.perf_counter()
@@ -804,11 +856,32 @@ def create_app() -> Any:
         except Exception as e:  # noqa: BLE001
             raise _api_error("INTERNAL", f"检索失败: {e}", 500) from e
 
+        # 差异化空结果提示：知识库为空 / 集合无文档 / 确实无命中，
+        # 用户不用猜"是没搜到还是搜错了地方"
+        message: str | None = getattr(stats, "message", None)
+        if message is None:
+            if not hits:
+                try:
+                    total_docs = await asyncio.to_thread(
+                        store.count_documents, None, None
+                    )
+                except Exception:  # noqa: BLE001 — 提示尽力而为
+                    total_docs = -1
+                if total_docs == 0:
+                    message = "知识库为空：请先在【导入】页添加文档"
+                elif req.collection and await asyncio.to_thread(
+                    store.count_documents, req.collection, None
+                ) == 0:
+                    message = f"集合「{req.collection}」中没有任何文档，请确认集合名是否正确"
+            elif getattr(stats, "degraded_reason", None):
+                message = stats.degraded_reason
+
         return SearchResponse(
             query=req.query,
             total=len(hits),
             elapsed_ms=stats.elapsed_ms,
             degraded=stats.degraded,
+            message=message,
             hits=[
                 SearchHitDTO(
                     rank=h.rank,
@@ -902,7 +975,14 @@ def create_app() -> Any:
             fut = loop.run_in_executor(None, _pump)
             try:
                 while True:
-                    chunk = await queue.get()
+                    try:
+                        chunk = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        # 心跳帧：LLM 首 token 前的检索/思考期可能远超 15s，
+                        # 长时间无数据会被代理/防火墙静默掐断 SSE 连接。
+                        # 注释帧（冒号开头）是 SSE 标准的忽略语法，前端解析器会跳过。
+                        yield ": heartbeat\n\n"
+                        continue
                     if chunk is None:
                         break
                     if chunk.startswith("__ERROR__:"):
@@ -1228,6 +1308,21 @@ def create_app() -> Any:
                     # 使后续搜索 / 导入也使用新模型。
                     if target_embedder is not state.embedder:
                         state.embedder = target_embedder
+                        # 同步 settings 并持久化：否则 GET /v1/config 仍报旧模型名，
+                        # 且重启后 embedder 按旧 embed_model 加载，回到维度不匹配状态
+                        state.settings.embed_model = (
+                            req.model.strip() if req.model else state.settings.embed_model
+                        )
+                        state.settings.embed_dim = target_embedder.dimension
+                        try:
+                            from doc2mind.core.config import save_settings
+
+                            if not save_settings(state.settings):
+                                logger.warning(
+                                    "reindex 后写入 config.toml 失败，重启后将回退旧嵌入模型"
+                                )
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("reindex 后同步配置失败：%s", e)
                 except Exception as e:  # noqa: BLE001
                     with state._jobs_lock:
                         job.status = "failed"
@@ -1272,9 +1367,11 @@ def create_app() -> Any:
 
 # --- 辅助 ---
 def _api_error(code: str, message: str, status: int) -> HTTPException:
-    """构造统一错误响应。"""
+    """构造统一错误响应；5xx 同时落日志（排障线索）。"""
     from fastapi import HTTPException
 
+    if status >= 500:
+        logger.error("API %s (%s): %s", status, code, message)
     return HTTPException(
         status_code=status,
         detail=ApiError(code=code, message=message).model_dump(),

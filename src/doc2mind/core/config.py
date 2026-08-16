@@ -10,9 +10,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 # --- 平台相关目录 ---
@@ -218,7 +221,11 @@ def load_config_file() -> dict[str, object]:
     """读取 config.toml（若存在），返回字段字典；缺失/损坏时返回空 dict。
 
     支持顶层 `[doc2mind]` 小节（推荐），也兼容平铺键值。
+
+    损坏（语法错误/读失败）时记录告警并可通过 `get_config_load_error()`
+    获取原因，供启动界面 / `/v1/config` 提示用户，而不是静默丢弃全部自定义配置。
     """
+    global _config_load_error
     path = config_file_path()
     if not path.is_file():
         return {}
@@ -234,9 +241,22 @@ def load_config_file() -> dict[str, object]:
         # 读取集合 = 持久化字段 + 敏感字段（手写 toml 的 llm_api_key 仍生效，
         # 只是 save_settings 不会把它写回去）
         readable = set(_PERSIST_FIELDS) | _SENSITIVE_FIELDS
+        _config_load_error = None
         return {k: v for k, v in root.items() if k in readable}
-    except Exception:  # noqa: BLE001 — 配置损坏时回退默认值
+    except Exception as e:  # noqa: BLE001 — 配置损坏时回退默认值
+        _config_load_error = f"config.toml 解析失败（{path}）：{e}，已临时回退默认配置"
+        logger.warning("%s；请修复或删除该文件后重启", _config_load_error)
         return {}
+
+
+# 最近一次 load_config_file 的失败原因（None = 正常）。config 在进程启动时
+# 加载一次，这里缓存错误供 /v1/config 等查询；save_settings 成功写入后清除。
+_config_load_error: str | None = None
+
+
+def get_config_load_error() -> str | None:
+    """返回启动时 config.toml 的解析错误（无则 None）。"""
+    return _config_load_error
 
 
 def _toml_repr(value: object) -> str:
@@ -248,13 +268,20 @@ def _toml_repr(value: object) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
-def save_settings(settings: Settings) -> None:
-    """把当前配置持久化到 config.toml（下次启动自动生效）。"""
+def save_settings(settings: Settings) -> bool:
+    """把当前配置持久化到 config.toml（下次启动自动生效）。
+
+    Returns:
+        True = 写入成功；False = 失败（目录不可创建/磁盘满/权限不足，
+        已记录 error 日志，调用方应向用户提示"重启后配置可能回退"）。
+    """
+    global _config_load_error
     path = config_file_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return
+    except OSError as e:
+        logger.error("创建配置目录失败（%s）：%s，配置未持久化", path.parent, e)
+        return False
     lines = [
         "# DocMind 配置文件（`doc2mind config` 命令写入）",
         "# 可用 `doc2mind models` 查看可选嵌入模型",
@@ -268,8 +295,12 @@ def save_settings(settings: Settings) -> None:
         lines.append(f"{name} = {_toml_repr(value)}")
     try:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as e:
+        logger.error("写入配置文件失败（%s）：%s，配置未持久化", path, e)
+        return False
+    # 成功写入后，此前启动时的解析错误已不复存在
+    _config_load_error = None
+    return True
 
 
 # --- 全局单例（惰性）---

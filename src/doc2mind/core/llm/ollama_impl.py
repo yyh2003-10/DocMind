@@ -9,7 +9,16 @@ import json
 import os
 from typing import Iterator
 
-from doc2mind.core.llm.base import LLMClient, LLMError
+from doc2mind.core.llm.base import LLMClient, LLMError, sanitize_max_tokens
+
+
+def _options(temperature: float, max_tokens: int | None) -> dict:
+    """构造 Ollama options：num_predict 超上限时不传（Ollama 取模型默认）。"""
+    opts: dict = {"temperature": temperature}
+    mt = sanitize_max_tokens(max_tokens)
+    if mt is not None:
+        opts["num_predict"] = mt
+    return opts
 
 
 class OllamaClient(LLMClient):
@@ -55,10 +64,10 @@ class OllamaClient(LLMClient):
         payload = {
             "model": self._model,
             "messages": messages,
-            "options": {
-                "temperature": temperature if temperature is not None else self._temperature,
-                "num_predict": max_tokens if max_tokens is not None else self._max_tokens,
-            },
+            "options": _options(
+                temperature if temperature is not None else self._temperature,
+                max_tokens if max_tokens is not None else self._max_tokens,
+            ),
             "stream": False,
         }
         try:
@@ -93,10 +102,10 @@ class OllamaClient(LLMClient):
         payload = {
             "model": self._model,
             "messages": messages,
-            "options": {
-                "temperature": temperature if temperature is not None else self._temperature,
-                "num_predict": max_tokens if max_tokens is not None else self._max_tokens,
-            },
+            "options": _options(
+                temperature if temperature is not None else self._temperature,
+                max_tokens if max_tokens is not None else self._max_tokens,
+            ),
             "stream": True,
         }
         try:

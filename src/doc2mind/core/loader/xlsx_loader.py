@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from doc2mind.core.loader.base import Loader, LoaderError
+from doc2mind.core.loader.base import Loader, LoaderError, make_source
 from doc2mind.core.models import (
     DocFormat,
     DocumentElement,
@@ -139,7 +139,7 @@ class XlsxLoader(Loader):
             wb.close()
 
             return LoadedDocument(
-                source=path.name,
+                source=make_source(path),
                 format=DocFormat.XLSX,
                 elements=elements,
                 page_count=len(wb.worksheets) if wb.worksheets else None,

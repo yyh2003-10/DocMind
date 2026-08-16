@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from doc2mind.core.loader.base import Loader, LoaderError
+from doc2mind.core.loader.base import Loader, LoaderError, make_source
 from doc2mind.core.models import (
     DocFormat,
     DocumentElement,
@@ -171,7 +171,7 @@ class MarkdownLoader(Loader):
                 i += 1
 
             return LoadedDocument(
-                source=path.name,
+                source=make_source(path),
                 format=DocFormat.MARKDOWN,
                 elements=elements,
                 page_count=None,
