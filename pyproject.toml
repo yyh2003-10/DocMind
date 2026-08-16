@@ -89,6 +89,10 @@ server = [
 api = [
     "openai==2.38.0",
 ]
+# RAG 对话 LLM（OpenAI 兼容 + Ollama）
+llm = [
+    "openai==2.38.0",
+]
 # 开发依赖
 dev = [
     "pytest==9.0.3",
@@ -99,7 +103,7 @@ dev = [
 ]
 # 全部安装
 all = [
-    "doc2mind[server,api,ocr,gpu]",
+    "doc2mind[server,api,llm,ocr,gpu]",
 ]
 
 [project.scripts]
