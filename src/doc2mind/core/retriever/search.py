@@ -22,9 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from doc2mind.core.chunker.base import Chunk
-from doc2mind.core.embedder.base import Embedder
-from doc2mind.core.store.sqlite_vec import StoredChunk, VectorStore
+from doc2mind.core.embedder.base import Embedder, EmbedderError
+from doc2mind.core.store.sqlite_vec import VectorStore
 
 
 class RetrievalError(Exception):
@@ -35,7 +34,7 @@ class RetrievalError(Exception):
 class SearchHit:
     """检索命中项。"""
 
-    chunk: "StoredChunkMeta"
+    chunk: StoredChunkMeta
     score: float
     match_type: str  # vector | bm25 | hybrid
     vector_score: float
@@ -69,6 +68,7 @@ class SearchStats:
     elapsed_ms: int
     vector_candidates: int
     bm25_candidates: int
+    degraded: bool = False  # True = 嵌入服务不可用，已降级为纯 BM25
 
 
 class Retriever:
@@ -94,7 +94,7 @@ class Retriever:
     def search(
         self,
         query: str,
-        collection: str | None = "default",
+        collection: str | list[str] | None = "default",
         top_k: int = 10,
         min_score: float = 0.0,
     ) -> tuple[list[SearchHit], SearchStats]:
@@ -102,9 +102,9 @@ class Retriever:
 
         Args:
             query: 查询文本
-            collection: 集合名，None 表示跨所有集合
+            collection: 集合名或集合名列表（多选知识库），None 表示跨所有集合
             top_k: 返回结果数
-            min_score: 过滤低分结果
+            min_score: 过滤低分结果（RRF 融合分量纲，仅专家调参用）
 
         Returns:
             (hits, stats)，hits 按 score 降序
@@ -112,6 +112,7 @@ class Retriever:
         import time
 
         t0 = time.perf_counter()
+        degraded = False
         try:
             # 1. 嵌入查询
             query_vec = self.embedder.embed_query(query)
@@ -125,6 +126,12 @@ class Retriever:
             vec_scored = [
                 (cid, _distance_to_score(dist), dist) for cid, dist in vec_hits
             ]
+        except EmbedderError:
+            # 降级：嵌入服务不可用（API key 缺失/网络失败/模型加载失败）时
+            # 跳过向量路，仅用 BM25 全文检索，避免整个搜索 500。
+            # 由调用方通过 stats.degraded 提示用户当前为降级模式。
+            degraded = True
+            vec_scored = []
 
             # 3. BM25 检索
             bm25_hits = self.store.bm25_search(
@@ -195,6 +202,7 @@ class Retriever:
                 elapsed_ms=elapsed_ms,
                 vector_candidates=len(vec_scored),
                 bm25_candidates=len(bm25_scored),
+                degraded=degraded,
             )
             return hits, stats
 

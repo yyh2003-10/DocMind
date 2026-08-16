@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from doc2mind.core.retriever.search import Retriever, RetrievalError, SearchHit, SearchStats
+from doc2mind.core.retriever.search import RetrievalError, Retriever, SearchHit, SearchStats
 
 __all__ = [
     "Retriever",
