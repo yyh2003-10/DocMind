@@ -32,6 +32,7 @@ from doc2mind.core.converter import (
     convert_document,
 )
 from doc2mind.core.loader.detect import get_loader, is_supported
+from doc2mind.core.logging_setup import setup_logging
 from doc2mind.core.pipeline import ingest_path
 from doc2mind.core.retriever.search import Retriever
 from doc2mind.core.store.sqlite_vec import VectorStore
@@ -75,6 +76,8 @@ def main_callback(
     ),
 ) -> None:
     """doc2mind — 轻量向量知识库工具。"""
+    # 所有子命令共用：日志落盘（数据目录 logs/ 下，轮转 5MB×3），幂等
+    setup_logging()
     return
 
 
@@ -549,7 +552,6 @@ def model_use(
     name: str = typer.Argument(..., help="要切换的模型名（推荐清单或 fastembed 支持的模型）。"),
 ) -> None:
     """切换嵌入模型并持久化（等价 `doc2mind config --set-model`）。"""
-    from doc2mind.core.config import save_settings
     from doc2mind.core.embedder.catalog import get_model_info
 
     info = get_model_info(name)
@@ -561,7 +563,7 @@ def model_use(
     settings = get_settings()
     settings.embed_model = name
     settings.embed_model_path = None  # 切换网络模型时清除本地模型指向
-    save_settings(settings)
+    _save_settings_or_warn(settings)
     rprint(f"[green]已切换嵌入模型:[/green] {name}")
     if info and info.dim != settings.embed_dim:
         rprint(
@@ -582,7 +584,6 @@ def model_add_local(
     ),
 ) -> None:
     """登记本地模型目录：直接用本地 ONNX 文件，无需联网下载。"""
-    from doc2mind.core.config import save_settings
     from doc2mind.core.embedder.catalog import validate_local_model_dir
 
     ok, message = validate_local_model_dir(path)
@@ -595,7 +596,7 @@ def model_add_local(
     settings.embed_model_path = str(path)
     if model_name:
         settings.embed_model = model_name
-    save_settings(settings)
+    _save_settings_or_warn(settings)
     rprint(f"[green]已登记本地模型目录:[/green] {path}")
     rprint(
         "[dim]说明: 使用本地模型时不再联网下载；若该模型与之前用的模型维度不同，"
@@ -622,7 +623,6 @@ def config(
         doc2mind config --set-model BAAI/bge-small-en-v1.5   # 切换模型（持久化）
         doc2mind config --model <名称>       # 临时用某个模型跑一次
     """
-    from doc2mind.core.config import save_settings
     from doc2mind.core.embedder.catalog import get_model_info, render_catalog_table
 
     if model:
@@ -644,7 +644,7 @@ def config(
             )
         settings = get_settings()
         settings.embed_model = set_model
-        save_settings(settings)
+        _save_settings_or_warn(settings)
         rprint(f"[green]已保存嵌入模型:[/green] {set_model}")
         if info and info.dim != settings.embed_dim:
             rprint(
@@ -675,6 +675,17 @@ def set_settings_for_model(model: str) -> None:
     """临时覆盖全局配置中的嵌入模型（仅本次进程）。"""
     settings = get_settings()
     settings.embed_model = model
+
+
+def _save_settings_or_warn(settings: object) -> None:
+    """持久化配置；失败时明确警告（否则用户重启后才发现配置丢了）。"""
+    from doc2mind.core.config import save_settings
+
+    if not save_settings(settings):  # type: ignore[arg-type]
+        rprint(
+            "[red]警告:[/red] 配置已在本进程生效，但写入 config.toml 失败"
+            "（磁盘满/权限不足），重启后将回退为之前的配置。"
+        )
 
 
 @app.command()

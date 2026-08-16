@@ -8,26 +8,10 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
-from doc2mind.core.llm.base import LLMClient, LLMError
+from doc2mind.core.llm.base import LLMClient, LLMError, sanitize_max_tokens
 
-# OpenAI 兼容生态的 max_tokens 常见硬上限（sensenova 等网关实测 [1, 65536]）
-_MAX_TOKENS_CEILING = 65536
-
-
-def _sanitize_max_tokens(value: int | None) -> int | None:
-    """max_tokens 超出兼容生态上限时返回 None（不传，由服务端取默认）。
-
-    用户常把「上下文窗口」（如 256000）误当输出上限填进 llm_max_tokens，
-    会被严格校验的网关 400 拒绝（field MaxTokens invalid）。不传该参数时
-    服务端取模型默认上限，比硬 clamp 到某个常数对各服务商更通用。
-    """
-    if value is None:
-        return None
-    if value < 1:
-        return 1
-    if value > _MAX_TOKENS_CEILING:
-        return None
-    return value
+# 向后兼容别名（历史测试/调用方引用）
+_sanitize_max_tokens = sanitize_max_tokens
 
 
 class OpenAIClient(LLMClient):
@@ -77,6 +61,32 @@ class OpenAIClient(LLMClient):
     def provider(self) -> str:
         return "openai"
 
+    @staticmethod
+    def _wrap_api_error(e: Exception, action: str) -> LLMError:
+        """把 openai SDK 异常转成带原因分类的 LLMError（对齐 Anthropic/Gemini）。
+
+        此前统一压成一句"OpenAI API 调用失败: ..."，用户无法区分
+        401（key 无效）/ 404（模型或地址错）/ 429（限流）/ 网络不通。
+        """
+        status = getattr(e, "status_code", None)
+        if status in (401, 403):
+            hint = "API Key 无效或无权限"
+        elif status == 404:
+            hint = "模型名或 API 地址不存在（自定义 base_url 需含 /v1）"
+        elif status == 429:
+            hint = "请求过于频繁或额度不足"
+        elif status is not None and 500 <= status < 600:
+            hint = "服务端错误，请稍后重试"
+        else:
+            name = type(e).__name__
+            if "Timeout" in name:
+                hint = "请求超时，请检查网络或增加超时时间"
+            elif "Connection" in name or "Connect" in name:
+                hint = "无法连接 API 服务，请检查网络或 base_url"
+            else:
+                return LLMError(f"OpenAI API {action}失败: {e}")
+        return LLMError(f"OpenAI API {action}失败（{hint}）: {e}")
+
     def _do_chat(
         self,
         messages: list[dict],
@@ -88,7 +98,7 @@ class OpenAIClient(LLMClient):
                 model=self._model,
                 messages=messages,
                 temperature=temperature if temperature is not None else self._temperature,
-                max_tokens=_sanitize_max_tokens(
+                max_tokens=sanitize_max_tokens(
                     max_tokens if max_tokens is not None else self._max_tokens
                 ),
             )
@@ -99,8 +109,10 @@ class OpenAIClient(LLMClient):
             if content is None:
                 return ""
             return content.strip()
+        except LLMError:
+            raise
         except Exception as e:
-            raise LLMError(f"OpenAI API 调用失败: {e}") from e
+            raise self._wrap_api_error(e, "调用") from e
 
     def _do_stream_chat(
         self,
@@ -122,5 +134,7 @@ class OpenAIClient(LLMClient):
                 delta = chunk.choices[0].delta
                 if delta and delta.content:
                     yield delta.content
+        except LLMError:
+            raise
         except Exception as e:
-            raise LLMError(f"OpenAI API 流式调用失败: {e}") from e
+            raise self._wrap_api_error(e, "流式调用") from e

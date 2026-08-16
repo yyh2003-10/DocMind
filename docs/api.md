@@ -137,12 +137,14 @@
 **响应 200：**
 ```json
 {
-  "status": "ok",
+  "status": "ok",                 // ok | degraded（数据库/sqlite-vec 不可用时 degraded）
   "version": "0.1.0",
   "uptime_seconds": 3600,
   "gpu_available": true,
   "gpu_provider": "cuda",
-  "embed_providers": ["cuda", "cpu"]
+  "embed_providers": ["cuda", "cpu"],
+  "store_ok": true,               // 真实健康探测：数据库连接 + sqlite-vec 扩展
+  "store_error": null             // store_ok=false 时的原因描述
 }
 ```
 
@@ -190,7 +192,8 @@
   "query": "transformer 注意力机制",
   "collection": "papers",          // 默认 "default"，"*" 表示跨所有集合
   "top_k": 10,                     // 默认 10
-  "min_score": 0.0,                // 过滤低分结果，默认 0
+  "min_score": 0.0,                // 过滤低分结果，默认 0；注意过滤的是 RRF
+                                   // 融合分（量纲约 0~0.033），超范围会被忽略并提示
   "filter": {                      // 可选元数据过滤
     "format": ["pdf", "docx"],
     "heading_level": [1, 2]
@@ -205,7 +208,9 @@
   "query": "transformer 注意力机制",
   "hits": [ { /* SearchHit */ } ],
   "total": 10,
-  "elapsed_ms": 47
+  "elapsed_ms": 47,
+  "degraded": false,              // true = 嵌入/向量检索不可用，本次为纯 BM25 降级
+  "message": null                 // 供前端展示的提示：空库/集合无文档/降级原因/min_score 误用
 }
 ```
 
@@ -265,7 +270,9 @@ LLM 连接测试：用传入参数构造**临时**客户端发一条极小消息
   "api_key": "sk-xxx",         // 省略/空 = 沿用后端当前配置的 key（验证已保存配置）
   "base_url": "https://api.deepseek.com/v1",  // 省略 = 沿用当前配置或提供商官方地址
   "model": "deepseek-chat",    // 省略 = 沿用当前配置或提供商默认模型
-  "timeout": 15.0              // 测试超时秒数，默认 15，上限 120
+  "timeout": 15.0,             // 测试超时秒数，默认 15，上限 120
+  "stream": false              // true = 走流式接口（stream_chat）测试，
+                               // 可暴露流式特有问题（SSE 解析、chunk 格式）
 }
 ```
 

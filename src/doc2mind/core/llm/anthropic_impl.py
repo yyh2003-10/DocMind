@@ -9,10 +9,13 @@ from __future__ import annotations
 import json
 from typing import Iterator
 
-from doc2mind.core.llm.base import LLMClient, LLMError
+from doc2mind.core.llm.base import LLMClient, LLMError, sanitize_max_tokens
 
 _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_BASE_URL = "https://api.anthropic.com"
+# Anthropic 的 max_tokens 是必填字段（无服务端默认）；用户误填超大值时
+# sanitize 返回 None，此处退回所有 Claude 模型都接受的安全上限。
+_FALLBACK_MAX_TOKENS = 8192
 
 
 def _split_system(messages: list[dict]) -> tuple[str, list[dict]]:
@@ -83,9 +86,12 @@ class AnthropicClient(LLMClient):
         stream: bool,
     ) -> dict:
         system, rest = _split_system(messages)
+        mt = sanitize_max_tokens(
+            max_tokens if max_tokens is not None else self._max_tokens
+        )
         payload: dict = {
             "model": self._model,
-            "max_tokens": max_tokens if max_tokens is not None else self._max_tokens,
+            "max_tokens": mt if mt is not None else _FALLBACK_MAX_TOKENS,
             "temperature": temperature if temperature is not None else self._temperature,
             "messages": rest,
             "stream": stream,

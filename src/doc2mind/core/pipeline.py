@@ -233,36 +233,40 @@ def ingest_text(
                 t0,
             )
 
+        # 维度预检：与文件导入同规则（换模型未重建索引时给出可操作指引）
+        store_dim = getattr(store, "embedding_dim", None)
+        embed_dim = getattr(embedder, "dimension", None)
+        if store_dim is not None and embed_dim is not None and embed_dim != store_dim:
+            return _fail(
+                Path(source), collection,
+                f"嵌入模型维度 ({embed_dim}) 与向量库维度 ({store_dim}) 不一致："
+                "请先在设置页执行「重建索引」（reindex），或切回原嵌入模型后再导入",
+                t0,
+            )
+
         document_id = uuid.uuid4().hex
         now = _now_iso()
-        # UNIQUE(collection, source)：同标题重入（force 或内容变化）时先删旧文档，
-        # 避免插入新 id 撞唯一约束；删除会连带清理旧分块与向量。
+        # 单事务原子替换（删旧 → 写文档 → 写分块）：失败整体回滚，
+        # 不会留下"文档记录存在但没有任何分块"的孤儿状态。
         try:
-            store.delete_by_source(doc.source, collection)
-        except Exception:  # noqa: BLE001
-            pass  # 无旧文档时 delete_by_source 返回 0，不抛错
-        store.upsert_document(
-            StoredDocument(
-                id=document_id,
-                source=doc.source,
-                collection=collection,
-                format=doc.format.value,
-                file_hash=doc.file_hash,
-                size_bytes=doc.size_bytes,
-                page_count=None,
-                chunk_count=len(chunks),
-                created_at=now,
-                updated_at=now,
+            store.replace_document(
+                StoredDocument(
+                    id=document_id,
+                    source=doc.source,
+                    collection=collection,
+                    format=doc.format.value,
+                    file_hash=doc.file_hash,
+                    size_bytes=doc.size_bytes,
+                    page_count=None,
+                    chunk_count=len(chunks),
+                    created_at=now,
+                    updated_at=now,
+                ),
+                chunks=chunks,
+                embeddings=embeddings,
             )
-        )
-        store.insert_chunks(
-            document_id=document_id,
-            collection=collection,
-            source=doc.source,
-            fmt=doc.format.value,
-            chunks=chunks,
-            embeddings=embeddings,
-        )
+        except Exception as e:  # noqa: BLE001
+            return _fail(Path(source), collection, f"写库失败: {e}", t0)
         logger.info(
             "ingest_text 完成: source=%s collection=%s chunks=%d",
             source, collection, len(chunks),
@@ -341,18 +345,25 @@ def _ingest_one(
             t0,
         )
 
-    # 写库
+    # 维度预检：换嵌入模型后未重建索引时，提前给出可操作的错误指引，
+    # 而不是等写库时报一句没头没尾的"写库失败"。
+    store_dim = getattr(store, "embedding_dim", None)
+    embed_dim = getattr(embedder, "dimension", None)
+    if store_dim is not None and embed_dim is not None and embed_dim != store_dim:
+        return _fail(
+            path, collection,
+            f"嵌入模型维度 ({embed_dim}) 与向量库维度 ({store_dim}) 不一致："
+            "请先在设置页执行「重建索引」（reindex），或切回原嵌入模型后再导入",
+            t0,
+        )
+
+    # 写库：单事务原子替换（删旧 → 写文档 → 写分块），失败整体回滚。
+    # UNIQUE(collection, source) 的"替换"语义由此实现；source 现为完整路径，
+    # 不同目录的同名文件互不覆盖。
     document_id = uuid.uuid4().hex
     now = _now_iso()
     try:
-        # UNIQUE(collection, source)：文件内容变化（MD5 变）后重新导入同一文件时，
-        # 旧文档（同 source 不同 hash）仍在库中，插入新 id 会撞唯一约束。
-        # 先删除同 (collection, source) 的旧文档（连带旧分块与向量），实现"替换"语义。
-        try:
-            store.delete_by_source(doc.source, collection)
-        except Exception:  # noqa: BLE001
-            pass  # 无旧文档时 delete_by_source 返回 0，不抛错
-        store.upsert_document(
+        store.replace_document(
             StoredDocument(
                 id=document_id,
                 source=doc.source,
@@ -364,13 +375,7 @@ def _ingest_one(
                 chunk_count=len(chunks),
                 created_at=now,
                 updated_at=now,
-            )
-        )
-        store.insert_chunks(
-            document_id=document_id,
-            collection=collection,
-            source=doc.source,
-            fmt=doc.format.value,
+            ),
             chunks=chunks,
             embeddings=embeddings,
         )

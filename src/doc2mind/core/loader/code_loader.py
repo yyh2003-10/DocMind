@@ -19,7 +19,7 @@ import hashlib
 import re
 from pathlib import Path
 
-from doc2mind.core.loader.base import Loader, LoaderError
+from doc2mind.core.loader.base import Loader, LoaderError, make_source
 from doc2mind.core.models import (
     DocFormat,
     DocumentElement,
@@ -390,7 +390,7 @@ class CodeLoader(Loader):
                     )
 
             return LoadedDocument(
-                source=path.name,
+                source=make_source(path),
                 format=DocFormat.CODE,
                 elements=elements,
                 page_count=None,

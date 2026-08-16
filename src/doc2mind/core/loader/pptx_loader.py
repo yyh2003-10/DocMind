@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from doc2mind.core.loader.base import Loader, LoaderError
+from doc2mind.core.loader.base import Loader, LoaderError, make_source
 from doc2mind.core.models import (
     DocFormat,
     DocumentElement,
@@ -197,7 +197,7 @@ class PptxLoader(Loader):
                         )
 
             return LoadedDocument(
-                source=path.name,
+                source=make_source(path),
                 format=DocFormat.PPTX,
                 elements=elements,
                 page_count=len(prs.slides) if prs.slides else None,

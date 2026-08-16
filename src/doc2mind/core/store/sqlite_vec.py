@@ -334,6 +334,25 @@ class VectorStore:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
+    def ping(self) -> bool:
+        """轻量健康探测：连接存活且 vec0 扩展可用。
+
+        供 /v1/health 做真实健康检查（数据库损坏 / sqlite-vec 扩展缺失时
+        返回 False，而不是绿灯报 ok）。探测失败不改变连接状态。
+        """
+        try:
+            with self._lock:
+                if self._conn is None:
+                    return False
+                self._conn.execute("SELECT 1").fetchone()
+                # vec0 扩展可用性：查已注册的虚拟表模块（不触碰业务表）
+                self._conn.execute(
+                    "SELECT 1 FROM vec_chunks LIMIT 0"
+                ).fetchall()
+            return True
+        except Exception:  # noqa: BLE001 — 健康探测任何异常都视为不可用
+            return False
+
     # --- sqlite-vec 扩展加载 ---
     @staticmethod
     def _load_vec_extension(conn: sqlite3.Connection) -> None:
@@ -473,64 +492,8 @@ class VectorStore:
             conn = self._conn
             try:
                 conn.execute("BEGIN")
-                inserted = 0
-                for chunk, emb in zip(chunks, embeddings, strict=False):
-                    # 序列化向量为 bytes（vec0 接受 BLOB）
-                    emb_bytes = _vector_to_bytes(emb)
-                    meta = chunk.metadata
-
-                    # 1. 插入向量，拿 id
-                    cur = conn.execute(
-                        "INSERT INTO vec_chunks(embedding) VALUES (?)",
-                        (emb_bytes,),
-                    )
-                    vec_id = cur.lastrowid
-                    if vec_id is None:
-                        conn.execute("ROLLBACK")
-                        raise StoreError("无法获取 vec_chunks.id")
-
-                    # 2. 插入 chunks_meta
-                    excluded_keys = {
-                        "type", "page", "sheet", "slide", "heading",
-                        "language", "level", "chunk_index",
-                    }
-                    extra = {k: v for k, v in meta.items() if k not in excluded_keys}
-                    conn.execute(
-                        """
-                        INSERT INTO chunks_meta
-                            (id, document_id, content, tokens, chunk_index,
-                             collection, source, format, doc_type, page,
-                             sheet, slide, heading, language, extra)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            vec_id, document_id, chunk.content, chunk.tokens,
-                            int(meta.get("chunk_index", 0)),
-                            collection, source, fmt,
-                            meta.get("type"),
-                            meta.get("page"),
-                            meta.get("sheet"),
-                            meta.get("slide"),
-                            meta.get("heading"),
-                            meta.get("language"),
-                            json.dumps(extra, ensure_ascii=False),
-                        ),
-                    )
-
-                    # 3. 插入 FTS5 索引
-                    if self._fts_available:
-                        conn.execute(
-                            "INSERT INTO bm25_index(content, collection, chunk_id) VALUES (?, ?, ?)",
-                            (chunk.content, collection, vec_id),
-                        )
-                    inserted += 1
-
-                # 4. 更新文档 chunk_count。
-                # 绝对值写入：upsert_document 已把文档记录写成 chunk_count=len(chunks)，
-                # 若此处再累加（chunk_count + inserted）会造成双倍计数（2×len(chunks)）。
-                conn.execute(
-                    "UPDATE documents SET chunk_count = ?, updated_at = ? WHERE id = ?",
-                    (inserted, _now_iso(), document_id),
+                inserted = self._insert_chunks_in_txn(
+                    conn, document_id, collection, source, fmt, chunks, embeddings
                 )
                 conn.execute("COMMIT")
                 return inserted
@@ -546,6 +509,187 @@ class VectorStore:
                 except Exception:
                     pass
                 raise StoreError(f"插入分块失败: {e}") from e
+
+    @_retry_on_locked
+    def replace_document(
+        self,
+        doc: StoredDocument,
+        chunks: Sequence[Chunk],
+        embeddings: Sequence,
+    ) -> int:
+        """原子替换文档：删旧（同 collection+source）→ 写文档 → 写分块，单事务。
+
+        旧流程分三步各自提交（delete_by_source → upsert_document → insert_chunks），
+        insert_chunks 中途失败会留下"文档记录存在、chunk_count>0、但没有任何
+        分块"的孤儿状态，质量页随即误报。本方法把三步放进同一事务，失败整体
+        回滚，旧文档保持原样。
+
+        Args:
+            doc: 新文档记录（chunk_count 应为 len(chunks)）
+            chunks: `Chunk` 列表
+            embeddings: 与 chunks 顺序对应的向量列表
+
+        Returns:
+            插入的 chunk 数
+        """
+        if len(chunks) != len(embeddings):
+            raise StoreError(
+                f"chunks ({len(chunks)}) 与 embeddings ({len(embeddings)}) 长度不一致"
+            )
+
+        with self._lock:
+            self._require_open()
+            conn = self._conn
+            try:
+                conn.execute("BEGIN")
+
+                # 1. 删除同 (collection, source) 的旧文档及分块/向量/FTS
+                old_ids = [
+                    r[0] for r in conn.execute(
+                        "SELECT id FROM documents WHERE source = ? AND collection = ?",
+                        (doc.source, doc.collection),
+                    ).fetchall()
+                ]
+                for old_id in old_ids:
+                    self._delete_document_chunks_in_txn(conn, old_id)
+                    conn.execute("DELETE FROM documents WHERE id = ?", (old_id,))
+
+                # 2. 写新文档记录
+                conn.execute(
+                    """
+                    INSERT INTO documents
+                        (id, source, collection, format, file_hash,
+                         size_bytes, page_count, chunk_count, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        source=excluded.source,
+                        chunk_count=excluded.chunk_count,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        doc.id, doc.source, doc.collection, doc.format,
+                        doc.file_hash, doc.size_bytes, doc.page_count,
+                        doc.chunk_count, doc.created_at, doc.updated_at,
+                    ),
+                )
+
+                # 3. 写分块（空列表也允许 = 显式清空该 source）
+                inserted = 0
+                if chunks:
+                    inserted = self._insert_chunks_in_txn(
+                        conn, doc.id, doc.collection, doc.source,
+                        doc.format, chunks, embeddings,
+                    )
+
+                conn.execute("COMMIT")
+                return inserted
+            except StoreError:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            except Exception as e:  # noqa: BLE001
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise StoreError(f"替换文档失败: {e}") from e
+
+    def _insert_chunks_in_txn(
+        self,
+        conn: sqlite3.Connection,
+        document_id: str,
+        collection: str,
+        source: str,
+        fmt: str,
+        chunks: Sequence[Chunk],
+        embeddings: Sequence,
+    ) -> int:
+        """在已开启的事务内插入分块（调用方负责锁 / BEGIN / COMMIT / ROLLBACK）。"""
+        inserted = 0
+        for chunk, emb in zip(chunks, embeddings, strict=False):
+            # 序列化向量为 bytes（vec0 接受 BLOB）
+            emb_bytes = _vector_to_bytes(emb)
+            meta = chunk.metadata
+
+            # 1. 插入向量，拿 id
+            cur = conn.execute(
+                "INSERT INTO vec_chunks(embedding) VALUES (?)",
+                (emb_bytes,),
+            )
+            vec_id = cur.lastrowid
+            if vec_id is None:
+                raise StoreError("无法获取 vec_chunks.id")
+
+            # 2. 插入 chunks_meta
+            excluded_keys = {
+                "type", "page", "sheet", "slide", "heading",
+                "language", "level", "chunk_index",
+            }
+            extra = {k: v for k, v in meta.items() if k not in excluded_keys}
+            conn.execute(
+                """
+                INSERT INTO chunks_meta
+                    (id, document_id, content, tokens, chunk_index,
+                     collection, source, format, doc_type, page,
+                     sheet, slide, heading, language, extra)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    vec_id, document_id, chunk.content, chunk.tokens,
+                    int(meta.get("chunk_index", 0)),
+                    collection, source, fmt,
+                    meta.get("type"),
+                    meta.get("page"),
+                    meta.get("sheet"),
+                    meta.get("slide"),
+                    meta.get("heading"),
+                    meta.get("language"),
+                    json.dumps(extra, ensure_ascii=False),
+                ),
+            )
+
+            # 3. 插入 FTS5 索引
+            if self._fts_available:
+                conn.execute(
+                    "INSERT INTO bm25_index(content, collection, chunk_id) VALUES (?, ?, ?)",
+                    (chunk.content, collection, vec_id),
+                )
+            inserted += 1
+
+        # 4. 更新文档 chunk_count（绝对值写入，不累加）
+        conn.execute(
+            "UPDATE documents SET chunk_count = ?, updated_at = ? WHERE id = ?",
+            (inserted, _now_iso(), document_id),
+        )
+        return inserted
+
+    def _delete_document_chunks_in_txn(
+        self, conn: sqlite3.Connection, document_id: str
+    ) -> list[int]:
+        """在已开启的事务内删除文档的全部分块（向量/FTS/meta），返回 chunk id 列表。"""
+        rows = conn.execute(
+            "SELECT id FROM chunks_meta WHERE document_id = ?",
+            (document_id,),
+        ).fetchall()
+        chunk_ids = [r[0] for r in rows]
+        if chunk_ids:
+            placeholders = ",".join("?" * len(chunk_ids))
+            conn.execute(
+                f"DELETE FROM vec_chunks WHERE id IN ({placeholders})",
+                chunk_ids,
+            )
+            if self._fts_available:
+                conn.execute(
+                    f"DELETE FROM bm25_index WHERE chunk_id IN ({placeholders})",
+                    chunk_ids,
+                )
+            conn.execute(
+                f"DELETE FROM chunks_meta WHERE id IN ({placeholders})",
+                chunk_ids,
+            )
+        return chunk_ids
 
     # --- 删除 ---
     @_retry_on_locked

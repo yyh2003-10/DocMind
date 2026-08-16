@@ -776,6 +776,12 @@ def run_mcp_server() -> None:
     import sys
     import threading
 
+    # 日志落盘（数据目录 logs/）；stdio 传输下 stdout 被 JSON-RPC 占用，
+    # 文件日志是 MCP 排障的唯一可靠线索
+    from doc2mind.core.logging_setup import setup_logging
+
+    setup_logging()
+
     _dump_sec = os.environ.get("DOC2MIND_MCP_DUMP_SEC")
     if _dump_sec:
         import faulthandler
