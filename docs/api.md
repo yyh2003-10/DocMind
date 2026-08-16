@@ -215,7 +215,7 @@
 
 RAG 对话问答：从知识库检索相关文档，调用 LLM 生成回答并标注引用来源。支持多轮对话（传 `chatId` 延续会话）。
 
-需要先配置 LLM：`DOC2MIND_LLM_PROVIDER=openai` + `DOC2MIND_LLM_API_KEY` + `DOC2MIND_LLM_MODEL`，或 `DOC2MIND_LLM_PROVIDER=ollama`。
+需要先配置 LLM：`DOC2MIND_LLM_PROVIDER`（`openai` / `anthropic` / `gemini` / `ollama`）+ 对应密钥与模型名，详见 [docs/mcp.md](mcp.md) 的「RAG 对话配置」。
 
 **请求体：**
 ```jsonc
@@ -250,6 +250,36 @@ RAG 对话问答：从知识库检索相关文档，调用 LLM 生成回答并�
 ```
 
 **响应 400 `RAG_ERROR`：** LLM 未配置或配置错误。
+
+---
+
+### `POST /v1/llm/test`
+
+LLM 连接测试：用传入参数构造**临时**客户端发一条极小消息（`max_tokens=16`），验证提供商/API Key/地址/模型名是否可用。不落盘、不修改运行时配置、不做 RAG 检索。设置页「测试连接」按钮的后端。
+
+**请求体：**
+```jsonc
+{
+  "provider": "openai",        // 必填之一：none/openai/anthropic/gemini/ollama；
+                               // 省略时用后端当前运行时配置
+  "api_key": "sk-xxx",         // 省略/空 = 沿用后端当前配置的 key（验证已保存配置）
+  "base_url": "https://api.deepseek.com/v1",  // 省略 = 沿用当前配置或提供商官方地址
+  "model": "deepseek-chat",    // 省略 = 沿用当前配置或提供商默认模型
+  "timeout": 15.0              // 测试超时秒数，默认 15，上限 120
+}
+```
+
+**响应 200：**
+```jsonc
+// 成功
+{ "ok": true, "provider": "openai", "model": "deepseek-chat",
+  "reply_preview": "你好", "elapsed_ms": 1234, "error": null }
+
+// 失败（错误已分类：key 无效 / 地址错误 / 网络不通 / 运行库缺失 / 超时）
+{ "ok": false, "provider": "openai", "model": "",
+  "reply_preview": null, "elapsed_ms": 362,
+  "error": "OpenAI API 调用失败: 401 invalid api key" }
+```
 
 ---
 

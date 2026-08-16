@@ -5,6 +5,7 @@
     POST   /v1/ingest
     POST   /v1/search
     POST   /v1/chat
+    POST   /v1/llm/test        (设置页「测试连接」)
     GET    /v1/documents         (列表 + 分页)
     GET    /v1/documents/{id}
     DELETE /v1/documents/{id}
@@ -144,7 +145,7 @@ class ReindexRequest(BaseModel):
 class ChatRequest(BaseModel):
     """RAG 对话请求。"""
     query: str
-    collection: str = "default"
+    collection: str | None = None
     top_k: int = Field(5, ge=1, le=20, validation_alias="topK")
     chat_id: str | None = Field(None, validation_alias="chatId")
     collections: list[str] | None = Field(None, validation_alias="collections")
