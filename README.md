@@ -121,6 +121,7 @@ WpfApp1\bin\Release\net8.0-windows\win-x64\DocMind.exe
 - **BM25 + 向量混合检索**，RRF 融合，中英文皆宜
 - **格式互转** PDF / DOCX / XLSX / PPTX → MD / JSON / TXT / HTML
 - **MCP Server** 一行接入 Cursor / Claude Desktop / Windsurf
+- **RAG 对话**（OpenAI 兼容 API / Ollama 本地 LLM），支持多轮追问 + 来源引用
 - **FastAPI 服务**（extras）HTTP API
 - **增量更新** 文件 MD5 去重，未变更跳过
 
@@ -145,6 +146,10 @@ doc2mind ingest ./report.pdf --collection papers
 # 搜索
 doc2mind search "transformer 注意力机制"
 doc2mind search "..." --collection papers --top-k 5
+
+# RAG 对话（需配置 LLM，见下方配置说明）
+doc2mind chat "项目架构是什么？"                # 单次问答
+doc2mind chat                                  # 交互式多轮对话
 
 # 列出 / 统计 / 删除
 doc2mind list
@@ -209,6 +214,23 @@ MCP 接入文档在 [`docs/mcp.md`](docs/mcp.md)。
 | Linux | `~/.config/doc2mind/config.toml` |
 
 也可通过环境变量 `DOC2MIND_*` 覆盖，或用 `--config` 指定。
+
+### RAG 对话配置
+
+`doc2mind chat` 需要配置 LLM 才能使用：
+
+```bash
+# OpenAI 兼容 API（DeepSeek/Qwen/OpenAI 通用）
+set DOC2MIND_LLM_PROVIDER=openai
+set DOC2MIND_LLM_API_KEY=sk-your-api-key
+set DOC2MIND_LLM_MODEL=deepseek-chat
+
+# 本地 Ollama（完全离线）
+set DOC2MIND_LLM_PROVIDER=ollama
+set DOC2MIND_LLM_MODEL=llama3.2
+```
+
+详见 [docs/mcp.md](docs/mcp.md) 的「RAG 对话配置」。
 
 ## 许可证
 

@@ -6,6 +6,7 @@ xmlns:helpers="clr-namespace:DocMind.Helpers">
     <Application.Resources>
         <ResourceDictionary>
             <helpers:LogLevelToBrushConverter x:Key="LogLevelToBrush"/>
+            <helpers:BoolInvertConverter x:Key="BoolInvertConverter"/>
             <ResourceDictionary.MergedDictionaries>
                 <!-- 初始主题由 ThemeService.LoadInitialTheme() 在 OnStartup 中覆盖 -->
                 <ResourceDictionary Source="Styles/Theme.xaml"/>

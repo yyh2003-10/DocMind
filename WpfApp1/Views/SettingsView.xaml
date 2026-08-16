@@ -2,10 +2,20 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-             xmlns:vm="clr-namespace:DocMind.ViewModels"
+xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	             xmlns:vm="clr-namespace:DocMind.ViewModels"
+	             xmlns:helpers="clr-namespace:DocMind.Helpers"
              mc:Ignorable="d"
              d:DesignHeight="450" d:DesignWidth="800">
+
+    <!-- 卡片区段的统一图标样式 -->
+    <UserControl.Resources>
+        <Style x:Key="SectionIcon" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="18"/>
+            <Setter Property="Margin" Value="0,0,10,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+    </UserControl.Resources>
 
     <Grid Margin="0">
         <Grid.RowDefinitions>
@@ -17,27 +27,30 @@
         <ScrollViewer Grid.Row="0"
                       VerticalScrollBarVisibility="Auto"
                       Padding="0,0,0,12">
-            <StackPanel MaxWidth="560">
+            <StackPanel MaxWidth="600">
+                <!-- 页面标题 -->
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                    <TextBlock Text="设置" Style="{StaticResource TitleText}"/>
+                    <TextBlock Text="配置客户端与后端行为"
+                               Style="{StaticResource CaptionText}"
+                               VerticalAlignment="Bottom"
+                               Margin="12,0,0,4"/>
+                </StackPanel>
+
                 <!-- ===== 网络连接 ===== -->
-                <Border Background="{StaticResource BackgroundBrush}"
-                        BorderBrush="{StaticResource BorderBrush}"
-                        BorderThickness="1"
-                        CornerRadius="10"
-                        Padding="20,16"
-                        Margin="0,0,0,12"
-                        Effect="{StaticResource ShadowSm}">
+                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,12">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                            <TextBlock Text="🌐" FontSize="20" Margin="0,0,10,0"/>
+                            <TextBlock Text="🌐" Style="{StaticResource SectionIcon}"/>
                             <TextBlock Text="后端连接" Style="{StaticResource SubtitleText}"/>
                         </StackPanel>
 
-                        <TextBlock Text="后端地址" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBlock Text="后端地址" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding BackendUrl, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="例如 http://127.0.0.1:8765"
                                  Margin="0,0,0,16"/>
 
-                        <TextBlock Text="启动超时（秒）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBlock Text="启动超时（秒）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding StartupTimeoutSec, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="后端进程启动等待时间"
                                  Margin="0,0,0,0"/>
@@ -45,63 +58,53 @@
                 </Border>
 
                 <!-- ===== 性能 ===== -->
-                <Border Background="{StaticResource BackgroundBrush}"
-                        BorderBrush="{StaticResource BorderBrush}"
-                        BorderThickness="1"
-                        CornerRadius="10"
-                        Padding="20,16"
-                        Margin="0,0,0,12"
-                        Effect="{StaticResource ShadowSm}">
+                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,12">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                            <TextBlock Text="⚡" FontSize="20" Margin="0,0,10,0"/>
+                            <TextBlock Text="⚡" Style="{StaticResource SectionIcon}"/>
                             <TextBlock Text="性能" Style="{StaticResource SubtitleText}"/>
                         </StackPanel>
 
-                        <TextBlock Text="任务轮询间隔（毫秒）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBlock Text="任务轮询间隔（毫秒）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding PollIntervalMs, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="100-10000ms，值越小实时性越高但负载越大"/>
                     </StackPanel>
                 </Border>
 
                 <!-- ===== 模型与分块 ===== -->
-                <Border Background="{StaticResource BackgroundBrush}"
-                        BorderBrush="{StaticResource BorderBrush}"
-                        BorderThickness="1"
-                        CornerRadius="10"
-                        Padding="20,16"
-                        Margin="0,0,0,12"
-                        Effect="{StaticResource ShadowSm}">
+                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,12">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                            <TextBlock Text="🧠" FontSize="20" Margin="0,0,10,0"/>
+                            <TextBlock Text="🧠" Style="{StaticResource SectionIcon}"/>
                             <TextBlock Text="模型与分块" Style="{StaticResource SubtitleText}"/>
                         </StackPanel>
 
-                        <TextBlock Text="嵌入模型" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBlock Text="嵌入模型" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <ComboBox ItemsSource="{Binding SupportedEmbedModels}"
                                   SelectedItem="{Binding EmbedModel}"
                                   ToolTip="向量化用模型；更换模型后需在后端重启后到「文档库」页重建索引"
-                                  Margin="0,0,0,8"/>
+                                  Margin="0,0,0,12"/>
 
-                        <!-- GPU 加速警告条（精简版安装包无 onnxruntime-gpu 时显示） -->
-                        <Border Background="#FFF8E1"
-                                BorderBrush="#FFC107"
+                        <!-- GPU 加速警告条 -->
+                        <Border Background="{StaticResource WarningLightBrush}"
+                                BorderBrush="{StaticResource WarningBrush}"
                                 BorderThickness="1"
-                                CornerRadius="6"
+                                CornerRadius="8"
                                 Padding="12,8"
-                                Margin="0,0,0,12"
+                                Margin="0,0,0,16"
                                 Visibility="{Binding GpuWarning.ShowWarning, Converter={StaticResource BoolToVis}}">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="⚠" FontSize="16" VerticalAlignment="Center" Margin="0,0,8,0"/>
                                 <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Text="当前为 CPU 模式（嵌入推理较慢）" FontWeight="SemiBold"/>
-                                    <TextBlock Text="安装 GPU 加速包可显著提升性能" FontSize="12" Foreground="Gray"/>
+                                    <TextBlock Text="当前为 CPU 模式（嵌入推理较慢）" FontWeight="SemiBold"
+                                               Foreground="{StaticResource WarningBrush}"/>
+                                    <TextBlock Text="安装 GPU 加速包可显著提升性能" FontSize="12"
+                                               Foreground="{StaticResource TextSecondaryBrush}"/>
                                 </StackPanel>
                                 <Button Content="安装 GPU 加速"
                                         Command="{Binding GpuWarning.OpenGpuInstallCommand}"
                                         Style="{StaticResource PrimaryButtonStyle}"
-                                        Padding="8,4"
+                                        Padding="12,5"
                                         Margin="12,0,0,0"
                                         FontSize="12"
                                         VerticalAlignment="Center"/>
@@ -114,18 +117,18 @@
                             </StackPanel>
                         </Border>
 
-                        <TextBlock Text="本地模型目录（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBlock Text="本地模型目录（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding EmbedModelPath, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="填本地 ONNX 模型目录（含 model.onnx / model_optimized.onnx + tokenizer.json）；留空则用上面的模型联网下载"
-                                 Margin="0,0,0,8"/>
+                                 Margin="0,0,0,12"/>
                         <TextBlock Style="{StaticResource SmallText}"
-                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Foreground="{StaticResource TextTertiaryBrush}"
                                    Margin="0,0,0,12">
                             留空 = 使用上方下拉的推荐模型（首次自动下载，之后用本地缓存）；填本地目录 = 完全离线使用自己的模型。
                         </TextBlock>
 
                         <TextBlock Style="{StaticResource SmallText}"
-                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Foreground="{StaticResource TextTertiaryBrush}"
                                    Margin="0,0,0,12">
                             以下参数修改后重启客户端生效（注入后端环境变量），留空使用后端默认值。
                         </TextBlock>
@@ -133,27 +136,27 @@
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="16"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
 
                             <StackPanel Grid.Column="0">
-                                <TextBlock Text="分块最大 token 数" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <TextBlock Text="分块最大 token 数" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                                 <TextBox Text="{Binding ChunkMaxTokens, UpdateSourceTrigger=PropertyChanged}"
                                          ToolTip="默认 1500；越大分块越粗"
                                          Margin="0,0,0,12"/>
-                                <TextBlock Text="分块最小字符数" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <TextBlock Text="分块最小字符数" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                                 <TextBox Text="{Binding ChunkMinChars, UpdateSourceTrigger=PropertyChanged}"
                                          ToolTip="默认 50；低于此长度的块被丢弃"
                                          Margin="0,0,0,0"/>
                             </StackPanel>
 
                             <StackPanel Grid.Column="2">
-                                <TextBlock Text="分块重叠字符数" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <TextBlock Text="分块重叠字符数" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                                 <TextBox Text="{Binding ChunkOverlapChars, UpdateSourceTrigger=PropertyChanged}"
                                          ToolTip="默认 200；相邻块重叠量，越大上下文越连贯"
                                          Margin="0,0,0,12"/>
-                                <TextBlock Text="分块最大字符数" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <TextBlock Text="分块最大字符数" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                                 <TextBox Text="{Binding ChunkMaxChars, UpdateSourceTrigger=PropertyChanged}"
                                          ToolTip="默认 4000；单块字符上限"
                                          Margin="0,0,0,0"/>
@@ -162,17 +165,92 @@
                     </StackPanel>
                 </Border>
 
-                <!-- ===== 启动选项 ===== -->
-                <Border Background="{StaticResource BackgroundBrush}"
-                        BorderBrush="{StaticResource BorderBrush}"
-                        BorderThickness="1"
-                        CornerRadius="10"
-                        Padding="20,16"
-                        Margin="0,0,0,12"
-                        Effect="{StaticResource ShadowSm}">
+                <!-- ===== 大模型对话 ===== -->
+                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,12">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                            <TextBlock Text="🚀" FontSize="20" Margin="0,0,10,0"/>
+                            <TextBlock Text="🤖" Style="{StaticResource SectionIcon}"/>
+                            <TextBlock Text="大模型对话" Style="{StaticResource SubtitleText}"/>
+                        </StackPanel>
+
+                        <TextBlock Style="{StaticResource SmallText}"
+                                   Foreground="{StaticResource TextTertiaryBrush}"
+                                   Margin="0,0,0,12">
+                            配置后可在「对话」页使用 RAG 问答。支持 OpenAI 兼容 API（DeepSeek / Qwen / OpenAI）和本地 Ollama。
+                        </TextBlock>
+
+                        <TextBlock Text="提供商标识" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                        <ComboBox SelectedValue="{Binding LlmProvider}"
+                                  SelectedValuePath="Content"
+                                  Margin="0,0,0,12">
+                            <ComboBoxItem Content="none" IsSelected="True"/>
+                            <ComboBoxItem Content="openai"/>
+                            <ComboBoxItem Content="ollama"/>
+                        </ComboBox>
+
+                        <TextBlock Text="API Key（OpenAI 兼容）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <PasswordBox Grid.Column="0"
+                                         helpers:PasswordBoxHelper.BoundPassword="{Binding LlmApiKey, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="DeepSeek / OpenAI / Qwen 等 API Key；留空则不修改"
+                                         Margin="0,0,0,12"/>
+                            <Button Grid.Column="1"
+                                    Content="测试连接"
+                                    Command="{Binding TestConnectionCommand}"
+                                    IsEnabled="{Binding IsTestingConnection, Converter={StaticResource BoolInvertConverter}}"
+                                    Margin="8,0,0,12"
+                                    Padding="12,4"
+                                    ToolTip="测试后端可达性与 LLM 配置是否正常"/>
+                        </Grid>
+
+                        <TextBlock Text="API 基础地址（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                        <TextBox Text="{Binding LlmBaseUrl, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="OpenAI 兼容 API 地址，如 https://api.deepseek.com/v1；Ollama 默认 http://localhost:11434"
+                                 Margin="0,0,0,12"/>
+
+                        <TextBlock Text="模型名" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                        <TextBox Text="{Binding LlmModel, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="如 deepseek-chat、gpt-4o-mini、llama3.2、qwen2.5"
+                                 Margin="0,0,0,12"/>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="16"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="温度（0-2）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                                <TextBox Text="{Binding LlmTemperature, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="默认 0.7；越低越确定，越高越有创造性"
+                                         Margin="0,0,0,12"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="最大 Token 数" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                                <TextBox Text="{Binding LlmMaxTokens, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="默认 2048；单次回答最大 token 数"
+                                         Margin="0,0,0,12"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <TextBlock Text="检索引用数（RAG Top-K）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                        <TextBox Text="{Binding RagTopK, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="默认 5；从知识库检索的文档片段数"
+                                 Margin="0,0,0,0"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- ===== 启动选项 ===== -->
+                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,12">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                            <TextBlock Text="🚀" Style="{StaticResource SectionIcon}"/>
                             <TextBlock Text="启动选项" Style="{StaticResource SubtitleText}"/>
                         </StackPanel>
 
@@ -183,7 +261,7 @@
                                        Style="{StaticResource BodyText}"/>
                         </CheckBox>
                         <TextBlock Style="{StaticResource SmallText}"
-                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Foreground="{StaticResource TextTertiaryBrush}"
                                    Margin="0,0,0,12">
                             取消勾选则仅连接外部已运行的后端（手动 doc2mind serve）
                         </TextBlock>
@@ -195,26 +273,26 @@
                                        Style="{StaticResource BodyText}"/>
                         </CheckBox>
                         <TextBlock Style="{StaticResource SmallText}"
-                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Foreground="{StaticResource TextTertiaryBrush}"
                                    Margin="0,0,0,12">
                             取消勾选则退出后保留后端继续运行
                         </TextBlock>
 
                         <!-- 后端命令路径 -->
-                        <TextBlock Text="后端命令路径（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBlock Text="后端命令路径（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding BackendCommand, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="绝对路径优先；空走自动探测 doc2mind / python -m doc2mind"
                                  Margin="0,0,0,16"/>
 
                         <!-- 自动导入 -->
-                        <TextBlock Text="启动时自动导入的目录（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                        <TextBlock Text="启动时自动导入的目录（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding AutoIngestPath, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="空表示不自动导入；填目录或文件路径"
-                                 Margin="0,0,0,8"/>
-                        <TextBlock Text="目标集合名" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                 Margin="0,0,0,12"/>
+                        <TextBlock Text="目标集合名" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding AutoIngestCollection, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="默认 default"
-                                 Margin="0,0,0,8"/>
+                                 Margin="0,0,0,12"/>
                         <CheckBox IsChecked="{Binding AutoIngestRecursive}"
                                   Margin="0,0,0,0">
                             <TextBlock Text="目录时递归子目录"
@@ -224,16 +302,10 @@
                 </Border>
 
                 <!-- ===== 外观 ===== -->
-                <Border Background="{StaticResource BackgroundBrush}"
-                        BorderBrush="{StaticResource BorderBrush}"
-                        BorderThickness="1"
-                        CornerRadius="10"
-                        Padding="20,16"
-                        Margin="0,0,0,12"
-                        Effect="{StaticResource ShadowSm}">
+                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,12">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                            <TextBlock Text="🎨" FontSize="20" Margin="0,0,10,0"/>
+                            <TextBlock Text="🎨" Style="{StaticResource SectionIcon}"/>
                             <TextBlock Text="外观" Style="{StaticResource SubtitleText}"/>
                         </StackPanel>
 
@@ -252,15 +324,38 @@
                                 <Button Content="☀ 浅色"
                                         Command="{Binding SetLightThemeCommand}"
                                         Width="Auto" MinWidth="64"
-                                        Padding="12,6"
+                                        Padding="14,7"
                                         Margin="0,0,8,0">
                                     <Button.Style>
-                                        <Style TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
-                                            <Setter Property="Background" Value="Transparent"/>
+                                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                            <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
+                                            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+                                            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+                                            <Setter Property="BorderThickness" Value="1"/>
+                                            <Setter Property="Padding" Value="14,7"/>
+                                            <Setter Property="Cursor" Value="Hand"/>
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <Border x:Name="Root" Background="{TemplateBinding Background}"
+                                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                                CornerRadius="8" Padding="{TemplateBinding Padding}">
+                                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter TargetName="Root" Property="Background" Value="{StaticResource HoverBrush}"/>
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding SelectedTheme}" Value="Light">
                                                     <Setter Property="Background" Value="{StaticResource PrimaryBrush}"/>
                                                     <Setter Property="Foreground" Value="{StaticResource TextInverseBrush}"/>
+                                                    <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
                                                 </DataTrigger>
                                             </Style.Triggers>
                                         </Style>
@@ -269,14 +364,37 @@
                                 <Button Content="🌙 深色"
                                         Command="{Binding SetDarkThemeCommand}"
                                         Width="Auto" MinWidth="64"
-                                        Padding="12,6">
+                                        Padding="14,7">
                                     <Button.Style>
-                                        <Style TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
-                                            <Setter Property="Background" Value="Transparent"/>
+                                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                            <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
+                                            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+                                            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+                                            <Setter Property="BorderThickness" Value="1"/>
+                                            <Setter Property="Padding" Value="14,7"/>
+                                            <Setter Property="Cursor" Value="Hand"/>
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <Border x:Name="Root" Background="{TemplateBinding Background}"
+                                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                                CornerRadius="8" Padding="{TemplateBinding Padding}">
+                                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter TargetName="Root" Property="Background" Value="{StaticResource HoverBrush}"/>
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding SelectedTheme}" Value="Dark">
                                                     <Setter Property="Background" Value="{StaticResource PrimaryBrush}"/>
                                                     <Setter Property="Foreground" Value="{StaticResource TextInverseBrush}"/>
+                                                    <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
                                                 </DataTrigger>
                                             </Style.Triggers>
                                         </Style>
@@ -288,15 +406,10 @@
                 </Border>
 
                 <!-- ===== 关于 ===== -->
-                <Border Background="{StaticResource BackgroundBrush}"
-                        BorderBrush="{StaticResource BorderBrush}"
-                        BorderThickness="1"
-                        CornerRadius="10"
-                        Padding="20,16"
-                        Effect="{StaticResource ShadowSm}">
+                <Border Style="{StaticResource CardStyle}">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                            <TextBlock Text="ℹ" FontSize="20" Margin="0,0,10,0"/>
+                            <TextBlock Text="ℹ" Style="{StaticResource SectionIcon}"/>
                             <TextBlock Text="关于" Style="{StaticResource SubtitleText}"/>
                         </StackPanel>
 
@@ -317,7 +430,7 @@
                         </TextBlock>
 
                         <TextBlock Style="{StaticResource SmallText}"
-                                   Foreground="{StaticResource TextMutedBrush}"
+                                   Foreground="{StaticResource TextTertiaryBrush}"
                                    TextWrapping="Wrap"
                                    Margin="0,8,0,0">
                             提示：修改后端连接后保存配置，重启客户端使通信变更加载最新配置。
@@ -332,8 +445,9 @@
                 Background="{StaticResource SurfaceBrush}"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="0,1,0,0"
-                Padding="0,8,0,0">
-            <Grid Margin="0,0,0,0">
+                Padding="0,10,0,0"
+                Margin="0,8,0,0">
+            <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
@@ -359,7 +473,7 @@
                 <Border Grid.Column="2"
                         CornerRadius="10"
                         Background="{StaticResource WarningLightBrush}"
-                        Padding="10,4"
+                        Padding="12,5"
                         VerticalAlignment="Center"
                         Visibility="{Binding IsDirty, Converter={StaticResource BoolToVis}}">
                     <StackPanel Orientation="Horizontal">

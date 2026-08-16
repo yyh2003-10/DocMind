@@ -52,13 +52,35 @@ public sealed class TrayService : IDisposable
 
     public void UpdateStatus(BackendState state)
     {
-        StatusText = state switch
+        var text = state switch
         {
             BackendState.Online => "DocMind - 在线",
             BackendState.Starting => "DocMind - 启动中…",
             BackendState.Stopping => "DocMind - 退出中…",
             _ => "DocMind - 离线",
         };
+
+        // StateChanged 可能来自后台线程（进程监控/健康检查/退出清理），
+        // TaskbarIcon 是 UI 对象，必须先切回 UI 线程再改 ToolTipText。
+        // 必须用 BeginInvoke：OnExit 里 UI 线程同步阻塞在 GetResult 时用 Invoke 会死锁。
+        if (_icon.Dispatcher.CheckAccess())
+        {
+            ApplyStatusText(text);
+        }
+        else
+        {
+            _icon.Dispatcher.BeginInvoke(() => ApplyStatusText(text));
+        }
+    }
+
+    private void ApplyStatusText(string value)
+    {
+        if (_statusText != value)
+        {
+            _statusText = value;
+            _icon.ToolTipText = value;
+            StatusChanged?.Invoke(this, value);
+        }
     }
 
     public void HideToTray() => _mainWindow.Hide();

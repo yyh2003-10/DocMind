@@ -32,6 +32,22 @@ public class AppSettings
     /// <summary>HuggingFace 镜像端点（注入 HF_ENDPOINT 环境变量；空 = 用内置默认值 hf-mirror.com）。</summary>
     public string? HfEndpoint { get; set; }
 
+    // ===== LLM / RAG 对话（启动时注入 DOC2MIND_* 环境变量） =====
+    /// <summary>LLM 提供商标识（none | openai | ollama）。</summary>
+    public string LlmProvider { get; set; } = "none";
+    /// <summary>OpenAI 兼容 API Key（对应 DOC2MIND_LLM_API_KEY）。</summary>
+    public string? LlmApiKey { get; set; }
+    /// <summary>API 基础地址（对应 DOC2MIND_LLM_BASE_URL）。</summary>
+    public string? LlmBaseUrl { get; set; }
+    /// <summary>模型名（对应 DOC2MIND_LLM_MODEL）。</summary>
+    public string LlmModel { get; set; } = "";
+    /// <summary>温度参数（对应 DOC2MIND_LLM_TEMPERATURE）。</summary>
+    public double LlmTemperature { get; set; } = 0.7;
+    /// <summary>最大 token 数（对应 DOC2MIND_LLM_MAX_TOKENS）。</summary>
+    public int LlmMaxTokens { get; set; } = 2048;
+    /// <summary>检索引用 chunk 数（对应 DOC2MIND_RAG_TOP_K）。</summary>
+    public int RagTopK { get; set; } = 5;
+
     // ===== 启动选项 =====
     /// <summary>启动 WPF 时自动拉起后端子进程（false = 仅轮询外部已运行的后端）。</summary>
     public bool AutoStartBackend { get; set; } = true;

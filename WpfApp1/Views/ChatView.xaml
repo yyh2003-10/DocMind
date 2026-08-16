@@ -1,0 +1,279 @@
+<UserControl x:Class="DocMind.Views.ChatView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="clr-namespace:DocMind.ViewModels"
+             xmlns:m="clr-namespace:DocMind.Models"
+             xmlns:cc="clr-namespace:DocMind.Controls"
+             mc:Ignorable="d"
+             d:DesignHeight="450" d:DesignWidth="800">
+
+    <UserControl.Resources>
+        <!-- 消息时间/元信息 -->
+        <Style x:Key="ChatMetaText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}"/>
+            <Setter Property="Margin" Value="0,4,0,0"/>
+        </Style>
+
+        <!-- 引用来源行 -->
+        <Style x:Key="SourceLineText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+        </Style>
+
+        <!-- 消息气泡模板 -->
+        <DataTemplate x:Key="MessageBubbleTemplate" DataType="{x:Type vm:ChatMessage}">
+            <Grid Margin="0,0,0,12">
+                <Grid.Resources>
+                    <BooleanToVisibilityConverter x:Key="B2V"/>
+                </Grid.Resources>
+
+                <!-- 用户消息右对齐，助手消息左对齐 -->
+                <Border HorizontalAlignment="Left"
+                        CornerRadius="12"
+                        Padding="12,10"
+                        MaxWidth="620"
+                        Background="{StaticResource CardBrush}"
+                        BorderBrush="{StaticResource BorderBrush}"
+                        BorderThickness="1">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="HorizontalAlignment" Value="Left"/>
+                            <Style.Triggers>
+                                <!-- 用户消息：右对齐 + 品牌色高亮 -->
+                                <DataTrigger Binding="{Binding IsUser}" Value="True">
+                                    <Setter Property="HorizontalAlignment" Value="Right"/>
+                                    <Setter Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
+                                    <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+
+                    <StackPanel>
+                        <!-- 消息内容 -->
+                        <TextBlock Text="{Binding Content, Mode=OneWay}"
+                                   Style="{StaticResource BodyText}"
+                                   TextWrapping="Wrap"
+                                   xml:space="preserve"/>
+
+                        <!-- 加载动画（思考中） -->
+                        <StackPanel Visibility="{Binding IsLoading, Converter={StaticResource B2V}}"
+                                    Orientation="Horizontal" Margin="0,6,0,0">
+                            <cc:SkeletonControl CornerRadius="2" Height="10" Width="18" Margin="0,0,4,0"/>
+                            <cc:SkeletonControl CornerRadius="2" Height="10" Width="14" Margin="0,0,4,0"/>
+                            <cc:SkeletonControl CornerRadius="2" Height="10" Width="22"/>
+                        </StackPanel>
+
+                        <!-- 引用来源 -->
+                        <ItemsControl ItemsSource="{Binding Sources, Mode=OneWay}"
+                                      Margin="0,8,0,0"
+                                      Visibility="{Binding HasSources, Converter={StaticResource BoolToVis}}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type m:SourceRef}">
+                                    <StackPanel Orientation="Horizontal" Margin="0,1,0,1">
+                                        <TextBlock Text="{Binding Index, StringFormat=[{0}]}"
+                                                   Style="{StaticResource SourceLineText}"
+                                                   Foreground="{StaticResource PrimaryBrush}"
+                                                   FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding Source, Mode=OneWay}"
+                                                   Style="{StaticResource SourceLineText}"
+                                                   Margin="6,0,0,0"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   MaxWidth="320"/>
+                                        <TextBlock Text="{Binding Page, Mode=OneWay, TargetNullValue=—}"
+                                                   Style="{StaticResource SourceLineText}"
+                                                   Margin="6,0,0,0"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <!-- 元信息：模型 + 耗时 -->
+                        <TextBlock Style="{StaticResource ChatMetaText}"
+                                   Visibility="{Binding HasModel, Converter={StaticResource BoolToVis}}">
+                            <TextBlock.Inlines>
+                                <Run Text="{Binding Model, Mode=OneWay}"/>
+                                <Run Text="("/><Run Text="{Binding Provider, Mode=OneWay}"/><Run Text=")"/>
+                                <Run Text=" · "/><Run Text="{Binding ElapsedMs, Mode=OneWay, StringFormat={}{0}ms}"/>
+                            </TextBlock.Inlines>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <!-- 工具条 -->
+            <RowDefinition Height="Auto"/>
+            <!-- 消息区 -->
+            <RowDefinition Height="*"/>
+            <!-- 输入区 -->
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ===== 工具条：知识库集合（复选）+ 添加 + 清空 ===== -->
+        <Border Grid.Row="0"
+                Background="{StaticResource CardBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="14"
+                Padding="14,10"
+                Margin="0,0,0,12">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- 第一行：集合标签 + 添加按钮 + 清空 -->
+                <Grid Grid.Row="0" Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" Text="知识库"
+                               Style="{StaticResource SmallText}"
+                               VerticalAlignment="Center"
+                               Margin="0,0,8,0"/>
+
+                    <!-- 添加知识库：输入框 + 按钮 -->
+                    <Grid Grid.Column="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0"
+                                 Text="{Binding NewCollectionName, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="输入新知识库名称后点击「添加」"
+                                 VerticalContentAlignment="Center"
+                                 Margin="0,0,8,0">
+                            <TextBox.InputBindings>
+                                <KeyBinding Key="Enter"
+                                            Command="{Binding AddCollectionCommand}"
+                                            CommandParameter="{Binding NewCollectionName}"/>
+                            </TextBox.InputBindings>
+                        </TextBox>
+                        <Button Grid.Column="1"
+                                Content="添加知识库"
+                                Command="{Binding AddCollectionCommand}"
+                                CommandParameter="{Binding NewCollectionName}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="10,4"/>
+                    </Grid>
+
+                    <Button Grid.Column="2"
+                            Content="清空对话"
+                            Command="{Binding ClearCommand}"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Margin="8,0,0,0"
+                            Visibility="{Binding HasMessages, Converter={StaticResource BoolToVis}}"/>
+                </Grid>
+
+                <!-- 第二行：知识库复选框列表 -->
+                <ItemsControl Grid.Row="1" ItemsSource="{Binding Collections}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal"/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="{x:Type vm:CollectionItem}">
+                            <CheckBox Content="{Binding Name}"
+                                      IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                      Margin="0,2,14,2"
+                                      VerticalContentAlignment="Center"/>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </Grid>
+        </Border>
+
+        <!-- ===== 消息列表 ===== -->
+        <Grid Grid.Row="1">
+            <ScrollViewer x:Name="MessageScroll"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="0,4">
+                    <!-- 欢迎空态 -->
+                    <Border Background="{StaticResource SurfaceBrush}"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="10"
+                            Padding="24"
+                            VerticalAlignment="Center"
+                            MaxWidth="420"
+                            HorizontalAlignment="Center"
+                            Visibility="{Binding ShowEmptyGuide, Converter={StaticResource BoolToVis}}">
+                        <StackPanel>
+                            <TextBlock Text="💬" FontSize="40" HorizontalAlignment="Center"/>
+                            <TextBlock Text="{Binding EmptyGuideText, Mode=OneWay}"
+                                       Style="{StaticResource BodyText}"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       TextWrapping="Wrap"
+                                       TextAlignment="Center"
+                                       Margin="0,12,0,0"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 消息列表 -->
+                    <ItemsControl ItemsSource="{Binding Messages}">
+                        <ItemsControl.ItemTemplate>
+                            <StaticResource ResourceKey="MessageBubbleTemplate"/>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+
+        <!-- ===== 输入区 ===== -->
+        <Border Grid.Row="2"
+                Background="{StaticResource CardBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="14"
+                Padding="14,10"
+                Margin="0,12,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <Grid Grid.Column="0" Margin="0,0,8,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="ChatInputBox"
+                             Grid.Column="0"
+                             Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="输入问题，回车发送。支持多轮追问"
+                             VerticalContentAlignment="Center"
+                             MinHeight="32"
+                             KeyUp="ChatInputBox_KeyUp"/>
+                    <Button Grid.Column="1"
+                            Content="×"
+                            Style="{StaticResource TextButtonStyle}"
+                            Command="{Binding ClearCommand}"
+                            FontSize="16"
+                            Padding="6,0"
+                            Margin="-8,0,0,0"
+                            Visibility="{Binding HasInput, Converter={StaticResource BoolToVis}}"/>
+                </Grid>
+
+                <Button Grid.Column="1"
+                        Content="发送"
+                        Command="{Binding SendCommand}"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        MinWidth="80"/>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

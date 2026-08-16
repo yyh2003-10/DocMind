@@ -23,6 +23,8 @@ public partial class DocumentsViewModel : ViewModelBase
     private const int DetailChunkStep = 30;
     private const int DetailChunkMax = 200;
     private bool _isDetailLoading;
+    /// <summary>详情请求序号：切换选中时递增，用于丢弃过期响应（防竞态）。</summary>
+    private int _detailLoadSeq;
 
     public DocumentsViewModel(IDoc2kbApiService apiService, NotificationService notifications)
     {
@@ -46,6 +48,9 @@ public partial class DocumentsViewModel : ViewModelBase
         _hasLoadedOnce = true;
         await RefreshAsync();
     }
+
+    /// <summary>外部数据变更（如导入完成）后使缓存失效：下次进入页面自动重新加载。</summary>
+    public void InvalidateCache() => _hasLoadedOnce = false;
 
     /// <summary>集合名（可选，留空为全部）。</summary>
     public string? Collection
@@ -120,6 +125,11 @@ public partial class DocumentsViewModel : ViewModelBase
                 {
                     _ = LoadDetailAsync(value.Id);
                 }
+                else
+                {
+                    // 取消选中时清空旧详情，避免显示错位的文档内容
+                    Detail = null;
+                }
             }
         }
     }
@@ -142,10 +152,29 @@ public partial class DocumentsViewModel : ViewModelBase
         }
     }
 
-    public bool HasDetail => Detail != null;
+    public bool HasDetail => Detail != null && DetailError is null;
 
-    /// <summary>无详情时显示空态提示。</summary>
-    public bool HasNoDetail => Detail == null;
+    /// <summary>无详情时显示空态提示或加载状态。</summary>
+    public bool HasNoDetail => Detail is null || DetailError is not null;
+
+    /// <summary>详情加载错误信息（用户可见）。加载失败后显示，成功后清除。</summary>
+    public string? DetailError
+    {
+        get => _detailError;
+        set
+        {
+            if (SetProperty(ref _detailError, value))
+            {
+                OnPropertyChanged(nameof(HasDetail));
+                OnPropertyChanged(nameof(HasNoDetail));
+                OnPropertyChanged(nameof(HasDetailError));
+            }
+        }
+    }
+    private string? _detailError;
+
+    /// <summary>是否有详情加载错误（用于 UI 错误面板可见性）。</summary>
+    public bool HasDetailError => DetailError is not null;
 
     /// <summary>分块预览计数：已显示 X / 共 N。</summary>
     public string ChunkInfoText => Detail is null
@@ -232,19 +261,47 @@ public partial class DocumentsViewModel : ViewModelBase
         }
     }
 
-    /// <summary>加载选中文档的详情（chunks 预览）。</summary>
+    /// <summary>加载选中文档的详情（chunks 预览）。
+    /// 请求序号防竞态：快速切换选中时，丢弃过期请求的响应，避免旧详情覆盖新选中。</summary>
     private async Task LoadDetailAsync(string id)
     {
+        var seq = ++_detailLoadSeq;
         _detailChunkLimit = 20; // 新文档从默认上限重新开始
+        DetailError = null; // 清除上次错误
         try
         {
             var detail = await _apiService.GetDocumentAsync(id, chunks: _detailChunkLimit, chunkContentLength: 300);
+            if (seq != _detailLoadSeq)
+            {
+                return; // 期间用户已切换选中，丢弃过期响应
+            }
             Detail = detail;
+            DetailError = null; // 成功则清除错误
             DebugLog.Info($"文档详情加载完成: id={id} chunksPreview={detail.ChunksPreview.Count}", "Documents");
+        }
+        catch (ApiException ex)
+        {
+            if (seq == _detailLoadSeq)
+            {
+                DetailError = $"详情加载失败：{ex.Message}";
+                DebugLog.Error($"文档详情 API 错误: id={id} code={ex.Code} message={ex.Message}", "Documents", ex);
+            }
+        }
+        catch (BackendConnectionException ex)
+        {
+            if (seq == _detailLoadSeq)
+            {
+                DetailError = $"后端不可达：{ex.Message}";
+                DebugLog.Error($"文档详情后端不可达: id={id} {ex.Message}", "Documents", ex);
+            }
         }
         catch (Exception ex)
         {
-            DebugLog.Error($"文档详情加载失败: id={id} {ex.Message}", "Documents", ex);
+            if (seq == _detailLoadSeq)
+            {
+                DetailError = $"详情加载失败：{ex.Message}";
+                DebugLog.Error($"文档详情加载失败: id={id} {ex.Message}", "Documents", ex);
+            }
         }
     }
 
@@ -260,14 +317,20 @@ public partial class DocumentsViewModel : ViewModelBase
         IsDetailLoading = true;
         try
         {
+            var seq = ++_detailLoadSeq;
             var target = Math.Min(_detailChunkLimit + DetailChunkStep, DetailChunkMax);
             var detail = await _apiService.GetDocumentAsync(SelectedDocument.Id, chunks: target, chunkContentLength: 300);
+            if (seq != _detailLoadSeq)
+            {
+                return; // 期间用户已切换选中，丢弃过期响应
+            }
             Detail = detail;
             _detailChunkLimit = target;
             DebugLog.Info($"加载更多分块完成: id={SelectedDocument.Id} chunks={detail.ChunksPreview.Count}", "Documents");
         }
         catch (Exception ex)
         {
+            DetailError = $"加载更多分块失败：{ex.Message}";
             DebugLog.Error($"加载更多分块失败: {ex.Message}", "Documents", ex);
         }
         finally
@@ -397,6 +460,7 @@ public partial class DocumentsViewModel : ViewModelBase
 
     private bool _isReindexing;
     private string? _reindexStatus;
+    private CancellationTokenSource? _reindexCts;
 
     /// <summary>是否正在重建索引。</summary>
     public bool IsReindexing
@@ -436,6 +500,9 @@ public partial class DocumentsViewModel : ViewModelBase
 
     private bool CanReindex => !IsReindexing && !IsBusy;
 
+    /// <summary>取消进行中的重建索引轮询（窗口关闭时由 MainViewModel 统一调用）。</summary>
+    public void CancelReindexPolling() => _reindexCts?.Cancel();
+
     /// <summary>重建当前集合（或全部）的向量索引，用后端任务轮询进度。</summary>
     [RelayCommand(CanExecute = nameof(CanReindex))]
     private async Task ReindexAsync()
@@ -459,6 +526,7 @@ public partial class DocumentsViewModel : ViewModelBase
         IsReindexing = true;
         _reindexProcessed = 0;
         _reindexTotal = 0;
+        _reindexCts = new CancellationTokenSource();
         ReindexStatus = "提交重建索引任务…";
         DebugLog.Info($"提交重建索引: Collection='{(col ?? "(全部)")}'", "Documents");
 
@@ -479,7 +547,8 @@ public partial class DocumentsViewModel : ViewModelBase
                         ? $"重建中 {j.Processed}/{j.Total} 分块"
                         : $"任务状态：{j.Status}";
                 }),
-                pollInterval: TimeSpan.FromSeconds(1));
+                pollInterval: TimeSpan.FromSeconds(1),
+                ct: _reindexCts.Token);
 
             if (final.Status.Equals("failed", StringComparison.OrdinalIgnoreCase))
             {
@@ -493,6 +562,11 @@ public partial class DocumentsViewModel : ViewModelBase
                 _notifications.Success($"重建索引完成（{final.Processed}/{final.Total} 分块）");
                 DebugLog.Info($"重建索引完成: processed={final.Processed} total={final.Total}", "Documents");
             }
+        }
+        catch (OperationCanceledException) when (_reindexCts?.IsCancellationRequested == true)
+        {
+            StatusMessage = "已取消重建索引（窗口关闭/手动取消）";
+            DebugLog.Info("重建索引轮询已取消", "Documents");
         }
         catch (ApiException ex)
         {
@@ -513,6 +587,8 @@ public partial class DocumentsViewModel : ViewModelBase
         {
             IsReindexing = false;
             ReindexStatus = null;
+            _reindexCts?.Dispose();
+            _reindexCts = null;
             // 重建后刷新列表（chunk 数不变，但保持数据新鲜）
             _ = RefreshAsync();
         }

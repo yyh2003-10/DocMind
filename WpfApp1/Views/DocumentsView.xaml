@@ -16,10 +16,10 @@
 
         <!-- ===== 工具条 ===== -->
         <Border Grid.Row="0"
-                Background="{StaticResource SurfaceBrush}"
+                Background="{StaticResource CardBrush}"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="8"
+                CornerRadius="14"
                 Padding="12,10"
                 Margin="0,0,0,12">
             <DockPanel>
@@ -104,12 +104,11 @@
 
             <!-- 文档列表 -->
             <Border Grid.Column="0"
-                    Background="{StaticResource BackgroundBrush}"
+                    Background="{StaticResource CardBrush}"
                     BorderBrush="{StaticResource BorderBrush}"
                     BorderThickness="1"
-                    CornerRadius="10"
-                    Padding="12"
-                    Effect="{StaticResource ShadowSm}">
+                    CornerRadius="14"
+                    Padding="14">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Top"
                                Text="文档列表"
@@ -178,12 +177,11 @@
 
             <!-- 详情面板 -->
             <Border Grid.Column="2"
-                    Background="{StaticResource BackgroundBrush}"
+                    Background="{StaticResource CardBrush}"
                     BorderBrush="{StaticResource BorderBrush}"
                     BorderThickness="1"
-                    CornerRadius="10"
-                    Padding="12"
-                    Effect="{StaticResource ShadowSm}">
+                    CornerRadius="14"
+                    Padding="14">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Top"
                                Text="文档详情"
@@ -195,7 +193,29 @@
                             <!-- 未选中提示 -->
                             <TextBlock Text="选择左侧文档查看详情与分块预览"
                                        Style="{StaticResource SmallText}"
-                                       Visibility="{Binding HasNoDetail, Converter={StaticResource BoolToVis}}"/>
+                                       Visibility="{Binding HasNoDetail, Converter={StaticResource BoolToVis}}"
+                                       HorizontalAlignment="Center"
+                                       Margin="0,20,0,0"/>
+
+                            <!-- 详情加载错误 -->
+                            <Border Background="{StaticResource DangerLightBrush}"
+                                    BorderBrush="{StaticResource DangerBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Padding="12,10"
+                                    Margin="0,0,0,8"
+                                    Visibility="{Binding HasDetailError, Converter={StaticResource BoolToVis}}">
+                                <StackPanel>
+                                    <TextBlock Text="⚠ 详情加载失败"
+                                               Style="{StaticResource CaptionText}"
+                                               Foreground="{StaticResource DangerBrush}"
+                                               FontWeight="SemiBold"
+                                               Margin="0,0,0,4"/>
+                                    <TextBlock Text="{Binding DetailError, Mode=OneWay}"
+                                               Style="{StaticResource SmallText}"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Border>
 
                             <!-- 详情内容 -->
                             <StackPanel Visibility="{Binding HasDetail, Converter={StaticResource BoolToVis}}">

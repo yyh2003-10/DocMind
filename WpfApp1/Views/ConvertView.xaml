@@ -17,10 +17,10 @@
 
         <!-- ===== 输入选择卡片 ===== -->
         <Border Grid.Row="0"
-                Background="{StaticResource SurfaceBrush}"
+                Background="{StaticResource CardBrush}"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="8"
+                CornerRadius="14"
                 Padding="16,12"
                 Margin="0,0,0,8">
             <Grid>
@@ -52,10 +52,10 @@
 
         <!-- ===== 输出 + 格式卡片 ===== -->
         <Border Grid.Row="1"
-                Background="{StaticResource SurfaceBrush}"
+                Background="{StaticResource CardBrush}"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="8"
+                CornerRadius="14"
                 Padding="16,12"
                 Margin="0,0,0,12">
             <Grid>
@@ -117,8 +117,8 @@
 
         <!-- ===== 忙碌进度条（转换进行中时显示） ===== -->
         <Border Grid.Row="2"
-                Background="{StaticResource SurfaceBrush}"
-                CornerRadius="8"
+                Background="{StaticResource CardBrush}"
+                CornerRadius="10"
                 Padding="12,8"
                 Margin="0,0,0,12"
                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">

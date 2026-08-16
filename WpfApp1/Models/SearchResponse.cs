@@ -21,4 +21,5 @@ public sealed record SearchResponse
     public IReadOnlyList<SearchHit> Hits { get; init; } = [];
     public int Total { get; init; }
     public int ElapsedMs { get; init; }
+    public bool Degraded { get; init; }
 }

@@ -31,8 +31,17 @@ public partial class SettingsViewModel : ViewModelBase
     private int? _chunkMinChars;
     private int? _chunkOverlapChars;
     private int? _chunkMaxChars;
+    // --- LLM ---
+    private string _llmProvider = "none";
+    private string? _llmApiKey;
+    private string? _llmBaseUrl;
+    private string _llmModel = "";
+    private double _llmTemperature = 0.7;
+    private int _llmMaxTokens = 2048;
+    private int _ragTopK = 5;
     private string _statusMessage = "就绪";
     private bool _isDirty;
+    private bool _isTestingConnection;
 
     public SettingsViewModel(
         AppSettings appSettings,
@@ -65,6 +74,13 @@ public partial class SettingsViewModel : ViewModelBase
         _chunkMinChars = _appSettings.ChunkMinChars;
         _chunkOverlapChars = _appSettings.ChunkOverlapChars;
         _chunkMaxChars = _appSettings.ChunkMaxChars;
+        _llmProvider = _appSettings.LlmProvider;
+        _llmApiKey = _appSettings.LlmApiKey;
+        _llmBaseUrl = _appSettings.LlmBaseUrl;
+        _llmModel = _appSettings.LlmModel;
+        _llmTemperature = _appSettings.LlmTemperature;
+        _llmMaxTokens = _appSettings.LlmMaxTokens;
+        _ragTopK = _appSettings.RagTopK;
     }
 
     /// <summary>GPU 加速状态（警告条 + 关于区显示）。</summary>
@@ -196,6 +212,55 @@ public partial class SettingsViewModel : ViewModelBase
         set => SetDirty(ref _chunkMaxChars, value);
     }
 
+    /// <summary>LLM 提供商标识（none | openai | ollama）。</summary>
+    public string LlmProvider
+    {
+        get => _llmProvider;
+        set => SetDirty(ref _llmProvider, value);
+    }
+
+    /// <summary>OpenAI 兼容 API Key。</summary>
+    public string? LlmApiKey
+    {
+        get => _llmApiKey;
+        set => SetDirty(ref _llmApiKey, value);
+    }
+
+    /// <summary>API 基础地址（如 https://api.deepseek.com/v1）。</summary>
+    public string? LlmBaseUrl
+    {
+        get => _llmBaseUrl;
+        set => SetDirty(ref _llmBaseUrl, value);
+    }
+
+    /// <summary>模型名（如 deepseek-chat、gpt-4o-mini、llama3.2）。</summary>
+    public string LlmModel
+    {
+        get => _llmModel;
+        set => SetDirty(ref _llmModel, value);
+    }
+
+    /// <summary>温度参数（0-2，默认 0.7）。</summary>
+    public double LlmTemperature
+    {
+        get => _llmTemperature;
+        set => SetDirty(ref _llmTemperature, value);
+    }
+
+    /// <summary>最大 token 数（默认 2048）。</summary>
+    public int LlmMaxTokens
+    {
+        get => _llmMaxTokens;
+        set => SetDirty(ref _llmMaxTokens, value);
+    }
+
+    /// <summary>检索引用 chunk 数（默认 5）。</summary>
+    public int RagTopK
+    {
+        get => _ragTopK;
+        set => SetDirty(ref _ragTopK, value);
+    }
+
     /// <summary>可选的嵌入模型清单（设置页下拉；与后端 catalog 一致，均为 fastembed 实际支持）。</summary>
     public IReadOnlyList<string> SupportedEmbedModels { get; } = new[]
     {
@@ -213,6 +278,13 @@ public partial class SettingsViewModel : ViewModelBase
     {
         get => _statusMessage;
         set => SetProperty(ref _statusMessage, value);
+    }
+
+    /// <summary>是否正在测试连接。</summary>
+    public bool IsTestingConnection
+    {
+        get => _isTestingConnection;
+        set => SetProperty(ref _isTestingConnection, value);
     }
 
     /// <summary>是否有未保存的改动。</summary>
@@ -274,6 +346,13 @@ public partial class SettingsViewModel : ViewModelBase
             _appSettings.ChunkMinChars = ChunkMinChars;
             _appSettings.ChunkOverlapChars = ChunkOverlapChars;
             _appSettings.ChunkMaxChars = ChunkMaxChars;
+            _appSettings.LlmProvider = LlmProvider;
+            _appSettings.LlmApiKey = LlmApiKey;
+            _appSettings.LlmBaseUrl = LlmBaseUrl;
+            _appSettings.LlmModel = LlmModel;
+            _appSettings.LlmTemperature = LlmTemperature;
+            _appSettings.LlmMaxTokens = LlmMaxTokens;
+            _appSettings.RagTopK = RagTopK;
 
             // 落盘到用户级目录（%LOCALAPPDATA%\DocMind\appsettings.json）
             var settingsPath = AppSettings.ConfigPath;
@@ -297,6 +376,13 @@ public partial class SettingsViewModel : ViewModelBase
                 ChunkMinChars = ChunkMinChars,
                 ChunkOverlapChars = ChunkOverlapChars,
                 ChunkMaxChars = ChunkMaxChars,
+                LlmProvider = LlmProvider,
+                LlmApiKey = LlmApiKey,
+                LlmBaseUrl = LlmBaseUrl,
+                LlmModel = LlmModel,
+                LlmTemperature = LlmTemperature,
+                LlmMaxTokens = LlmMaxTokens,
+                RagTopK = RagTopK,
                 Theme = _appSettings.Theme,
                 DismissGpuWarning = _gpuWarning.Dismissed,
             }, new JsonSerializerOptions { WriteIndented = true });
@@ -320,6 +406,13 @@ public partial class SettingsViewModel : ViewModelBase
                     ChunkMaxChars = ChunkMaxChars,
                     SearchTopK = null,     // 前端暂不暴露
                     RrfK = null,           // 前端暂不暴露
+                    LlmProvider = string.IsNullOrWhiteSpace(LlmProvider) ? "none" : LlmProvider,
+                    LlmApiKey = string.IsNullOrWhiteSpace(LlmApiKey) ? null : LlmApiKey,
+                    LlmBaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl) ? null : LlmBaseUrl,
+                    LlmModel = string.IsNullOrWhiteSpace(LlmModel) ? null : LlmModel,
+                    LlmTemperature = LlmTemperature,
+                    LlmMaxTokens = LlmMaxTokens,
+                    RagTopK = RagTopK,
                 });
                 // 后端提示（如切换模型后维度变化需重建索引）
                 if (!string.IsNullOrWhiteSpace(pushed.Notice))
@@ -367,6 +460,13 @@ public partial class SettingsViewModel : ViewModelBase
         ChunkMinChars = _appSettings.ChunkMinChars;
         ChunkOverlapChars = _appSettings.ChunkOverlapChars;
         ChunkMaxChars = _appSettings.ChunkMaxChars;
+        LlmProvider = _appSettings.LlmProvider;
+        LlmApiKey = _appSettings.LlmApiKey;
+        LlmBaseUrl = _appSettings.LlmBaseUrl;
+        LlmModel = _appSettings.LlmModel;
+        LlmTemperature = _appSettings.LlmTemperature;
+        LlmMaxTokens = _appSettings.LlmMaxTokens;
+        RagTopK = _appSettings.RagTopK;
         IsDirty = false;
         StatusMessage = "已恢复";
     }
@@ -376,4 +476,64 @@ public partial class SettingsViewModel : ViewModelBase
 
     [RelayCommand]
     private void SetDarkTheme() => SelectedTheme = ThemeMode.Dark;
+
+    /// <summary>测试后端与 LLM 连接。</summary>
+    [RelayCommand]
+    private async Task TestConnectionAsync()
+    {
+        if (IsTestingConnection)
+            return;
+
+        IsTestingConnection = true;
+        StatusMessage = "测试连接中…";
+        DebugLog.Info("开始测试连接", "Settings");
+
+        try
+        {
+            // 1. 测试后端可达性
+            var health = await _apiService.GetHealthAsync();
+            if (health is null)
+            {
+                StatusMessage = "❌ 后端不可达";
+                DebugLog.Warn("测试连接失败: 后端不可达", "Settings");
+                return;
+            }
+
+            var config = await _apiService.GetConfigAsync();
+
+            // 2. 如果 LLM 已配置，尝试对话
+            if (config.LlmProvider is not null && config.LlmProvider != "none" && config.LlmApiKeyConfigured)
+            {
+                try
+                {
+                    var chatResp = await _apiService.ChatAsync(new ChatRequest
+                    {
+                        Query = "你好，请回复「连接成功」",
+                        TopK = 1,
+                    });
+                    StatusMessage = $"✅ 连接成功 · 模型: {chatResp.Model} ({chatResp.Provider})";
+                    DebugLog.Info($"测试连接成功: model={chatResp.Model}", "Settings");
+                }
+                catch (Exception chatEx)
+                {
+                    StatusMessage = $"❌ LLM 测试失败: {chatEx.Message}";
+                    DebugLog.Warn($"测试连接 LLM 失败: {chatEx.Message}", "Settings");
+                }
+            }
+            else
+            {
+                StatusMessage = "✅ 后端连接正常（未配置 LLM，跳过对话测试）";
+                DebugLog.Info("测试连接成功（未配置 LLM）", "Settings");
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"❌ 连接失败: {ex.Message}";
+            DebugLog.Error($"测试连接异常: {ex.Message}", "Settings", ex);
+        }
+        finally
+        {
+            IsTestingConnection = false;
+        }
+    }
 }

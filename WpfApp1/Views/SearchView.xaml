@@ -25,19 +25,17 @@
 
         <!-- 结果卡片模板 -->
         <DataTemplate x:Key="HitCardTemplate" DataType="{x:Type m:SearchHit}">
-            <Border Background="{StaticResource BackgroundBrush}"
+            <Border Background="{StaticResource CardBrush}"
                     BorderBrush="{StaticResource BorderBrush}"
                     BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="12"
+                    CornerRadius="10"
+                    Padding="14"
                     Margin="0,0,0,8"
-                    Effect="{StaticResource ShadowSm}"
                     SnapsToDevicePixels="True">
                 <Border.Style>
                     <Style TargetType="Border">
                         <Style.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Effect" Value="{StaticResource ShadowMd}"/>
                                 <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
                             </Trigger>
                             <!-- 选中高亮：跟随 ListBoxItem.IsSelected -->
@@ -45,7 +43,6 @@
                                          Value="True">
                                 <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
                                 <Setter Property="BorderThickness" Value="2"/>
-                                <Setter Property="Effect" Value="{StaticResource ShadowMd}"/>
                             </DataTrigger>
                         </Style.Triggers>
                     </Style>
@@ -126,15 +123,16 @@
 
         <!-- ===== 搜索条 ===== -->
         <Border Grid.Row="0"
-                Background="{StaticResource SurfaceBrush}"
+                Background="{StaticResource CardBrush}"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="8"
-                Padding="12,10"
+                CornerRadius="14"
+                Padding="14,10"
                 Margin="0,0,0,12">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
@@ -199,9 +197,11 @@
 
         <!-- ===== 结果统计条 ===== -->
         <Border Grid.Row="1"
-                Background="{StaticResource SurfaceBrush}"
-                CornerRadius="6"
-                Padding="12,6"
+                Background="{StaticResource CardBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="14,7"
                 Margin="0,0,0,8"
                 Visibility="{Binding HasResults, Converter={StaticResource BoolToVis}}">
             <StackPanel Orientation="Horizontal">
@@ -227,27 +227,24 @@
                 <!-- 骨架屏（加载中显示） -->
                 <StackPanel Margin="0,0,0,8"
                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
-                    <Border Background="{StaticResource BorderBrush}"
-                            CornerRadius="8" Height="90" Margin="0,0,0,8"
-                            Effect="{StaticResource ShadowSm}">
+                    <Border Background="{StaticResource SurfaceBrush}"
+                            CornerRadius="8" Height="90" Margin="0,0,0,8">
                         <StackPanel Margin="12">
                             <cc:SkeletonControl CornerRadius="4" Height="14" Width="120" Margin="0,0,0,8"/>
                             <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
                             <cc:SkeletonControl CornerRadius="4" Height="12" Width="80"/>
                         </StackPanel>
                     </Border>
-                    <Border Background="{StaticResource BorderBrush}"
-                            CornerRadius="8" Height="80" Margin="0,0,0,8"
-                            Effect="{StaticResource ShadowSm}">
+                    <Border Background="{StaticResource SurfaceBrush}"
+                            CornerRadius="8" Height="80" Margin="0,0,0,8">
                         <StackPanel Margin="12">
                             <cc:SkeletonControl CornerRadius="4" Height="14" Width="100" Margin="0,0,0,8"/>
                             <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
                             <cc:SkeletonControl CornerRadius="4" Height="12" Width="60"/>
                         </StackPanel>
                     </Border>
-                    <Border Background="{StaticResource BorderBrush}"
-                            CornerRadius="8" Height="80"
-                            Effect="{StaticResource ShadowSm}">
+                    <Border Background="{StaticResource SurfaceBrush}"
+                            CornerRadius="8" Height="80">
                         <StackPanel Margin="12">
                             <cc:SkeletonControl CornerRadius="4" Height="14" Width="90" Margin="0,0,0,8"/>
                             <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
@@ -258,38 +255,37 @@
 
                 <!-- 实际结果列表 + 空态引导（叠放） -->
                 <Grid>
-                    <ScrollViewer VerticalScrollBarVisibility="Auto"
-                                  BorderThickness="0">
-                        <!-- ListBox 支持选中 → 绑定 SelectedHit，点击卡片即可看详情 -->
-                        <ListBox ItemsSource="{Binding Hits}"
-                                 ItemTemplate="{StaticResource HitCardTemplate}"
-                                 SelectedItem="{Binding SelectedHit}"
-                                 SelectionMode="Single"
-                                 BorderThickness="0"
-                                 Background="Transparent"
-                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                 VirtualizingPanel.IsVirtualizing="True"
-                                 VirtualizingPanel.VirtualizationMode="Recycling"
-                                 Focusable="False">
-                            <ListBox.ItemContainerStyle>
-                                <Style TargetType="ListBoxItem">
-                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                                    <Setter Property="Padding" Value="0"/>
-                                    <Setter Property="Margin" Value="0"/>
-                                    <Setter Property="Background" Value="Transparent"/>
-                                    <Setter Property="BorderThickness" Value="0"/>
-                                    <Setter Property="Focusable" Value="False"/>
-                                    <Setter Property="Template">
-                                        <Setter.Value>
-                                            <ControlTemplate TargetType="ListBoxItem">
-                                                <ContentPresenter/>
-                                            </ControlTemplate>
-                                        </Setter.Value>
-                                    </Setter>
-                                </Style>
-                            </ListBox.ItemContainerStyle>
-                        </ListBox>
-                    </ScrollViewer>
+                    <!-- ListBox 支持选中 → 绑定 SelectedHit，点击卡片即可看详情。
+                         注意：不要在外层再套 ScrollViewer——ListBox 自带滚动面板，
+                         外层 ScrollViewer 会给它无限高度，导致 VirtualizingPanel 虚拟化失效。 -->
+                    <ListBox ItemsSource="{Binding Hits}"
+                             ItemTemplate="{StaticResource HitCardTemplate}"
+                             SelectedItem="{Binding SelectedHit}"
+                             SelectionMode="Single"
+                             BorderThickness="0"
+                             Background="Transparent"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             VirtualizingPanel.IsVirtualizing="True"
+                             VirtualizingPanel.VirtualizationMode="Recycling"
+                             Focusable="False">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                <Setter Property="Padding" Value="0"/>
+                                <Setter Property="Margin" Value="0"/>
+                                <Setter Property="Background" Value="Transparent"/>
+                                <Setter Property="BorderThickness" Value="0"/>
+                                <Setter Property="Focusable" Value="False"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBoxItem">
+                                            <ContentPresenter/>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                    </ListBox>
 
                     <!-- 空态引导：无结果且非忙碌时显示，告诉用户下一步该干嘛 -->
                     <Border Background="{StaticResource SurfaceBrush}"
@@ -371,11 +367,12 @@
                                 </StackPanel>
                             </Border>
 
-                            <!-- 完整内容 -->
+                            <!-- 完整内容（后端已截断至 2000 字符；MaxHeight 兜底防超长文本拖慢布局） -->
                             <TextBlock x:Name="DetailContentText"
                                        Text="{Binding SelectedHit.Content, Mode=OneWay}"
                                        Style="{StaticResource BodyText}"
                                        TextWrapping="Wrap"
+                                       MaxHeight="420"
                                        xml:space="preserve"/>
 
                             <!-- 空态 -->

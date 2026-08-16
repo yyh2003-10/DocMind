@@ -21,6 +21,9 @@ public partial class ImportViewModel : ViewModelBase
     private int _progressPercent;
     private CancellationTokenSource? _importCts;
 
+    /// <summary>导入流程结束（成功/失败/取消）时触发，供其他页面联动刷新（如文档库）。</summary>
+    public event Action? ImportCompleted;
+
     public ImportViewModel(IDoc2kbApiService apiService, NotificationService notifications)
     {
         _apiService = apiService;
@@ -403,6 +406,8 @@ public partial class ImportViewModel : ViewModelBase
             _importCts?.Dispose();
             _importCts = null;
             DebugLog.Info($"导入流程结束，总耗时{sw.ElapsedMilliseconds}ms", "Import");
+            // 无论成败都通知联动方（可能部分文件已成功写入库）
+            ImportCompleted?.Invoke();
         }
     }
 

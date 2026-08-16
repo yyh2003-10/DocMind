@@ -58,6 +58,7 @@ public partial class MainViewModel : ViewModelBase
     public ObservableCollection<NavigationItem> NavigationItems { get; } = new();
 
     private readonly SearchViewModel _searchViewModel;
+    private readonly ChatViewModel _chatViewModel;
     private readonly ImportViewModel _importViewModel;
     private readonly ConvertViewModel _convertViewModel;
     private readonly QualityViewModel _qualityViewModel;
@@ -69,6 +70,7 @@ public partial class MainViewModel : ViewModelBase
         IDoc2kbApiService apiService,
         AppSettings settings,
         SearchViewModel searchViewModel,
+        ChatViewModel chatViewModel,
         ImportViewModel importViewModel,
         ConvertViewModel convertViewModel,
         QualityViewModel qualityViewModel,
@@ -79,6 +81,7 @@ public partial class MainViewModel : ViewModelBase
         ApiService = apiService;
         Settings = settings;
         _searchViewModel = searchViewModel;
+        _chatViewModel = chatViewModel;
         _importViewModel = importViewModel;
         _convertViewModel = convertViewModel;
         _qualityViewModel = qualityViewModel;
@@ -89,9 +92,13 @@ public partial class MainViewModel : ViewModelBase
         // 文档详情「分块定位」→ 跳转搜索页执行搜索
         _documentsViewModel.ChunkSearchRequested += OnChunkSearchRequested;
 
+        // 导入完成 → 文档库缓存失效（下次进入自动刷新）
+        _importViewModel.ImportCompleted += OnImportCompleted;
+
         Title = "DocMind";
 
         NavigationItems.Add(new NavigationItem { Title = "搜索", Icon = "🔍", IconPath = "Assets/nav-search.png", ViewModelType = typeof(SearchViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "对话", Icon = "💬", ViewModelType = typeof(ChatViewModel) });
         NavigationItems.Add(new NavigationItem { Title = "导入", Icon = "📥", IconPath = "Assets/nav-import.png", ViewModelType = typeof(ImportViewModel) });
         NavigationItems.Add(new NavigationItem { Title = "转换", Icon = "🔄", IconPath = "Assets/nav-convert.png", ViewModelType = typeof(ConvertViewModel) });
         NavigationItems.Add(new NavigationItem { Title = "质量看板", Icon = "📊", IconPath = "Assets/nav-quality.png", ViewModelType = typeof(QualityViewModel) });
@@ -116,11 +123,6 @@ public partial class MainViewModel : ViewModelBase
             {
                 OnPropertyChanged(nameof(CurrentStatusText));
                 OnPropertyChanged(nameof(CurrentIsBusy));
-                OnPropertyChanged(nameof(IsSearchActive));
-                OnPropertyChanged(nameof(IsImportActive));
-                OnPropertyChanged(nameof(ShowDetailPanel));
-                OnPropertyChanged(nameof(SelectedHitInfo));
-                OnPropertyChanged(nameof(ImportSummary));
 
                 // 导航自动加载：文档库/质量看板首次进入时自动拉取数据
                 if (_currentPage is DocumentsViewModel dv)
@@ -148,6 +150,7 @@ public partial class MainViewModel : ViewModelBase
             CurrentPage = value?.ViewModelType switch
             {
                 var type when type == typeof(SearchViewModel) => _searchViewModel,
+                var type when type == typeof(ChatViewModel) => _chatViewModel,
                 var type when type == typeof(ImportViewModel) => _importViewModel,
                 var type when type == typeof(ConvertViewModel) => _convertViewModel,
                 var type when type == typeof(QualityViewModel) => _qualityViewModel,
@@ -205,11 +208,35 @@ public partial class MainViewModel : ViewModelBase
         if (item != null) SelectedNavigationItem = item;
     }
 
+    [RelayCommand]
+    private void NavigateToChat()
+    {
+        var item = NavigationItems.FirstOrDefault(n => n.ViewModelType == typeof(ChatViewModel));
+        if (item != null) SelectedNavigationItem = item;
+    }
+
     /// <summary>文档详情分块点击 → 设置搜索词并跳转搜索页。</summary>
     private void OnChunkSearchRequested(string query)
     {
         _searchViewModel.SearchWithQuery(query);
         NavigateToSearch();
+    }
+
+    /// <summary>窗口关闭时统一取消各页面进行中的后台任务（导入轮询、重建索引轮询等）。</summary>
+    public void CancelInFlightOperations()
+    {
+        _importViewModel.CancelImportCommand.Execute(null);
+        _documentsViewModel.CancelReindexPolling();
+    }
+
+    /// <summary>导入完成 → 文档库数据已变化：失效缓存，若文档库页正在显示则直接刷新。</summary>
+    private void OnImportCompleted()
+    {
+        _documentsViewModel.InvalidateCache();
+        if (CurrentPage == _documentsViewModel)
+        {
+            _documentsViewModel.RefreshCommand.Execute(null);
+        }
     }
 
     [RelayCommand]
@@ -247,6 +274,7 @@ public partial class MainViewModel : ViewModelBase
         get
         {
             if (CurrentPage == _searchViewModel) return _searchViewModel.StatusMessage;
+            if (CurrentPage == _chatViewModel) return _chatViewModel.StatusMessage;
             if (CurrentPage == _importViewModel) return _importViewModel.StatusMessage;
             if (CurrentPage == _convertViewModel) return _convertViewModel.StatusMessage;
             if (CurrentPage == _qualityViewModel) return _qualityViewModel.StatusMessage;
@@ -262,6 +290,7 @@ public partial class MainViewModel : ViewModelBase
         get
         {
             if (CurrentPage == _searchViewModel) return _searchViewModel.IsBusy;
+            if (CurrentPage == _chatViewModel) return _chatViewModel.IsBusy;
             if (CurrentPage == _importViewModel) return _importViewModel.IsBusy;
             if (CurrentPage == _convertViewModel) return _convertViewModel.IsBusy;
             if (CurrentPage == _qualityViewModel) return _qualityViewModel.IsBusy;
@@ -270,37 +299,20 @@ public partial class MainViewModel : ViewModelBase
         }
     }
 
-    // ===================== 详情面板 =====================
+    // ===================== 详情面板（已移除） =====================
 
-    public bool IsSearchActive => CurrentPage == _searchViewModel;
-    public bool IsImportActive => CurrentPage == _importViewModel;
+    /// <summary>各子 View（SearchView / DocumentsView）已内嵌详情面板，
+    /// MainWindow 不再提供全局详情面板。保留此属性返回 false 以兼容外部引用。</summary>
+    public bool ShowDetailPanel => false;
 
-    /// <summary>右侧详情面板是否显示（仅搜索/导入/文档库页有详情内容）。</summary>
-    public bool ShowDetailPanel =>
-        CurrentPage == _searchViewModel
-        || CurrentPage == _importViewModel
-        || CurrentPage == _documentsViewModel;
+    /// <summary>兼容保留：已不再使用。</summary>
+    public bool IsSearchActive => false;
 
-    public string? SelectedHitInfo
-    {
-        get
-        {
-            if (CurrentPage != _searchViewModel) return null;
-            var hit = _searchViewModel.SelectedHit;
-            return hit != null
-                ? $"文档: {hit.Source ?? "—"}\n相似度: {hit.Score:F4}"
-                : "未选中结果";
-        }
-    }
+    /// <summary>兼容保留：已不再使用。</summary>
+    public bool IsChatActive => false;
 
-    public string? ImportSummary
-    {
-        get
-        {
-            if (CurrentPage != _importViewModel) return null;
-            return $"已导入: {_importViewModel.Results.Count}\n跳过: {_importViewModel.Skipped.Count}\n失败: {_importViewModel.Failed.Count}";
-        }
-    }
+    /// <summary>兼容保留：已不再使用。</summary>
+    public bool IsImportActive => false;
 
     private void OnPagePropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -309,9 +321,5 @@ public partial class MainViewModel : ViewModelBase
             OnPropertyChanged(nameof(CurrentStatusText));
         else if (e.PropertyName == "IsBusy")
             OnPropertyChanged(nameof(CurrentIsBusy));
-        else if (sender == _searchViewModel && e.PropertyName == nameof(SearchViewModel.SelectedHit))
-            OnPropertyChanged(nameof(SelectedHitInfo));
-        else if (sender == _importViewModel && e.PropertyName == nameof(ImportViewModel.HasResults))
-            OnPropertyChanged(nameof(ImportSummary));
     }
 }

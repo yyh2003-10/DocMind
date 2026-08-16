@@ -58,6 +58,7 @@ namespace DocMind
             // ViewModels
             services.AddSingleton<MainViewModel>();
             services.AddTransient<SearchViewModel>();
+            services.AddTransient<ChatViewModel>();
             services.AddTransient<ImportViewModel>();
             services.AddTransient<ConvertViewModel>();
             services.AddTransient<QualityViewModel>();
@@ -302,7 +303,7 @@ namespace DocMind
             e.SetObserved();
         }
 
-        protected override async void OnExit(ExitEventArgs e)
+        protected override void OnExit(ExitEventArgs e)
         {
             DebugLog.Info($"DocMind 退出 @ {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}", "App");
             try
@@ -311,7 +312,10 @@ namespace DocMind
                 var backend = _serviceProvider.GetRequiredService<BackendProcessService>();
                 if (settings.StopBackendOnExit)
                 {
-                    await backend.StopAsync();
+                    // 同步等待：async void OnExit 不会阻塞退出流程（await 后进程可能已退出，
+                    // 优雅停止会被中断）。StopAsync 内部有 5s 优雅 + kill 兜底，阻塞等待可接受。
+                    // Task.Run 脱离 UI SynchronizationContext，避免 UI 线程 GetResult 死锁。
+                    Task.Run(() => backend.StopAsync().GetAwaiter().GetResult()).GetAwaiter().GetResult();
                 }
                 backend.Dispose();
             }

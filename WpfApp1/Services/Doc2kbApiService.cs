@@ -62,6 +62,9 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task<SearchResponse> SearchAsync(SearchRequest req, CancellationToken ct = default)
         => SendAsync<SearchResponse>(HttpMethod.Post, "v1/search", req, ct);
 
+    public Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default)
+        => SendAsync<ChatResponse>(HttpMethod.Post, "v1/chat", req, ct);
+
     public Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", CancellationToken ct = default)
         => SendAsync<DocumentListResponse>(HttpMethod.Get, BuildUri("v1/documents", new Dictionary<string, string?>
         {
@@ -91,6 +94,9 @@ public class Doc2kbApiService : IDoc2kbApiService
         {
             ["collection"] = collection
         }), null, ct);
+
+    public Task<Stats> CreateCollectionAsync(string name, CancellationToken ct = default)
+        => SendAsync<Stats>(HttpMethod.Post, "v1/collections", new { name }, ct);
 
     public Task<QualityReport> GetQualityAsync(string? collection = null, CancellationToken ct = default)
         => SendAsync<QualityReport>(HttpMethod.Get, BuildUri("v1/quality", new Dictionary<string, string?>

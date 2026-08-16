@@ -16,14 +16,18 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     // ── Search ──
     public Func<SearchRequest, CancellationToken, Task<SearchResponse>>? OnSearch { get; set; }
 
+    // ── Chat ──
+    public Func<ChatRequest, CancellationToken, Task<ChatResponse>>? OnChat { get; set; }
+
     // ── Documents ──
     public Func<string?, int, int, string?, string, CancellationToken, Task<DocumentListResponse>>? OnListDocuments { get; set; }
     public Func<string, int, int, string?, CancellationToken, Task<DocumentDetail>>? OnGetDocument { get; set; }
     public Func<string, string?, CancellationToken, Task<DeleteResult>>? OnDeleteDocument { get; set; }
 
-    // ── Stats / Quality ──
+    // ── Stats / Quality / Collections ──
     public Func<string?, CancellationToken, Task<Stats>>? OnGetStats { get; set; }
     public Func<string?, CancellationToken, Task<QualityReport>>? OnGetQuality { get; set; }
+    public Func<string, CancellationToken, Task<Stats>>? OnCreateCollection { get; set; }
 
     // ── Convert ──
     public Func<ConvertRequest, CancellationToken, Task<ConvertResult>>? OnConvert { get; set; }
@@ -57,6 +61,9 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Task<SearchResponse> SearchAsync(SearchRequest req, CancellationToken ct = default)
         => OnSearch?.Invoke(req, ct) ?? throw new NotImplementedException();
 
+    public Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default)
+        => OnChat?.Invoke(req, ct) ?? throw new NotImplementedException();
+
     public Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", CancellationToken ct = default)
         => OnListDocuments?.Invoke(collection, page, pageSize, format, sort, ct) ?? throw new NotImplementedException();
 
@@ -71,6 +78,9 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
 
     public Task<QualityReport> GetQualityAsync(string? collection = null, CancellationToken ct = default)
         => OnGetQuality?.Invoke(collection, ct) ?? throw new NotImplementedException();
+
+    public Task<Stats> CreateCollectionAsync(string name, CancellationToken ct = default)
+        => OnCreateCollection?.Invoke(name, ct) ?? throw new NotImplementedException();
 
     public Task<ConvertResult> ConvertAsync(ConvertRequest req, CancellationToken ct = default)
         => OnConvert?.Invoke(req, ct) ?? throw new NotImplementedException();

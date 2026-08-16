@@ -14,7 +14,7 @@
 
         <!-- ===== 顶部工具条 ===== -->
         <Border Grid.Row="0"
-                Background="{StaticResource SurfaceBrush}"
+                Background="{StaticResource CardBrush}"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="0,0,0,1"
                 Padding="0,8,0,8">
@@ -60,7 +60,8 @@
                  BorderThickness="0"
                  Background="{StaticResource BackgroundBrush}"
                  ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                 ScrollViewer.VerticalScrollBarVisibility="Auto">
+                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                 VirtualizingStackPanel.IsVirtualizing="False">
             <ListBox.ItemContainerStyle>
                 <Style TargetType="ListBoxItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
