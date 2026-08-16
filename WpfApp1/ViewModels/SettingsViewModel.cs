@@ -42,6 +42,9 @@ public partial class SettingsViewModel : ViewModelBase
     private string _statusMessage = "就绪";
     private bool _isDirty;
     private bool _isTestingConnection;
+    // 加载时的 key/base_url 快照：区分「从未配置」（保存时不推送）与「主动清空」（保存时显式清除）
+    private string? _savedApiKeyAtLoad;
+    private string? _savedBaseUrlAtLoad;
 
     public SettingsViewModel(
         AppSettings appSettings,
@@ -75,12 +78,14 @@ public partial class SettingsViewModel : ViewModelBase
         _chunkOverlapChars = _appSettings.ChunkOverlapChars;
         _chunkMaxChars = _appSettings.ChunkMaxChars;
         _llmProvider = _appSettings.LlmProvider;
-        _llmApiKey = _appSettings.LlmApiKey;
+        _llmApiKey = _appSettings.LlmApiKey = SecretProtector.Unprotect(_appSettings.LlmApiKey);
         _llmBaseUrl = _appSettings.LlmBaseUrl;
         _llmModel = _appSettings.LlmModel;
         _llmTemperature = _appSettings.LlmTemperature;
         _llmMaxTokens = _appSettings.LlmMaxTokens;
         _ragTopK = _appSettings.RagTopK;
+        _savedApiKeyAtLoad = _llmApiKey;
+        _savedBaseUrlAtLoad = _llmBaseUrl;
     }
 
     /// <summary>GPU 加速状态（警告条 + 关于区显示）。</summary>
@@ -212,14 +217,14 @@ public partial class SettingsViewModel : ViewModelBase
         set => SetDirty(ref _chunkMaxChars, value);
     }
 
-    /// <summary>LLM 提供商标识（none | openai | ollama）。</summary>
+    /// <summary>LLM 提供商标识（none | openai | ollama | anthropic | gemini）。</summary>
     public string LlmProvider
     {
         get => _llmProvider;
         set => SetDirty(ref _llmProvider, value);
     }
 
-    /// <summary>OpenAI 兼容 API Key。</summary>
+    /// <summary>API Key（内存中持明文，落盘时经 DPAPI 加密）。</summary>
     public string? LlmApiKey
     {
         get => _llmApiKey;
@@ -355,6 +360,8 @@ public partial class SettingsViewModel : ViewModelBase
             _appSettings.RagTopK = RagTopK;
 
             // 落盘到用户级目录（%LOCALAPPDATA%\DocMind\appsettings.json）
+            // API Key 用 DPAPI 加密（dpapi:v1: 前缀），内存/AppSettings 单例仍持明文
+            // 供 BackendProcessService 注入环境变量与测试连接使用
             var settingsPath = AppSettings.ConfigPath;
             AppSettings.EnsureConfigDir();
 
@@ -377,7 +384,7 @@ public partial class SettingsViewModel : ViewModelBase
                 ChunkOverlapChars = ChunkOverlapChars,
                 ChunkMaxChars = ChunkMaxChars,
                 LlmProvider = LlmProvider,
-                LlmApiKey = LlmApiKey,
+                LlmApiKey = SecretProtector.Protect(LlmApiKey),
                 LlmBaseUrl = LlmBaseUrl,
                 LlmModel = LlmModel,
                 LlmTemperature = LlmTemperature,
@@ -390,9 +397,20 @@ public partial class SettingsViewModel : ViewModelBase
             await File.WriteAllTextAsync(settingsPath, json);
 
             // 推送到后端运行时配置（/v1/config），免重启生效；
-            // 后端不可达时仅告警，不阻断本地保存（重启后端后环境变量也会生效）。
+            // 推送失败会显式警告（重启后端后环境变量仍会生效，见 BackendProcessService）。
+            var pushFailed = false;
             try
             {
+                // key/base_url 清除语义：之前配置过、现在被清空 → 传 "" 显式清除；
+                // 之前就没配置 → 传 null 不修改（避免误清后端手动配置的值）
+                var hadApiKey = !string.IsNullOrWhiteSpace(_savedApiKeyAtLoad);
+                var pushApiKey = string.IsNullOrWhiteSpace(LlmApiKey)
+                    ? (hadApiKey ? "" : null)
+                    : LlmApiKey.Trim();
+                var pushBaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl)
+                    ? (string.IsNullOrWhiteSpace(_savedBaseUrlAtLoad) ? null : "")
+                    : LlmBaseUrl.Trim();
+
                 var pushed = await _apiService.UpdateConfigAsync(new BackendConfigUpdate
                 {
                     // 空模型名不推送，避免清空后端配置
@@ -407,9 +425,9 @@ public partial class SettingsViewModel : ViewModelBase
                     SearchTopK = null,     // 前端暂不暴露
                     RrfK = null,           // 前端暂不暴露
                     LlmProvider = string.IsNullOrWhiteSpace(LlmProvider) ? "none" : LlmProvider,
-                    LlmApiKey = string.IsNullOrWhiteSpace(LlmApiKey) ? null : LlmApiKey,
-                    LlmBaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl) ? null : LlmBaseUrl,
-                    LlmModel = string.IsNullOrWhiteSpace(LlmModel) ? null : LlmModel,
+                    LlmApiKey = pushApiKey,
+                    LlmBaseUrl = pushBaseUrl,
+                    LlmModel = string.IsNullOrWhiteSpace(LlmModel) ? null : LlmModel.Trim(),
                     LlmTemperature = LlmTemperature,
                     LlmMaxTokens = LlmMaxTokens,
                     RagTopK = RagTopK,
@@ -424,12 +442,23 @@ public partial class SettingsViewModel : ViewModelBase
             }
             catch (Exception ex)
             {
+                pushFailed = true;
                 DebugLog.Warn($"后端参数推送失败（重启后端后仍会生效）: {ex.Message}", "Settings");
+                _notifications.Warning(
+                    $"后端推送失败：{ex.Message}\n配置已保存到本地，重启后端后将通过环境变量生效。",
+                    "配置未即时同步");
             }
 
             IsDirty = false;
-            StatusMessage = "已保存（模型/分块参数已实时生效；其余变更重启后端生效）";
-            _notifications.Success("设置已保存");
+            _savedApiKeyAtLoad = LlmApiKey;
+            _savedBaseUrlAtLoad = LlmBaseUrl;
+            StatusMessage = pushFailed
+                ? "已保存（后端推送失败，重启后端后生效）"
+                : "已保存（模型/分块参数已实时生效；其余变更重启后端生效）";
+            if (!pushFailed)
+            {
+                _notifications.Success("设置已保存");
+            }
             DebugLog.Info($"设置保存成功: {settingsPath}", "Settings");
         }
         catch (Exception ex)
@@ -477,7 +506,8 @@ public partial class SettingsViewModel : ViewModelBase
     [RelayCommand]
     private void SetDarkTheme() => SelectedTheme = ThemeMode.Dark;
 
-    /// <summary>测试后端与 LLM 连接。</summary>
+    /// <summary>测试后端可达性与 LLM 连接。
+    /// LLM 测试用 UI 当前输入值（未保存也能测）——字段留空时后端沿用当前运行时配置。</summary>
     [RelayCommand]
     private async Task TestConnectionAsync()
     {
@@ -499,31 +529,35 @@ public partial class SettingsViewModel : ViewModelBase
                 return;
             }
 
-            var config = await _apiService.GetConfigAsync();
-
-            // 2. 如果 LLM 已配置，尝试对话
-            if (config.LlmProvider is not null && config.LlmProvider != "none" && config.LlmApiKeyConfigured)
+            // 2. 未选择提供商：只测后端
+            if (string.IsNullOrWhiteSpace(LlmProvider) || LlmProvider == "none")
             {
-                try
-                {
-                    var chatResp = await _apiService.ChatAsync(new ChatRequest
-                    {
-                        Query = "你好，请回复「连接成功」",
-                        TopK = 1,
-                    });
-                    StatusMessage = $"✅ 连接成功 · 模型: {chatResp.Model} ({chatResp.Provider})";
-                    DebugLog.Info($"测试连接成功: model={chatResp.Model}", "Settings");
-                }
-                catch (Exception chatEx)
-                {
-                    StatusMessage = $"❌ LLM 测试失败: {chatEx.Message}";
-                    DebugLog.Warn($"测试连接 LLM 失败: {chatEx.Message}", "Settings");
-                }
+                StatusMessage = "✅ 后端连接正常（未选择 LLM 提供商，跳过对话测试）";
+                DebugLog.Info("测试连接成功（未配置 LLM）", "Settings");
+                return;
+            }
+
+            // 3. 用 UI 当前输入值测 LLM（POST /v1/llm/test，无需先保存；
+            //    key/base_url/model 留空时后端沿用当前运行时配置）
+            var result = await _apiService.LlmTestAsync(new LlmTestRequest
+            {
+                Provider = LlmProvider.Trim(),
+                ApiKey = string.IsNullOrWhiteSpace(LlmApiKey) ? null : LlmApiKey.Trim(),
+                BaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl) ? null : LlmBaseUrl.Trim(),
+                Model = string.IsNullOrWhiteSpace(LlmModel) ? null : LlmModel.Trim(),
+                Timeout = 20,
+            });
+
+            if (result.Ok)
+            {
+                StatusMessage = $"✅ LLM 连接成功 · {result.Provider} / {result.Model} · {result.ElapsedMs}ms"
+                    + (string.IsNullOrEmpty(result.ReplyPreview) ? "" : $" · 回复: {result.ReplyPreview}");
+                DebugLog.Info($"LLM 测试成功: provider={result.Provider} model={result.Model} {result.ElapsedMs}ms", "Settings");
             }
             else
             {
-                StatusMessage = "✅ 后端连接正常（未配置 LLM，跳过对话测试）";
-                DebugLog.Info("测试连接成功（未配置 LLM）", "Settings");
+                StatusMessage = $"❌ LLM 测试失败 · {result.Provider}: {result.Error ?? "未知错误"}";
+                DebugLog.Warn($"LLM 测试失败: {result.Error}", "Settings");
             }
         }
         catch (Exception ex)

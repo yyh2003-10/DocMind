@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from doc2mind.core.config import Settings, get_settings, set_settings
+
+
+@pytest.fixture(autouse=True)
+def _no_user_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """隔离本机用户 config.toml：from_env 的「默认值」断言不被真实配置污染。"""
+    monkeypatch.setattr("doc2mind.core.config.load_config_file", lambda: {})
 
 
 class TestSettings:
@@ -104,6 +112,35 @@ class TestSettings:
             assert s.server_port == 8765  # 保持默认
         finally:
             del os.environ["DOC2MIND_SERVER_PORT"]
+
+    def test_from_env_embed_dim_aligned_with_catalog(self) -> None:
+        """catalog 已收录模型：embed_dim 自动对齐真实维度，无需加载模型探测。"""
+        os.environ["DOC2MIND_EMBED_MODEL"] = "jinaai/jina-embeddings-v2-base-zh"
+        try:
+            s = Settings.from_env()
+            assert s.embed_dim == 768
+        finally:
+            del os.environ["DOC2MIND_EMBED_MODEL"]
+
+    def test_from_env_explicit_embed_dim_wins(self) -> None:
+        """显式配置的 embed_dim（toml/环境变量）优先，catalog 不覆盖。"""
+        os.environ["DOC2MIND_EMBED_MODEL"] = "jinaai/jina-embeddings-v2-base-zh"
+        os.environ["DOC2MIND_EMBED_DIM"] = "999"
+        try:
+            s = Settings.from_env()
+            assert s.embed_dim == 999
+        finally:
+            del os.environ["DOC2MIND_EMBED_MODEL"]
+            del os.environ["DOC2MIND_EMBED_DIM"]
+
+    def test_from_env_custom_model_keeps_preset_dim(self) -> None:
+        """catalog 未收录的自定义模型：保持预设维度（由 reindex probe 兜底）。"""
+        os.environ["DOC2MIND_EMBED_MODEL"] = "my-org/custom-embed-model"
+        try:
+            s = Settings.from_env()
+            assert s.embed_dim == 512
+        finally:
+            del os.environ["DOC2MIND_EMBED_MODEL"]
 
     def test_ensure_dirs(self) -> None:
         import pathlib

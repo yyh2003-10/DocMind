@@ -176,7 +176,7 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                         <TextBlock Style="{StaticResource SmallText}"
                                    Foreground="{StaticResource TextTertiaryBrush}"
                                    Margin="0,0,0,12">
-                            配置后可在「对话」页使用 RAG 问答。支持 OpenAI 兼容 API（DeepSeek / Qwen / OpenAI）和本地 Ollama。
+                            配置后可在「对话」页使用 RAG 问答。支持 OpenAI 兼容 API（DeepSeek / Qwen / OpenAI）、Anthropic Claude、Google Gemini 和本地 Ollama。
                         </TextBlock>
 
                         <TextBlock Text="提供商标识" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
@@ -185,10 +185,12 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                                   Margin="0,0,0,12">
                             <ComboBoxItem Content="none" IsSelected="True"/>
                             <ComboBoxItem Content="openai"/>
+                            <ComboBoxItem Content="anthropic"/>
+                            <ComboBoxItem Content="gemini"/>
                             <ComboBoxItem Content="ollama"/>
                         </ComboBox>
 
-                        <TextBlock Text="API Key（OpenAI 兼容）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                        <TextBlock Text="API Key" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -196,7 +198,7 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                             </Grid.ColumnDefinitions>
                             <PasswordBox Grid.Column="0"
                                          helpers:PasswordBoxHelper.BoundPassword="{Binding LlmApiKey, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="DeepSeek / OpenAI / Qwen 等 API Key；留空则不修改"
+                                         ToolTip="对应提供商的 API Key；Ollama 无需填写。保存时加密存储，留空 = 不修改已配置的 Key"
                                          Margin="0,0,0,12"/>
                             <Button Grid.Column="1"
                                     Content="测试连接"
@@ -204,17 +206,17 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                                     IsEnabled="{Binding IsTestingConnection, Converter={StaticResource BoolInvertConverter}}"
                                     Margin="8,0,0,12"
                                     Padding="12,4"
-                                    ToolTip="测试后端可达性与 LLM 配置是否正常"/>
+                                    ToolTip="用当前输入值测试（无需先保存）：先测后端可达，再向所选提供商发一条最小消息验证 Key 与地址"/>
                         </Grid>
 
                         <TextBlock Text="API 基础地址（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding LlmBaseUrl, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="OpenAI 兼容 API 地址，如 https://api.deepseek.com/v1；Ollama 默认 http://localhost:11434"
+                                 ToolTip="留空用各提供商官方地址。OpenAI 兼容示例 https://api.deepseek.com/v1；Ollama 默认 http://localhost:11434"
                                  Margin="0,0,0,12"/>
 
                         <TextBlock Text="模型名" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding LlmModel, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="如 deepseek-chat、gpt-4o-mini、llama3.2、qwen2.5"
+                                 ToolTip="如 deepseek-chat、gpt-4o-mini、claude-sonnet-4-5、gemini-2.5-flash、llama3.2"
                                  Margin="0,0,0,12"/>
 
                         <Grid>

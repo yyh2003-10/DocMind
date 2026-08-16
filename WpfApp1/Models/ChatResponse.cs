@@ -35,3 +35,14 @@ public sealed record ChatResponse
     /// <summary>引用来源列表。</summary>
     public IReadOnlyList<SourceRef> Sources { get; init; } = [];
 }
+
+/// <summary>POST /v1/chat/stream 终帧（done=true）解析结果。</summary>
+public sealed record ChatStreamResult
+{
+    public string ChatId { get; init; } = string.Empty;
+    public string Model { get; init; } = string.Empty;
+    public string Provider { get; init; } = string.Empty;
+    public int TotalChunks { get; init; }
+    public int ElapsedMs { get; init; }
+    public IReadOnlyList<SourceRef> Sources { get; init; } = [];
+}

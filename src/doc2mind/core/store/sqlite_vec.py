@@ -278,6 +278,18 @@ class VectorStore:
                 # 建表
                 conn.executescript(_SCHEMA_SQL)
                 conn.execute(_VEC_SQL_TEMPLATE.format(dim=self.embedding_dim))
+                # 维度以磁盘上已有表的实际建表 SQL 为准：CREATE ... IF NOT
+                # EXISTS 在表已存在时静默跳过，而构造传入的维度可能仍是
+                # 模型加载前的预设值（如默认 512）。回读真实维度，让
+                # reindex 的维度判断、后续写入都以表为准。
+                row = conn.execute(
+                    "SELECT sql FROM sqlite_master"
+                    " WHERE type='table' AND name='vec_chunks'"
+                ).fetchone()
+                if row and row[0]:
+                    m = _re.search(r"FLOAT\[(\d+)\]", str(row[0]))
+                    if m:
+                        self.embedding_dim = int(m.group(1))
 
                 # FTS5（可选）
                 try:

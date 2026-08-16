@@ -121,6 +121,7 @@ public partial class MainViewModel : ViewModelBase
 
             if (SetProperty(ref _currentPage, value))
             {
+                DebugLog.Debug($"页面导航: → {value?.Title ?? "(空)"}", "Nav");
                 OnPropertyChanged(nameof(CurrentStatusText));
                 OnPropertyChanged(nameof(CurrentIsBusy));
 

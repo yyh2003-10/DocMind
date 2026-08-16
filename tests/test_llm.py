@@ -157,9 +157,11 @@ class TestGetLLMClient:
         s = Settings(llm_provider="none")
         assert get_llm_client(s) is None
 
-    def test_provider_openai_without_key_returns_none(self) -> None:
+    def test_provider_openai_without_key_raises(self) -> None:
+        """配置了 provider 但缺 key → 抛错（而非静默返回 None 让对话时才失败）。"""
         s = Settings(llm_provider="openai", llm_api_key=None)
-        assert get_llm_client(s) is None
+        with pytest.raises(LLMError, match="llm_api_key"):
+            get_llm_client(s)
 
     def test_provider_openai_with_key(self) -> None:
         try:
@@ -181,6 +183,43 @@ class TestGetLLMClient:
         assert isinstance(client, OllamaClient)
         assert client.model_name == "llama3.2"
 
-    def test_provider_invalid_returns_none(self) -> None:
+    def test_provider_anthropic_returns_client(self) -> None:
+        from doc2mind.core.llm.anthropic_impl import AnthropicClient
+
+        s = Settings(llm_provider="anthropic", llm_api_key="sk-ant-test")
+        client = get_llm_client(s)
+        assert isinstance(client, AnthropicClient)
+        assert client.provider == "anthropic"
+        assert client.model_name == "claude-sonnet-4-5"  # 默认模型
+
+    def test_provider_anthropic_without_key_raises(self) -> None:
+        s = Settings(llm_provider="anthropic", llm_api_key=None)
+        with pytest.raises(LLMError, match="llm_api_key"):
+            get_llm_client(s)
+
+    def test_provider_gemini_returns_client(self) -> None:
+        from doc2mind.core.llm.gemini_impl import GeminiClient
+
+        s = Settings(llm_provider="gemini", llm_api_key="g-test")
+        client = get_llm_client(s)
+        assert isinstance(client, GeminiClient)
+        assert client.provider == "gemini"
+        assert client.model_name == "gemini-2.5-flash"  # 默认模型
+
+    def test_provider_gemini_without_key_raises(self) -> None:
+        s = Settings(llm_provider="gemini", llm_api_key=None)
+        with pytest.raises(LLMError, match="llm_api_key"):
+            get_llm_client(s)
+
+    def test_provider_invalid_raises(self) -> None:
+        """未知 provider → 抛错并提示可选值（而非静默返回 None）。"""
         s = Settings(llm_provider="invalid_provider")
-        assert get_llm_client(s) is None
+        with pytest.raises(LLMError, match="invalid_provider"):
+            get_llm_client(s)
+
+    def test_timeout_passed_to_client(self) -> None:
+        """settings.llm_timeout 应传递到客户端实现（不再用硬编码 120s）。"""
+        s = Settings(llm_provider="ollama", llm_timeout=33.0)
+        client = get_llm_client(s)
+        assert isinstance(client, OllamaClient)
+        assert client._timeout == 33.0

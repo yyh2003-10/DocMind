@@ -149,7 +149,20 @@ class Settings:
                     kwargs[f.name] = raw
             except (ValueError, TypeError):
                 continue
-        return cls(**kwargs)  # type: ignore[arg-type]
+        s = cls(**kwargs)  # type: ignore[arg-type]
+
+        # embed_dim 与 embed_model 对齐：catalog 已收录的模型直接查维度，
+        # 避免用预设 512 建 vec_chunks 表后与模型实际输出维度不符（切换
+        # 嵌入模型后 Dimension mismatch 的根因）。显式配置（config.toml /
+        # 环境变量的 embed_dim）优先，此处不覆盖；catalog 未收录的自定义
+        # 模型保持预设值，由 reindex 的 probe 重建兜底。
+        if "embed_dim" not in kwargs:
+            from doc2mind.core.embedder.catalog import get_model_info
+
+            info = get_model_info(s.embed_model)
+            if info is not None:
+                s.embed_dim = info.dim
+        return s
 
     def ensure_dirs(self) -> None:
         """确保数据目录存在。"""
@@ -160,6 +173,7 @@ class Settings:
 # 允许写入 config.toml 的字段（其余字段由环境变量 / 默认值决定）
 _PERSIST_FIELDS: tuple[str, ...] = (
     "embed_model",
+    "embed_dim",
     "embed_model_path",
     "embed_batch_size",
     "chunk_max_tokens",
@@ -169,9 +183,8 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "search_top_k",
     "rrf_k",
     "hf_endpoint",
-    # LLM / RAG 对话
+    # LLM / RAG 对话（llm_api_key 除外 — 见 save_settings）
     "llm_provider",
-    "llm_api_key",
     "llm_base_url",
     "llm_model",
     "llm_temperature",
@@ -180,6 +193,11 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "rag_min_score",
     "llm_timeout",
 )
+
+# 敏感字段：不写入 config.toml（API Key 明文落盘有泄漏风险）。
+# 运行时 key 由 WPF 前端通过环境变量 / POST /v1/config 注入；
+# 手动编辑 config.toml 写入的 llm_api_key 仍可被读取（向后兼容 CLI 用户）。
+_SENSITIVE_FIELDS: frozenset[str] = frozenset({"llm_api_key"})
 
 
 def config_file_path() -> Path:
@@ -213,7 +231,10 @@ def load_config_file() -> dict[str, object]:
         with open(path, "rb") as f:
             data = tomllib.load(f)
         root = data.get("doc2mind", data) if isinstance(data, dict) else {}
-        return {k: v for k, v in root.items() if k in _PERSIST_FIELDS}
+        # 读取集合 = 持久化字段 + 敏感字段（手写 toml 的 llm_api_key 仍生效，
+        # 只是 save_settings 不会把它写回去）
+        readable = set(_PERSIST_FIELDS) | _SENSITIVE_FIELDS
+        return {k: v for k, v in root.items() if k in readable}
     except Exception:  # noqa: BLE001 — 配置损坏时回退默认值
         return {}
 

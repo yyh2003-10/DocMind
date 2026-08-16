@@ -5,29 +5,65 @@ using DocMind.Services;
 
 namespace DocMind.ViewModels;
 
-/// <summary>单条对话消息（用户或助手）。</summary>
-public sealed record ChatMessage
+/// <summary>单条对话消息（用户或助手）。可变 class 以支持流式增量追加 token。</summary>
+public sealed class ChatMessage : System.ComponentModel.INotifyPropertyChanged
 {
+    private string _role = string.Empty;
+    private string _content = string.Empty;
+    private IReadOnlyList<SourceRef>? _sources;
+    private string? _model;
+    private string? _provider;
+    private int? _elapsedMs;
+    private bool _isLoading;
+
     /// <summary>角色：user / assistant / system。</summary>
-    public required string Role { get; init; }
+    public string Role
+    {
+        get => _role;
+        set => SetField(ref _role, value);
+    }
 
     /// <summary>消息内容。</summary>
-    public required string Content { get; init; }
+    public string Content
+    {
+        get => _content;
+        set => SetField(ref _content, value);
+    }
 
     /// <summary>引用来源（仅 assistant 有）。</summary>
-    public IReadOnlyList<SourceRef>? Sources { get; init; }
+    public IReadOnlyList<SourceRef>? Sources
+    {
+        get => _sources;
+        set => SetField(ref _sources, value);
+    }
 
     /// <summary>模型名（仅 assistant 有）。</summary>
-    public string? Model { get; init; }
+    public string? Model
+    {
+        get => _model;
+        set => SetField(ref _model, value);
+    }
 
     /// <summary>提供商标识（仅 assistant 有）。</summary>
-    public string? Provider { get; init; }
+    public string? Provider
+    {
+        get => _provider;
+        set => SetField(ref _provider, value);
+    }
 
     /// <summary>耗时 ms（仅 assistant 有）。</summary>
-    public int? ElapsedMs { get; init; }
+    public int? ElapsedMs
+    {
+        get => _elapsedMs;
+        set => SetField(ref _elapsedMs, value);
+    }
 
     /// <summary>是否正在加载（骨架屏用）。</summary>
-    public bool IsLoading { get; init; }
+    public bool IsLoading
+    {
+        get => _isLoading;
+        set => SetField(ref _isLoading, value);
+    }
 
     /// <summary>是否有引用来源（控制来源列表可见性）。</summary>
     public bool HasSources => Sources is { Count: > 0 };
@@ -37,6 +73,17 @@ public sealed record ChatMessage
 
     /// <summary>是否来自用户（UI 分左右用）。</summary>
     public bool IsUser => Role == "user";
+
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+
+    private void SetField<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? propertyName = null)
+    {
+        if (!System.Collections.Generic.EqualityComparer<T>.Default.Equals(field, value))
+        {
+            field = value;
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
+        }
+    }
 }
 
 /// <summary>可勾选的知识库集合项（复选框用）。</summary>
@@ -170,7 +217,9 @@ public partial class ChatViewModel : ViewModelBase
             if (SetProperty(ref _isBusy, value))
             {
                 OnPropertyChanged(nameof(ShowEmptyGuide));
+                OnPropertyChanged(nameof(ShowStop));
                 SendCommand.NotifyCanExecuteChanged();
+                StopCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -232,6 +281,7 @@ public partial class ChatViewModel : ViewModelBase
 
             OnPropertyChanged(nameof(HasSelectedCollection));
             SendCommand.NotifyCanExecuteChanged();
+            DebugLog.Info($"集合列表加载完成: {list.Count} 个 [{string.Join(", ", list)}]", "Chat");
         }
         catch (Exception ex)
         {
@@ -311,13 +361,19 @@ public partial class ChatViewModel : ViewModelBase
         + "DocMind 会检索已导入的文档，\n"
         + "结合多轮上下文生成带来源标注的回答。\n\n"
         + "还没导入文档？先到【导入】页添加文件。\n\n"
-        + "💡 需要先配置 LLM：\n"
-        + "  设置 DOC2MIND_LLM_PROVIDER=openai\n"
-        + "  或运行 doc2mind config 持久化配置";
+        + "💡 需要先配置 LLM：到【设置 → 大模型对话】\n"
+        + "  选择提供商（OpenAI 兼容 / Claude / Gemini / Ollama）\n"
+        + "  填写 API Key 后点「测试连接」验证";
 
     private bool CanSend => !IsBusy && HasInput;
 
-    /// <summary>发送消息。</summary>
+    /// <summary>是否可停止（生成中）。</summary>
+    private bool CanStop => IsBusy;
+
+    /// <summary>停止命令是否可见（生成中显示停止按钮）。</summary>
+    public bool ShowStop => IsBusy;
+
+    /// <summary>发送消息（流式）。</summary>
     [RelayCommand(CanExecute = nameof(CanSend))]
     private async Task SendAsync()
     {
@@ -329,106 +385,159 @@ public partial class ChatViewModel : ViewModelBase
         Messages.Add(new ChatMessage { Role = "user", Content = query });
         InputText = string.Empty;
 
-        // 添加加载占位
-        var loadingMsg = new ChatMessage { Role = "assistant", Content = "思考中…", IsLoading = true };
-        Messages.Add(loadingMsg);
+        // 添加流式占位（先空内容，逐 token 追加）
+        var assistantMsg = new ChatMessage { Role = "assistant", Content = "", IsLoading = true };
+        Messages.Add(assistantMsg);
 
         IsBusy = true;
+        ShowStopChanged();
         StatusMessage = "对话中…";
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
+        _cts = new CancellationTokenSource();
+        // 流式排查统计：token 帧数 + 首 token 延迟（TTFT）
+        var tokenCount = 0;
+        long firstTokenMs = -1;
         try
         {
             var selected = SelectedCollections;
-            var resp = await _apiService.ChatAsync(
+            DebugLog.Info(
+                $"发送消息: query='{(query.Length > 100 ? query[..100] + "…" : query)}' " +
+                $"collections=[{string.Join(",", selected)}] topK={TopK} chatId='{_chatId ?? "-"}' msgCount={Messages.Count}",
+                "Chat");
+            ChatStreamResult? final = null;
+            await _apiService.ChatStreamAsync(
                 new ChatRequest
                 {
                     Query = query,
                     Collections = selected.Count > 0 ? selected : null,
                     TopK = TopK,
                     ChatId = _chatId,
-                });
+                },
+                onToken: token =>
+                {
+                    if (tokenCount == 0)
+                    {
+                        firstTokenMs = sw.ElapsedMilliseconds;
+                    }
+                    tokenCount++;
+                    // 首 token 到达即结束加载态，开始增量显示
+                    if (assistantMsg.IsLoading)
+                    {
+                        assistantMsg.IsLoading = false;
+                        assistantMsg.Content = token;
+                    }
+                    else
+                    {
+                        assistantMsg.Content += token;
+                    }
+                },
+                onDone: result => { final = result; },
+                ct: _cts.Token);
 
             sw.Stop();
+            DebugLog.Info(
+                $"流式统计: tokens={tokenCount} 首token={(firstTokenMs >= 0 ? $"{firstTokenMs}ms" : "未收到")} " +
+                $"收到done帧={(final is not null ? "是" : "否")} 总耗时{sw.ElapsedMilliseconds}ms",
+                "Chat");
 
-            // 更新 chat_id（首轮后锁定）
-            _chatId = resp.ChatId ?? _chatId;
-
-            // 替换加载占位为真实回答
-            var index = Messages.IndexOf(loadingMsg);
-            if (index >= 0)
+            // 终帧：回写多轮 chat_id + 来源 + 元数据（流式多轮不中断的关键）
+            if (final is not null)
             {
-                Messages[index] = new ChatMessage
-                {
-                    Role = "assistant",
-                    Content = resp.Answer,
-                    Sources = resp.Sources,
-                    Model = resp.Model,
-                    Provider = resp.Provider,
-                    ElapsedMs = resp.ElapsedMs,
-                };
+                _chatId = final.ChatId ?? _chatId;
+                assistantMsg.Sources = final.Sources;
+                assistantMsg.Model = final.Model;
+                assistantMsg.Provider = final.Provider;
+                assistantMsg.ElapsedMs = final.ElapsedMs;
+
+                StatusMessage = $"模型: {final.Model} ({final.Provider}) · 引用 {final.TotalChunks} 块 · 耗时 {final.ElapsedMs}ms";
+                DebugLog.Info($"对话完成(流式): elapsed={final.ElapsedMs}ms model={final.Model} chunks={final.TotalChunks} sources={final.Sources.Count} chatId='{final.ChatId}'", "Chat");
+            }
+            else
+            {
+                DebugLog.Warn("未收到 done 终帧：多轮 chat_id 未更新、来源/模型元数据缺失（后端可能异常中断流）", "Chat");
+                StatusMessage = $"对话完成 · 耗时 {sw.ElapsedMilliseconds}ms";
             }
 
-            StatusMessage = $"模型: {resp.Model} ({resp.Provider}) · 引用 {resp.TotalChunks} 块 · 耗时 {resp.ElapsedMs}ms";
-            DebugLog.Info($"对话完成: elapsed={resp.ElapsedMs}ms model={resp.Model} chunks={resp.TotalChunks}", "Chat");
+            if (string.IsNullOrEmpty(assistantMsg.Content))
+            {
+                assistantMsg.Content = "（无内容返回）";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            sw.Stop();
+            StatusMessage = "已停止生成";
+            DebugLog.Info("对话已停止", "Chat");
+            if (string.IsNullOrEmpty(assistantMsg.Content))
+            {
+                assistantMsg.Content = "（已停止生成）";
+            }
         }
         catch (ApiException ex)
         {
             sw.Stop();
             StatusMessage = $"API 错误：{ex.Message}";
             DebugLog.Error($"对话 API 错误: code={ex.Code} message={ex.Message}", "Chat", ex);
-            // 替换加载占位为错误消息
-            var index = Messages.IndexOf(loadingMsg);
-            if (index >= 0)
-            {
-                Messages[index] = new ChatMessage
-                {
-                    Role = "assistant",
-                    Content = $"❌ API 错误：{ex.Message}",
-                };
-            }
+            assistantMsg.IsLoading = false;
+            assistantMsg.Content = $"❌ API 错误：{ex.Message}";
         }
         catch (BackendConnectionException ex)
         {
             sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
             DebugLog.Error($"对话后端不可达: {ex.Message}", "Chat", ex);
-            var index = Messages.IndexOf(loadingMsg);
-            if (index >= 0)
-            {
-                Messages[index] = new ChatMessage
-                {
-                    Role = "assistant",
-                    Content = $"❌ 后端不可达：{ex.Message}",
-                };
-            }
+            assistantMsg.IsLoading = false;
+            assistantMsg.Content = $"❌ 后端不可达：{ex.Message}";
         }
         catch (Exception ex)
         {
             sw.Stop();
             StatusMessage = $"错误：{ex.Message}";
-            DebugLog.Error($"对话未知异常", "Chat", ex);
-            var index = Messages.IndexOf(loadingMsg);
-            if (index >= 0)
-            {
-                Messages[index] = new ChatMessage
-                {
-                    Role = "assistant",
-                    Content = $"❌ 错误：{ex.Message}",
-                };
-            }
+            DebugLog.Error($"对话未知异常: {ex.GetType().Name}: {ex.Message}", "Chat", ex);
+            assistantMsg.IsLoading = false;
+            assistantMsg.Content = $"❌ 错误：{ex.Message}";
         }
         finally
         {
+            _cts?.Dispose();
+            _cts = null;
             IsBusy = false;
+            ShowStopChanged();
             OnPropertyChanged(nameof(HasMessages));
         }
+    }
+
+    private CancellationTokenSource? _cts;
+
+    /// <summary>停止生成。</summary>
+    [RelayCommand(CanExecute = nameof(CanStop))]
+    private void Stop()
+    {
+        DebugLog.Info("请求停止生成（用户点击停止按钮）", "Chat");
+        try
+        {
+            _cts?.Cancel();
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"取消生成时异常: {ex.Message}", "Chat");
+        }
+    }
+
+    private void ShowStopChanged()
+    {
+        OnPropertyChanged(nameof(ShowStop));
+        StopCommand.NotifyCanExecuteChanged();
     }
 
     /// <summary>清空对话。</summary>
     [RelayCommand]
     private void Clear()
     {
+        DebugLog.Info($"清空对话: messages={Messages.Count} chatId='{_chatId ?? "-"}'", "Chat");
+        // 进行中则先停止
+        try { _cts?.Cancel(); } catch { /* ignore */ }
         Messages.Clear();
         _chatId = null;
         StatusMessage = "就绪";

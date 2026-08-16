@@ -49,6 +49,7 @@ public sealed class BackendProcessService : IDisposable
     {
         if (State == BackendState.Online || _python is { HasExited: false })
         {
+            DebugLog.Debug($"StartAsync 跳过：已在目标状态 (State={State})", "Backend");
             return true;
         }
         if (_python is { HasExited: true })
@@ -59,8 +60,10 @@ public sealed class BackendProcessService : IDisposable
         // 先探测 URL 上是否已有健康后端（外部实例 / 上次会话遗留的后端仍在线）。
         // 有则直接复用，不再拉起新进程——否则新进程因端口占用立即退出，
         // MonitorAsync 会把状态灯翻回离线，造成"后端明明在线却显示离线"。
+        DebugLog.Debug($"启动后端流程开始: State={State} Url={_settings.BackendUrl}", "Backend");
         if (await ProbeHealthOnceAsync(ct))
         {
+            DebugLog.Info("健康探测通过：复用 URL 上已有的后端实例，不拉起子进程", "Backend");
             SetState(BackendState.Online);
             progress?.Report("检测到后端已在线，复用现有实例");
             // 持续健康监控：该实例退出时状态灯翻离线
@@ -91,6 +94,7 @@ public sealed class BackendProcessService : IDisposable
             }
             else
             {
+                DebugLog.Error($"后端启动超时：{_settings.StartupTimeoutSec}s 内 /v1/health 未就绪", "Backend");
                 SetState(BackendState.Offline);
                 progress?.Report("后端启动超时");
                 await TryCleanupAsync(ct);
@@ -100,6 +104,7 @@ public sealed class BackendProcessService : IDisposable
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger?.LogError(ex, "后端启动失败");
+            DebugLog.Error($"后端启动异常: {ex.Message}", "Backend", ex);
             SetState(BackendState.Offline);
             progress?.Report($"后端启动失败：{ex.Message}");
             await TryCleanupAsync(ct);
@@ -114,6 +119,7 @@ public sealed class BackendProcessService : IDisposable
         {
             return;
         }
+        DebugLog.Info($"停止后端流程开始: State={State} PID={_python?.Id.ToString() ?? "-"}", "Backend");
         SetState(BackendState.Stopping);
         _monitorCts?.Cancel();
         _monitorCts = null;
@@ -139,9 +145,11 @@ public sealed class BackendProcessService : IDisposable
             SetState(resp.IsSuccessStatusCode
                 ? BackendState.Online
                 : BackendState.Offline);
+            DebugLog.Debug($"外部后端探测: HTTP {(int)resp.StatusCode} → State={State}", "Backend");
         }
-        catch
+        catch (Exception ex)
         {
+            DebugLog.Debug($"外部后端探测失败（视为离线）: {ex.GetType().Name}: {ex.Message}", "Backend");
             SetState(BackendState.Offline);
         }
 
@@ -212,32 +220,100 @@ public sealed class BackendProcessService : IDisposable
             RedirectStandardError = true,
             RedirectStandardInput = true,
         };
+        // 记录实际注入的环境变量（均为模型/分块参数，非敏感），便于排查"配置未生效"
+        var injectedEnv = new List<string>();
         // HuggingFace 镜像配置：优先用设置页的 HfEndpoint，其次保留系统环境变量，
         // 都没配时注入默认 hf-mirror.com（国内网络必需）。
         if (!string.IsNullOrWhiteSpace(_settings.HfEndpoint))
         {
             psi.Environment["HF_ENDPOINT"] = _settings.HfEndpoint.Trim();
+            injectedEnv.Add($"HF_ENDPOINT={psi.Environment["HF_ENDPOINT"]}");
         }
         else if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HF_ENDPOINT")))
         {
             psi.Environment["HF_ENDPOINT"] = "https://hf-mirror.com";
+            injectedEnv.Add("HF_ENDPOINT=https://hf-mirror.com");
         }
 
         // 设置页的模型/分块参数 → 后端 DOC2MIND_* 环境变量（重启后端生效）。
         // 只在非空时注入，留空让后端用内置默认值。
         if (!string.IsNullOrWhiteSpace(_settings.EmbedModel))
+        {
             psi.Environment["DOC2MIND_EMBED_MODEL"] = _settings.EmbedModel.Trim();
+            injectedEnv.Add($"DOC2MIND_EMBED_MODEL={psi.Environment["DOC2MIND_EMBED_MODEL"]}");
+        }
         if (_settings.ChunkMaxTokens is > 0)
+        {
             psi.Environment["DOC2MIND_CHUNK_MAX_TOKENS"] = _settings.ChunkMaxTokens.Value.ToString();
+            injectedEnv.Add($"DOC2MIND_CHUNK_MAX_TOKENS={psi.Environment["DOC2MIND_CHUNK_MAX_TOKENS"]}");
+        }
         if (_settings.ChunkMinChars is > 0)
+        {
             psi.Environment["DOC2MIND_CHUNK_MIN_CHARS"] = _settings.ChunkMinChars.Value.ToString();
+            injectedEnv.Add($"DOC2MIND_CHUNK_MIN_CHARS={psi.Environment["DOC2MIND_CHUNK_MIN_CHARS"]}");
+        }
         if (_settings.ChunkOverlapChars is > 0)
+        {
             psi.Environment["DOC2MIND_CHUNK_OVERLAP_CHARS"] = _settings.ChunkOverlapChars.Value.ToString();
+            injectedEnv.Add($"DOC2MIND_CHUNK_OVERLAP_CHARS={psi.Environment["DOC2MIND_CHUNK_OVERLAP_CHARS"]}");
+        }
         if (_settings.ChunkMaxChars is > 0)
+        {
             psi.Environment["DOC2MIND_CHUNK_MAX_CHARS"] = _settings.ChunkMaxChars.Value.ToString();
+            injectedEnv.Add($"DOC2MIND_CHUNK_MAX_CHARS={psi.Environment["DOC2MIND_CHUNK_MAX_CHARS"]}");
+        }
+
+        // 设置页的 LLM 配置 → DOC2MIND_LLM_* 环境变量（双保险之一）：
+        // POST /v1/config 即时推送失败时，后端重启后仍能从环境变量拿到正确配置。
+        // 环境变量优先级高于 config.toml（后端 from_env 覆盖语义），与「前端为配置源」一致。
+        // API Key 不记入 injectedEnv 日志（敏感值只记「已注入」）。
+        if (!string.IsNullOrWhiteSpace(_settings.LlmProvider))
+        {
+            psi.Environment["DOC2MIND_LLM_PROVIDER"] = _settings.LlmProvider.Trim();
+            injectedEnv.Add($"DOC2MIND_LLM_PROVIDER={psi.Environment["DOC2MIND_LLM_PROVIDER"]}");
+        }
+        if (!string.IsNullOrWhiteSpace(_settings.LlmApiKey))
+        {
+            psi.Environment["DOC2MIND_LLM_API_KEY"] = _settings.LlmApiKey.Trim();
+            injectedEnv.Add("DOC2MIND_LLM_API_KEY=<已注入，值略>");
+        }
+        if (!string.IsNullOrWhiteSpace(_settings.LlmBaseUrl))
+        {
+            psi.Environment["DOC2MIND_LLM_BASE_URL"] = _settings.LlmBaseUrl.Trim();
+            injectedEnv.Add($"DOC2MIND_LLM_BASE_URL={psi.Environment["DOC2MIND_LLM_BASE_URL"]}");
+        }
+        if (!string.IsNullOrWhiteSpace(_settings.LlmModel))
+        {
+            psi.Environment["DOC2MIND_LLM_MODEL"] = _settings.LlmModel.Trim();
+            injectedEnv.Add($"DOC2MIND_LLM_MODEL={psi.Environment["DOC2MIND_LLM_MODEL"]}");
+        }
+        psi.Environment["DOC2MIND_LLM_TEMPERATURE"] = _settings.LlmTemperature.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        injectedEnv.Add($"DOC2MIND_LLM_TEMPERATURE={psi.Environment["DOC2MIND_LLM_TEMPERATURE"]}");
+        psi.Environment["DOC2MIND_LLM_MAX_TOKENS"] = _settings.LlmMaxTokens.ToString();
+        injectedEnv.Add($"DOC2MIND_LLM_MAX_TOKENS={psi.Environment["DOC2MIND_LLM_MAX_TOKENS"]}");
+        psi.Environment["DOC2MIND_RAG_TOP_K"] = _settings.RagTopK.ToString();
+        injectedEnv.Add($"DOC2MIND_RAG_TOP_K={psi.Environment["DOC2MIND_RAG_TOP_K"]}");
+
+        DebugLog.Info($"启动后端子进程: {psi.FileName} {psi.Arguments}", "Backend");
+        DebugLog.Debug($"注入环境变量 ({injectedEnv.Count} 项): {string.Join("; ", injectedEnv)}", "Backend");
+
+        // 注入 PYTHONPATH=仓库 src 目录：让 `python -m doc2mind` 优先 import 仓库内
+        // 修复版源码（src/doc2mind），而非 site-packages 里的旧版 doc2mind 发布包，
+        // 否则会出现 chat.py 中 `name 'KnowledgeBase' is not defined` 等旧版缺陷。
+        var srcDir = TryResolveRepoSrcDir();
+        if (srcDir is not null)
+        {
+            var hasPath = psi.Environment.TryGetValue("PYTHONPATH", out var cur) && !string.IsNullOrEmpty(cur);
+            psi.Environment["PYTHONPATH"] = hasPath
+                ? $"{srcDir}{Path.PathSeparator}{cur}"
+                : srcDir;
+            DebugLog.Info($"注入 PYTHONPATH（优先仓库源码）: {psi.Environment["PYTHONPATH"]}", "Backend");
+        }
 
         _logger?.LogInformation("启动后端：{Cmd} {Args}", psi.FileName, psi.Arguments);
-        return Process.Start(psi) ?? throw new InvalidOperationException("Process.Start 返回 null");
+        var proc = Process.Start(psi) ?? throw new InvalidOperationException("Process.Start 返回 null");
+        DebugLog.Info($"后端子进程已启动: PID={proc.Id}", "Backend");
+        return proc;
     }
 
     /// <summary>解析后端命令：返回 (fileName, argsPrefix)。
@@ -248,19 +324,35 @@ public sealed class BackendProcessService : IDisposable
         var envCmd = Environment.GetEnvironmentVariable("DOC2MIND_CMD");
         if (!string.IsNullOrWhiteSpace(envCmd))
         {
+            DebugLog.Info($"后端命令解析: 来源=环境变量 DOC2MIND_CMD → '{envCmd.Trim()}'", "Backend");
             return (envCmd.Trim(), string.Empty);
         }
 
         // 2) appsettings.BackendCommand 用户配置
+        //    若配置的是 python 解释器（如 python.exe），则补 `-m doc2mind` 前缀，
+        //    配合 StartPythonProcess 注入的 PYTHONPATH=src，优先运行仓库内修复版源码
+        //    （而非 site-packages 里的旧版 doc2mind 发布包）。
         if (!string.IsNullOrWhiteSpace(_settings.BackendCommand))
         {
-            return (_settings.BackendCommand!.Trim(), string.Empty);
+            var cmd = _settings.BackendCommand!.Trim();
+            var fileName = cmd;
+            var argsPrefix = string.Empty;
+            if (Path.GetFileName(cmd).Equals("python.exe", StringComparison.OrdinalIgnoreCase)
+                || Path.GetFileName(cmd).Equals("python", StringComparison.OrdinalIgnoreCase)
+                || Path.GetFileName(cmd).Equals("python3", StringComparison.OrdinalIgnoreCase)
+                || Path.GetFileName(cmd).Equals("python3.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                argsPrefix = "-m doc2mind ";
+            }
+            DebugLog.Info($"后端命令解析: 来源=用户配置 BackendCommand → '{fileName}' '{argsPrefix}'", "Backend");
+            return (fileName, argsPrefix);
         }
 
         // 3) 项目自带 .venv 优先：从应用目录向上找 .venv，避免命中 PATH 里失效的全局 doc2mind 安装
         var venv = TryResolveProjectVenv();
         if (venv is not null)
         {
+            DebugLog.Info($"后端命令解析: 来源=项目 .venv → '{venv.Value.fileName}' '{venv.Value.argsPrefix}'", "Backend");
             return venv.Value;
         }
 
@@ -268,12 +360,30 @@ public sealed class BackendProcessService : IDisposable
         var resolved = TryResolveFromWhere("doc2mind");
         if (resolved is not null)
         {
+            DebugLog.Info($"后端命令解析: 来源=where 探测 → '{resolved}'", "Backend");
             return (resolved, string.Empty);
         }
 
         // 5) 回退：尝试 python.exe（PATH 里）+ -m doc2mind
         var pythonExe = TryResolveFromWhere("python") ?? "python";
+        DebugLog.Warn($"后端命令解析: 未找到 doc2mind，回退 '{pythonExe}' -m doc2mind", "Backend");
         return (pythonExe, "-m doc2mind ");
+    }
+
+    /// <summary>从应用所在目录逐级向上查找仓库 src 目录（含 doc2mind 包的 Python 源码），
+    /// 命中返回绝对路径，找不到返回 null。最多向上 6 层。</summary>
+    private static string? TryResolveRepoSrcDir()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        for (int i = 0; i < 6 && dir is not null; i++, dir = dir.Parent)
+        {
+            var src = Path.Combine(dir.FullName, "src");
+            if (Directory.Exists(src) && Directory.Exists(Path.Combine(src, "doc2mind")))
+            {
+                return Path.GetFullPath(src);
+            }
+        }
+        return null;
     }
 
     /// <summary>从应用所在目录逐级向上查找项目自带 .venv（最多 6 层），
@@ -469,14 +579,17 @@ public sealed class BackendProcessService : IDisposable
                 // 端口被外部/遗留实例占用时，自拉进程会立即退出，但后端其实在线；
                 // 此时保持 Online 并转入健康轮询，而不是盲设 Offline。
                 _logger?.LogWarning("后端子进程退出 (code {ExitCode})，重新探测健康状态", proc.ExitCode);
+                DebugLog.Warn($"后端子进程意外退出: PID={proc.Id} exitCode={proc.ExitCode}，重新探测健康状态", "Backend");
                 _python = null;
                 if (await ProbeHealthOnceAsync(ct))
                 {
+                    DebugLog.Info("子进程退出后探测到健康实例，保持在线（端口可能被外部实例占用）", "Backend");
                     SetState(BackendState.Online);
                     StartHealthMonitor();
                 }
                 else
                 {
+                    DebugLog.Warn("子进程退出且无健康实例，状态置为离线", "Backend");
                     SetState(BackendState.Offline);
                 }
             }
@@ -509,6 +622,7 @@ public sealed class BackendProcessService : IDisposable
             catch (OperationCanceledException)
             {
                 // 5s 未退 → 强制 kill
+                DebugLog.Warn($"后端 5s 未优雅退出，强制 kill 进程树 (PID {proc.Id})", "Backend");
                 try { proc.Kill(entireProcessTree: true); } catch { /* ignore */ }
                 try { await proc.WaitForExitAsync(ct); } catch { /* ignore */ }
             }
@@ -526,6 +640,7 @@ public sealed class BackendProcessService : IDisposable
         {
             return;
         }
+        DebugLog.Debug($"后端状态变更: {State} → {s}", "Backend");
         State = s;
         StateChanged?.Invoke(this, s);
     }

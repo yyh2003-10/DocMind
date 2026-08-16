@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using DocMind.Services;
 using DocMind.ViewModels;
 
 namespace DocMind.Views;
@@ -17,6 +18,7 @@ public partial class ChatView : UserControl
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        DebugLog.Debug("ChatView 已加载", "Chat");
         FocusInput();
     }
 
@@ -28,6 +30,11 @@ public partial class ChatView : UserControl
             if (DataContext is ChatViewModel vm && vm.SendCommand.CanExecute(null))
             {
                 vm.SendCommand.Execute(null);
+            }
+            else
+            {
+                // 排查"回车没反应"：生成中或输入为空时回车被忽略
+                DebugLog.Debug($"回车发送被忽略（IsBusy={DataContext is ChatViewModel v && v.IsBusy}，输入为空或生成中）", "Chat");
             }
             e.Handled = true;
         }

@@ -3,6 +3,8 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.IO;
+using System.Text.RegularExpressions;
 using DocMind.Models;
 using Microsoft.Extensions.Logging;
 
@@ -53,6 +55,9 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task<BackendConfig> UpdateConfigAsync(BackendConfigUpdate req, CancellationToken ct = default)
         => SendAsync<BackendConfig>(HttpMethod.Post, "v1/config", req, ct);
 
+    public Task<LlmTestResult> LlmTestAsync(LlmTestRequest req, CancellationToken ct = default)
+        => SendAsync<LlmTestResult>(HttpMethod.Post, "v1/llm/test", req, ct);
+
     public Task<IngestResponse> IngestAsync(IngestRequest req, CancellationToken ct = default)
         => SendAsync<IngestResponse>(HttpMethod.Post, "v1/ingest", req, ct);
 
@@ -64,6 +69,196 @@ public class Doc2kbApiService : IDoc2kbApiService
 
     public Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default)
         => SendAsync<ChatResponse>(HttpMethod.Post, "v1/chat", req, ct);
+
+    public async Task<ChatStreamResult> ChatStreamAsync(
+        ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, CancellationToken ct = default)
+    {
+        var reqBody = JsonSerializer.Serialize(req, JsonOptions);
+        DebugLog.Info($"→ POST v1/chat/stream\n  req: {Truncate(RedactSecrets(reqBody), 800)}", "API");
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "v1/chat/stream")
+        {
+            Content = new StringContent(reqBody, System.Text.Encoding.UTF8, "application/json"),
+        };
+
+        HttpResponseMessage response;
+        try
+        {
+            // ResponseHeadersRead：一旦响应头就绪即返回，后续逐块读取 body（真流式）
+            response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
+                .ConfigureAwait(false);
+        }
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            throw new ApiException("TIMEOUT", "Request timed out.", innerException: ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Backend connection failed for v1/chat/stream");
+            throw new BackendConnectionException("Backend is unreachable.", ex);
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                var errBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                DebugLog.Error($"✗ POST v1/chat/stream -> {(int)response.StatusCode} ({response.ReasonPhrase})\n  resp: {Truncate(errBody, 800)}", "API");
+                throw await CreateApiExceptionAsync(response).ConfigureAwait(false);
+            }
+
+            // SSE 响应应为 text/event-stream；内容类型异常通常意味着代理/网关返回了非流式 body
+            var contentType = response.Content.Headers.ContentType?.MediaType;
+            if (!string.IsNullOrEmpty(contentType)
+                && contentType.Contains("text", StringComparison.OrdinalIgnoreCase)
+                && !contentType.Contains("event-stream", StringComparison.OrdinalIgnoreCase))
+            {
+                DebugLog.Warn($"v1/chat/stream 响应 Content-Type 异常: {contentType}（预期 text/event-stream）", "API");
+            }
+
+            using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            using var reader = new StreamReader(stream);
+
+            string? line;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            // 流式排查统计：token 帧数 / 首 token 延迟 / 是否收到终帧 / 未识别帧数
+            var tokenFrames = 0;
+            var unknownFrames = 0;
+            long firstTokenMs = -1;
+            var doneReceived = false;
+            try
+            {
+                while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) is not null)
+                {
+                    ct.ThrowIfCancellationRequested();
+
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue; // SSE 帧间空行
+                    }
+
+                    const string prefix = "data: ";
+                    if (!line.StartsWith(prefix, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var payload = line[prefix.Length..].Trim();
+                    if (payload == "[DONE]")
+                    {
+                        break;
+                    }
+
+                    JsonDocument doc;
+                    try
+                    {
+                        doc = JsonDocument.Parse(payload);
+                    }
+                    catch (JsonException ex)
+                    {
+                        DebugLog.Error($"SSE 帧 JSON 解析失败: {ex.Message}\n  raw: {Truncate(payload, 300)}", "API", ex);
+                        throw new ApiException("PARSE_ERROR", $"Invalid SSE frame: {ex.Message}", innerException: ex);
+                    }
+
+                    using var d = doc;
+                    var root = d.RootElement;
+
+                    if (root.TryGetProperty("error", out var errElem))
+                    {
+                        var errMsg = errElem.GetString() ?? "unknown error";
+                        DebugLog.Error($"SSE error 帧（后端 RAG/LLM 出错）: {errMsg}\n  raw: {Truncate(payload, 300)}", "API");
+                        throw new ApiException("RAG_ERROR", errMsg);
+                    }
+
+                    if (root.TryGetProperty("token", out var tokElem))
+                    {
+                        if (tokenFrames == 0)
+                        {
+                            firstTokenMs = sw.ElapsedMilliseconds;
+                        }
+                        tokenFrames++;
+                        onToken(tokElem.GetString() ?? string.Empty);
+                        continue;
+                    }
+
+                    if (root.TryGetProperty("done", out var doneElem) && doneElem.ValueKind == JsonValueKind.True)
+                    {
+                        doneReceived = true;
+                        var result = ParseDoneFrame(root);
+                        onDone(result);
+                    }
+                    else if (root.ValueKind == JsonValueKind.Object)
+                    {
+                        // 未识别的帧类型：可能是后端新增事件（如心跳/进度），记录以便排查协议不匹配
+                        unknownFrames++;
+                        if (unknownFrames <= 5)
+                        {
+                            DebugLog.Debug($"SSE 未识别帧（已跳过）: {Truncate(payload, 300)}", "API");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not (OperationCanceledException or ApiException))
+            {
+                // 流中途断开（后端崩溃/网络中断/代理截断）
+                DebugLog.Error(
+                    $"SSE 流读取中断 after {sw.ElapsedMilliseconds}ms (tokenFrames={tokenFrames} done={doneReceived}): {ex.GetType().Name}: {ex.Message}",
+                    "API", ex);
+                throw new ApiException("STREAM_INTERRUPTED", $"Chat stream interrupted: {ex.Message}", innerException: ex);
+            }
+
+            sw.Stop();
+            DebugLog.Info(
+                $"✓ POST v1/chat/stream completed in {sw.ElapsedMilliseconds}ms " +
+                $"(tokenFrames={tokenFrames} firstToken={(firstTokenMs >= 0 ? $"{firstTokenMs}ms" : "none")} " +
+                $"done={doneReceived} unknownFrames={unknownFrames})",
+                "API");
+
+            if (!doneReceived)
+            {
+                DebugLog.Warn("SSE 流结束但未收到 done 终帧（多轮 chat_id 与引用来源将丢失）", "API");
+            }
+
+            // 没收到 done 帧时给出空结果（下限保护）
+            return new ChatStreamResult();
+        }
+    }
+
+    private static ChatStreamResult ParseDoneFrame(JsonElement root)
+    {
+        string ChatId() => root.TryGetProperty("chat_id", out var v) ? (v.GetString() ?? string.Empty) : string.Empty;
+        string Model() => root.TryGetProperty("model", out var v) ? (v.GetString() ?? string.Empty) : string.Empty;
+        string Provider() => root.TryGetProperty("provider", out var v) ? (v.GetString() ?? string.Empty) : string.Empty;
+        int TotalChunks() => root.TryGetProperty("total_chunks", out var v) && v.TryGetInt32(out var n) ? n : 0;
+        int ElapsedMs() => root.TryGetProperty("elapsed_ms", out var v) && v.TryGetInt32(out var n) ? n : 0;
+
+        var sources = new List<SourceRef>();
+        if (root.TryGetProperty("sources", out var sArr) && sArr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var s in sArr.EnumerateArray())
+            {
+                sources.Add(new SourceRef
+                {
+                    Index = s.TryGetProperty("index", out var i) && i.TryGetInt32(out var iv) ? iv : 0,
+                    Source = s.TryGetProperty("source", out var src) ? (src.GetString() ?? string.Empty) : string.Empty,
+                    Format = s.TryGetProperty("format", out var f) ? (f.GetString() ?? string.Empty) : string.Empty,
+                    Page = s.TryGetProperty("page", out var p) && p.ValueKind == JsonValueKind.Number ? p.GetInt32() : null,
+                    Heading = s.TryGetProperty("heading", out var h) ? h.GetString() : null,
+                    Score = s.TryGetProperty("score", out var sc) && sc.ValueKind == JsonValueKind.Number ? sc.GetDouble() : 0,
+                });
+            }
+        }
+
+        return new ChatStreamResult
+        {
+            ChatId = ChatId(),
+            Model = Model(),
+            Provider = Provider(),
+            TotalChunks = TotalChunks(),
+            ElapsedMs = ElapsedMs(),
+            Sources = sources,
+        };
+    }
 
     public Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", CancellationToken ct = default)
         => SendAsync<DocumentListResponse>(HttpMethod.Get, BuildUri("v1/documents", new Dictionary<string, string?>
@@ -139,7 +334,7 @@ public class Doc2kbApiService : IDoc2kbApiService
         {
             reqBody = JsonSerializer.Serialize(payload, JsonOptions);
         }
-        DebugLog.Info($"→ {method} {uri}" + (reqBody is null ? "" : "\n  req: " + Truncate(reqBody, 800)), "API");
+        DebugLog.Info($"→ {method} {uri}" + (reqBody is null ? "" : "\n  req: " + Truncate(RedactSecrets(reqBody), 800)), "API");
 
         using var request = new HttpRequestMessage(method, uri);
         if (payload is not null)
@@ -220,6 +415,10 @@ public class Doc2kbApiService : IDoc2kbApiService
 
     private static string Truncate(string s, int max)
         => s.Length > max ? s[..max] + "…(truncated)" : s;
+
+    /// <summary>日志脱敏：掩盖请求体中的 *api_key 字段值（如 /v1/config 推送的 llm_api_key），避免明文密钥落入日志文件。</summary>
+    private static string RedactSecrets(string body)
+        => Regex.Replace(body, @"(""[^""]*api_key""\s*:\s*"")[^""]*("")", "$1***$2");
 
     private static async Task<ApiException> CreateApiExceptionAsync(HttpResponseMessage response)
     {
