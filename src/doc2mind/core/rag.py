@@ -176,19 +176,15 @@ def rag_answer(
     # 1. 解析会话
     cid, history = _load_history(chat_id)
 
-    # 2. LLM 客户端
-    client = llm_client or get_llm_client(s)
+    # 2. LLM 客户端（配置错误如缺 API Key / 未知 provider 转成 RagError 给出明确提示）
+    try:
+        client = llm_client or get_llm_client(s)
+    except LLMError as e:
+        raise RagError(f"LLM 配置错误: {e}") from e
     if client is None:
         raise RagError(
-            "未配置 LLM。请先设置：\n"
-            "  方式一（OpenAI 兼容 API，如 DeepSeek）：\n"
-            '    set DOC2MIND_LLM_PROVIDER=openai\n'
-            '    set DOC2MIND_LLM_API_KEY=sk-xxx\n'
-            '    set DOC2MIND_LLM_MODEL=deepseek-chat\n'
-            "  方式二（本地 Ollama）：\n"
-            '    set DOC2MIND_LLM_PROVIDER=ollama\n'
-            '    set DOC2MIND_LLM_MODEL=llama3.2\n'
-            "  或运行 `doc2mind config` 持久化配置。"
+            "未配置 LLM。请在 WPF「设置 → 大模型对话」选择提供商并填写 API Key，"
+            "或设置环境变量 DOC2MIND_LLM_PROVIDER（openai/ollama/anthropic/gemini）。"
         )
 
     # 3-5. 检索 + 构建上下文 + 组装消息
@@ -258,19 +254,15 @@ def rag_answer_stream(
     # 1. 解析会话
     cid, history = _load_history(chat_id)
 
-    # 2. LLM 客户端
-    client = llm_client or get_llm_client(s)
+    # 2. LLM 客户端（配置错误如缺 API Key / 未知 provider 转成 RagError 给出明确提示）
+    try:
+        client = llm_client or get_llm_client(s)
+    except LLMError as e:
+        raise RagError(f"LLM 配置错误: {e}") from e
     if client is None:
         raise RagError(
-            "未配置 LLM。请先设置：\n"
-            "  方式一（OpenAI 兼容 API，如 DeepSeek）：\n"
-            '    set DOC2MIND_LLM_PROVIDER=openai\n'
-            '    set DOC2MIND_LLM_API_KEY=sk-xxx\n'
-            '    set DOC2MIND_LLM_MODEL=deepseek-chat\n'
-            "  方式二（本地 Ollama）：\n"
-            '    set DOC2MIND_LLM_PROVIDER=ollama\n'
-            '    set DOC2MIND_LLM_MODEL=llama3.2\n'
-            "  或运行 `doc2mind config` 持久化配置。"
+            "未配置 LLM。请在 WPF「设置 → 大模型对话」选择提供商并填写 API Key，"
+            "或设置环境变量 DOC2MIND_LLM_PROVIDER（openai/ollama/anthropic/gemini）。"
         )
 
     # 3-5. 检索 + 构建上下文 + 组装消息

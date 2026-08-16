@@ -23,8 +23,10 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +39,12 @@ from doc2mind.core.converter import (
     convert_document,
 )
 from doc2mind.core.embedder import get_embedder
+from doc2mind.core.llm import (
+    LLMError,
+    LLMTimeoutError,
+    SUPPORTED_PROVIDERS,
+    get_llm_client,
+)
 from doc2mind.core.loader.detect import get_loader, is_supported
 from doc2mind.core.pipeline import ingest_path, ingest_text
 from doc2mind.core.rag import RagError, rag_answer, rag_answer_stream
@@ -203,6 +211,23 @@ class ConfigUpdate(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class LlmTestRequest(BaseModel):
+    """LLM 连接测试请求 — 用传入参数构造临时客户端验证，不落盘、不动运行时配置。
+
+    字段语义：None = 沿用后端当前运行时配置的值；传值 = 测试该新值
+    （WPF 设置页「测试连接」传 UI 当前输入，未保存也能测）。
+    """
+
+    provider: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    # 测试超时秒数（连接测试宜短，避免长时间挂起）
+    timeout: float = Field(15.0, gt=0, le=120)
+
+    model_config = {"populate_by_name": True}
+
+
 # --- 响应体 ---
 class HealthResponse(BaseModel):
     status: str = "ok"
@@ -216,6 +241,7 @@ class HealthResponse(BaseModel):
 
 class ConfigResponse(BaseModel):
     embed_model: str
+    embed_model_path: str | None = None
     embed_batch_size: int
     chunk_max_tokens: int
     chunk_min_chars: int
@@ -236,6 +262,19 @@ class ConfigResponse(BaseModel):
     llm_api_key_configured: bool = False
     # 可选提示（如切换模型后需要重建索引）；null 表示无提示
     notice: str | None = None
+
+
+class LlmTestResponse(BaseModel):
+    """LLM 连接测试结果。"""
+
+    ok: bool
+    provider: str = ""
+    model: str = ""
+    # 回复预览（成功时前 100 字符，供前端展示）
+    reply_preview: str | None = None
+    elapsed_ms: int = 0
+    # 失败原因（已分类的中文提示：key 无效 / 地址错误 / 网络不通 / SDK 未安装 / 超时）
+    error: str | None = None
 
 
 class DocumentDTO(BaseModel):
@@ -430,6 +469,7 @@ def create_app() -> Any:
         s = state.settings
         return ConfigResponse(
             embed_model=s.embed_model,
+            embed_model_path=s.embed_model_path,
             embed_batch_size=s.embed_batch_size,
             chunk_max_tokens=s.chunk_max_tokens,
             chunk_min_chars=s.chunk_min_chars,
@@ -452,14 +492,31 @@ def create_app() -> Any:
     async def update_config(req: ConfigUpdate) -> ConfigResponse:
         s = state.settings
         old_model = s.embed_model
+
+        # provider 合法性校验：配置错误尽早暴露（400），而非对话时才报错
+        if req.llm_provider is not None:
+            provider = req.llm_provider.strip()
+            if provider not in SUPPORTED_PROVIDERS:
+                raise _api_error(
+                    "BAD_REQUEST",
+                    f"不支持的 llm_provider: {provider}，可选: {'/'.join(SUPPORTED_PROVIDERS)}",
+                    400,
+                )
+
         # 允许修改的字段 → 更新运行时 settings（后续导入/检索生效）
         updates = req.model_dump(exclude_none=True)
+        # 空字符串 = 显式清除 llm_api_key / llm_base_url
+        # （exclude_none 会忽略 null，前端清空输入框时传 ""）
+        for k in ("llm_api_key", "llm_base_url"):
+            if k in updates and isinstance(updates[k], str) and not updates[k].strip():
+                updates[k] = None
         if updates:
             for k, v in updates.items():
                 if hasattr(s, k):
                     setattr(s, k, v)
 
-        # 模型切换引导：维度变化时提示用户重建索引
+        # 模型切换引导：维度变化时提示用户重建索引，并同步 settings.embed_dim
+        # （否则本进程/其他进程后续新建 store 仍用旧预设维度，重现维度不匹配）
         notice: str | None = None
         if req.embed_model and req.embed_model != old_model:
             from doc2mind.core.embedder.catalog import get_model_info
@@ -468,22 +525,27 @@ def create_app() -> Any:
             old_info = get_model_info(old_model)
             new_dim = new_info.dim if new_info else None
             old_dim = old_info.dim if old_info else None
+            if new_dim is not None:
+                s.embed_dim = new_dim
             if new_dim is not None and old_dim is not None and new_dim != old_dim:
                 notice = (
                     f"嵌入模型维度由 {old_dim} 变为 {new_dim}，"
                     "请对已有集合执行「重建索引」后检索才生效（设置页 → 文档管理）。"
                 )
 
-        # 持久化到 config.toml（下次启动自动生效）
+        # 持久化到 config.toml（下次启动自动生效）；失败不静默——写入
+        # notice 提示用户本次已生效但重启后可能回退
         try:
             from doc2mind.core.config import save_settings
 
             save_settings(s)
-        except Exception:  # noqa: BLE001 — 持久化失败不影响本次更新
-            pass
+        except Exception as e:  # noqa: BLE001 — 持久化失败不影响本次运行时更新
+            msg = f"配置已生效，但写入 config.toml 失败（重启后可能回退）：{e}"
+            notice = f"{notice}；{msg}" if notice else msg
 
         return ConfigResponse(
             embed_model=s.embed_model,
+            embed_model_path=s.embed_model_path,
             embed_batch_size=s.embed_batch_size,
             chunk_max_tokens=s.chunk_max_tokens,
             chunk_min_chars=s.chunk_min_chars,
@@ -502,6 +564,75 @@ def create_app() -> Any:
             llm_api_key_configured=bool(s.llm_api_key),
             notice=notice,
         )
+
+    # --- POST /v1/llm/test（设置页「测试连接」：验证 LLM 配置是否可用）---
+    @app.post("/v1/llm/test", response_model=LlmTestResponse)
+    async def llm_test(req: LlmTestRequest) -> LlmTestResponse:
+        """用传入参数构造临时客户端发一条极小消息，验证 LLM 配置。
+
+        不落盘、不修改运行时配置、不做 RAG 检索 — 纯连通性/鉴权测试。
+        请求字段 None 时沿用后端当前运行时配置（可用于验证已保存配置）。
+        """
+        s = state.settings
+        provider = (req.provider or s.llm_provider or "none").strip()
+        if provider == "none":
+            return LlmTestResponse(
+                ok=False, provider="none",
+                error="未选择 LLM 提供商（llm_provider=none），请先在设置页选择",
+            )
+        if provider not in SUPPORTED_PROVIDERS:
+            return LlmTestResponse(
+                ok=False, provider=provider,
+                error=f"不支持的提供商: {provider}，可选: {'/'.join(SUPPORTED_PROVIDERS)}",
+            )
+
+        # 临时 Settings：dataclasses.replace 生成副本，不动运行时配置
+        tmp = dataclasses.replace(
+            s,
+            llm_provider=provider,
+            llm_api_key=(req.api_key or "").strip() or s.llm_api_key,
+            llm_base_url=(req.base_url or "").strip() or s.llm_base_url,
+            llm_model=(req.model or "").strip() or s.llm_model,
+        )
+
+        def _run() -> tuple[str, str, str]:
+            """在线程池中执行：创建临时客户端并发送最小测试消息。"""
+            client = get_llm_client(tmp)
+            if client is None:  # pragma: no cover — provider 已校验，防御分支
+                raise LLMError("LLM 客户端创建失败")
+            reply = client.chat(
+                [{"role": "user", "content": "ping"}],
+                max_tokens=16,
+                timeout=req.timeout,
+            )
+            return client.provider, client.model_name, reply
+
+        t0 = time.perf_counter()
+        try:
+            provider_used, model, reply = await asyncio.to_thread(_run)
+            return LlmTestResponse(
+                ok=True,
+                provider=provider_used,
+                model=model,
+                reply_preview=(reply or "")[:100] or "（空回复）",
+                elapsed_ms=int((time.perf_counter() - t0) * 1000),
+            )
+        except ImportError as e:
+            # openai SDK 未安装等运行库缺失
+            return LlmTestResponse(
+                ok=False, provider=provider, elapsed_ms=int((time.perf_counter() - t0) * 1000),
+                error=f"运行库缺失: {e}",
+            )
+        except LLMTimeoutError as e:
+            return LlmTestResponse(
+                ok=False, provider=provider, elapsed_ms=int((time.perf_counter() - t0) * 1000),
+                error=f"连接超时（{req.timeout:.0f}s）: 网络不通、地址错误或服务无响应",
+            )
+        except LLMError as e:
+            return LlmTestResponse(
+                ok=False, provider=provider, elapsed_ms=int((time.perf_counter() - t0) * 1000),
+                error=str(e),
+            )
 
     # --- POST /v1/ingest ---
     @app.post("/v1/ingest", response_model=IngestResponse)
@@ -735,27 +866,51 @@ def create_app() -> Any:
     # --- POST /v1/chat/stream (SSE) ---
     @app.post("/v1/chat/stream")
     async def chat_stream(req: ChatRequest) -> Any:
-        """RAG 流式对话：先检索，再 SSE 逐 token 输出 LLM 回答。"""
+        """RAG 流式对话：先检索，再 SSE 逐 token 输出 LLM 回答。
+
+        说明：rag_answer_stream 是同步生成器（检索 + LLM），不宜在事件循环
+        线程阻塞。这里用一个后台线程驱动它，逐帧把 token 推到 asyncio.Queue，
+        再由 async 生成器消费并 yield，从而实现真正的逐字流式输出（而非先
+        list() 收集完再发送）。
+        """
         async def event_generator() -> Any:
             loop = asyncio.get_event_loop()
+            queue: "asyncio.Queue[Optional[str]]" = asyncio.Queue()
+            gen = rag_answer_stream(
+                req.query, req.collection, req.top_k, req.chat_id,
+                collections=req.collections,
+            )
+
+            def _pump() -> None:
+                try:
+                    for chunk_json in gen:
+                        asyncio.run_coroutine_threadsafe(
+                            queue.put(chunk_json), loop
+                        ).result()
+                except RagError as e:
+                    asyncio.run_coroutine_threadsafe(
+                        queue.put(f"__ERROR__:{e}"), loop
+                    ).result()
+                except Exception as e:  # noqa: BLE001
+                    asyncio.run_coroutine_threadsafe(
+                        queue.put(f"__ERROR__:对话失败: {e}"), loop
+                    ).result()
+                finally:
+                    asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
+
+            fut = loop.run_in_executor(None, _pump)
             try:
-                # 在独立线程中运行同步生成器，避免阻塞事件循环
-                tokens = await loop.run_in_executor(
-                    None, lambda: list(rag_answer_stream(
-                        req.query, req.collection, req.top_k, req.chat_id,
-                        collections=req.collections,
-                    )),
-                )
-                for chunk_json in tokens:
-                    yield f"data: {chunk_json}\n\n"
-            except RagError as e:
-                yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-                yield "data: [DONE]\n\n"
-                return
-            except Exception as e:  # noqa: BLE001
-                yield f"data: {json.dumps({'error': f'对话失败: {e}'}, ensure_ascii=False)}\n\n"
-                yield "data: [DONE]\n\n"
-                return
+                while True:
+                    chunk = await queue.get()
+                    if chunk is None:
+                        break
+                    if chunk.startswith("__ERROR__:"):
+                        yield f"data: {json.dumps({'error': chunk[len('__ERROR__:'):]}, ensure_ascii=False)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    yield f"data: {chunk}\n\n"
+            finally:
+                await fut  # 确保后台线程已退出
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -989,6 +1144,19 @@ def create_app() -> Any:
                 # 维度变化：不拒绝，改为重建向量表（在 _run_reindex 中执行）
                 need_rebuild = True
             target_embedder = candidate
+        elif state.embedder is not None:
+            # 未指定 model：复用当前 embedder。运行时通过 /v1/config 换过嵌入模型时，
+            # 当前 embedder 维度可能与库表维度不一致（如 512 → 768），
+            # 此时 update_embeddings 原地更新必然维度不匹配失败，必须同样走重建路径。
+            # 先 probe 一次强制加载模型拿到真实维度（加载前 dimension 是预设值）。
+            try:
+                _ = list(state.embedder.embed_texts(["probe"]))
+            except Exception as e:  # noqa: BLE001
+                raise _api_error(
+                    "BAD_REQUEST", f"加载嵌入模型失败: {e}", 400
+                ) from e
+            if state.embedder.dimension != store.embedding_dim:
+                need_rebuild = True
 
         job = JobStatus(
             job_id=job_id,

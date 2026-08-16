@@ -28,10 +28,12 @@ class OllamaClient(LLMClient):
         host: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
+        timeout: float = 120.0,
     ) -> None:
         self._model = model or "llama3.2"
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._timeout = timeout
         self._host = (host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
 
     @property
@@ -63,7 +65,7 @@ class OllamaClient(LLMClient):
             resp = httpx.post(
                 f"{self._host}/api/chat",
                 json=payload,
-                timeout=120,
+                timeout=self._timeout,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -98,7 +100,7 @@ class OllamaClient(LLMClient):
             "stream": True,
         }
         try:
-            with httpx.Client(timeout=120) as client:
+            with httpx.Client(timeout=self._timeout) as client:
                 with client.stream("POST", f"{self._host}/api/chat", json=payload) as response:
                     response.raise_for_status()
                     for line in response.iter_lines():

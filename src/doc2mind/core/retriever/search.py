@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from doc2mind.core.embedder.base import Embedder, EmbedderError
-from doc2mind.core.store.sqlite_vec import VectorStore
+from doc2mind.core.store.sqlite_vec import StoreError, VectorStore
 
 
 class RetrievalError(Exception):
@@ -115,23 +115,32 @@ class Retriever:
         degraded = False
         try:
             # 1. 嵌入查询
-            query_vec = self.embedder.embed_query(query)
-
-            # 2. 向量检索（取 top_k * 3 候选）
-            vec_candidates_n = top_k * 3
-            vec_hits = self.store.vector_search(
-                query_vec, top_k=vec_candidates_n, collection=collection
-            )
-            # 距离 → score
-            vec_scored = [
-                (cid, _distance_to_score(dist), dist) for cid, dist in vec_hits
-            ]
-        except EmbedderError:
-            # 降级：嵌入服务不可用（API key 缺失/网络失败/模型加载失败）时
+            # 降级①：嵌入服务不可用（API key 缺失/网络失败/模型加载失败）时
             # 跳过向量路，仅用 BM25 全文检索，避免整个搜索 500。
             # 由调用方通过 stats.degraded 提示用户当前为降级模式。
-            degraded = True
-            vec_scored = []
+            try:
+                query_vec = self.embedder.embed_query(query)
+            except EmbedderError:
+                degraded = True
+                query_vec = None
+
+            # 2. 向量检索（取 top_k * 3 候选）
+            # 降级②：向量索引不可用（典型：运行时换嵌入模型后维度不匹配且
+            # 未重建索引）时同样跳过向量路，仅用 BM25。
+            vec_scored: list[tuple[int, float, float]] = []
+            if query_vec is not None:
+                vec_candidates_n = top_k * 3
+                try:
+                    vec_hits = self.store.vector_search(
+                        query_vec, top_k=vec_candidates_n, collection=collection
+                    )
+                    # 距离 → score
+                    vec_scored = [
+                        (cid, _distance_to_score(dist), dist) for cid, dist in vec_hits
+                    ]
+                except StoreError:
+                    degraded = True
+                    vec_scored = []
 
             # 3. BM25 检索
             bm25_hits = self.store.bm25_search(

@@ -1,4 +1,4 @@
-"""LLM 客户端模块 — 统一抽象 + OpenAI / Ollama 实现。
+"""LLM 客户端模块 — 统一抽象 + OpenAI / Ollama / Anthropic / Gemini 实现。
 
 使用方式：
     from doc2mind.core.llm import get_llm_client, LLMClient, LLMError
@@ -8,6 +8,12 @@
 """
 
 from doc2mind.core.llm.base import LLMClient, LLMError, LLMTimeoutError
-from doc2mind.core.llm.factory import get_llm_client
+from doc2mind.core.llm.factory import SUPPORTED_PROVIDERS, get_llm_client
 
-__all__ = ["LLMClient", "LLMError", "LLMTimeoutError", "get_llm_client"]
+__all__ = [
+    "LLMClient",
+    "LLMError",
+    "LLMTimeoutError",
+    "get_llm_client",
+    "SUPPORTED_PROVIDERS",
+]
