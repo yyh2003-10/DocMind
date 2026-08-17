@@ -103,8 +103,28 @@ class Settings:
     rag_top_k: int = 5
     rag_min_score: float = 0.0
 
+    # 自定义 RAG 系统提示词（人设/回答风格）；None/空 = 用内置默认提示词。
+    # 环境变量 DOC2MIND_RAG_SYSTEM_PROMPT 可覆盖。
+    rag_system_prompt: str | None = None
+
+    # 多轮对话历史 token 预算：从最新消息向前保留,直到累计 token 超过此值。
+    # 0 = 不按 token 截断(仍受 _MAX_HISTORY=20 条上限保护)。
+    # 环境变量 DOC2MIND_RAG_MAX_HISTORY_TOKENS 可覆盖。
+    rag_max_history_tokens: int = 4096
+
     # LLM 调用超时（秒），0 = 使用默认值 120s
     llm_timeout: float = 0.0
+
+    # --- AI 自动整理（curate）---
+    # 入库成功后自动打标签/生成摘要；ingest_text 未指定集合时还会自动归类。
+    auto_curate_on_ingest: bool = True
+    # 语义去重候选阈值（向量相似分 0-1，越高越严格，默认 0.85）
+    curate_dedup_score_threshold: float = 0.85
+    # 整理时送入 LLM 的文档内容截断上限（字符）
+    curate_max_chars: int = 8000
+    # 目录摄入超过该文件数时跳过入库自动整理（防一次触发海量 LLM 调用，
+    # 此时改用 curate 工具/接口批量整理）
+    curate_auto_max_files: int = 20
 
     # --- 嵌入模型下载 ---
     # HuggingFace 端点/镜像。国内网络直连 HF 常超时，设为
@@ -113,11 +133,15 @@ class Settings:
     # hf-mirror.com，无需手动配置。
     hf_endpoint: str | None = None
 
-    # 嵌入模型缓存目录（持久化，避免放 Temp 被系统清理后反复重新下载）。
+    # --- 嵌入模型缓存目录 ---
     # 默认与知识库同目录：%LOCALAPPDATA%\doc2mind\fastembed_cache
     embed_cache_dir: Path = field(
         default_factory=lambda: _user_data_dir() / "fastembed_cache"
     )
+
+    # --- 文件系统监控（文件变更自动摄入）---
+    watch_paths: list[str] = field(default_factory=list)
+    watch_debounce_seconds: float = 5.0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -148,6 +172,8 @@ class Settings:
                     kwargs[f.name] = raw.lower() in ("1", "true", "yes", "on")
                 elif f.type is Path or f.type == "Path":
                     kwargs[f.name] = Path(raw).expanduser().resolve()
+                elif f.type is list or "list" in str(f.type):
+                    kwargs[f.name] = [x.strip() for x in raw.split(",") if x.strip()]
                 else:
                     kwargs[f.name] = raw
             except (ValueError, TypeError):
@@ -194,7 +220,17 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "llm_max_tokens",
     "rag_top_k",
     "rag_min_score",
+    "rag_system_prompt",
+    "rag_max_history_tokens",
     "llm_timeout",
+    # AI 自动整理（curate）
+    "auto_curate_on_ingest",
+    "curate_dedup_score_threshold",
+    "curate_max_chars",
+    "curate_auto_max_files",
+    # 文件监控
+    "watch_paths",
+    "watch_debounce_seconds",
 )
 
 # 敏感字段：不写入 config.toml（API Key 明文落盘有泄漏风险）。
@@ -265,6 +301,8 @@ def _toml_repr(value: object) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
+    if isinstance(value, (list, tuple)):
+        return json.dumps(list(value), ensure_ascii=False)
     return json.dumps(str(value), ensure_ascii=False)
 
 

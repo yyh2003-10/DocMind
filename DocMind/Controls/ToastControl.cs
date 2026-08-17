@@ -72,6 +72,21 @@ public class ToastControl : Control
 
     protected override Visual GetVisualChild(int index) => _activeItems[index];
 
+    protected override HitTestResult? HitTestCore(PointHitTestParameters hitTestParameters)
+    {
+        // 只有命中具体 ToastItem 时才拦截，点击其余空白区域 100% 穿透给下层页面与 WebView2
+        for (int i = _activeItems.Count - 1; i >= 0; i--)
+        {
+            var item = _activeItems[i];
+            var hit = VisualTreeHelper.HitTest(item, hitTestParameters.HitPoint);
+            if (hit != null)
+            {
+                return hit;
+            }
+        }
+        return null;
+    }
+
     /// <summary>单条 Toast 条目（内部控件）。</summary>
     private class ToastItem : FrameworkElement
     {

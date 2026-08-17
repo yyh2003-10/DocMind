@@ -161,3 +161,15 @@ class TestSettings:
         assert get_settings().server_port == 1234
         # 恢复
         set_settings(Settings())
+
+    def test_watch_paths_from_env(self) -> None:
+        os.environ["DOC2MIND_WATCH_PATHS"] = "C:/docs, D:/notes/kb , /var/data"
+        os.environ["DOC2MIND_WATCH_DEBOUNCE_SECONDS"] = "3.5"
+        try:
+            s = Settings.from_env()
+            assert s.watch_paths == ["C:/docs", "D:/notes/kb", "/var/data"]
+            assert s.watch_debounce_seconds == 3.5
+        finally:
+            del os.environ["DOC2MIND_WATCH_PATHS"]
+            del os.environ["DOC2MIND_WATCH_DEBOUNCE_SECONDS"]
+

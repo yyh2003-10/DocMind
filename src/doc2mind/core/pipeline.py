@@ -43,6 +43,9 @@ class IngestResult:
     status: str  # ingested | skipped | updated | failed
     error: str | None = None
     document_id: str | None = None
+    # 入库后 AI 自动整理的结果（enrich/categorize）；未触发或失败时为 None。
+    # collection 字段反映整理后的最终集合（可能被自动归类移动过）。
+    curation: dict | None = None
 
 
 @dataclass
@@ -109,10 +112,23 @@ def ingest_path(
         store.open()
 
     total = len(files)
+    # 入库自动整理护栏：目录文件数超上限时跳过（一次目录摄入触发数百次
+    # LLM 调用既慢又贵），此时应改用 curate 工具/接口批量整理。
+    auto_curate = bool(
+        getattr(settings, "auto_curate_on_ingest", False)
+        and total <= getattr(settings, "curate_auto_max_files", 20)
+    )
+    if getattr(settings, "auto_curate_on_ingest", False) and not auto_curate:
+        logger.info(
+            "文件数 %d 超过 curate_auto_max_files=%d，跳过入库自动整理"
+            "（可用 curate 批量整理）",
+            total, getattr(settings, "curate_auto_max_files", 20),
+        )
     summary = IngestSummary()
     try:
         for idx, f in enumerate(files, start=1):
-            res = _ingest_one(f, settings, collection, force, store, embedder)
+            res = _ingest_one(f, settings, collection, force, store, embedder,
+                              auto_curate=auto_curate)
             summary.results.append(res)
             if res.status == "ingested":
                 summary.total_documents += 1
@@ -137,7 +153,7 @@ def ingest_path(
 def ingest_text(
     text: str,
     title: str | None = None,
-    collection: str = "default",
+    collection: str | None = None,
     force: bool = False,
     settings: Settings | None = None,
     store: VectorStore | None = None,
@@ -152,17 +168,26 @@ def ingest_text(
     Args:
         text: 要入库的文本内容。
         title: 可选标题，作为 source 显示（如 `note:标题`）；空则取文本前 30 字符。
-        collection: 集合名。
+        collection: 集合名。None（默认）= 落到默认集合并允许 AI 自动归类
+            （auto_curate_on_ingest 开启且 LLM 可用时，入库后自动移动到
+            AI 判断的集合）；显式指定 = 尊重调用方选择，只打标签不归类。
         force: 即使相同文本已存在也重新摄入（默认 False = 跳过去重）。
         settings: 配置；None 则用全局配置。
         store: 已打开的 VectorStore；None 则内部创建并关闭。
 
     Returns:
-        `IngestResult`
+        `IngestResult`（collection 为整理后的最终集合；curation 携带整理结果）
     """
     if settings is None:
         settings = get_settings()
     settings.ensure_dirs()
+
+    # None = 未指定集合 → 默认集合 + 允许 AI 自动归类
+    auto_categorize = collection is None
+    effective_collection = (
+        (collection or settings.collection_default or "default").strip() or "default"
+    )
+    collection = effective_collection
 
     body = (text or "").strip()
     if not body:
@@ -271,12 +296,19 @@ def ingest_text(
             "ingest_text 完成: source=%s collection=%s chunks=%d",
             source, collection, len(chunks),
         )
+        # 入库自动整理：打标签/摘要（+ 未指定集合时自动归类）。
+        # 失败不影响入库结果；归类可能移动集合，最终值以库里为准。
+        curation = _auto_curate_after_ingest(
+            store, settings, document_id, allow_categorize=auto_categorize
+        )
+        final_doc = store.get_document_by_id(document_id)
         return IngestResult(
-            source=source, collection=collection,
+            source=source,
+            collection=final_doc.collection if final_doc else collection,
             format=doc.format.value, size_bytes=doc.size_bytes,
             chunk_count=len(chunks),
             elapsed_ms=int((time.perf_counter() - t0) * 1000),
-            status="ingested", document_id=document_id,
+            status="ingested", document_id=document_id, curation=curation,
         )
     except Exception as e:  # noqa: BLE001
         return _fail(Path(source), collection, f"写库失败: {e}", t0)
@@ -292,6 +324,7 @@ def _ingest_one(
     force: bool,
     store: VectorStore,
     embedder,
+    auto_curate: bool = False,
 ) -> IngestResult:
     """摄入单个文件。"""
     t0 = time.perf_counter()
@@ -382,13 +415,83 @@ def _ingest_one(
     except Exception as e:  # noqa: BLE001
         return _fail(path, collection, f"写库失败: {e}", t0)
 
+    # 入库自动整理（文件摄入只打标签/摘要，不自动归类——集合由调用方指定）
+    curation = None
+    if auto_curate:
+        curation = _auto_curate_after_ingest(
+            store, settings, document_id, allow_categorize=False
+        )
+
     return IngestResult(
         source=doc.source, collection=collection,
         format=doc.format.value, size_bytes=doc.size_bytes,
         chunk_count=len(chunks),
         elapsed_ms=int((time.perf_counter() - t0) * 1000),
-        status="ingested", document_id=document_id,
+        status="ingested", document_id=document_id, curation=curation,
     )
+
+
+def _auto_curate_after_ingest(
+    store: VectorStore,
+    settings: Settings,
+    document_id: str,
+    allow_categorize: bool,
+) -> dict | None:
+    """入库成功后的 AI 自动整理：打标签/生成摘要（可选自动归类）。
+
+    任何失败（LLM 未配置 / 调用出错 / 配置不完整）都只记日志并返回 None，
+    绝不影响入库结果。curator 与 pipeline 相互引用，这里延迟导入打破循环。
+    """
+    if not getattr(settings, "auto_curate_on_ingest", False):
+        return None
+    try:
+        from doc2mind.core.llm.base import LLMError
+        from doc2mind.core.llm.factory import get_llm_client
+
+        try:
+            llm = get_llm_client(settings)
+        except LLMError as e:
+            logger.info("auto curate 跳过（LLM 配置不可用）: %s", e)
+            return None
+        if llm is None:
+            return None
+
+        from doc2mind.core import curator
+
+        doc = store.get_document_by_id(document_id)
+        if doc is None:
+            return None
+        out: dict = {
+            "enrich": curator.enrich_document(
+                store, llm, doc, max_chars=settings.curate_max_chars, dry_run=False
+            )
+        }
+        if allow_categorize:
+            out["categorize"] = curator.categorize_document(store, llm, doc, dry_run=False)
+
+        # 自动抽取图谱实体并关联
+        try:
+            from doc2mind.core.extractor import extract_and_store
+
+            rep_text = curator._doc_representative_text(store, doc, max_chars=1800)
+            if len(rep_text) >= 50:
+                first_chunk = store.list_chunks_by_document(doc.id, limit=1)
+                first_chunk_id = first_chunk[0].id if first_chunk else None
+                out["extract"] = extract_and_store(
+                    rep_text,
+                    doc.collection,
+                    llm,
+                    doc_id=doc.id,
+                    db_path=settings.db_path,
+                    chunk_id=first_chunk_id,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("入库自动图谱抽取失败（不影响入库）: %s", e)
+
+        return out
+    except Exception as e:  # noqa: BLE001 — 整理失败绝不影响入库
+        logger.warning("auto curate 失败（不影响入库）: %s", e)
+        return None
 
 
 def _fail(path: Path, collection: str, err: str, t0: float) -> IngestResult:

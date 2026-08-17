@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Media;
 using CommunityToolkit.Mvvm.Input;
@@ -11,12 +12,14 @@ public partial class MainViewModel : ViewModelBase
 {
     public IDoc2kbApiService ApiService { get; }
     public AppSettings Settings { get; }
+    private readonly BackendProcessService? _backendService;
     private ViewModelBase? _currentPage;
     private NavigationItem? _selectedNavigationItem;
     private string _statusMessage = "就绪";
     private bool _isSidebarCollapsed;
     private string _backendStatusText = "连接后端…";
     private Brush _backendStatusBrush = Brushes.Gray;
+    private BackendState _backendState = BackendState.Offline;
 
     public string StatusMessage
     {
@@ -40,12 +43,16 @@ public partial class MainViewModel : ViewModelBase
         private set => SetProperty(ref _backendStatusBrush, value);
     }
 
+    /// <summary>是否可手动启动后端（仅在离线时显示启动按钮）。</summary>
+    public bool CanStartBackend => _backendState is BackendState.Offline;
+
     /// <summary>后端地址（底栏显示）。</summary>
     public string BackendUrl => Settings.BackendUrl;
 
     /// <summary>由 App 的后端进程服务状态事件回调，刷新顶栏/底栏状态灯。</summary>
     public void UpdateBackendState(BackendState state)
     {
+        _backendState = state;
         (BackendStatusText, BackendStatusBrush) = state switch
         {
             BackendState.Online => ("后端在线", Brushes.Green),
@@ -53,6 +60,26 @@ public partial class MainViewModel : ViewModelBase
             BackendState.Stopping => ("后端退出中…", Brushes.Goldenrod),
             _ => ("后端离线", Brushes.Red),
         };
+        OnPropertyChanged(nameof(CanStartBackend));
+        StartBackendCommand.NotifyCanExecuteChanged();
+
+        // 后端恢复在线时，自动刷新搜索集合与质量看板
+        if (state == BackendState.Online)
+        {
+            _ = _searchViewModel.LoadCollectionsAsync();
+            _ = _chatViewModel.LoadCollectionsCommand.ExecuteAsync(null);
+        }
+    }
+
+    /// <summary>手动启动/重连后端服务。</summary>
+    [RelayCommand(CanExecute = nameof(CanStartBackend))]
+    private async Task StartBackendAsync()
+    {
+        if (_backendService != null)
+        {
+            StatusMessage = "正在启动后端服务…";
+            await _backendService.StartAsync(new Progress<string>(msg => StatusMessage = msg));
+        }
     }
 
     public ObservableCollection<NavigationItem> NavigationItems { get; } = new();
@@ -63,8 +90,10 @@ public partial class MainViewModel : ViewModelBase
     private readonly ConvertViewModel _convertViewModel;
     private readonly QualityViewModel _qualityViewModel;
     private readonly DocumentsViewModel _documentsViewModel;
+    private readonly GraphViewModel _graphViewModel;
     private readonly SettingsViewModel _settingsViewModel;
     private readonly DebugLogViewModel _debugLogViewModel;
+    private readonly GpuWarningViewModel? _gpuWarning;
 
     public MainViewModel(
         IDoc2kbApiService apiService,
@@ -75,24 +104,42 @@ public partial class MainViewModel : ViewModelBase
         ConvertViewModel convertViewModel,
         QualityViewModel qualityViewModel,
         DocumentsViewModel documentsViewModel,
+        GraphViewModel graphViewModel,
         SettingsViewModel settingsViewModel,
-        DebugLogViewModel debugLogViewModel)
+        DebugLogViewModel debugLogViewModel,
+        GpuWarningViewModel? gpuWarning = null,
+        BackendProcessService? backendService = null)
     {
         ApiService = apiService;
         Settings = settings;
+        _backendService = backendService;
+        _gpuWarning = gpuWarning;
         _searchViewModel = searchViewModel;
         _chatViewModel = chatViewModel;
         _importViewModel = importViewModel;
         _convertViewModel = convertViewModel;
         _qualityViewModel = qualityViewModel;
         _documentsViewModel = documentsViewModel;
+        _graphViewModel = graphViewModel;
         _settingsViewModel = settingsViewModel;
         _debugLogViewModel = debugLogViewModel;
 
         // 文档详情「分块定位」→ 跳转搜索页执行搜索
         _documentsViewModel.ChunkSearchRequested += OnChunkSearchRequested;
 
-        // 导入完成 → 文档库缓存失效（下次进入自动刷新）
+        // 搜索详情「在文档库中查看」→ 跳转文档库并定位
+        _searchViewModel.OpenDocumentRequested += OnSearchOpenDocumentRequested;
+
+        // 搜索详情「基于分块提问」→ 跳转对话页并填入问题
+        _searchViewModel.AskInChatRequested += OnSearchAskInChatRequested;
+
+        // 转换成功「一键导入」→ 跳转导入页并填入文件路径
+        _convertViewModel.ImportRequested += OnConvertImportRequested;
+
+        // 对话页「引用来源点击」→ 跳转搜索页用源文件名搜索
+        _chatViewModel.SourceSearchRequested += OnSourceSearchRequested;
+
+        // 导入完成 → 文档库/图谱/质量看板缓存失效并刷新
         _importViewModel.ImportCompleted += OnImportCompleted;
 
         Title = "DocMind";
@@ -104,6 +151,7 @@ public partial class MainViewModel : ViewModelBase
         NavigationItems.Add(new NavigationItem { Title = "质量看板", Icon = "📊", IconPath = "Assets/nav-quality.png", ViewModelType = typeof(QualityViewModel) });
         // 文档库/调试日志无独立 PNG 图标：IconPath 置空，由侧栏模板回退显示 emoji 字符
         NavigationItems.Add(new NavigationItem { Title = "文档库", Icon = "🗂️", ViewModelType = typeof(DocumentsViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "知识图谱", Icon = "🕸️", ViewModelType = typeof(GraphViewModel) });
         NavigationItems.Add(new NavigationItem { Title = "设置", Icon = "⚙️", IconPath = "Assets/nav-settings.png", ViewModelType = typeof(SettingsViewModel) });
         NavigationItems.Add(new NavigationItem { Title = "调试日志", Icon = "📋", ViewModelType = typeof(DebugLogViewModel) });
 
@@ -125,11 +173,17 @@ public partial class MainViewModel : ViewModelBase
                 OnPropertyChanged(nameof(CurrentStatusText));
                 OnPropertyChanged(nameof(CurrentIsBusy));
 
-                // 导航自动加载：文档库/质量看板首次进入时自动拉取数据
+                // 导航自动加载：每次进入页面时刷新数据，确保信息实时
+                if (_currentPage is ChatViewModel cv)
+                    _ = cv.LoadCollectionsCommand.ExecuteAsync(null);
                 if (_currentPage is DocumentsViewModel dv)
-                    _ = dv.EnsureLoadedAsync();
+                    _ = dv.RefreshCommand.ExecuteAsync(null);
                 if (_currentPage is QualityViewModel qv)
                     _ = qv.EnsureLoadedAsync();
+                if (_currentPage is GraphViewModel gv)
+                    _ = gv.EnsureLoadedAsync();
+                if (_currentPage is SettingsViewModel)
+                    _ = _gpuWarning?.DiagnoseAsync();
 
                 // 订阅新页面
                 if (_currentPage != null)
@@ -156,6 +210,7 @@ public partial class MainViewModel : ViewModelBase
                 var type when type == typeof(ConvertViewModel) => _convertViewModel,
                 var type when type == typeof(QualityViewModel) => _qualityViewModel,
                 var type when type == typeof(DocumentsViewModel) => _documentsViewModel,
+                var type when type == typeof(GraphViewModel) => _graphViewModel,
                 var type when type == typeof(SettingsViewModel) => _settingsViewModel,
                 var type when type == typeof(DebugLogViewModel) => _debugLogViewModel,
                 _ => _searchViewModel
@@ -223,6 +278,36 @@ public partial class MainViewModel : ViewModelBase
         NavigateToSearch();
     }
 
+    /// <summary>搜索详情「在文档库中查看」→ 填入文件名并跳转文档库页。</summary>
+    private void OnSearchOpenDocumentRequested(string sourcePath)
+    {
+        var fileName = Path.GetFileName(sourcePath);
+        _documentsViewModel.SearchQuery = fileName;
+        NavigateToDocuments();
+    }
+
+    /// <summary>搜索详情「基于分块提问」→ 填入问题并跳转对话页。</summary>
+    private void OnSearchAskInChatRequested(string prompt)
+    {
+        _chatViewModel.InputText = prompt;
+        NavigateToChat();
+    }
+
+    /// <summary>格式转换「一键导入」→ 填入文件路径并跳转导入页。</summary>
+    private void OnConvertImportRequested(string filePath)
+    {
+        _importViewModel.SelectedPath = filePath;
+        NavigateToImport();
+    }
+
+    /// <summary>引用来源点击：用文件名搜索知识库，跳转搜索页。</summary>
+    private void OnSourceSearchRequested(Models.SourceRef src)
+    {
+        var query = Path.GetFileNameWithoutExtension(src.Source);
+        _searchViewModel.SearchWithQuery(query);
+        NavigateToSearch();
+    }
+
     /// <summary>窗口关闭时统一取消各页面进行中的后台任务（导入轮询、重建索引轮询等）。</summary>
     public void CancelInFlightOperations()
     {
@@ -230,14 +315,39 @@ public partial class MainViewModel : ViewModelBase
         _documentsViewModel.CancelReindexPolling();
     }
 
-    /// <summary>导入完成 → 文档库数据已变化：失效缓存，若文档库页正在显示则直接刷新。</summary>
+    /// <summary>导入完成 → 文档库、知识图谱、质量看板及对话集合全量同步刷新。</summary>
     private void OnImportCompleted()
     {
+        // 1. 文档库：失效缓存，若正在显示则直接刷新
         _documentsViewModel.InvalidateCache();
         if (CurrentPage == _documentsViewModel)
         {
             _documentsViewModel.RefreshCommand.Execute(null);
         }
+
+        // 2. 知识图谱与质量看板：失效缓存，下次进入或当前页自动刷新
+        _graphViewModel.InvalidateCache();
+        if (CurrentPage == _graphViewModel)
+        {
+            _ = _graphViewModel.EnsureLoadedAsync();
+        }
+
+        _qualityViewModel.InvalidateCache();
+        if (CurrentPage == _qualityViewModel)
+        {
+            _ = _qualityViewModel.EnsureLoadedAsync();
+        }
+
+        // 3. 对话页与搜索页：集合列表可能有新增集合，自动拉取
+        _ = _chatViewModel.LoadCollectionsCommand.ExecuteAsync(null);
+        _ = _searchViewModel.LoadCollectionsAsync();
+    }
+
+    [RelayCommand]
+    private void NavigateToDocuments()
+    {
+        var item = NavigationItems.FirstOrDefault(n => n.ViewModelType == typeof(DocumentsViewModel));
+        if (item != null) SelectedNavigationItem = item;
     }
 
     [RelayCommand]

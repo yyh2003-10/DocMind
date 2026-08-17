@@ -1,33 +1,118 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.Windows;
+using System.Windows.Documents;
+using System.Windows.Input;
+using System.Windows.Media;
 using CommunityToolkit.Mvvm.Input;
 using DocMind.Models;
 using DocMind.Services;
+using Markdig;
+using Markdig.Wpf;
 
 namespace DocMind.ViewModels;
 
 /// <summary>单条对话消息（用户或助手）。可变 class 以支持流式增量追加 token。</summary>
-public sealed class ChatMessage : System.ComponentModel.INotifyPropertyChanged
+public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyChanged
 {
     private string _role = string.Empty;
     private string _content = string.Empty;
+    private FlowDocument? _renderedDocument;
+    private long _lastRenderTicks;
+    /// <summary>reparse 节流间隔(ms):流式期间避免每个 token 都重新解析 Markdown。</summary>
+    private const long RenderThrottleMs = 50;
     private IReadOnlyList<SourceRef>? _sources;
     private string? _model;
     private string? _provider;
     private int? _elapsedMs;
     private bool _isLoading;
+    private bool _showRegenerate;
 
     /// <summary>角色：user / assistant / system。</summary>
     public string Role
     {
         get => _role;
-        set => SetField(ref _role, value);
+        set
+        {
+            if (SetField(ref _role, value))
+            {
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsUser)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsAssistant)));
+            }
+        }
     }
 
     /// <summary>消息内容。</summary>
     public string Content
     {
         get => _content;
-        set => SetField(ref _content, value);
+        set
+        {
+            if (SetField(ref _content, value))
+            {
+                UpdateRenderedDocument();
+            }
+        }
+    }
+
+    /// <summary>助手回答经 Markdig 解析后的 FlowDocument;用户消息或解析失败时为 null。</summary>
+    /// <remarks>UI 层据此渲染 Markdown(代码块/列表/表格/可点击链接);用户消息仍走纯 TextBlock。</remarks>
+    public FlowDocument? RenderedDocument
+    {
+        get => _renderedDocument;
+        private set => SetField(ref _renderedDocument, value);
+    }
+
+    /// <summary>强制重新解析 Markdown(终帧 onDone 后调用,确保最终渲染完整,不受节流影响)。</summary>
+    public void ForceRefreshRender() => UpdateRenderedDocument(force: true);
+
+    /// <summary>流式增量追加 token。</summary>
+    public void AppendToken(string token)
+    {
+        Content += token;
+    }
+
+    /// <summary>把 Content 用 Markdig 解析为 FlowDocument。流式期间节流,终帧后强制刷新。</summary>
+    private void UpdateRenderedDocument(bool force = false)
+    {
+        // 用户消息不渲染 Markdown(纯文本即可,避免 Markdown 语法误解析)
+        if (IsUser || string.IsNullOrEmpty(Content))
+        {
+            if (_renderedDocument is not null)
+            {
+                RenderedDocument = null;
+            }
+            return;
+        }
+        // 节流:流式期间频繁 reparse 浪费 CPU,50ms 一次足够流畅
+        var now = Environment.TickCount64;
+        if (!force && (now - _lastRenderTicks) < RenderThrottleMs)
+        {
+            return;
+        }
+        _lastRenderTicks = now;
+        try
+        {
+            var pipeline = new MarkdownPipelineBuilder().UseSupportedExtensions().Build();
+            var doc = Markdig.Wpf.Markdown.ToFlowDocument(Content, pipeline);
+            // 对齐 ChatView 气泡样式:清除 FlowDocument 默认页边距,继承 BodyText 样式(FontSize=15, Medium, TextPrimary)
+            doc.PagePadding = new Thickness(0);
+            doc.FontFamily = SystemFonts.MessageFontFamily;
+            doc.FontSize = 15;
+            doc.FontWeight = FontWeights.Medium;
+            doc.Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextPrimaryBrush")
+                                     ?? Brushes.Black);
+            RenderedDocument = doc;
+        }
+        catch (Exception ex)
+        {
+            // 解析失败:清空 RenderedDocument,UI 会 fallback 到纯 TextBlock(由 Visibility 控制)
+            DebugLog.Warn($"Markdown 解析失败,降级纯文本: {ex.Message}", "Chat");
+            if (_renderedDocument is not null)
+            {
+                RenderedDocument = null;
+            }
+        }
     }
 
     /// <summary>引用来源（仅 assistant 有）。</summary>
@@ -65,6 +150,36 @@ public sealed class ChatMessage : System.ComponentModel.INotifyPropertyChanged
         set => SetField(ref _isLoading, value);
     }
 
+    /// <summary>是否显示「重新生成」（仅最后一条 assistant 消息、非生成中；由 VM 维护）。</summary>
+    public bool ShowRegenerate
+    {
+        get => _showRegenerate;
+        set => SetField(ref _showRegenerate, value);
+    }
+
+    /// <summary>是否有可复制内容（控制「复制」按钮可见性）。</summary>
+    public bool CanCopy => !IsLoading && !string.IsNullOrEmpty(Content);
+
+    /// <summary>复制消息内容到剪贴板。</summary>
+    [RelayCommand]
+    private void Copy()
+    {
+        if (string.IsNullOrEmpty(Content))
+        {
+            return;
+        }
+        try
+        {
+            Clipboard.SetText(Content);
+        }
+        catch (Exception ex)
+        {
+            // 剪贴板被其他进程占用（OCR/远程桌面场景偶发）：重试一次，仍失败仅记录
+            DebugLog.Warn($"复制到剪贴板失败: {ex.Message}", "Chat");
+            try { Clipboard.SetText(Content); } catch { /* 放弃，不打断 UI */ }
+        }
+    }
+
     /// <summary>是否有引用来源（控制来源列表可见性）。</summary>
     public bool HasSources => Sources is { Count: > 0 };
 
@@ -74,15 +189,20 @@ public sealed class ChatMessage : System.ComponentModel.INotifyPropertyChanged
     /// <summary>是否来自用户（UI 分左右用）。</summary>
     public bool IsUser => Role == "user";
 
+    /// <summary>是否来自助手（UI 渲染助手 Markdown 消息卡片用）。</summary>
+    public bool IsAssistant => Role == "assistant";
+
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
 
-    private void SetField<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? propertyName = null)
+    private bool SetField<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? propertyName = null)
     {
         if (!System.Collections.Generic.EqualityComparer<T>.Default.Equals(field, value))
         {
             field = value;
             PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
+            return true;
         }
+        return false;
     }
 }
 
@@ -124,15 +244,47 @@ public sealed class CollectionItem : System.ComponentModel.INotifyPropertyChange
         => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
 }
 
+/// <summary>历史会话列表项（ComboBox 显示用）。</summary>
+public sealed class ChatSessionItem
+{
+    public string ChatId { get; init; } = string.Empty;
+
+    /// <summary>会话标题（首条用户问题前 50 字）。</summary>
+    public string Title { get; init; } = string.Empty;
+
+    public int MessageCount { get; init; }
+
+    /// <summary>最后更新时间（ISO，来自后端）。</summary>
+    public string UpdatedAt { get; init; } = string.Empty;
+
+    /// <summary>下拉显示文本。</summary>
+    public string Display
+    {
+        get
+        {
+            var title = string.IsNullOrWhiteSpace(Title) ? ChatId : Title;
+            return MessageCount > 0 ? $"{title}（{MessageCount} 条）" : title;
+        }
+    }
+}
+
 public partial class ChatViewModel : ViewModelBase
 {
     private readonly IDoc2kbApiService _apiService;
+
+    /// <summary>用户点击引用来源时的请求事件。MainViewModel 订阅后导航到搜索页并传入源文件名。</summary>
+    public event Action<SourceRef>? SourceSearchRequested;
 
     private string _inputText = string.Empty;
     private bool _isBusy;
     private string _statusMessage = "就绪";
     private string? _chatId;
-    private int _topK = 5;
+    private bool _isLoadingSessions;
+
+    /// <summary>模型下拉首项伪值：表示「用设置页配置的默认模型」。</summary>
+    public const string DefaultModelLabel = "默认（设置页模型）";
+
+    private string _selectedModel = DefaultModelLabel;
 
     public ChatViewModel(IDoc2kbApiService apiService)
     {
@@ -162,18 +314,58 @@ public partial class ChatViewModel : ViewModelBase
         LoadCollectionsCommand = new AsyncRelayCommand(LoadCollectionsAsync);
         AddCollectionCommand = new AsyncRelayCommand<string?>(AddCollectionAsync);
 
+        Sessions = new ObservableCollection<ChatSessionItem>();
+        AvailableModels = new ObservableCollection<string> { DefaultModelLabel };
+
         Messages.CollectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(ShowEmptyGuide));
             OnPropertyChanged(nameof(EmptyGuideText));
+            UpdateMessageFlags();
         };
 
-        // 构造时拉取已有知识库集合
+        // 构造时拉取已有知识库集合 + 历史会话 + 后端当前模型（模型下拉种子）
         _ = LoadCollectionsAsync();
+        _ = LoadSessionsAsync();
+        _ = SeedModelFromConfigAsync();
     }
 
     /// <summary>可勾选的知识库集合列表（复选框）。</summary>
     public ObservableCollection<CollectionItem> Collections { get; }
+
+    /// <summary>历史会话列表（持久化在后端 SQLite，重启可恢复）。</summary>
+    public ObservableCollection<ChatSessionItem> Sessions { get; }
+
+    /// <summary>模型下拉候选（首项为「默认」伪值，其余为拉取/种子模型）。</summary>
+    public ObservableCollection<string> AvailableModels { get; }
+
+    /// <summary>当前选中模型；DefaultModelLabel = 用设置页配置（请求不带 model）。</summary>
+    public string SelectedModel
+    {
+        get => _selectedModel;
+        set
+        {
+            if (SetProperty(ref _selectedModel, string.IsNullOrWhiteSpace(value) ? DefaultModelLabel : value))
+            {
+                StatusMessage = value == DefaultModelLabel ? "就绪" : $"模型: {value}（下条消息生效）";
+            }
+        }
+    }
+
+    private ChatSessionItem? _selectedSession;
+
+    /// <summary>当前会话；null = 新会话（未发送过消息）。选中即载入历史消息并可续聊。</summary>
+    public ChatSessionItem? SelectedSession
+    {
+        get => _selectedSession;
+        set
+        {
+            if (SetProperty(ref _selectedSession, value) && value is not null && !_isLoadingSessions)
+            {
+                _ = LoadSessionMessagesAsync(value);
+            }
+        }
+    }
 
     /// <summary>当前选中的集合名列表（供发送时使用）。</summary>
     public IReadOnlyList<string> SelectedCollections =>
@@ -220,6 +412,8 @@ public partial class ChatViewModel : ViewModelBase
                 OnPropertyChanged(nameof(ShowStop));
                 SendCommand.NotifyCanExecuteChanged();
                 StopCommand.NotifyCanExecuteChanged();
+                RegenerateCommand.NotifyCanExecuteChanged();
+                UpdateMessageFlags();
             }
         }
     }
@@ -229,13 +423,6 @@ public partial class ChatViewModel : ViewModelBase
     {
         get => _statusMessage;
         set => SetProperty(ref _statusMessage, value);
-    }
-
-    /// <summary>引用 chunk 数。</summary>
-    public int TopK
-    {
-        get => _topK;
-        set => SetProperty(ref _topK, value);
     }
 
     /// <summary>从后端拉取已有知识库集合，并合并用户手动添加的。</summary>
@@ -269,13 +456,20 @@ public partial class ChatViewModel : ViewModelBase
                 }
             }
 
+            // 记录当前勾选状态，刷新后恢复，避免自动刷新丢失用户选择
+            var selectedNames = Collections
+                .Where(c => c.IsSelected)
+                .Select(c => c.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
             Collections.Clear();
             var list = names.ToList();
             list.Sort(StringComparer.OrdinalIgnoreCase);
             foreach (var name in list)
             {
-                // 默认勾选 default 集合
-                var isSelected = string.Equals(name, "default", StringComparison.OrdinalIgnoreCase);
+                // 已有勾选则恢复；无任何勾选时（首次加载）默认选 default
+                var isSelected = selectedNames.Contains(name)
+                    || (selectedNames.Count == 0 && string.Equals(name, "default", StringComparison.OrdinalIgnoreCase));
                 Collections.Add(new CollectionItem { Name = name, IsSelected = isSelected });
             }
 
@@ -367,6 +561,9 @@ public partial class ChatViewModel : ViewModelBase
 
     private bool CanSend => !IsBusy && HasInput;
 
+    /// <summary>是否可重新生成（非生成中，且最后一条是 assistant 消息）。</summary>
+    private bool CanRegenerate => !IsBusy && Messages.Count > 0 && Messages[^1].Role == "assistant";
+
     /// <summary>是否可停止（生成中）。</summary>
     private bool CanStop => IsBusy;
 
@@ -381,9 +578,47 @@ public partial class ChatViewModel : ViewModelBase
         if (string.IsNullOrWhiteSpace(query))
             return;
 
-        // 添加用户消息
-        Messages.Add(new ChatMessage { Role = "user", Content = query });
         InputText = string.Empty;
+        await SendCoreAsync(query, addUserMessage: true);
+    }
+
+    /// <summary>重新生成最后一条回答：移除末尾 assistant 消息后重发最后一条用户问题（保留 chatId 多轮上下文）。</summary>
+    [RelayCommand(CanExecute = nameof(CanRegenerate))]
+    private async Task RegenerateAsync()
+    {
+        if (IsBusy)
+            return;
+
+        var lastUserIdx = -1;
+        for (var i = Messages.Count - 1; i >= 0; i--)
+        {
+            if (Messages[i].Role == "user")
+            {
+                lastUserIdx = i;
+                break;
+            }
+        }
+        if (lastUserIdx < 0)
+            return;
+
+        var query = Messages[lastUserIdx].Content;
+        // 移除该用户消息之后的所有消息（旧回答/错误占位）
+        for (var i = Messages.Count - 1; i > lastUserIdx; i--)
+        {
+            Messages.RemoveAt(i);
+        }
+        DebugLog.Info($"重新生成: 移除 {Messages.Count - lastUserIdx - 1} 条旧回答后重发", "Chat");
+        await SendCoreAsync(query, addUserMessage: false);
+    }
+
+    /// <summary>发送核心：添加用户消息（可选）+ 流式请求 + 终帧回写。Send 与 Regenerate 共用。</summary>
+    private async Task SendCoreAsync(string query, bool addUserMessage)
+    {
+        // 添加用户消息
+        if (addUserMessage)
+        {
+            Messages.Add(new ChatMessage { Role = "user", Content = query });
+        }
 
         // 添加流式占位（先空内容，逐 token 追加）
         var assistantMsg = new ChatMessage { Role = "assistant", Content = "", IsLoading = true };
@@ -403,7 +638,7 @@ public partial class ChatViewModel : ViewModelBase
             var selected = SelectedCollections;
             DebugLog.Info(
                 $"发送消息: query='{(query.Length > 100 ? query[..100] + "…" : query)}' " +
-                $"collections=[{string.Join(",", selected)}] topK={TopK} chatId='{_chatId ?? "-"}' msgCount={Messages.Count}",
+                $"collections=[{string.Join(",", selected)}] chatId='{_chatId ?? "-"}' model='{(SelectedModel == DefaultModelLabel ? "-" : SelectedModel)}' msgCount={Messages.Count}",
                 "Chat");
             ChatStreamResult? final = null;
             await _apiService.ChatStreamAsync(
@@ -411,8 +646,12 @@ public partial class ChatViewModel : ViewModelBase
                 {
                     Query = query,
                     Collections = selected.Count > 0 ? selected : null,
-                    TopK = TopK,
+                    // TopK 不传（null）：由后端按设置页的 rag_top_k 决定，
+                    // 避免对话页硬编码 5 覆盖用户配置（此前设置页改引用数无效）
+                    TopK = null,
                     ChatId = _chatId,
+                    // 对话页快速切换模型：默认项不带（用设置页配置），选了具体模型则按请求覆盖
+                    Model = SelectedModel == DefaultModelLabel ? null : SelectedModel,
                 },
                 onToken: token =>
                 {
@@ -432,7 +671,12 @@ public partial class ChatViewModel : ViewModelBase
                         assistantMsg.Content += token;
                     }
                 },
-                onDone: result => { final = result; },
+                onDone: result =>
+                {
+                    final = result;
+                    // 终帧后强制重新解析 Markdown,确保最终渲染完整(不受流式节流影响)
+                    assistantMsg.ForceRefreshRender();
+                },
                 ct: _cts.Token);
 
             sw.Stop();
@@ -444,6 +688,7 @@ public partial class ChatViewModel : ViewModelBase
             // 终帧：回写多轮 chat_id + 来源 + 元数据（流式多轮不中断的关键）
             if (final is not null)
             {
+                var isNewChat = _chatId is null && !string.IsNullOrEmpty(final.ChatId);
                 _chatId = final.ChatId ?? _chatId;
                 assistantMsg.Sources = final.Sources;
                 assistantMsg.Model = final.Model;
@@ -452,6 +697,12 @@ public partial class ChatViewModel : ViewModelBase
 
                 StatusMessage = $"模型: {final.Model} ({final.Provider}) · 引用 {final.TotalChunks} 块 · 耗时 {final.ElapsedMs}ms";
                 DebugLog.Info($"对话完成(流式): elapsed={final.ElapsedMs}ms model={final.Model} chunks={final.TotalChunks} sources={final.Sources.Count} chatId='{final.ChatId}'", "Chat");
+
+                // 新会话首条回答完成 → 刷新会话列表（标题/条数已生成），选中当前会话
+                if (isNewChat)
+                {
+                    _ = LoadSessionsAsync(selectChatId: _chatId);
+                }
             }
             else
             {
@@ -459,10 +710,12 @@ public partial class ChatViewModel : ViewModelBase
                 StatusMessage = $"对话完成 · 耗时 {sw.ElapsedMilliseconds}ms";
             }
 
+            assistantMsg.IsLoading = false;
             if (string.IsNullOrEmpty(assistantMsg.Content))
             {
                 assistantMsg.Content = "（无内容返回）";
             }
+            UpdateMessageFlags();
         }
         catch (OperationCanceledException)
         {
@@ -477,10 +730,15 @@ public partial class ChatViewModel : ViewModelBase
         catch (ApiException ex)
         {
             sw.Stop();
-            StatusMessage = $"API 错误：{ex.Message}";
+            var hint = LlmConfigHint(ex.Message);
+            StatusMessage = hint is null
+                ? $"API 错误：{ex.Message}"
+                : $"API 错误：{ex.Message}（请到设置页检查 LLM 配置）";
             DebugLog.Error($"对话 API 错误: code={ex.Code} message={ex.Message}", "Chat", ex);
             assistantMsg.IsLoading = false;
-            assistantMsg.Content = $"❌ API 错误：{ex.Message}";
+            assistantMsg.Content = hint is null
+                ? $"❌ API 错误：{ex.Message}"
+                : $"❌ API 错误：{ex.Message}\n\n💡 {hint}";
         }
         catch (BackendConnectionException ex)
         {
@@ -510,6 +768,28 @@ public partial class ChatViewModel : ViewModelBase
 
     private CancellationTokenSource? _cts;
 
+    /// <summary>LLM 鉴权/未配置类错误 → 返回引导到设置页的提示文案；其余错误返回 null。
+    /// 后端把 LLM 调用错误包在 RAG_ERROR 的消息文本里（如「API Key 无效 (HTTP 401)」「未选择 LLM 提供商」），
+    /// 这里按关键词启发式分类，给用户可操作的下一步而不是裸错误。</summary>
+    private static string? LlmConfigHint(string? message)
+    {
+        if (string.IsNullOrEmpty(message))
+        {
+            return null;
+        }
+        var m = message.ToLowerInvariant();
+        var isAuth = m.Contains("401") || m.Contains("403") || m.Contains("unauthorized")
+            || m.Contains("api key") || m.Contains("apikey") || m.Contains("鉴权") || m.Contains("密钥");
+        var isNotConfigured = m.Contains("未配置") || m.Contains("未设置") || m.Contains("未选择")
+            || m.Contains("llm_provider") || m.Contains("provider=none") || m.Contains("no provider");
+        return (isAuth, isNotConfigured) switch
+        {
+            (true, _) => "API Key 无效或未配置：请到【设置 → 大模型对话】检查 API Key 后点「保存」",
+            (_, true) => "尚未配置 LLM：请到【设置 → 大模型对话】选择提供商、填写 API Key，并点「测试连接」验证",
+            _ => null,
+        };
+    }
+
     /// <summary>停止生成。</summary>
     [RelayCommand(CanExecute = nameof(CanStop))]
     private void Stop()
@@ -531,7 +811,7 @@ public partial class ChatViewModel : ViewModelBase
         StopCommand.NotifyCanExecuteChanged();
     }
 
-    /// <summary>清空对话。</summary>
+    /// <summary>清空当前对话视图（不删除后端会话记录）。</summary>
     [RelayCommand]
     private void Clear()
     {
@@ -540,7 +820,183 @@ public partial class ChatViewModel : ViewModelBase
         try { _cts?.Cancel(); } catch { /* ignore */ }
         Messages.Clear();
         _chatId = null;
+        _selectedSession = null;
+        OnPropertyChanged(nameof(SelectedSession));
         StatusMessage = "就绪";
         OnPropertyChanged(nameof(HasMessages));
     }
+
+    /// <summary>开始新会话（清空视图并取消会话选中）。</summary>
+    [RelayCommand]
+    private void NewChat() => Clear();
+
+    /// <summary>删除历史会话（后端 SQLite + 内存）；删除当前会话则切到新会话。</summary>
+    [RelayCommand]
+    private async Task DeleteSessionAsync(ChatSessionItem? session)
+    {
+        session ??= SelectedSession;
+        if (session is null || _isLoadingSessions)
+            return;
+
+        try
+        {
+            await _apiService.DeleteChatAsync(session.ChatId);
+            Sessions.Remove(session);
+            DebugLog.Info($"已删除会话: {session.ChatId} '{session.Title}'", "Chat");
+
+            if (session.ChatId == _chatId || session.ChatId == SelectedSession?.ChatId)
+            {
+                Clear();
+            }
+            StatusMessage = $"已删除会话：{session.Title}";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"删除会话失败：{ex.Message}";
+            DebugLog.Warn($"删除会话失败: {session.ChatId}: {ex.Message}", "Chat");
+        }
+    }
+
+    /// <summary>维护消息级标志（复制可见性由 CanCopy 自算；重新生成仅最后一条 assistant 显示）。</summary>
+    private void UpdateMessageFlags()
+    {
+        for (var i = 0; i < Messages.Count; i++)
+        {
+            var m = Messages[i];
+            m.ShowRegenerate = i == Messages.Count - 1 && m.Role == "assistant" && !IsBusy;
+        }
+    }
+
+    /// <summary>拉取历史会话列表（后端不可达时静默）。selectChatId 非空时选中该会话。</summary>
+    private async Task LoadSessionsAsync(string? selectChatId = null)
+    {
+        try
+        {
+            var list = await _apiService.ListChatsAsync(limit: 50);
+            _isLoadingSessions = true;
+            try
+            {
+                Sessions.Clear();
+                foreach (var s in list.Chats)
+                {
+                    Sessions.Add(new ChatSessionItem
+                    {
+                        ChatId = s.ChatId,
+                        Title = s.Title,
+                        MessageCount = s.MessageCount,
+                        UpdatedAt = s.UpdatedAt,
+                    });
+                }
+
+                // 选中目标会话：优先 selectChatId（新完成的首答），否则跟随当前 chatId
+                var targetId = selectChatId ?? _chatId;
+                SelectedSession = targetId is null
+                    ? null
+                    : Sessions.FirstOrDefault(s => s.ChatId == targetId);
+            }
+            finally
+            {
+                _isLoadingSessions = false;
+            }
+            DebugLog.Info($"会话列表加载完成: {Sessions.Count} 个", "Chat");
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"加载会话列表失败: {ex.Message}", "Chat");
+        }
+    }
+
+    /// <summary>选中历史会话 → 拉取全部消息载入视图，续聊沿用同一 chatId（后端从 DB 恢复上下文）。</summary>
+    private async Task LoadSessionMessagesAsync(ChatSessionItem session)
+    {
+        try
+        {
+            var detail = await _apiService.GetChatAsync(session.ChatId);
+            Messages.Clear();
+            foreach (var m in detail.Messages)
+            {
+                Messages.Add(new ChatMessage { Role = m.Role, Content = m.Content });
+            }
+            _chatId = session.ChatId;
+            StatusMessage = $"已载入会话：{session.Title}（{detail.Messages.Count} 条消息，可继续追问）";
+            DebugLog.Info($"载入历史会话: {session.ChatId} messages={detail.Messages.Count}", "Chat");
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"载入会话失败：{ex.Message}";
+            DebugLog.Error($"载入历史会话失败: {session.ChatId}: {ex.Message}", "Chat", ex);
+        }
+    }
+
+    /// <summary>点击引用来源：触发事件，由 MainViewModel 订阅后导航到搜索页并传入源文件名。</summary>
+    [RelayCommand]
+    private void OpenSource(SourceRef? src)
+    {
+        if (src is null)
+        {
+            return;
+        }
+        SourceSearchRequested?.Invoke(src);
+    }
+
+    /// <summary>对话页拉取模型列表（用后端运行时配置：设置页已保存的 provider/key/地址）。</summary>
+    [RelayCommand]
+    private async Task RefreshModelsAsync()
+    {
+        try
+        {
+            var result = await _apiService.LlmModelsAsync(new LlmModelsRequest { Timeout = 10 });
+            if (!result.Ok)
+            {
+                StatusMessage = $"❌ 获取模型列表失败: {result.Error ?? "未知错误"}";
+                DebugLog.Warn($"对话页获取模型列表失败: {result.Error}", "Chat");
+                return;
+            }
+
+            var current = SelectedModel;
+            AvailableModels.Clear();
+            AvailableModels.Add(DefaultModelLabel);
+            foreach (var m in result.Models)
+            {
+                if (!string.IsNullOrWhiteSpace(m))
+                {
+                    AvailableModels.Add(m);
+                }
+            }
+            // 保留用户此前选择（已不在列表中则回到默认）
+            SelectedModel = AvailableModels.Contains(current) ? current : DefaultModelLabel;
+            StatusMessage = $"✅ 获取到 {result.Models.Count} 个模型（{result.Provider}）";
+            DebugLog.Info($"对话页模型列表: provider={result.Provider} count={result.Models.Count}", "Chat");
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"❌ 获取模型列表失败: {ex.Message}";
+            DebugLog.Warn($"对话页获取模型列表异常: {ex.Message}", "Chat");
+        }
+    }
+
+    /// <summary>种子模型：从后端配置取当前 llm_model 加入候选（未拉列表前至少能看到配置值）。</summary>
+    private async Task SeedModelFromConfigAsync()
+    {
+        try
+        {
+            var cfg = await _apiService.GetConfigAsync();
+            var model = cfg?.LlmModel;
+            if (!string.IsNullOrWhiteSpace(model) && !AvailableModels.Contains(model))
+            {
+                AvailableModels.Add(model);
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Debug($"读取后端配置种子模型失败（忽略）: {ex.Message}", "Chat");
+        }
+    }
+
+    /// <summary>测试用：等待会话列表加载（构造时 fire-and-forget 不可 await）。</summary>
+    internal Task SessionsLoadedForTestAsync() => LoadSessionsAsync();
+
+    /// <summary>测试用：等待选中会话的消息加载完成。</summary>
+    internal Task SessionLoadedForTestAsync()
+        => SelectedSession is null ? Task.CompletedTask : LoadSessionMessagesAsync(SelectedSession);
 }

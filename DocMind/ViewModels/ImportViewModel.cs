@@ -288,6 +288,7 @@ public partial class ImportViewModel : ViewModelBase
                 },
                 _importCts.Token);
 
+            _currentJobId = job.JobId;
             DebugLog.Info($"导入任务已创建: jobId={job.JobId} status={job.Status}", "Import");
 
             // 轮询直到完成：progress 0.0-1.0 → 百分比
@@ -411,12 +412,26 @@ public partial class ImportViewModel : ViewModelBase
         }
     }
 
-    /// <summary>取消正在进行的导入（仅停止前端轮询；后端线程仍会跑完）。</summary>
+    private string? _currentJobId;
+
+    /// <summary>取消正在进行的导入（停止前端轮询，并向后端发送取消任务请求）。</summary>
     [RelayCommand(CanExecute = nameof(CanCancel))]
-    private void CancelImport()
+    private async Task CancelImport()
     {
-        StatusMessage = "正在取消…";
+        StatusMessage = "正在取消导入并通知后端…";
         _importCts?.Cancel();
+        if (!string.IsNullOrWhiteSpace(_currentJobId))
+        {
+            try
+            {
+                await _apiService.CancelJobAsync(_currentJobId);
+                DebugLog.Info($"已向后端发送取消任务请求: jobId={_currentJobId}", "Import");
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"向后端发送取消任务请求失败: {ex.Message}", "Import");
+            }
+        }
     }
 
     /// <summary>清空当前结果与状态。</summary>

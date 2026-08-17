@@ -1,3 +1,4 @@
+using System.Text.Json;
 using DocMind.Models;
 using DocMind.Services;
 using DocMind.ViewModels;
@@ -5,9 +6,42 @@ using DocMind;
 
 namespace DocMind.Tests;
 
+/// <summary>把 AppSettings 落盘路径指到 temp 目录。
+/// 此前 SaveAsync 直接写真实 %LOCALAPPDATA%\DocMind\appsettings.json，
+/// 跑一次测试就会把用户已配置的 API Key 等真实配置覆盖掉。</summary>
+public sealed class SettingsFileFixture : IDisposable
+{
+    public SettingsFileFixture()
+    {
+        AppSettings.ConfigDirOverrideForTests = Path.Combine(
+            Path.GetTempPath(), "DocMind.Tests", Guid.NewGuid().ToString("N"));
+    }
+
+    public void Dispose()
+    {
+        try
+        {
+            var dir = AppSettings.ConfigDirOverrideForTests;
+            if (dir is not null && Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+        catch { /* temp 清理失败不影响测试结果 */ }
+        AppSettings.ConfigDirOverrideForTests = null;
+    }
+}
+
+[CollectionDefinition("SettingsFile")]
+public sealed class SettingsFileCollection : ICollectionFixture<SettingsFileFixture>
+{
+}
+
 /// <summary>
 /// SettingsViewModel 单元测试：LLM 字段初始化、IsDirty 追踪、保存推送、Revert 恢复。
+/// 落盘相关用例经 SettingsFileFixture 隔离到 temp 目录。
 /// </summary>
+[Collection("SettingsFile")]
 public class SettingsViewModelTests
 {
     private static SettingsViewModel CreateVm(
@@ -20,8 +54,17 @@ public class SettingsViewModelTests
 fake ??= new FakeDoc2kbApiService();
     fake.OnUpdateConfig ??= (_, _) =>
         Task.FromResult(new BackendConfig { Notice = null });
-        var gpuWarning = new GpuWarningViewModel();
-        return new SettingsViewModel(appSettings, notifications, themeService, fake, gpuWarning);
+    fake.OnGetGpuDiagnosis ??= _ =>
+        Task.FromResult(new Models.GpuDiagnosis { RecommendedPath = "cpu" });
+    fake.OnInstallGpu ??= (_, onLog, onDone, _) =>
+    {
+        onLog("[模拟] 安装完成");
+        onDone(true);
+        return Task.CompletedTask;
+    };
+    var backend = new BackendProcessService(appSettings);
+    var gpuWarning = new GpuWarningViewModel(fake, backend, notifications);
+    return new SettingsViewModel(appSettings, notifications, themeService, fake, gpuWarning, backend);
     }
 
     // ======================================================================
@@ -395,5 +438,441 @@ fake ??= new FakeDoc2kbApiService();
         await task;
 
         Assert.False(vm.IsTestingConnection);
+    }
+
+    // ======================================================================
+    // API Key 保存语义（留空 = 保留原值；「清除」按钮 = 显式删除）
+    // ======================================================================
+
+    [Fact]
+    public async Task SaveAsync_EmptyApiKey_KeepsExistingKeyAndSkipsPush()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new BackendConfig { Notice = null });
+        };
+
+        var settings = new AppSettings { LlmProvider = "openai", LlmApiKey = "sk-orig" };
+        var vm = CreateVm(settings, fake);
+        Assert.True(vm.HasSavedApiKey);
+
+        vm.LlmApiKey = "";            // 用户清空输入框（留空 ≠ 清除）
+        vm.LlmModel = "gpt-4o-mini";  // 顺手改其他字段
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Null(captured!.LlmApiKey);            // 后端不修改（null）
+        Assert.Equal("sk-orig", settings.LlmApiKey); // 本地保留原值
+        Assert.Contains("保留原值", vm.StatusMessage);
+    }
+
+    [Fact]
+    public async Task SaveAsync_ClearApiKeyCommand_ClearsLocallyAndBackend()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new BackendConfig { Notice = null });
+        };
+
+        var settings = new AppSettings { LlmProvider = "openai", LlmApiKey = "sk-orig" };
+        var vm = CreateVm(settings, fake);
+
+        vm.ClearApiKeyCommand.Execute(null);
+        Assert.Null(vm.LlmApiKey);
+        Assert.True(vm.IsDirty); // 清除请求本身标记 dirty，保存按钮可用
+
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Equal("", captured!.LlmApiKey);   // 后端显式清除（空串）
+        Assert.Null(settings.LlmApiKey);         // 本地置空
+        Assert.False(vm.HasSavedApiKey);
+    }
+
+    [Fact]
+    public async Task SaveAsync_ReInputAfterClear_CancelsClearRequest()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new BackendConfig { Notice = null });
+        };
+
+        var settings = new AppSettings { LlmProvider = "openai", LlmApiKey = "sk-orig" };
+        var vm = CreateVm(settings, fake);
+
+        vm.ClearApiKeyCommand.Execute(null);
+        vm.LlmApiKey = "sk-new"; // 清除后又重新输入 → 取消清除请求
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Equal("sk-new", captured!.LlmApiKey);
+        Assert.Equal("sk-new", settings.LlmApiKey);
+    }
+
+    [Fact]
+    public async Task Revert_AfterClearApiKey_RestoresKeyAndCancelsClear()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new BackendConfig { Notice = null });
+        };
+
+        var settings = new AppSettings { LlmProvider = "openai", LlmApiKey = "sk-orig" };
+        var vm = CreateVm(settings, fake);
+
+        vm.ClearApiKeyCommand.Execute(null);
+        vm.RevertCommand.Execute(null);
+        Assert.Equal("sk-orig", vm.LlmApiKey);
+
+        vm.LlmModel = "deepseek-chat"; // 随便改一个字段触发保存
+        await vm.SaveCommand.ExecuteAsync(null);
+        // 清除请求已随 Revert 取消：推送恢复后的原值（幂等），而不是空串清除
+        Assert.Equal("sk-orig", captured!.LlmApiKey);
+    }
+
+    [Fact]
+    public void Constructor_DecryptFailedFlag_ShowsWarning()
+    {
+        var settings = new AppSettings { LlmProvider = "openai", LlmKeyDecryptFailed = true };
+        var vm = CreateVm(settings);
+
+        Assert.Null(vm.LlmApiKey); // 密文解密失败按未配置处理
+        Assert.Contains("无法解密", vm.StatusMessage);
+    }
+
+    // ======================================================================
+    // AppSettings.Save() 唯一落盘出口：密文落盘 + 全字段 + 内存明文
+    // ======================================================================
+
+    [Fact]
+    public void AppSettings_Save_WritesEncryptedKeyAndKeepsPlaintextInMemory()
+    {
+        var settings = new AppSettings { LlmApiKey = "sk-plain", RequestTimeoutSec = 120 };
+
+        settings.Save();
+
+        var json = File.ReadAllText(AppSettings.ConfigPath);
+        Assert.Contains("\"llmApiKey\": \"dpapi:v1:", json); // 落盘是 DPAPI 密文
+        Assert.Contains("\"requestTimeoutSec\": 120", json); // 全字段（此前匿名对象会丢此字段）
+        Assert.Equal("sk-plain", settings.LlmApiKey);        // 单例仍持明文（不被 Save 改动）
+
+        // 回读后可解密还原
+        var reloaded = JsonSerializer.Deserialize<AppSettings>(json,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        Assert.NotNull(reloaded);
+        Assert.Equal("sk-plain", SecretProtector.Unprotect(reloaded!.LlmApiKey));
+    }
+
+    [Fact]
+    public async Task SaveAsync_WritesToIsolatedTempConfig_NotRealUserConfig()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (_, _) => Task.FromResult(new BackendConfig { Notice = null });
+
+        var settings = new AppSettings();
+        var vm = CreateVm(settings, fake);
+        vm.LlmTemperature = 0.9;
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        // 落盘发生在 temp 覆写目录下，而不是真实 %LOCALAPPDATA%\DocMind
+        Assert.StartsWith(Path.GetTempPath(), AppSettings.ConfigPath, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(AppSettings.ConfigPath));
+    }
+
+    // ======================================================================
+    // 后端配置回填（/v1/config）：key 已配置态 / config.toml 损坏告警
+    // ======================================================================
+
+    [Fact]
+    public async Task LoadBackendConfig_BackendKeyConfigured_EnablesClear()
+    {
+        // 本地 appsettings 无 key，但后端报告已配置（环境变量等注入）→ 清除按钮应可用
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnGetConfig = _ =>
+            Task.FromResult(new BackendConfig { LlmApiKeyConfigured = true, Notice = null });
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new BackendConfig { Notice = null });
+        };
+
+        var settings = new AppSettings { LlmProvider = "openai" }; // 本地无 key
+        var vm = CreateVm(settings, fake);
+
+        // 构造时 fire-and-forget 拉取尚未完成，等待后应回填
+        await vm.LoadBackendConfigAsync();
+        Assert.True(vm.HasSavedApiKey);
+
+        // 此时「清除」应真正推到后端（推 "" 而不是 null = 不修改）
+        vm.ClearApiKeyCommand.Execute(null);
+        Assert.True(vm.IsDirty);
+        await vm.SaveCommand.ExecuteAsync(null);
+        Assert.Equal("", captured!.LlmApiKey);
+    }
+
+    [Fact]
+    public async Task LoadBackendConfig_ConfigError_ShowsWarning()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnGetConfig = _ =>
+            Task.FromResult(new BackendConfig
+            {
+                LlmApiKeyConfigured = false,
+                ConfigError = "config.toml 解析失败（损坏）",
+                Notice = null,
+            });
+
+        var vm = CreateVm(new AppSettings(), fake);
+        await vm.LoadBackendConfigAsync();
+
+        Assert.Contains("config.toml", vm.StatusMessage);
+    }
+
+    [Fact]
+    public async Task LoadBackendConfig_Unreachable_StaysSilent()
+    {
+        // 后端不可达/未实现：不抛异常、状态保持就绪
+        var fake = new FakeDoc2kbApiService(); // OnGetConfig 默认抛 NotImplementedException
+        var vm = CreateVm(new AppSettings(), fake);
+
+        await vm.LoadBackendConfigAsync(); // 不应抛出
+
+        Assert.Equal("就绪", vm.StatusMessage);
+        Assert.False(vm.HasSavedApiKey);
+    }
+
+    // ======================================================================
+    // 模型名清除语义（曾配置过+现清空 → 推 "" 显式清除）
+    // ======================================================================
+
+    [Fact]
+    public async Task SaveAsync_ClearsModel_WhenPreviouslyConfigured()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new BackendConfig { Notice = null });
+        };
+
+        var settings = new AppSettings { LlmProvider = "openai", LlmModel = "deepseek-chat" };
+        var vm = CreateVm(settings, fake);
+
+        // 清空模型名 → 曾配置过，应推 "" 显式清除后端的旧模型
+        vm.LlmModel = "";
+        vm.LlmTemperature = 0.6; // 顺手改一个字段触发保存
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Equal("", captured!.LlmModel);
+    }
+
+    [Fact]
+    public async Task SaveAsync_ModelNeverConfigured_DoesNotPushClear()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new BackendConfig { Notice = null });
+        };
+
+        var settings = new AppSettings { LlmProvider = "openai" }; // 从未配置模型
+        var vm = CreateVm(settings, fake);
+
+        // 清空模型名（本来就空）→ 推 null（不修改后端，避免误清后端手动配置）
+        vm.LlmTemperature = 0.6;
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Null(captured!.LlmModel);
+    }
+
+    // ======================================================================
+    // 获取模型列表（POST /v1/llm/models）
+    // ======================================================================
+
+    [Fact]
+    public async Task RefreshLlmModels_Success_FillsCandidateList()
+    {
+        LlmModelsRequest? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnLlmModels = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new LlmModelsResult
+            {
+                Ok = true,
+                Provider = "ollama",
+                Models = new[] { "llama3.2:latest", "qwen2.5:7b", "deepseek-r1:8b" },
+            });
+        };
+
+        var settings = new AppSettings { LlmProvider = "ollama", LlmModel = "llama3.2" };
+        var vm = CreateVm(settings, fake);
+
+        await vm.RefreshLlmModelsCommand.ExecuteAsync(null);
+
+        Assert.Equal(3, vm.LlmModels.Count);
+        Assert.Contains("qwen2.5:7b", vm.LlmModels);
+        // 请求带 UI 当前输入值（未保存也能拉）
+        Assert.Equal("ollama", captured!.Provider);
+        Assert.Contains("3 个模型", vm.StatusMessage);
+    }
+
+    [Fact]
+    public async Task RefreshLlmModels_NoneProvider_ShowsHint()
+    {
+        var fake = new FakeDoc2kbApiService();
+        var vm = CreateVm(new AppSettings { LlmProvider = "none" }, fake);
+
+        await vm.RefreshLlmModelsCommand.ExecuteAsync(null);
+
+        Assert.Empty(vm.LlmModels);
+        Assert.Contains("请先选择 LLM 提供商", vm.StatusMessage);
+    }
+
+    [Fact]
+    public async Task RefreshLlmModels_BackendError_ShowsClassifiedError()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnLlmModels = (_, _) => Task.FromResult(new LlmModelsResult
+        {
+            Ok = false,
+            Provider = "openai",
+            Error = "OpenAI API API Key 无效 (HTTP 401): ...",
+        });
+
+        var vm = CreateVm(new AppSettings { LlmProvider = "openai" }, fake);
+        await vm.RefreshLlmModelsCommand.ExecuteAsync(null);
+
+        Assert.Empty(vm.LlmModels);
+        Assert.Contains("401", vm.StatusMessage);
+    }
+
+    // ======================================================================
+    // 系统提示词（RagSystemPrompt）
+    // ======================================================================
+
+    [Fact]
+    public void Constructor_LoadsRagSystemPromptFromAppSettings()
+    {
+        var settings = new AppSettings { RagSystemPrompt = "用文言文回答。" };
+        var vm = CreateVm(settings);
+
+        Assert.Equal("用文言文回答。", vm.RagSystemPrompt);
+        Assert.False(vm.IsDirty);
+    }
+
+    [Fact]
+    public async Task SaveAsync_PushesRagSystemPrompt()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new BackendConfig { Notice = null });
+        };
+        var settings = new AppSettings();
+        var vm = CreateVm(settings, fake);
+
+        vm.RagSystemPrompt = "你是一个严谨的法律文档助手。";
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Equal("你是一个严谨的法律文档助手。", captured!.RagSystemPrompt);
+        Assert.Equal("你是一个严谨的法律文档助手。", settings.RagSystemPrompt); // 本地 AppSettings 同步
+    }
+
+    [Fact]
+    public async Task SaveAsync_WasConfiguredNowEmpty_PushesExplicitClear()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new BackendConfig { Notice = null });
+        };
+        // 曾配置过系统提示词
+        var settings = new AppSettings { RagSystemPrompt = "旧提示词", LlmProvider = "openai" };
+        var vm = CreateVm(settings, fake);
+
+        vm.RagSystemPrompt = ""; // 清空保存 → 显式清除（推 ""）
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Equal("", captured!.RagSystemPrompt);
+        Assert.Null(settings.RagSystemPrompt); // 本地置空
+    }
+
+    [Fact]
+    public async Task SaveAsync_NeverConfiguredEmpty_PushesNull()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new BackendConfig { Notice = null });
+        };
+        var settings = new AppSettings(); // 从未配置
+        var vm = CreateVm(settings, fake);
+
+        vm.LlmTemperature = 0.5; // 触发 dirty，系统提示词保持空
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Null(captured!.RagSystemPrompt);
+    }
+
+    [Fact]
+    public async Task WatchPaths_AddRemoveAndSave_PushesToBackend()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new BackendConfig { Notice = null });
+        };
+
+        var settings = new AppSettings { WatchPaths = new List<string> { "C:/docs" } };
+        var vm = CreateVm(settings, fake);
+
+        Assert.Single(vm.WatchPaths);
+        Assert.Equal("C:/docs", vm.WatchPaths[0]);
+
+        // 添加新路径
+        vm.NewWatchPath = "D:/notes";
+        vm.AddWatchPathCommand.Execute(null);
+        Assert.Equal(2, vm.WatchPaths.Count);
+        Assert.Empty(vm.NewWatchPath);
+
+        // 重复添加忽略
+        vm.NewWatchPath = "D:/notes";
+        vm.AddWatchPathCommand.Execute(null);
+        Assert.Equal(2, vm.WatchPaths.Count);
+
+        // 移除路径
+        vm.RemoveWatchPathCommand.Execute("C:/docs");
+        Assert.Single(vm.WatchPaths);
+        Assert.Equal("D:/notes", vm.WatchPaths[0]);
+
+        // 保存
+        await vm.SaveCommand.ExecuteAsync(null);
+        Assert.NotNull(captured);
+        Assert.Single(captured.WatchPaths!);
+        Assert.Equal("D:/notes", captured.WatchPaths![0]);
+        Assert.Single(settings.WatchPaths);
+        Assert.Equal("D:/notes", settings.WatchPaths[0]);
     }
 }

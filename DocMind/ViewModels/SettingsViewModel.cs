@@ -1,5 +1,3 @@
-using System.IO;
-using System.Text.Json;
 using CommunityToolkit.Mvvm.Input;
 using DocMind.Models;
 using DocMind.Services;
@@ -14,6 +12,7 @@ public partial class SettingsViewModel : ViewModelBase
     private readonly ThemeService _themeService;
     private readonly IDoc2kbApiService _apiService;
     private readonly GpuWarningViewModel _gpuWarning;
+    private readonly BackendProcessService? _backendProcess;
 
     private string _backendUrl;
     private int _pollIntervalMs;
@@ -39,25 +38,39 @@ public partial class SettingsViewModel : ViewModelBase
     private double _llmTemperature = 0.7;
     private int _llmMaxTokens = 2048;
     private int _ragTopK = 5;
+    private string? _ragSystemPrompt;
+    private int _ragMaxHistoryTokens = 4096;
     private string _statusMessage = "就绪";
     private bool _isDirty;
     private bool _isTestingConnection;
-    // 加载时的 key/base_url 快照：区分「从未配置」（保存时不推送）与「主动清空」（保存时显式清除）
+    private bool _isFetchingModels;
+    // 加载/上次保存时的 key/base_url/model/system_prompt 快照：base_url/model/system_prompt 用于推送清除语义
+    // （曾配置过+现清空 → 推 "" 显式清除）；key 用于「清除」按钮可见性（与后端 llm_api_key_configured 合并判断）
     private string? _savedApiKeyAtLoad;
     private string? _savedBaseUrlAtLoad;
+    private string _savedModelAtLoad = "";
+    private string? _savedRagSystemPromptAtLoad;
+    // 后端报告的 API Key 已配置状态（/v1/config 的 llm_api_key_configured）。
+    // 补充本地判断：本地 appsettings 无 key 但后端有（环境变量/手动配置）时也应允许清除
+    private bool _backendApiKeyConfigured;
+    // 用户点了「清除 Key」按钮：保存时本地置空 + 后端显式清除。
+    // key 输入框留空 ≠ 清除（留空 = 保留原值，与 UI ToolTip 承诺一致）
+    private bool _clearApiKeyRequested;
 
     public SettingsViewModel(
         AppSettings appSettings,
         NotificationService notifications,
         ThemeService themeService,
         IDoc2kbApiService apiService,
-        GpuWarningViewModel gpuWarning)
+        GpuWarningViewModel gpuWarning,
+        BackendProcessService? backendProcess = null)
     {
         _appSettings = appSettings;
         _notifications = notifications;
         _themeService = themeService;
         _apiService = apiService;
         _gpuWarning = gpuWarning;
+        _backendProcess = backendProcess;
         Title = "设置";
 
         // 加载当前值到可编辑字段
@@ -78,14 +91,80 @@ public partial class SettingsViewModel : ViewModelBase
         _chunkOverlapChars = _appSettings.ChunkOverlapChars;
         _chunkMaxChars = _appSettings.ChunkMaxChars;
         _llmProvider = _appSettings.LlmProvider;
-        _llmApiKey = _appSettings.LlmApiKey = SecretProtector.Unprotect(_appSettings.LlmApiKey);
+        // 单例在 App.LoadSettings 已统一解密为明文；此处不再回写单例，
+        // 避免运行态明文/落盘密文状态互相污染（曾导致明文落盘与密文被覆盖）
+        _llmApiKey = _appSettings.LlmApiKey;
         _llmBaseUrl = _appSettings.LlmBaseUrl;
         _llmModel = _appSettings.LlmModel;
         _llmTemperature = _appSettings.LlmTemperature;
         _llmMaxTokens = _appSettings.LlmMaxTokens;
         _ragTopK = _appSettings.RagTopK;
+        _ragSystemPrompt = _appSettings.RagSystemPrompt;
+        _ragMaxHistoryTokens = _appSettings.RagMaxHistoryTokens;
+        _watchDebounceSeconds = _appSettings.WatchDebounceSeconds;
+
+        WatchPaths.Clear();
+        if (_appSettings.WatchPaths != null)
+        {
+            foreach (var p in _appSettings.WatchPaths)
+            {
+                if (!string.IsNullOrWhiteSpace(p))
+                    WatchPaths.Add(p.Trim());
+            }
+        }
+
         _savedApiKeyAtLoad = _llmApiKey;
         _savedBaseUrlAtLoad = _llmBaseUrl;
+        _savedModelAtLoad = _llmModel;
+        _savedRagSystemPromptAtLoad = _ragSystemPrompt;
+
+        // 密文解密失败（换 Windows 用户/文件损坏）：显式提醒重输，而不是静默当作未配置
+        // （静默变空曾让用户改其他参数一保存就把已配置的 Key 永久抹掉）
+        if (_appSettings.LlmKeyDecryptFailed)
+        {
+            StatusMessage = "⚠ 已配置的 API Key 无法解密，请重新输入后保存";
+            _notifications.Warning(
+                "已配置的 API Key 无法解密（可能更换过 Windows 用户或文件损坏），请在下方重新输入并保存。",
+                "API Key");
+        }
+
+        // 异步拉取后端实际配置（key 已配置态 / config.toml 损坏告警），回填后刷新 UI。
+        // 不阻塞构造；后端不可达/未实现时静默跳过（收尾置空响应）。
+        _ = LoadBackendConfigAsync();
+    }
+
+    /// <summary>拉取后端 /v1/config 回填运行时真相：API Key 是否已配置（可能由环境变量/
+    /// 后端注入，本地 appsettings 未必有）、config.toml 是否损坏。不覆盖用户正在编辑的字段。
+    /// internal：测试可直接 await 验证回填行为（构造函数中 fire-and-forget 调用）。</summary>
+    internal async Task LoadBackendConfigAsync()
+    {
+        try
+        {
+            var cfg = await _apiService.GetConfigAsync();
+            if (cfg is null)
+            {
+                return;
+            }
+            _backendApiKeyConfigured = cfg.LlmApiKeyConfigured;
+            OnPropertyChanged(nameof(HasSavedApiKey));
+
+            if (!string.IsNullOrWhiteSpace(cfg.ConfigError))
+            {
+                StatusMessage = "⚠ " + cfg.ConfigError;
+                DebugLog.Warn($"后端配置告警: {cfg.ConfigError}", "Settings");
+            }
+            else if (!string.IsNullOrWhiteSpace(cfg.Notice) && string.IsNullOrWhiteSpace(StatusMessage))
+            {
+                // 仅在没有更紧急状态时透传后端 notice（如换模型后需重建索引提示）
+                StatusMessage = cfg.Notice;
+                DebugLog.Info($"后端配置提示: {cfg.Notice}", "Settings");
+            }
+        }
+        catch (Exception ex)
+        {
+            // 后端不可达 / Fake 未实现：静默，不打扰设置页
+            DebugLog.Debug($"拉取后端配置失败（忽略）: {ex.GetType().Name}: {ex.Message}", "Settings");
+        }
     }
 
     /// <summary>GPU 加速状态（警告条 + 关于区显示）。</summary>
@@ -224,12 +303,24 @@ public partial class SettingsViewModel : ViewModelBase
         set => SetDirty(ref _llmProvider, value);
     }
 
-    /// <summary>API Key（内存中持明文，落盘时经 DPAPI 加密）。</summary>
+    /// <summary>API Key（内存中持明文，落盘时经 DPAPI 加密；留空保存 = 保留原值）。</summary>
     public string? LlmApiKey
     {
         get => _llmApiKey;
-        set => SetDirty(ref _llmApiKey, value);
+        set
+        {
+            if (SetDirty(ref _llmApiKey, value) && !string.IsNullOrWhiteSpace(value))
+            {
+                // 重新输入即取消「清除」请求
+                _clearApiKeyRequested = false;
+            }
+        }
     }
+
+    /// <summary>是否已配置 API Key（控制「清除 Key」按钮可用性）。
+    /// 本地 appsettings 有 key，或后端报告已配置（环境变量/手动注入）均视为已配置，
+    /// 保证「后端有 key 但本地快照没有」时用户仍能清除。</summary>
+    public bool HasSavedApiKey => !string.IsNullOrWhiteSpace(_savedApiKeyAtLoad) || _backendApiKeyConfigured;
 
     /// <summary>API 基础地址（如 https://api.deepseek.com/v1）。</summary>
     public string? LlmBaseUrl
@@ -264,6 +355,30 @@ public partial class SettingsViewModel : ViewModelBase
     {
         get => _ragTopK;
         set => SetDirty(ref _ragTopK, value);
+    }
+
+    /// <summary>自定义 RAG 系统提示词；空 = 用后端内置默认提示词（基于资料回答+引用来源）。</summary>
+    public string? RagSystemPrompt
+    {
+        get => _ragSystemPrompt;
+        set => SetDirty(ref _ragSystemPrompt, value);
+    }
+
+    /// <summary>多轮对话历史 token 预算（0 = 不按 token 截断，仍受后端 20 条上限保护）。</summary>
+    public int RagMaxHistoryTokens
+    {
+        get => _ragMaxHistoryTokens;
+        set => SetDirty(ref _ragMaxHistoryTokens, value);
+    }
+
+    /// <summary>「获取模型列表」拉取到的可用模型（设置页模型下拉候选；仍可手输任意名称）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<string> LlmModels { get; } = new();
+
+    /// <summary>是否正在拉取模型列表。</summary>
+    public bool IsFetchingModels
+    {
+        get => _isFetchingModels;
+        set => SetProperty(ref _isFetchingModels, value);
     }
 
     /// <summary>可选的嵌入模型清单（设置页下拉；与后端 catalog 一致，均为 fastembed 实际支持）。</summary>
@@ -334,6 +449,15 @@ public partial class SettingsViewModel : ViewModelBase
 
         try
         {
+            // key 语义（与 UI ToolTip 承诺一致）：
+            //   非空      → 使用输入值；
+            //   留空      → 保留原值（本地密文不覆盖、后端不修改）；
+            //   点了「清除」→ 本地置空 + 后端显式清除。
+            var hasApiKeyInput = !string.IsNullOrWhiteSpace(LlmApiKey);
+            var effectiveApiKey = hasApiKeyInput
+                ? LlmApiKey!.Trim()
+                : (_clearApiKeyRequested ? null : _appSettings.LlmApiKey);
+
             // 写回内存对象
             _appSettings.BackendUrl = BackendUrl;
             _appSettings.PollIntervalMs = PollIntervalMs;
@@ -352,61 +476,35 @@ public partial class SettingsViewModel : ViewModelBase
             _appSettings.ChunkOverlapChars = ChunkOverlapChars;
             _appSettings.ChunkMaxChars = ChunkMaxChars;
             _appSettings.LlmProvider = LlmProvider;
-            _appSettings.LlmApiKey = LlmApiKey;
+            _appSettings.LlmApiKey = effectiveApiKey;
             _appSettings.LlmBaseUrl = LlmBaseUrl;
             _appSettings.LlmModel = LlmModel;
             _appSettings.LlmTemperature = LlmTemperature;
             _appSettings.LlmMaxTokens = LlmMaxTokens;
             _appSettings.RagTopK = RagTopK;
+            _appSettings.RagSystemPrompt = string.IsNullOrWhiteSpace(RagSystemPrompt) ? null : RagSystemPrompt;
+            _appSettings.RagMaxHistoryTokens = RagMaxHistoryTokens;
+            _appSettings.WatchPaths = WatchPaths.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToList();
+            _appSettings.WatchDebounceSeconds = WatchDebounceSeconds;
+            _appSettings.DismissGpuWarning = _gpuWarning.Dismissed;
 
-            // 落盘到用户级目录（%LOCALAPPDATA%\DocMind\appsettings.json）
-            // API Key 用 DPAPI 加密（dpapi:v1: 前缀），内存/AppSettings 单例仍持明文
-            // 供 BackendProcessService 注入环境变量与测试连接使用
+            // 落盘：AppSettings.Save() 是唯一持久化出口（全字段 camelCase，key 经 DPAPI 加密），
+            // 避免双写盘路径（匿名对象/全对象、PascalCase/camelCase）互相覆盖。
+            // 内存/AppSettings 单例仍持明文，供 BackendProcessService 注入环境变量与测试连接使用。
+            _appSettings.Save();
             var settingsPath = AppSettings.ConfigPath;
-            AppSettings.EnsureConfigDir();
-
-            var json = JsonSerializer.Serialize(new
-            {
-                BackendUrl = BackendUrl,
-                PollIntervalMs = PollIntervalMs,
-                StartupTimeoutSec = StartupTimeoutSec,
-                BackendCommand = BackendCommand,
-                AutoStartBackend = AutoStartBackend,
-                StopBackendOnExit = StopBackendOnExit,
-                AutoIngestPath = AutoIngestPath,
-                AutoIngestCollection = AutoIngestCollection,
-                AutoIngestRecursive = AutoIngestRecursive,
-                EmbedModel = EmbedModel,
-                EmbedModelPath = EmbedModelPath,
-                HfEndpoint = HfEndpoint,
-                ChunkMaxTokens = ChunkMaxTokens,
-                ChunkMinChars = ChunkMinChars,
-                ChunkOverlapChars = ChunkOverlapChars,
-                ChunkMaxChars = ChunkMaxChars,
-                LlmProvider = LlmProvider,
-                LlmApiKey = SecretProtector.Protect(LlmApiKey),
-                LlmBaseUrl = LlmBaseUrl,
-                LlmModel = LlmModel,
-                LlmTemperature = LlmTemperature,
-                LlmMaxTokens = LlmMaxTokens,
-                RagTopK = RagTopK,
-                Theme = _appSettings.Theme,
-                DismissGpuWarning = _gpuWarning.Dismissed,
-            }, new JsonSerializerOptions { WriteIndented = true });
-
-            await File.WriteAllTextAsync(settingsPath, json);
 
             // 推送到后端运行时配置（/v1/config），免重启生效；
             // 推送失败会显式警告（重启后端后环境变量仍会生效，见 BackendProcessService）。
             var pushFailed = false;
             try
             {
-                // key/base_url 清除语义：之前配置过、现在被清空 → 传 "" 显式清除；
+                // key：非空推明文；留空推 null（不修改后端已配置值）；「清除」推 "" 显式清除
+                string? pushApiKey = hasApiKeyInput
+                    ? LlmApiKey!.Trim()
+                    : (_clearApiKeyRequested ? "" : null);
+                // base_url 清除语义：之前配置过、现在被清空 → 传 "" 显式清除；
                 // 之前就没配置 → 传 null 不修改（避免误清后端手动配置的值）
-                var hadApiKey = !string.IsNullOrWhiteSpace(_savedApiKeyAtLoad);
-                var pushApiKey = string.IsNullOrWhiteSpace(LlmApiKey)
-                    ? (hadApiKey ? "" : null)
-                    : LlmApiKey.Trim();
                 var pushBaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl)
                     ? (string.IsNullOrWhiteSpace(_savedBaseUrlAtLoad) ? null : "")
                     : LlmBaseUrl.Trim();
@@ -427,10 +525,18 @@ public partial class SettingsViewModel : ViewModelBase
                     LlmProvider = string.IsNullOrWhiteSpace(LlmProvider) ? "none" : LlmProvider,
                     LlmApiKey = pushApiKey,
                     LlmBaseUrl = pushBaseUrl,
-                    LlmModel = string.IsNullOrWhiteSpace(LlmModel) ? null : LlmModel.Trim(),
+                    LlmModel = string.IsNullOrWhiteSpace(LlmModel)
+                        ? (string.IsNullOrWhiteSpace(_savedModelAtLoad) ? null : "")
+                        : LlmModel.Trim(),
                     LlmTemperature = LlmTemperature,
                     LlmMaxTokens = LlmMaxTokens,
                     RagTopK = RagTopK,
+                    RagSystemPrompt = string.IsNullOrWhiteSpace(RagSystemPrompt)
+                        ? (string.IsNullOrWhiteSpace(_savedRagSystemPromptAtLoad) ? null : "")
+                        : RagSystemPrompt.Trim(),
+                    RagMaxHistoryTokens = RagMaxHistoryTokens,
+                    WatchPaths = WatchPaths.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToList(),
+                    WatchDebounceSeconds = WatchDebounceSeconds,
                 });
                 // 后端提示（如切换模型后维度变化需重建索引）
                 if (!string.IsNullOrWhiteSpace(pushed.Notice))
@@ -450,11 +556,28 @@ public partial class SettingsViewModel : ViewModelBase
             }
 
             IsDirty = false;
-            _savedApiKeyAtLoad = LlmApiKey;
+            _clearApiKeyRequested = false;
+            _savedApiKeyAtLoad = effectiveApiKey;
             _savedBaseUrlAtLoad = LlmBaseUrl;
+            _savedModelAtLoad = LlmModel;
+            _savedRagSystemPromptAtLoad = RagSystemPrompt;
+            // 保存后 key 已配置态与本次推送对齐：推了新 key → 已配置；清除（推 ""）→ 未配置；
+            // 留空保留 → 维持后端此前状态（可能是环境变量注入的 key）
+            if (hasApiKeyInput)
+            {
+                _backendApiKeyConfigured = true;
+            }
+            else if (_clearApiKeyRequested)
+            {
+                _backendApiKeyConfigured = false;
+            }
+            OnPropertyChanged(nameof(HasSavedApiKey));
+            var keyNote = !hasApiKeyInput && !_clearApiKeyRequested && !string.IsNullOrWhiteSpace(_savedApiKeyAtLoad)
+                ? "；API Key 保留原值"
+                : "";
             StatusMessage = pushFailed
-                ? "已保存（后端推送失败，重启后端后生效）"
-                : "已保存（模型/分块参数已实时生效；其余变更重启后端生效）";
+                ? $"已保存（后端推送失败，重启后端后生效）{keyNote}"
+                : $"已保存（模型/分块参数已实时生效；其余变更重启后端生效）{keyNote}";
             if (!pushFailed)
             {
                 _notifications.Success("设置已保存");
@@ -496,8 +619,25 @@ public partial class SettingsViewModel : ViewModelBase
         LlmTemperature = _appSettings.LlmTemperature;
         LlmMaxTokens = _appSettings.LlmMaxTokens;
         RagTopK = _appSettings.RagTopK;
+        RagSystemPrompt = _appSettings.RagSystemPrompt;
+        RagMaxHistoryTokens = _appSettings.RagMaxHistoryTokens;
+        _clearApiKeyRequested = false; // 恢复未保存的改动，包括未保存的「清除」请求
         IsDirty = false;
         StatusMessage = "已恢复";
+    }
+
+    /// <summary>显式清除已配置的 API Key（保存时本地置空并向后端推送清除）。
+    /// key 输入框留空保存只会保留原值，不会清除——清除必须走此按钮。</summary>
+    [RelayCommand]
+    private void ClearApiKey()
+    {
+        _clearApiKeyRequested = true;
+        LlmApiKey = null;
+        // 即使本地本就无 key（值未变化，setter 不会标记 dirty），清除请求本身
+        // 也要进入保存流程：后端可能有 key（环境变量/手动配置），此时仍要推送
+        // "" 显式清除。若没有这行，dirty=false 时保存按钮禁用，清除永远无法生效。
+        IsDirty = true;
+        SaveCommand.NotifyCanExecuteChanged();
     }
 
     [RelayCommand]
@@ -568,6 +708,157 @@ public partial class SettingsViewModel : ViewModelBase
         finally
         {
             IsTestingConnection = false;
+        }
+    }
+
+    /// <summary>拉取当前提供商的可用模型列表（POST /v1/llm/models）。
+    /// 用 UI 当前输入值（无需先保存）：Ollama 列本地已装模型，云端调各家 /models 接口；
+    /// key/base_url 留空时后端沿用当前运行时配置。失败不打断（仍可手输模型名）。</summary>
+    [RelayCommand]
+    private async Task RefreshLlmModelsAsync()
+    {
+        if (IsFetchingModels)
+            return;
+
+        if (string.IsNullOrWhiteSpace(LlmProvider) || LlmProvider == "none")
+        {
+            StatusMessage = "❌ 请先选择 LLM 提供商，再获取模型列表";
+            return;
+        }
+
+        IsFetchingModels = true;
+        StatusMessage = "获取模型列表中…";
+        DebugLog.Info($"开始获取模型列表: provider={LlmProvider}", "Settings");
+
+        try
+        {
+            var result = await _apiService.LlmModelsAsync(new LlmModelsRequest
+            {
+                Provider = LlmProvider.Trim(),
+                ApiKey = string.IsNullOrWhiteSpace(LlmApiKey) ? null : LlmApiKey.Trim(),
+                BaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl) ? null : LlmBaseUrl.Trim(),
+                Timeout = 10,
+            });
+
+            if (result.Ok)
+            {
+                LlmModels.Clear();
+                foreach (var m in result.Models)
+                {
+                    LlmModels.Add(m);
+                }
+                StatusMessage = $"✅ 获取到 {result.Models.Count} 个模型（{result.Provider}）";
+                DebugLog.Info($"模型列表获取成功: provider={result.Provider} count={result.Models.Count}", "Settings");
+            }
+            else
+            {
+                StatusMessage = $"❌ 获取模型列表失败: {result.Error ?? "未知错误"}";
+                DebugLog.Warn($"模型列表获取失败: {result.Error}", "Settings");
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"❌ 获取模型列表失败: {ex.Message}";
+            DebugLog.Error($"获取模型列表异常: {ex.Message}", "Settings", ex);
+        }
+        finally
+        {
+            IsFetchingModels = false;
+        }
+    }
+
+    // ===================== 文件监控 =====================
+
+    private string _newWatchPath = "";
+    private string? _selectedWatchPath;
+    private double _watchDebounceSeconds = 5.0;
+
+    public System.Collections.ObjectModel.ObservableCollection<string> WatchPaths { get; } = new();
+
+    public string NewWatchPath
+    {
+        get => _newWatchPath;
+        set => SetProperty(ref _newWatchPath, value);
+    }
+
+    public string? SelectedWatchPath
+    {
+        get => _selectedWatchPath;
+        set => SetProperty(ref _selectedWatchPath, value);
+    }
+
+    public double WatchDebounceSeconds
+    {
+        get => _watchDebounceSeconds;
+        set => SetDirty(ref _watchDebounceSeconds, value);
+    }
+
+    [RelayCommand]
+    private void AddWatchPath()
+    {
+        if (string.IsNullOrWhiteSpace(NewWatchPath)) return;
+        var p = NewWatchPath.Trim();
+        if (!WatchPaths.Contains(p))
+        {
+            WatchPaths.Add(p);
+            IsDirty = true;
+        }
+        NewWatchPath = "";
+    }
+
+    [RelayCommand]
+    private void RemoveWatchPath(string? path)
+    {
+        var target = path ?? SelectedWatchPath;
+        if (!string.IsNullOrWhiteSpace(target) && WatchPaths.Remove(target))
+        {
+            IsDirty = true;
+        }
+    }
+
+    [RelayCommand]
+    private void BrowseWatchPath()
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "选择要监控的文档目录",
+            Multiselect = false
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            NewWatchPath = dialog.FolderName;
+        }
+    }
+
+    [RelayCommand]
+    public async Task RestartBackendAsync()
+    {
+        if (_backendProcess == null)
+        {
+            StatusMessage = "未配置后端管理服务";
+            return;
+        }
+
+        StatusMessage = "正在强力重启后端服务...";
+        _notifications.Info("正在强力重启后端服务...", "重启中");
+        try
+        {
+            var ok = await _backendProcess.RestartAsync();
+            if (ok)
+            {
+                StatusMessage = "✅ 后端服务已成功重启并对齐最新端口";
+                _notifications.Success("后端服务已重启，端口与实例已对齐！", "重启成功");
+            }
+            else
+            {
+                StatusMessage = "❌ 后端服务重启失败，请查看日志";
+                _notifications.Error("后端服务重启失败", "错误");
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"❌ 重启异常: {ex.Message}";
+            _notifications.Error($"重启异常: {ex.Message}", "错误");
         }
     }
 }

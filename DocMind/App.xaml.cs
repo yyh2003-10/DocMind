@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
@@ -18,6 +18,7 @@ namespace DocMind
     public partial class App : Application
     {
         private readonly IServiceProvider _serviceProvider;
+        public IServiceProvider ServiceProvider => _serviceProvider;
         private TrayService? _trayService;
         private static Mutex? _mutex;
 
@@ -36,14 +37,31 @@ namespace DocMind
             var userConfigPath = AppSettings.ConfigPath;
             var exeConfigPath = System.IO.Path.Combine(AppContext.BaseDirectory, "appsettings.json");
 
-            var configuration = new ConfigurationBuilder()
-                .SetBasePath(AppContext.BaseDirectory)
-                .AddJsonFile(exeConfigPath, optional: true, reloadOnChange: false)
-                .AddJsonFile(userConfigPath, optional: true, reloadOnChange: false)
-                .Build();
+        var configuration = new ConfigurationBuilder()
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile(exeConfigPath, optional: true, reloadOnChange: false)
+            .AddJsonFile(userConfigPath, optional: true, reloadOnChange: false)
+            .Build();
 
-            return configuration.Get<AppSettings>() ?? new AppSettings();
+        var settings = configuration.Get<AppSettings>() ?? new AppSettings();
+
+        // 单例此后全程持明文（运行态），落盘出口（AppSettings.Save）统一加密。
+        // 解密失败（换 Windows 用户/文件损坏）静默变空曾是 API Key 被意外抹掉的根因之一，
+        // 这里显式置标志供设置页警告，并记日志。
+        var rawKey = settings.LlmApiKey;
+        if (SecretProtector.IsProtected(rawKey))
+        {
+            var plainKey = SecretProtector.Unprotect(rawKey);
+            if (string.IsNullOrEmpty(plainKey))
+            {
+                settings.LlmKeyDecryptFailed = true;
+                DebugLog.Warn("已配置的 LLM API Key 密文无法解密（换过 Windows 用户或文件损坏），本次按未配置处理", "App");
+            }
+            settings.LlmApiKey = plainKey;
         }
+
+        return settings;
+    }
 
         private static void ConfigureServices(IServiceCollection services, AppSettings settings)
         {
@@ -63,6 +81,7 @@ namespace DocMind
             services.AddTransient<ConvertViewModel>();
             services.AddTransient<QualityViewModel>();
             services.AddTransient<DocumentsViewModel>();
+            services.AddTransient<GraphViewModel>();
             services.AddTransient<SettingsViewModel>();
             services.AddTransient<DebugLogViewModel>();
 
@@ -205,6 +224,42 @@ namespace DocMind
                 api.UpdateBaseAddress(url);
                 DebugLog.Info($"后端地址变更，API 客户端已同步: {url}", "App");
             };
+
+            var notifications = _serviceProvider.GetRequiredService<NotificationService>();
+            IDisposable? eventSubscription = null;
+
+            backend.StateChanged += (_, state) =>
+            {
+                if (state == BackendState.Online && eventSubscription == null)
+                {
+                    eventSubscription = api.SubscribeEvents(msg =>
+                    {
+                        if (msg.Type == "file_ingested")
+                        {
+                            Dispatcher.InvokeAsync(() =>
+                            {
+                                var fileName = System.IO.Path.GetFileName(msg.Path ?? "");
+                                if (msg.Result == "ingested")
+                                {
+                                    notifications.Success($"已自动摄入文件: {fileName}（{msg.Collection ?? "default"}）", "自动监控摄入");
+                                }
+                                else if (msg.Result == "failed")
+                                {
+                                    notifications.Warning($"自动摄入失败: {fileName}\n{msg.Error ?? ""}", "监控摄入失败");
+                                }
+                            });
+
+                            try
+                            {
+                                var docsVm = _serviceProvider.GetService<DocumentsViewModel>();
+                                docsVm?.InvalidateCache();
+                            }
+                            catch { }
+                        }
+                    });
+                }
+            };
+
             var autoIngestDone = false;
             backend.StateChanged += async (_, state) =>
             {
@@ -244,7 +299,6 @@ namespace DocMind
             // GPU 加速检测：后端就绪后查询 /v1/health，上报 GPU 状态到设置页。
             // 用户已选择"不再提示"则跳过弹 toast，但仍更新状态行。
             var gpuWarning = _serviceProvider.GetRequiredService<GpuWarningViewModel>();
-            var notifications = _serviceProvider.GetRequiredService<NotificationService>();
             gpuWarning.Dismissed = settings.DismissGpuWarning;
             // 用户点击"不再提示"时持久化到 appsettings.json
             gpuWarning.OnDismissed = () =>
@@ -270,6 +324,8 @@ namespace DocMind
                             "当前为 CPU 模式（嵌入推理较慢），可在设置页安装 GPU 加速包",
                             "GPU 加速");
                     }
+                    // 异步触发 GPU 诊断（填充设置页「GPU 加速」卡片）
+                    _ = gpuWarning.DiagnoseAsync();
                 }
                 catch (Exception ex)
                 {

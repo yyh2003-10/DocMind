@@ -10,6 +10,12 @@ public partial class SearchViewModel : ViewModelBase
 {
     private readonly IDoc2kbApiService _apiService;
 
+    /// <summary>用户点击「在文档库中查看」事件（参数为文档来源路径/名称）。</summary>
+    public event Action<string>? OpenDocumentRequested;
+
+    /// <summary>用户点击「基于此分块提问」事件（参数为提问引导内容）。</summary>
+    public event Action<string>? AskInChatRequested;
+
     private string _query = string.Empty;
     private string? _collection;
     private int _topK = 10;
@@ -19,17 +25,59 @@ public partial class SearchViewModel : ViewModelBase
     private SearchResponse? _lastResponse;
     private SearchHit? _selectedHit;
 
+    public const string AllCollectionsLabel = "(全部集合)";
+
     public SearchViewModel(IDoc2kbApiService apiService)
     {
         _apiService = apiService;
         Title = "搜索";
         Hits = new ObservableCollection<SearchHit>();
-        // 结果列表变化 → 刷新空态引导可见性
+        AvailableCollections = new ObservableCollection<string> { AllCollectionsLabel, "default" };
+
+        // 结果列表变化 → 刷新空态引导与结果状态可见性
         Hits.CollectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(ShowEmptyGuide));
             OnPropertyChanged(nameof(EmptyGuideText));
+            OnPropertyChanged(nameof(HasHits));
         };
+
+        _ = LoadCollectionsAsync();
+    }
+
+    /// <summary>可选的集合列表（含全部集合选项及后端已存在集合）。</summary>
+    public ObservableCollection<string> AvailableCollections { get; }
+
+    /// <summary>异步从后端拉取现有集合列表。</summary>
+    public async Task LoadCollectionsAsync()
+    {
+        try
+        {
+            var stats = await _apiService.GetStatsAsync();
+            if (stats?.Collections != null)
+            {
+                var current = Collection;
+                AvailableCollections.Clear();
+                AvailableCollections.Add(AllCollectionsLabel);
+                foreach (var col in stats.Collections.Keys.OrderBy(k => k))
+                {
+                    AvailableCollections.Add(col);
+                }
+
+                if (!string.IsNullOrWhiteSpace(current) && AvailableCollections.Contains(current))
+                {
+                    Collection = current;
+                }
+                else
+                {
+                    Collection = AllCollectionsLabel;
+                }
+            }
+        }
+        catch
+        {
+            // 离线或初次加载失败时静默使用默认项
+        }
     }
 
     /// <summary>搜索词。</summary>
@@ -50,15 +98,18 @@ public partial class SearchViewModel : ViewModelBase
     /// <summary>是否有搜索词（用于 UI 显示清除按钮等）。</summary>
     public bool HasQuery => !string.IsNullOrWhiteSpace(Query);
 
+    /// <summary>是否有返回命中结果。</summary>
+    public bool HasHits => Hits.Count > 0;
+
     /// <summary>结果区空态是否可见（非忙碌且无结果）。</summary>
     public bool ShowEmptyGuide => !IsBusy && Hits.Count == 0;
 
     /// <summary>空态引导文案：区分"还没搜过"与"搜了没结果"。</summary>
     public string EmptyGuideText => HasQuery
-        ? "没有匹配的结果。\n试试换关键词，或调低「最低相似度」；\n也可以到【导入】页确认文档已加入知识库。"
-        : "输入问题开始搜索。\n搜索的是已导入文档的内容（向量 + 关键词混合检索）。\n还没导入文档？先到【导入】页添加文件。";
+        ? "没有匹配的结果。\n建议：尝试更换关键词，或调低「最低相似度」；\n也可以到【导入】页确认文档已加入知识库。"
+        : "输入问题或关键词开始搜索。\nDocMind 将基于向量语义与关键词进行混合检索。\n还没导入文档？先到【导入】页添加文件。";
 
-    /// <summary>集合名（可选）。</summary>
+    /// <summary>集合名（可选，AllCollectionsLabel 或空表示全部）。</summary>
     public string? Collection
     {
         get => _collection;
@@ -121,12 +172,20 @@ public partial class SearchViewModel : ViewModelBase
         set
         {
             if (SetProperty(ref _selectedHit, value))
+            {
                 OnPropertyChanged(nameof(HasSelectedHit));
+                OnPropertyChanged(nameof(HasNoSelectedHit));
+                OpenInDocumentsCommand.NotifyCanExecuteChanged();
+                AskInChatCommand.NotifyCanExecuteChanged();
+            }
         }
     }
 
     /// <summary>是否有选中的搜索结果（用于详情区可见性）。</summary>
     public bool HasSelectedHit => SelectedHit != null;
+
+    /// <summary>未选中结果时显示详情区空态提示。</summary>
+    public bool HasNoSelectedHit => SelectedHit is null;
 
     /// <summary>搜索结果列表。</summary>
     public ObservableCollection<SearchHit> Hits { get; }
@@ -147,7 +206,11 @@ public partial class SearchViewModel : ViewModelBase
         Hits.Clear();
         SelectedHit = null;
 
-        DebugLog.Info($"开始搜索: Query='{Query.Trim()}' Collection='{(string.IsNullOrWhiteSpace(Collection) ? "(全部)" : Collection.Trim())}' TopK={TopK}", "Search");
+        var targetCollection = (string.IsNullOrWhiteSpace(Collection) || Collection == AllCollectionsLabel)
+            ? null
+            : Collection.Trim();
+
+        DebugLog.Info($"开始搜索: Query='{Query.Trim()}' Collection='{(targetCollection ?? "(全部)")}' TopK={TopK}", "Search");
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         try
@@ -156,7 +219,7 @@ public partial class SearchViewModel : ViewModelBase
                 new SearchRequest
                 {
                     Query = Query.Trim(),
-                    Collection = string.IsNullOrWhiteSpace(Collection) ? null : Collection.Trim(),
+                    Collection = targetCollection,
                     TopK = TopK,
                     MinScore = MinScore,
                 });
@@ -166,6 +229,11 @@ public partial class SearchViewModel : ViewModelBase
             foreach (var hit in resp.Hits)
             {
                 Hits.Add(hit);
+            }
+
+            if (Hits.Count > 0)
+            {
+                SelectedHit = Hits[0];
             }
 
             StatusMessage = resp.Total > 0
@@ -221,5 +289,27 @@ public partial class SearchViewModel : ViewModelBase
         SelectedHit = null;
         LastResponse = null;
         StatusMessage = "就绪";
+    }
+
+    /// <summary>跳转至文档库查看该文档。</summary>
+    [RelayCommand(CanExecute = nameof(HasSelectedHit))]
+    private void OpenInDocuments()
+    {
+        if (SelectedHit != null && !string.IsNullOrWhiteSpace(SelectedHit.Source))
+        {
+            OpenDocumentRequested?.Invoke(SelectedHit.Source);
+        }
+    }
+
+    /// <summary>基于当前分块内容跳转到对话页发起提问。</summary>
+    [RelayCommand(CanExecute = nameof(HasSelectedHit))]
+    private void AskInChat()
+    {
+        if (SelectedHit != null && !string.IsNullOrWhiteSpace(SelectedHit.Content))
+        {
+            var snippet = SelectedHit.Content.Length > 200 ? SelectedHit.Content[..200] + "…" : SelectedHit.Content;
+            var prompt = $"关于文档《{SelectedHit.Source}》中的内容：\n「{snippet}」\n请帮我解释和总结。";
+            AskInChatRequested?.Invoke(prompt);
+        }
     }
 }

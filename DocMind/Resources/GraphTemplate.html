@@ -1,0 +1,1031 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DocMind 知识图谱</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+        html, body {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+            background-color: var(--bg-color, #FFFFFF);
+            color: var(--text-primary, #1D1D1F);
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+
+        :root {
+            --bg-color: #FFFFFF;
+            --surface-color: rgba(242, 242, 247, 0.85);
+            --card-color: #FFFFFF;
+            --border-color: #E5E5EA;
+            --text-primary: #1D1D1F;
+            --text-secondary: #8E8E93;
+            --text-tertiary: #AEAEB2;
+            --edge-color: rgba(142, 142, 147, 0.35);
+            --edge-highlight: #007AFF;
+            --shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+            --grid-line: rgba(0, 0, 0, 0.03);
+        }
+
+        body.dark-theme {
+            --bg-color: #000000;
+            --surface-color: rgba(28, 28, 30, 0.85);
+            --card-color: #1C1C1E;
+            --border-color: #38383A;
+            --text-primary: #F5F5F7;
+            --text-secondary: #8E8E93;
+            --text-tertiary: #636366;
+            --edge-color: rgba(142, 142, 147, 0.3);
+            --edge-highlight: #0A84FF;
+            --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+            --grid-line: rgba(255, 255, 255, 0.03);
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+        }
+        canvas:active {
+            cursor: grabbing;
+        }
+
+        /* 顶部/底部 Apple 风格毛玻璃图例与浮岛 */
+        #legend {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            padding: 10px 16px;
+            border-radius: 12px;
+            font-size: 12px;
+            display: flex;
+            gap: 14px;
+            flex-wrap: wrap;
+            box-shadow: var(--shadow);
+            z-index: 10;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+        .legend-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+        }
+
+        /* 控制浮岛 */
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: var(--shadow);
+            z-index: 10;
+        }
+        .ctrl-btn {
+            background: transparent;
+            border: none;
+            outline: none;
+            width: 38px;
+            height: 38px;
+            color: var(--text-primary);
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease;
+        }
+        .ctrl-btn:hover {
+            background: rgba(142, 142, 147, 0.15);
+            color: #007AFF;
+        }
+        .ctrl-btn:active {
+            background: rgba(142, 142, 147, 0.25);
+        }
+        .ctrl-btn + .ctrl-btn {
+            border-top: 1px solid var(--border-color);
+        }
+
+        /* 悬浮 Tooltip 卡片 */
+        #tooltip {
+            position: absolute;
+            display: none;
+            pointer-events: none;
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            padding: 10px 14px;
+            border-radius: 10px;
+            font-size: 12px;
+            box-shadow: var(--shadow);
+            z-index: 100;
+            transform: translate(12px, 12px);
+            max-width: 260px;
+        }
+        #tooltip .title {
+            font-weight: 600;
+            font-size: 14px;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+        #tooltip .meta {
+            color: var(--text-secondary);
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        /* 空状态引导 */
+        #empty-state {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            padding: 32px 40px;
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            max-width: 420px;
+            z-index: 20;
+        }
+        #empty-state .icon {
+            font-size: 40px;
+            margin-bottom: 12px;
+        }
+        #empty-state h3 {
+            font-size: 17px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+        #empty-state p {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+            margin-bottom: 18px;
+        }
+        #empty-state button {
+            background: #007AFF;
+            color: #FFFFFF;
+            border: none;
+            outline: none;
+            padding: 10px 20px;
+            font-size: 13px;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.15s ease, transform 0.1s ease;
+        }
+        #empty-state button:hover {
+            background: #0064D6;
+            transform: translateY(-1px);
+        }
+        #empty-state button:active {
+            background: #004FAD;
+            transform: translateY(0);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="graph-canvas"></canvas>
+
+    <div id="tooltip">
+        <div class="title" id="tt-title"></div>
+        <div class="meta" id="tt-meta"></div>
+    </div>
+
+    <div id="empty-state">
+        <div class="icon">🕸️</div>
+        <h3>当前集合暂无知识图谱</h3>
+        <p>从已有文档中通过大模型一键提取科技、人物、组织等关键实体与关系网。</p>
+        <button id="btn-extract" onclick="requestExtract()">⚡ 一键抽取构建图谱</button>
+    </div>
+
+    <div id="legend">
+        <div class="legend-item"><span class="legend-dot" style="background:#007AFF"></span>科技 (tech)</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#5856D6"></span>概念 (concept)</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#34C759"></span>人物 (person)</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#FF9500"></span>组织 (org)</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#FF2D55"></span>事件 (event)</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#AF52DE"></span>地点 (place)</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#8E8E93"></span>其他 (other)</div>
+    </div>
+
+    <div id="controls">
+        <button class="ctrl-btn" title="放大" onclick="zoomBy(1.25)">＋</button>
+        <button class="ctrl-btn" title="缩小" onclick="zoomBy(0.8)">−</button>
+        <button class="ctrl-btn" title="适应画布" onclick="fitView()">⛶</button>
+        <button class="ctrl-btn" title="重新布局" onclick="reheat()">⚡</button>
+    </div>
+
+    <script>
+        // Apple 经典实体分类调色盘与图标
+        const TYPE_PALETTES = {
+            tech:    { fill: '#007AFF', light: '#E8F2FF', stroke: '#0064D6', text: '#FFFFFF' },
+            concept: { fill: '#5856D6', light: '#EFEBFF', stroke: '#4745B8', text: '#FFFFFF' },
+            person:  { fill: '#34C759', light: '#E9F9EE', stroke: '#28A745', text: '#FFFFFF' },
+            org:     { fill: '#FF9500', light: '#FFF4E6', stroke: '#D97706', text: '#FFFFFF' },
+            event:   { fill: '#FF2D55', light: '#FFEAF0', stroke: '#D91B40', text: '#FFFFFF' },
+            place:   { fill: '#AF52DE', light: '#F7ECFC', stroke: '#9033C0', text: '#FFFFFF' },
+            other:   { fill: '#8E8E93', light: '#F2F2F7', stroke: '#636366', text: '#FFFFFF' }
+        };
+
+        const TYPE_ICONS = {
+            tech: '⚡',
+            concept: '💡',
+            person: '👤',
+            org: '🏢',
+            event: '📅',
+            place: '📍',
+            other: '🏷️'
+        };
+
+        const canvas = document.getElementById('graph-canvas');
+        const ctx = canvas.getContext('2d');
+        const emptyState = document.getElementById('empty-state');
+        const tooltip = document.getElementById('tooltip');
+        const ttTitle = document.getElementById('tt-title');
+        const ttMeta = document.getElementById('tt-meta');
+
+        let nodes = [];
+        let edges = [];
+        let nodeMap = new Map();
+        let adjMap = new Map(); // nodeId -> Set of neighbor nodeIds
+
+        // 视口变换与交互状态
+        let transform = { x: 0, y: 0, scale: 1.0 };
+        let isDraggingCanvas = false;
+        let dragStart = { x: 0, y: 0 };
+        let draggedNode = null;
+        let hoveredNode = null;
+        let selectedNodeId = null;
+        let isSimulating = true;
+        let alpha = 1.0; // 模拟退火衰减因子
+
+        function resizeCanvas() {
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = Math.max(100, Math.floor(window.innerWidth * dpr));
+            canvas.height = Math.max(100, Math.floor(window.innerHeight * dpr));
+            canvas.style.width = window.innerWidth + 'px';
+            canvas.style.height = window.innerHeight + 'px';
+            render();
+        }
+        window.addEventListener('resize', resizeCanvas);
+        window.addEventListener('DOMContentLoaded', resizeCanvas);
+        setTimeout(resizeCanvas, 50);
+
+        // 主题切换接口
+        window.setTheme = function(themeName) {
+            if (themeName === 'Dark' || themeName === 'dark') {
+                document.body.classList.add('dark-theme');
+            } else {
+                document.body.classList.remove('dark-theme');
+            }
+            render();
+        };
+
+        // 接收数据并初始化
+        window.renderGraph = function(dataOrJson) {
+            try {
+                const data = typeof dataOrJson === 'string' ? JSON.parse(dataOrJson) : dataOrJson;
+                initGraph(data);
+            } catch (err) {
+                console.error("解析图谱数据异常:", err);
+            }
+        };
+
+        // 外部聚焦节点接口
+        window.focusNode = function(nodeId) {
+            if (!nodeId || !nodeMap.has(nodeId)) return;
+            const target = nodeMap.get(nodeId);
+            selectedNodeId = nodeId;
+            
+            // 视口以目标节点为中心
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+            transform.x = (w / 2) - target.x * transform.scale;
+            transform.y = (h / 2) - target.y * transform.scale;
+            
+            reheat();
+            render();
+        };
+
+        // 监听来自 WPF 的原生 PostWebMessage 事件
+        if (window.chrome && window.chrome.webview) {
+            window.chrome.webview.addEventListener('message', function(e) {
+                if (e.data) {
+                    window.renderGraph(e.data);
+                }
+            });
+        }
+
+        function initGraph(data) {
+            if (!data || !data.nodes || data.nodes.length === 0) {
+                nodes = [];
+                edges = [];
+                nodeMap.clear();
+                adjMap.clear();
+                emptyState.style.display = 'block';
+                render();
+                return;
+            }
+
+            emptyState.style.display = 'none';
+
+            // 初始化节点（使用斐波那契发散分布，避免初始重叠堆积）
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+            const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+
+            nodeMap.clear();
+            adjMap.clear();
+
+            // 预设字体以精确测量文本包围盒
+            ctx.font = '500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+
+            nodes = data.nodes.map((n, i) => {
+                const r = Math.sqrt(i + 1) * 85;
+                const angle = i * goldenAngle;
+                const size = 18 + Math.min((n.size || 1) * 3, 24);
+                
+                // 测量实体文字的实际像素宽度，生成精确包围盒
+                const textMetric = ctx.measureText(n.name);
+                const textW = Math.ceil(textMetric.width);
+                const pillW = Math.max(size * 2 + 12, textW + 16);
+                const pillH = 20;
+                const boxW = pillW + 12; // 计入水平安全间隙
+                const boxH = size * 2 + pillH + 16; // 计入垂直安全间隙
+
+                const nodeObj = {
+                    id: n.id,
+                    name: n.name,
+                    type: (n.type || 'other').toLowerCase(),
+                    size: size,
+                    rawSize: n.size || 1,
+                    textW: textW,
+                    pillW: pillW,
+                    pillH: pillH,
+                    boxW: boxW,
+                    boxH: boxH,
+                    x: width / 2 + Math.cos(angle) * r,
+                    y: height / 2 + Math.sin(angle) * r,
+                    vx: 0,
+                    vy: 0,
+                    fx: null,
+                    fy: null,
+                    raw: n
+                };
+                nodeMap.set(n.id, nodeObj);
+                adjMap.set(n.id, new Set());
+                return nodeObj;
+            });
+
+            // 初始化边（支持双向/多重边曲率与偏移索引）
+            edges = [];
+            const edgePairCount = new Map();
+            (data.edges || []).forEach(e => {
+                const source = nodeMap.get(e.from);
+                const target = nodeMap.get(e.to);
+                if (source && target) {
+                    const pairKey = e.from < e.to ? `${e.from}__${e.to}` : `${e.to}__${e.from}`;
+                    const count = edgePairCount.get(pairKey) || 0;
+                    edgePairCount.set(pairKey, count + 1);
+
+                    edges.push({
+                        source: source,
+                        target: target,
+                        label: (e.label || '').trim(),
+                        fromId: e.from,
+                        toId: e.to,
+                        pairKey: pairKey,
+                        pairIndex: count
+                    });
+                    adjMap.get(e.from).add(e.to);
+                    adjMap.get(e.to).add(e.from);
+                }
+            });
+
+            // 计算多重边弯曲曲率，使双向/多重连线自然分离
+            edges.forEach(e => {
+                e.totalPairs = edgePairCount.get(e.pairKey) || 1;
+                if (e.totalPairs > 1) {
+                    const isForward = e.fromId < e.toId;
+                    const sign = isForward ? 1 : -1;
+                    e.curvature = 0.22 * sign * (1 + (e.pairIndex > 1 ? 0.35 : 0));
+                } else {
+                    e.curvature = 0;
+                }
+            });
+
+            // 预热迭代 60 步，初始呈现即为完全舒展无重叠布局
+            alpha = 1.0;
+            for (let step = 0; step < 60; step++) {
+                stepSimulation();
+            }
+
+            alpha = 0.8;
+            isSimulating = true;
+            fitView();
+            requestAnimationFrame(simulationLoop);
+        }
+
+        // 单步物理仿真（基于包围盒 AABB 强力防重叠碰撞算法）
+        function stepSimulation() {
+            const k = 180; // 理想弹簧长度增大，提供充足呼吸空间
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+            const cx = width / 2;
+            const cy = height / 2;
+
+            // 1. 节点间库仑斥力 + AABB 矩形包围盒严密碰撞分离
+            for (let i = 0; i < nodes.length; i++) {
+                const a = nodes[i];
+                for (let j = i + 1; j < nodes.length; j++) {
+                    const b = nodes[j];
+                    const dx = b.x - a.x;
+                    const dy = b.y - a.y;
+                    const distSq = dx * dx + dy * dy || 1;
+                    const dist = Math.sqrt(distSq);
+
+                    // 基础远距离库仑斥力
+                    const baseForce = (k * k * 3.6) / distSq;
+                    let fx = (dx / dist) * baseForce * alpha;
+                    let fy = (dy / dist) * baseForce * alpha;
+
+                    // 严密的 AABB 文本标签与实体包围盒碰撞排斥
+                    const reqDistX = (a.boxW + b.boxW) / 2 + 18; // 水平最小防遮挡间距
+                    const reqDistY = (a.boxH + b.boxH) / 2 + 14; // 垂直最小防遮挡间距
+
+                    const absDx = Math.abs(dx);
+                    const absDy = Math.abs(dy);
+
+                    if (absDx < reqDistX && absDy < reqDistY) {
+                        const overlapX = reqDistX - absDx;
+                        const overlapY = reqDistY - absDy;
+                        
+                        // 正交硬分离推力，彻底推开文本重叠
+                        const pushFactor = 18;
+                        const pushX = (dx >= 0 ? 1 : -1) * overlapX * pushFactor * alpha;
+                        const pushY = (dy >= 0 ? 1 : -1) * overlapY * pushFactor * alpha;
+
+                        fx += pushX;
+                        fy += pushY;
+                    }
+
+                    if (!a.fx) { a.vx -= fx; a.vy -= fy; }
+                    if (!b.fx) { b.vx += fx; b.vy += fy; }
+                }
+
+                // 向心弱重力
+                const toCenterX = cx - a.x;
+                const toCenterY = cy - a.y;
+                if (!a.fx) {
+                    a.vx += toCenterX * 0.002 * alpha;
+                    a.vy += toCenterY * 0.002 * alpha;
+                }
+            }
+
+            // 2. 边的胡克引力
+            for (let i = 0; i < edges.length; i++) {
+                const e = edges[i];
+                const dx = e.target.x - e.source.x;
+                const dy = e.target.y - e.source.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                const force = ((dist - k) * 0.04) * alpha;
+                const fx = (dx / dist) * force;
+                const fy = (dy / dist) * force;
+
+                if (!e.source.fx) { e.source.vx += fx; e.source.vy += fy; }
+                if (!e.target.fx) { e.target.vx -= fx; e.target.vy -= fy; }
+            }
+
+            // 3. 更新位置与阻尼衰减
+            const damping = 0.78;
+            for (let i = 0; i < nodes.length; i++) {
+                const n = nodes[i];
+                if (n.fx !== null && n.fy !== null) {
+                    n.x = n.fx;
+                    n.y = n.fy;
+                    n.vx = 0;
+                    n.vy = 0;
+                } else {
+                    n.vx *= damping;
+                    n.vy *= damping;
+                    n.x += n.vx;
+                    n.y += n.vy;
+                }
+            }
+
+            alpha *= 0.985;
+        }
+
+        // 力导向物理引擎循环
+        function simulationLoop() {
+            if (!isSimulating && alpha < 0.005) return;
+
+            stepSimulation();
+            render();
+
+            if (alpha >= 0.005 || draggedNode) {
+                requestAnimationFrame(simulationLoop);
+            } else {
+                isSimulating = false;
+            }
+        }
+
+        function reheat() {
+            alpha = 0.8;
+            isSimulating = true;
+            requestAnimationFrame(simulationLoop);
+        }
+
+        // 绘制圆角矩形辅助函数
+        function drawRoundedRect(ctx, x, y, width, height, radius) {
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.lineTo(x + width - radius, y);
+            ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+            ctx.lineTo(x + width, y + height - radius);
+            ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+            ctx.lineTo(x + radius, y + height);
+            ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+            ctx.lineTo(x, y + radius);
+            ctx.quadraticCurveTo(x, y, x + radius, y);
+            ctx.closePath();
+        }
+
+        // 矩形碰撞检测函数（带安全 margin）
+        function isBoxOverlap(b1, b2, margin = 4) {
+            return !(b1.x + b1.w + margin < b2.x ||
+                     b2.x + b2.w + margin < b1.x ||
+                     b1.y + b1.h + margin < b2.y ||
+                     b2.y + b2.h + margin < b1.y);
+        }
+
+        // 画布渲染引擎
+        function render() {
+            const dpr = window.devicePixelRatio || 1;
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+
+            ctx.save();
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, w, h);
+
+            // 应用平移与缩放
+            ctx.translate(transform.x, transform.y);
+            ctx.scale(transform.scale, transform.scale);
+
+            const isDark = document.body.classList.contains('dark-theme');
+            const edgeDefault = isDark ? 'rgba(142, 142, 147, 0.25)' : 'rgba(142, 142, 147, 0.35)';
+            const edgeActive = isDark ? '#0A84FF' : '#007AFF';
+            const labelColor = isDark ? '#8E8E93' : '#636366';
+            const activeLabelColor = isDark ? '#F5F5F7' : '#1D1D1F';
+
+            const activeNode = hoveredNode || (selectedNodeId ? nodeMap.get(selectedNodeId) : null);
+            const activeNeighbors = activeNode ? (adjMap.get(activeNode.id) || new Set()) : null;
+
+            // 占位盒列表（用于线上标签与节点文字的全局防重叠避让）
+            const occupiedBoxes = [];
+
+            // 1. 先将所有节点的球体与文字胶囊注册为避让障碍物
+            for (let i = 0; i < nodes.length; i++) {
+                const n = nodes[i];
+                occupiedBoxes.push({
+                    x: n.x - n.boxW / 2 - 4,
+                    y: n.y - n.size - 4,
+                    w: n.boxW + 8,
+                    h: n.boxH + 8
+                });
+            }
+
+            // 2. 绘制关系连线（支持双向贝塞尔弧线）
+            for (let i = 0; i < edges.length; i++) {
+                const e = edges[i];
+                const isEdgeActive = activeNode && (e.source.id === activeNode.id || e.target.id === activeNode.id);
+                const isDimmed = activeNode && !isEdgeActive;
+
+                ctx.beginPath();
+                ctx.moveTo(e.source.x, e.source.y);
+
+                if (e.curvature && e.curvature !== 0) {
+                    // 双向/多重边：使用二次贝塞尔曲线平滑分离
+                    const dx = e.target.x - e.source.x;
+                    const dy = e.target.y - e.source.y;
+                    const midX = (e.source.x + e.target.x) / 2;
+                    const midY = (e.source.y + e.target.y) / 2;
+                    const ctrlX = midX - dy * e.curvature;
+                    const ctrlY = midY + dx * e.curvature;
+                    ctx.quadraticCurveTo(ctrlX, ctrlY, e.target.x, e.target.y);
+                } else {
+                    ctx.lineTo(e.target.x, e.target.y);
+                }
+
+                ctx.strokeStyle = isEdgeActive ? edgeActive : (isDimmed ? 'rgba(142, 142, 147, 0.08)' : edgeDefault);
+                ctx.lineWidth = isEdgeActive ? 2.5 : 1.2;
+                ctx.stroke();
+            }
+
+            // 3. 动态防重叠绘制线上字体标签（Edge Labels）
+            // 优先级排序：高亮激活边优先放置，其他边动态避让
+            const labelCandidatesEdges = edges
+                .filter(e => e.label && (transform.scale > 0.55 || (activeNode && (e.source.id === activeNode.id || e.target.id === activeNode.id))))
+                .sort((a, b) => {
+                    const aActive = activeNode && (a.source.id === activeNode.id || a.target.id === activeNode.id);
+                    const bActive = activeNode && (b.source.id === activeNode.id || b.target.id === activeNode.id);
+                    return (bActive ? 1 : 0) - (aActive ? 1 : 0);
+                });
+
+            ctx.font = '500 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+
+            for (let i = 0; i < labelCandidatesEdges.length; i++) {
+                const e = labelCandidatesEdges[i];
+                const isEdgeActive = activeNode && (e.source.id === activeNode.id || e.target.id === activeNode.id);
+                const isDimmed = activeNode && !isEdgeActive;
+
+                if (isDimmed) continue;
+
+                const lMetric = ctx.measureText(e.label);
+                const lW = Math.ceil(lMetric.width) + 12;
+                const lH = 16;
+
+                // 生成多组沿连线/弧线的候选位置，多点探测最佳无重叠位置
+                const tList = [0.5, 0.38, 0.62, 0.28, 0.72];
+                const normOffsets = [0, 10, -10, 16, -16];
+                let bestPos = null;
+
+                for (const t of tList) {
+                    let baseX, baseY, normX = 0, normY = 0;
+                    const dx = e.target.x - e.source.x;
+                    const dy = e.target.y - e.source.y;
+                    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+                    const uNx = -dy / len;
+                    const uNy = dx / len;
+
+                    if (e.curvature && e.curvature !== 0) {
+                        const midX = (e.source.x + e.target.x) / 2;
+                        const midY = (e.source.y + e.target.y) / 2;
+                        const ctrlX = midX - dy * e.curvature;
+                        const ctrlY = midY + dx * e.curvature;
+                        // 二次贝塞尔曲线公式 B(t) = (1-t)^2*P0 + 2t(1-t)*P1 + t^2*P2
+                        const invT = 1 - t;
+                        baseX = invT * invT * e.source.x + 2 * invT * t * ctrlX + t * t * e.target.x;
+                        baseY = invT * invT * e.source.y + 2 * invT * t * ctrlY + t * t * e.target.y;
+                    } else {
+                        baseX = e.source.x + dx * t;
+                        baseY = e.source.y + dy * t;
+                    }
+
+                    for (const offset of normOffsets) {
+                        const candX = baseX + uNx * offset;
+                        const candY = baseY + uNy * offset;
+                        const candBox = {
+                            x: candX - lW / 2,
+                            y: candY - lH / 2,
+                            w: lW,
+                            h: lH
+                        };
+
+                        let hasCollision = false;
+                        for (let k = 0; k < occupiedBoxes.length; k++) {
+                            if (isBoxOverlap(candBox, occupiedBoxes[k], 3)) {
+                                hasCollision = true;
+                                break;
+                            }
+                        }
+
+                        if (!hasCollision) {
+                            bestPos = { x: candX, y: candY, box: candBox };
+                            break;
+                        }
+                    }
+
+                    if (bestPos) break;
+                }
+
+                // 如果找不到完全无重叠位置，且当前是非高亮边，则安全剔除避让（绝不画出重叠文本）
+                if (!bestPos && !isEdgeActive) {
+                    continue;
+                }
+
+                // 如果是高亮边但周围很挤，以中点兜底并置顶
+                if (!bestPos && isEdgeActive) {
+                    const midX = (e.source.x + e.target.x) / 2;
+                    const midY = (e.source.y + e.target.y) / 2;
+                    bestPos = {
+                        x: midX,
+                        y: midY,
+                        box: { x: midX - lW / 2, y: midY - lH / 2, w: lW, h: lH }
+                    };
+                }
+
+                if (bestPos) {
+                    occupiedBoxes.push(bestPos.box);
+
+                    // 绘制边标签微胶囊底框（Pill Badge）
+                    ctx.save();
+                    drawRoundedRect(ctx, bestPos.box.x, bestPos.box.y, bestPos.box.w, bestPos.box.h, 4);
+                    ctx.fillStyle = isEdgeActive 
+                        ? (isDark ? 'rgba(10, 132, 255, 0.3)' : 'rgba(0, 122, 255, 0.15)')
+                        : (isDark ? 'rgba(28, 28, 30, 0.92)' : 'rgba(255, 255, 255, 0.92)');
+                    ctx.fill();
+
+                    ctx.lineWidth = isEdgeActive ? 1.2 : 0.8;
+                    ctx.strokeStyle = isEdgeActive 
+                        ? (isDark ? '#0A84FF' : '#007AFF') 
+                        : (isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)');
+                    ctx.stroke();
+                    ctx.restore();
+
+                    // 绘制边标签文字
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillStyle = isEdgeActive ? (isDark ? '#5AC8FA' : '#007AFF') : labelColor;
+                    ctx.fillText(e.label, bestPos.x, bestPos.y);
+                }
+            }
+
+            // 2. 绘制节点与独立胶囊文字徽章
+            for (let i = 0; i < nodes.length; i++) {
+                const n = nodes[i];
+                const palette = TYPE_PALETTES[n.type] || TYPE_PALETTES.other;
+                const icon = TYPE_ICONS[n.type] || '🏷️';
+                const isCurrent = activeNode && n.id === activeNode.id;
+                const isNeighbor = activeNeighbors && activeNeighbors.has(n.id);
+                const isDimmed = activeNode && !isCurrent && !isNeighbor;
+
+                ctx.save();
+                ctx.globalAlpha = isDimmed ? 0.25 : 1.0;
+
+                // 节点外光晕（选中或悬浮）
+                if (isCurrent) {
+                    ctx.beginPath();
+                    ctx.arc(n.x, n.y, n.size + 8, 0, Math.PI * 2);
+                    ctx.fillStyle = isDark ? 'rgba(10, 132, 255, 0.45)' : 'rgba(0, 122, 255, 0.35)';
+                    ctx.fill();
+                }
+
+                // 节点实体圆
+                ctx.beginPath();
+                ctx.arc(n.x, n.y, n.size, 0, Math.PI * 2);
+                ctx.fillStyle = palette.fill;
+                ctx.fill();
+                ctx.lineWidth = isCurrent ? 3 : 2;
+                ctx.strokeStyle = isCurrent ? (isDark ? '#FFFFFF' : '#000000') : palette.stroke;
+                ctx.stroke();
+
+                // 节点内部：仅绘制居中的分类图标
+                ctx.font = `${Math.max(12, Math.min(18, n.size * 0.75))}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+                ctx.fillStyle = palette.text;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(icon, n.x, n.y);
+
+                // 节点下方：绘制独立的精致胶囊文本徽章（Pill Badge）
+                // 胶囊背景遮蔽连线，确保文字 100% 清晰可见、独立且不重叠
+                const pillX = n.x - n.pillW / 2;
+                const pillY = n.y + n.size + 5;
+                const pillW = n.pillW;
+                const pillH = n.pillH;
+                const radius = 6;
+
+                // 绘制胶囊背景底框与微投影
+                ctx.save();
+                drawRoundedRect(ctx, pillX, pillY, pillW, pillH, radius);
+                ctx.fillStyle = isCurrent 
+                    ? (isDark ? 'rgba(10, 132, 255, 0.25)' : 'rgba(0, 122, 255, 0.12)')
+                    : (isDark ? 'rgba(28, 28, 30, 0.95)' : 'rgba(255, 255, 255, 0.95)');
+                ctx.fill();
+
+                ctx.lineWidth = isCurrent ? 1.5 : 1;
+                ctx.strokeStyle = isCurrent 
+                    ? (isDark ? '#0A84FF' : '#007AFF') 
+                    : (isDark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(0, 0, 0, 0.1)');
+                ctx.stroke();
+                ctx.restore();
+
+                // 绘制胶囊内实体全称
+                ctx.font = isCurrent ? 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' : '500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillStyle = isCurrent ? (isDark ? '#5AC8FA' : '#007AFF') : (isDark ? '#F5F5F7' : '#1D1D1F');
+                ctx.fillText(n.name, n.x, pillY + pillH / 2);
+
+                ctx.restore();
+            }
+
+            ctx.restore();
+        }
+
+        // 视口自适应
+        function fitView() {
+            if (nodes.length === 0) return;
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            nodes.forEach(n => {
+                if (n.x < minX) minX = n.x;
+                if (n.x > maxX) maxX = n.x;
+                if (n.y < minY) minY = n.y;
+                if (n.y > maxY) maxY = n.y;
+            });
+
+            const padding = 120;
+            const graphW = Math.max(maxX - minX + padding * 2, 100);
+            const graphH = Math.max(maxY - minY + padding * 2, 100);
+
+            const scaleX = w / graphW;
+            const scaleY = h / graphH;
+            transform.scale = Math.max(0.3, Math.min(1.4, Math.min(scaleX, scaleY)));
+
+            const graphCenterX = (minX + maxX) / 2;
+            const graphCenterY = (minY + maxY) / 2;
+            transform.x = w / 2 - graphCenterX * transform.scale;
+            transform.y = h / 2 - graphCenterY * transform.scale;
+
+            render();
+        }
+
+        function zoomBy(factor) {
+            const w = window.innerWidth / 2;
+            const h = window.innerHeight / 2;
+            zoomAt(w, h, factor);
+        }
+
+        function zoomAt(screenX, screenY, factor) {
+            const newScale = Math.max(0.15, Math.min(3.5, transform.scale * factor));
+            const mouseWorldX = (screenX - transform.x) / transform.scale;
+            const mouseWorldY = (screenY - transform.y) / transform.scale;
+            transform.scale = newScale;
+            transform.x = screenX - mouseWorldX * transform.scale;
+            transform.y = screenY - mouseWorldY * transform.scale;
+            render();
+        }
+
+        // 坐标转换
+        function screenToWorld(sx, sy) {
+            return {
+                x: (sx - transform.x) / transform.scale,
+                y: (sy - transform.y) / transform.scale
+            };
+        }
+
+        function findNodeAt(worldX, worldY) {
+            for (let i = nodes.length - 1; i >= 0; i--) {
+                const n = nodes[i];
+                const dx = worldX - n.x;
+                const dy = worldY - n.y;
+                if (dx * dx + dy * dy <= n.size * n.size) {
+                    return n;
+                }
+            }
+            return null;
+        }
+
+        // 交互事件监听
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const factor = e.deltaY < 0 ? 1.12 : 0.89;
+            zoomAt(e.clientX, e.clientY, factor);
+        }, { passive: false });
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            const pos = screenToWorld(e.clientX, e.clientY);
+            const clicked = findNodeAt(pos.x, pos.y);
+
+            if (clicked) {
+                draggedNode = clicked;
+                clicked.fx = clicked.x;
+                clicked.fy = clicked.y;
+                reheat();
+            } else {
+                isDraggingCanvas = true;
+                dragStart.x = e.clientX - transform.x;
+                dragStart.y = e.clientY - transform.y;
+            }
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (draggedNode) {
+                const pos = screenToWorld(e.clientX, e.clientY);
+                draggedNode.fx = pos.x;
+                draggedNode.fy = pos.y;
+                reheat();
+                hideTooltip();
+                return;
+            }
+
+            if (isDraggingCanvas) {
+                transform.x = e.clientX - dragStart.x;
+                transform.y = e.clientY - dragStart.y;
+                render();
+                hideTooltip();
+                return;
+            }
+
+            // 悬停检测
+            const pos = screenToWorld(e.clientX, e.clientY);
+            const hovered = findNodeAt(pos.x, pos.y);
+
+            if (hovered !== hoveredNode) {
+                hoveredNode = hovered;
+                render();
+                if (hovered) {
+                    showTooltip(hovered, e.clientX, e.clientY);
+                } else {
+                    hideTooltip();
+                }
+            } else if (hovered) {
+                showTooltip(hovered, e.clientX, e.clientY);
+            }
+        });
+
+        window.addEventListener('mouseup', (e) => {
+            if (draggedNode) {
+                draggedNode.fx = null;
+                draggedNode.fy = null;
+                draggedNode = null;
+                reheat();
+            }
+            isDraggingCanvas = false;
+        });
+
+        canvas.addEventListener('click', (e) => {
+            const pos = screenToWorld(e.clientX, e.clientY);
+            const clicked = findNodeAt(pos.x, pos.y);
+
+            if (clicked) {
+                selectedNodeId = clicked.id;
+                render();
+                if (window.chrome && window.chrome.webview) {
+                    window.chrome.webview.postMessage(JSON.stringify({
+                        type: 'node_click',
+                        nodeId: clicked.id
+                    }));
+                }
+            } else {
+                selectedNodeId = null;
+                render();
+            }
+        });
+
+        function showTooltip(node, screenX, screenY) {
+            ttTitle.textContent = `${node.name}`;
+            ttMeta.innerHTML = `
+                <div>类型: <strong>${node.type}</strong></div>
+                <div>关联文档数: <strong>${node.rawSize}</strong></div>
+            `;
+            tooltip.style.left = `${screenX + 12}px`;
+            tooltip.style.top = `${screenY + 12}px`;
+            tooltip.style.display = 'block';
+        }
+
+        function hideTooltip() {
+            tooltip.style.display = 'none';
+        }
+
+        function requestExtract() {
+            if (window.chrome && window.chrome.webview) {
+                window.chrome.webview.postMessage(JSON.stringify({
+                    type: 'extract_requested'
+                }));
+            }
+        }
+
+        // 初始化尺寸
+        resizeCanvas();
+
+        if (window.__graphData) {
+            renderGraph(window.__graphData);
+        }
+    </script>
+</body>
+</html>

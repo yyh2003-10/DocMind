@@ -227,6 +227,23 @@ public partial class ConvertViewModel : ViewModelBase
         }
     }
 
+    /// <summary>用户请求将转换后的文件导入知识库（参数为输出文件路径）。</summary>
+    public event Action<string>? ImportRequested;
+
+    /// <summary>是否可将转换结果直接导入知识库。</summary>
+    public bool CanImportToKnowledgeBase =>
+        LastResult != null && LastResult.Success && !string.IsNullOrWhiteSpace(OutputPath) && File.Exists(OutputPath);
+
+    /// <summary>一键将转换结果导入知识库。</summary>
+    [RelayCommand(CanExecute = nameof(CanImportToKnowledgeBase))]
+    private void ImportToKnowledgeBase()
+    {
+        if (CanImportToKnowledgeBase)
+        {
+            ImportRequested?.Invoke(OutputPath.Trim());
+        }
+    }
+
     /// <summary>清空输入/输出/预览。</summary>
     [RelayCommand]
     private void Reset()
@@ -236,5 +253,7 @@ public partial class ConvertViewModel : ViewModelBase
         PreviewContent = string.Empty;
         LastResult = null;
         StatusMessage = "就绪";
+        ImportToKnowledgeBaseCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(CanImportToKnowledgeBase));
     }
 }

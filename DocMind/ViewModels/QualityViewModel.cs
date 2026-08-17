@@ -2,6 +2,10 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.Input;
 using DocMind.Models;
 using DocMind.Services;
+using LiveChartsCore;
+using LiveChartsCore.SkiaSharpView;
+using LiveChartsCore.SkiaSharpView.Painting;
+using SkiaSharp;
 
 namespace DocMind.ViewModels;
 
@@ -37,6 +41,9 @@ public partial class QualityViewModel : ViewModelBase
         _hasLoadedOnce = true;
         await RefreshAsync();
     }
+
+    /// <summary>使质量看板缓存失效，下次进入或导入完成后强制刷新数据。</summary>
+    public void InvalidateCache() => _hasLoadedOnce = false;
 
     /// <summary>集合名（可选，默认 default）。</summary>
     public string? Collection
@@ -82,8 +89,52 @@ public partial class QualityViewModel : ViewModelBase
     /// <summary>质量报告中的警告清单。</summary>
     public ObservableCollection<string> Warnings { get; }
 
+    /// <summary>是否有质量警告。</summary>
+    public bool HasWarnings => Warnings.Count > 0;
+
     /// <summary>各集合文档/chunk 分布（用于图表/列表展示）。</summary>
     public ObservableCollection<CollectionStats> Collections { get; }
+
+    /// <summary>格式分布饼图系列。</summary>
+    public ObservableCollection<ISeries> FormatSeries { get; } = [];
+
+    /// <summary>集合文档数柱状图系列。</summary>
+    public ObservableCollection<ISeries> CollectionSeries { get; } = [];
+
+    private void UpdateChartSeries()
+    {
+        FormatSeries.Clear();
+        CollectionSeries.Clear();
+
+        if (Report?.FormatDistribution is { Count: > 0 })
+        {
+            var colors = new[] { SKColors.DodgerBlue, SKColors.OrangeRed, SKColors.MediumSeaGreen,
+                                 SKColors.Gold, SKColors.MediumPurple, SKColors.Teal,
+                                 SKColors.Coral, SKColors.SkyBlue };
+            var i = 0;
+            foreach (var (fmt, count) in Report.FormatDistribution.OrderByDescending(kv => kv.Value))
+            {
+                FormatSeries.Add(new PieSeries<int>
+                {
+                    Values = [count],
+                    Name = string.IsNullOrEmpty(fmt) ? "(未知)" : fmt,
+                    Fill = new SolidColorPaint(colors[i % colors.Length]),
+                    DataLabelsSize = 12,
+                    DataLabelsPosition = LiveChartsCore.Measure.PolarLabelsPosition.Outer,
+                });
+                i++;
+            }
+        }
+
+        foreach (var col in Collections)
+        {
+            CollectionSeries.Add(new ColumnSeries<int>
+            {
+                Values = [col.Documents],
+                Name = col.Name,
+            });
+        }
+    }
 
     private bool CanRefresh => !IsBusy;
 
@@ -115,6 +166,7 @@ public partial class QualityViewModel : ViewModelBase
             {
                 Warnings.Add(w);
             }
+            OnPropertyChanged(nameof(HasWarnings));
             // 后端 Stats.collections 是 dict[str, [doc_count, chunk_count, size_bytes]]；
             // 网络边界反序列化数据，数组长度可能 <3（脏数据/版本差异），先校验再取下标。
             foreach (var kv in Stats.Collections)
@@ -130,6 +182,7 @@ public partial class QualityViewModel : ViewModelBase
             }
 
             StatusMessage = "已更新";
+            UpdateChartSeries();
             DebugLog.Info(
                 $"质量报告拉取完成: collections={Stats.Collections.Count} " +
                 $"totalDocuments={Stats.TotalDocuments} totalChunks={Stats.TotalChunks} warnings={Report.Warnings.Count} 耗时{sw.ElapsedMilliseconds}ms",

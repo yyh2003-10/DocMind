@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
 from doc2mind.core.config import Settings
@@ -62,6 +64,46 @@ class SlowLLMClient(LLMClient):
         return "should not reach"
 
 
+class GatedStreamLLMClient(LLMClient):
+    """流式测试桩：产出第一个 token 后阻塞一小段时间再产出第二个。
+
+    用于验证 stream_chat 是「真流式」——若实现把生成器整体 list() 缓冲，
+    拿第一个 token 必须等阻塞结束（耗时 ≈ 总生成时间），首 token 延迟被
+    人为拉满；真流式下第一个 token 应立即到达。
+    """
+
+    def __init__(self, gate_sleep: float = 0.5) -> None:
+        self._gate_sleep = gate_sleep
+
+    @property
+    def model_name(self) -> str:
+        return "gated-model"
+
+    @property
+    def provider(self) -> str:
+        return "mock"
+
+    def _do_chat(
+        self,
+        messages: list[dict],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        return "first second"
+
+    def _do_stream_chat(
+        self,
+        messages: list[dict],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[str]:
+        import time
+
+        yield "first"
+        time.sleep(self._gate_sleep)
+        yield "second"
+
+
 # --- Tests: LLMClient 基类 ---
 class TestLLMClient:
     def test_abstract_cannot_instantiate(self) -> None:
@@ -81,6 +123,44 @@ class TestLLMClient:
         tokens = list(client.stream_chat([{"role": "user", "content": "q"}]))
         assert len(tokens) == 1
         assert tokens[0] == "stream test"
+
+    def test_stream_chat_yields_first_token_immediately(self) -> None:
+        """真流式：第一个 token 在完整生成结束前即产出（防止 list() 全量缓冲回归）。
+
+        若实现把生成器整体收集（executor.submit(list, gen)），首 token 必须等
+        gate 阻塞（0.5s）结束才到达；真流式下应立即到达。
+        """
+        import time
+
+        client = GatedStreamLLMClient(gate_sleep=0.5)
+        gen = client.stream_chat([{"role": "user", "content": "q"}], timeout=5.0)
+
+        t0 = time.monotonic()
+        first = next(gen)
+        elapsed_first = time.monotonic() - t0
+
+        assert first == "first"
+        assert elapsed_first < 0.3, (
+            f"首 token 延迟 {elapsed_first:.3f}s ≥ 0.3s：stream_chat 可能整体缓冲了生成器"
+        )
+
+        rest = list(gen)
+        assert rest == ["second"]
+
+    def test_stream_chat_preserves_tokens_and_order(self) -> None:
+        """逐 token 产出且顺序正确、无丢帧。"""
+        client = GatedStreamLLMClient(gate_sleep=0.0)
+        tokens = list(client.stream_chat([{"role": "user", "content": "q"}], timeout=5.0))
+        assert tokens == ["first", "second"]
+
+    def test_stream_chat_timeout_raises(self) -> None:
+        """流式调用整体超时应抛出 LLMTimeoutError。"""
+        client = SlowLLMClient(delay=10.0)
+        with pytest.raises(LLMTimeoutError, match="超时"):
+            list(client.stream_chat(
+                [{"role": "user", "content": "hi"}],
+                timeout=0.1,
+            ))
 
     def test_chat_timeout_raises(self) -> None:
         """LLM 调用超时应抛出 LLMTimeoutError。"""

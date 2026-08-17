@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import threading
+from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -118,6 +119,7 @@ class TestHTTPChatEndpoint:
         assert len(data["sources"]) == 1
         assert data["sources"][0]["source"] == "arch.pdf"
         assert data["sources"][0]["page"] == 3
+        assert data["sources"][0]["chunk_id"] is not None  # 引用来源含 chunk_id(可点击定位用)
 
     def test_chat_empty_query_returns_422(self, client_with_app) -> None:
         tc, _ = client_with_app
@@ -310,6 +312,26 @@ class TestHTTPConfigLLMFields:
         assert data["llm_provider"] == "ollama"
         assert data["llm_model"] == "llama3.2"
 
+    def test_post_config_empty_model_clears_existing(self, config_client) -> None:
+        """WPF 清空模型名保存 → 推 "" 应显式清除后端已配置的旧模型（而非保留）。"""
+        resp = config_client.post("/v1/config", json={
+            "llm_provider": "openai",
+            "llm_model": "deepseek-chat",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["llm_model"] == "deepseek-chat"
+
+        resp2 = config_client.post("/v1/config", json={
+            "llm_provider": "openai",
+            "llm_model": "",
+        })
+        assert resp2.status_code == 200
+        data2 = resp2.json()
+        # 清除后 llm_model 为 None（未配置态；get_llm_client 会回退 provider 默认模型）
+        assert data2["llm_model"] is None
+        s = get_settings()
+        assert s.llm_model is None or s.llm_model == ""
+
 
 # ======================================================================
 # 5. 并发 session 写入安全测试
@@ -404,3 +426,298 @@ class TestConcurrentSessionSafety:
         assert len(results) == 8
         assert len(chat_ids) == 8  # 每个线程新建独立会话
         assert len(_CHAT_SESSIONS) == 8
+
+
+# ======================================================================
+# 6. 对话内按请求切换模型（POST /v1/chat 的 model 字段）
+# ======================================================================
+class TestChatModelOverride:
+    @pytest.fixture()
+    def capture_client(self):
+        """创建 app，捕获 rag 内传给 get_llm_client 的 Settings。"""
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/testclient not installed")
+
+        mock_llm = MockLLMClient("回答。")
+        hit = _make_hit()
+        captured: list[Settings] = []
+
+        def fake_get_llm_client(s):
+            captured.append(s)
+            return mock_llm
+
+        stack = ExitStack()
+        stack.enter_context(patch("doc2mind.core.rag._open_store", return_value=(MagicMock(), MagicMock())))
+        stats = SearchStats(query="q", total_hits=1, elapsed_ms=5, vector_candidates=1, bm25_candidates=1)
+        mock_retriever = MagicMock()
+        mock_retriever.search.return_value = ([hit], stats)
+        stack.enter_context(patch("doc2mind.core.rag.Retriever", return_value=mock_retriever))
+        stack.enter_context(patch("doc2mind.core.rag.get_llm_client", fake_get_llm_client))
+        try:
+            from doc2mind.server.http import create_app
+            yield TestClient(create_app()), captured
+        finally:
+            stack.close()
+
+    def test_model_override_reaches_llm_client(self, capture_client) -> None:
+        tc, captured = capture_client
+        resp = tc.post("/v1/chat", json={"query": "q", "model": "qwen2.5:7b"})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "mock-model"
+        assert captured, "get_llm_client 未被调用"
+        assert captured[0].llm_model == "qwen2.5:7b"
+
+    def test_no_model_uses_configured(self, capture_client) -> None:
+        tc, captured = capture_client
+        resp = tc.post("/v1/chat", json={"query": "q"})
+        assert resp.status_code == 200
+        # 未覆盖：settings.llm_model 保持后端配置值（默认空串）
+        assert captured[0].llm_model == get_settings().llm_model
+
+    def test_stream_accepts_model_field(self, capture_client) -> None:
+        """流式端点接受 model 字段不 422，并透传到 LLM 客户端构造。"""
+        tc, captured = capture_client
+        with tc.stream("POST", "/v1/chat/stream", json={"query": "q", "model": "llama3.2"}) as response:
+            assert response.status_code == 200
+            list(response.iter_lines())
+        assert captured and captured[0].llm_model == "llama3.2"
+
+
+# ======================================================================
+# 7. 会话历史持久化端点（GET /v1/chats, GET/DELETE /v1/chats/{id}）
+# ======================================================================
+class TestChatsEndpoints:
+    @pytest.fixture()
+    def chats_client(self):
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/testclient not installed")
+
+        _CHAT_SESSIONS.clear()
+        mock_llm = MockLLMClient("回答。")
+        stack = _mock_rag_patches(mock_llm)
+        try:
+            from doc2mind.server.http import create_app
+            yield TestClient(create_app())
+        finally:
+            stack.close()
+            _CHAT_SESSIONS.clear()
+
+    def test_chat_persists_session_to_db(self, chats_client) -> None:
+        tc = chats_client
+        resp = tc.post("/v1/chat", json={"query": "DocMind 支持哪些格式？"})
+        assert resp.status_code == 200
+        chat_id = resp.json()["chat_id"]
+
+        # 列表可见，标题取首条问题
+        listing = tc.get("/v1/chats").json()
+        assert listing["total"] >= 1
+        item = next(c for c in listing["chats"] if c["chat_id"] == chat_id)
+        assert item["title"] == "DocMind 支持哪些格式？"
+        assert item["message_count"] == 2  # user + assistant
+
+        # 详情含全部消息（user 在前，assistant 在后）
+        detail = tc.get(f"/v1/chats/{chat_id}").json()
+        assert [m["role"] for m in detail["messages"]] == ["user", "assistant"]
+        assert detail["messages"][0]["content"] == "DocMind 支持哪些格式？"
+
+    def test_session_context_recovers_from_db_after_memory_eviction(self, chats_client) -> None:
+        """内存 LRU 清空（模拟后端重启）后，续聊仍能从 DB 恢复上下文。"""
+        tc = chats_client
+        r1 = tc.post("/v1/chat", json={"query": "第一轮问题"}).json()
+        chat_id = r1["chat_id"]
+
+        _CHAT_SESSIONS.clear()  # 模拟重启：内存会话丢失
+
+        r2 = tc.post("/v1/chat", json={"query": "第二轮问题", "chat_id": chat_id})
+        assert r2.status_code == 200
+        assert r2.json()["chat_id"] == chat_id
+        # 内存缓存已从 DB 回填
+        assert chat_id in _CHAT_SESSIONS
+        assert len(_CHAT_SESSIONS[chat_id]) >= 3  # 第一轮 2 条 + 第二轮 user
+
+    def test_delete_session(self, chats_client) -> None:
+        tc = chats_client
+        chat_id = tc.post("/v1/chat", json={"query": "将被删除"}).json()["chat_id"]
+        assert tc.delete(f"/v1/chats/{chat_id}").status_code == 200
+
+        assert tc.get(f"/v1/chats/{chat_id}").status_code == 404
+        assert tc.delete(f"/v1/chats/{chat_id}").status_code == 404
+        assert chat_id not in _CHAT_SESSIONS
+
+    def test_get_missing_chat_404(self, chats_client) -> None:
+        assert chats_client.get("/v1/chats/no-such-chat").status_code == 404
+
+    def test_empty_listing(self, chats_client) -> None:
+        data = chats_client.get("/v1/chats").json()
+        assert data["chats"] == []
+        assert data["total"] == 0
+
+
+# ======================================================================
+# 8. 系统提示词自定义（rag_system_prompt）
+# ======================================================================
+class TestRagSystemPrompt:
+    @pytest.fixture()
+    def config_client(self):
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/testclient not installed")
+
+        original = get_settings()
+        set_settings(Settings())
+        try:
+            with patch("doc2mind.core.config.save_settings"):
+                from doc2mind.server.http import create_app
+                yield TestClient(create_app())
+        finally:
+            set_settings(original)
+
+    def test_config_round_trip_and_clear(self, config_client) -> None:
+        tc = config_client
+        # 默认未配置
+        assert tc.get("/v1/config").json()["rag_system_prompt"] is None
+
+        # 设置
+        r = tc.post("/v1/config", json={"rag_system_prompt": "你是一个简洁的中文技术文档助手。"})
+        assert r.status_code == 200
+        assert r.json()["rag_system_prompt"] == "你是一个简洁的中文技术文档助手。"
+        assert get_settings().rag_system_prompt == "你是一个简洁的中文技术文档助手。"
+
+        # 空字符串 = 显式清除
+        r2 = tc.post("/v1/config", json={"rag_system_prompt": ""})
+        assert r2.status_code == 200
+        assert r2.json()["rag_system_prompt"] is None
+        assert get_settings().rag_system_prompt is None
+
+    def test_custom_prompt_used_in_llm_messages(self) -> None:
+        """自定义提示词替换内置 _SYSTEM_PROMPT 进入 LLM 消息列表。"""
+        mock_llm = MockLLMClient("回答。")
+        s = Settings(llm_provider="openai", llm_api_key="test", rag_system_prompt="用文言文回答。")
+        stack = _mock_rag_patches(mock_llm)
+        try:
+            rag_answer(query="问题", settings=s, llm_client=mock_llm)
+        finally:
+            stack.close()
+        system_msg = mock_llm.last_messages[0]
+        assert system_msg["role"] == "system"
+        assert system_msg["content"] == "用文言文回答。"
+
+    def test_default_prompt_when_unset(self) -> None:
+        mock_llm = MockLLMClient("回答。")
+        s = Settings(llm_provider="openai", llm_api_key="test", rag_system_prompt=None)
+        stack = _mock_rag_patches(mock_llm)
+        try:
+            rag_answer(query="问题", settings=s, llm_client=mock_llm)
+        finally:
+            stack.close()
+        assert "知识库问答助手" in mock_llm.last_messages[0]["content"]
+
+
+class TestGraphEndpoints:
+    """知识图谱 HTTP 端点集成测试。"""
+
+    def test_graph_visualize_and_relations(self, tmp_path) -> None:
+        from starlette.testclient import TestClient
+
+        from doc2mind.core.store.graph_store import GraphStore
+        from doc2mind.server.http import create_app
+
+        db_file = tmp_path / "graph_test.db"
+        s = Settings(db_path=db_file)
+        store = GraphStore(db_file)
+        store.upsert_entity("FastAPI", "tech", "default")
+        store.upsert_entity("Python", "tech", "default")
+        e1 = store.upsert_entity("FastAPI", "tech", "default")
+        e2 = store.upsert_entity("Python", "tech", "default")
+        store.upsert_relation(e1, e2, "written_in")
+
+        app = create_app(s)
+        client = TestClient(app)
+
+        # GET /v1/graph/visualize
+        res = client.get("/v1/graph/visualize?collection=default")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["total_nodes"] == 2
+        assert len(data["edges"]) == 1
+        assert data["edges"][0]["label"] == "written_in"
+
+        # GET /v1/graph/entities
+        res_ent = client.get("/v1/graph/entities")
+        assert res_ent.status_code == 200
+        assert len(res_ent.json()) == 2
+
+        # GET /v1/graph/relations/{entity_id}
+        res_rel = client.get(f"/v1/graph/relations/{e1}")
+        assert res_rel.status_code == 200
+        assert len(res_rel.json()) == 1
+        assert res_rel.json()[0]["relation"] == "written_in"
+
+        # GET /v1/graph/stats
+        res_stats = client.get("/v1/graph/stats")
+        assert res_stats.status_code == 200
+        assert res_stats.json()["entity_count"] == 2
+        assert res_stats.json()["relation_count"] == 1
+
+    def test_graph_extract_requires_llm(self, tmp_path) -> None:
+        from starlette.testclient import TestClient
+        from doc2mind.server.http import create_app
+
+        s = Settings(db_path=tmp_path / "graph_extract_test.db", llm_provider="none")
+        app = create_app(s)
+        client = TestClient(app)
+
+        res = client.post("/v1/graph/extract?collection=default")
+        assert res.status_code == 400
+        assert "未配置 LLM" in res.json()["detail"]["message"]
+
+
+class TestEventsBroadcast:
+    """/v1/events SSE 广播测试。"""
+
+    def test_events_endpoint_ready_frame(self, tmp_path) -> None:
+        from starlette.testclient import TestClient
+        from doc2mind.server.http import create_app, _broadcast_event
+
+        s = Settings(db_path=tmp_path / "events_test.db")
+        app = create_app(s)
+        client = TestClient(app)
+
+        with client.stream("GET", "/v1/events") as response:
+            assert response.status_code == 200
+            for line in response.iter_lines():
+                if line.startswith("data: "):
+                    payload = json.loads(line[len("data: "):])
+                    assert payload["type"] == "ready"
+                    break
+
+    def test_broadcast_event_helper(self) -> None:
+        from doc2mind.server.http import _broadcast_event, _SSE_CONNECTIONS, _sse_lock
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        q: asyncio.Queue = asyncio.Queue()
+        entry = (loop, q)
+        with _sse_lock:
+            _SSE_CONNECTIONS.add(entry)
+
+        try:
+            _broadcast_event({"type": "file_ingested", "path": "test.md"})
+            # 执行事件循环处理投递
+            loop.run_until_complete(asyncio.sleep(0.01))
+            assert not q.empty()
+            item = q.get_nowait()
+            data = json.loads(item)
+            assert data["type"] == "file_ingested"
+            assert data["path"] == "test.md"
+        finally:
+            with _sse_lock:
+                _SSE_CONNECTIONS.discard(entry)
+            loop.close()
+
+

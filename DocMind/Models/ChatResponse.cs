@@ -5,10 +5,19 @@ public sealed record SourceRef
 {
     public int Index { get; init; }
     public string Source { get; init; } = string.Empty;
+    /// <summary>后端分块 ID（可空，兼容旧会话数据）。用于定位到原文档中的精确分块。</summary>
+    public int? ChunkId { get; init; }
     public string Format { get; init; } = string.Empty;
     public int? Page { get; init; }
     public string? Heading { get; init; }
     public double Score { get; init; }
+    public string SourceType { get; init; } = "local";
+    public string? Url { get; init; }
+    public string? Title { get; init; }
+
+    public bool IsWebSource => SourceType == "web" || !string.IsNullOrWhiteSpace(Url);
+
+    public string DisplayTitle => !string.IsNullOrWhiteSpace(Title) ? Title : Source;
 }
 
 /// <summary>POST /v1/chat 响应体。</summary>

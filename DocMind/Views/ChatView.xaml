@@ -34,7 +34,7 @@
                 <Border HorizontalAlignment="Left"
                         CornerRadius="12"
                         Padding="12,10"
-                        MaxWidth="620"
+                        MaxWidth="760"
                         Background="{StaticResource CardBrush}"
                         BorderBrush="{StaticResource BorderBrush}"
                         BorderThickness="1">
@@ -53,11 +53,41 @@
                     </Border.Style>
 
                     <StackPanel>
-                        <!-- 消息内容 -->
-                        <TextBlock Text="{Binding Content, Mode=OneWay}"
-                                   Style="{StaticResource BodyText}"
-                                   TextWrapping="Wrap"
-                                   xml:space="preserve"/>
+                        <!-- 消息内容：用户消息纯文本，助手消息 Markdown 渲染 -->
+                        <Grid>
+                            <!-- 用户消息：纯文本 TextBlock -->
+                            <TextBlock Text="{Binding Content, Mode=OneWay}"
+                                       TextWrapping="Wrap"
+                                       xml:space="preserve">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource BodyText}">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsUser}" Value="True">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <!-- 助手消息：Markdig 渲染的 FlowDocument(代码块/列表/表格/可点击链接) -->
+                            <FlowDocumentScrollViewer Document="{Binding RenderedDocument, Mode=OneWay}"
+                                                      Padding="0"
+                                                      IsToolBarVisible="False"
+                                                      VerticalScrollBarVisibility="Disabled"
+                                                      Foreground="{StaticResource TextPrimaryBrush}">
+                                <FlowDocumentScrollViewer.Style>
+                                    <Style TargetType="FlowDocumentScrollViewer">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsUser}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </FlowDocumentScrollViewer.Style>
+                            </FlowDocumentScrollViewer>
+                        </Grid>
 
                         <!-- 加载动画（思考中） -->
                         <StackPanel Visibility="{Binding IsLoading, Converter={StaticResource B2V}}"
@@ -67,26 +97,34 @@
                             <cc:SkeletonControl CornerRadius="2" Height="10" Width="22"/>
                         </StackPanel>
 
-                        <!-- 引用来源 -->
+                        <!-- 引用来源（可点击：搜索该来源在知识库中的相关内容） -->
                         <ItemsControl ItemsSource="{Binding Sources, Mode=OneWay}"
                                       Margin="0,8,0,0"
                                       Visibility="{Binding HasSources, Converter={StaticResource BoolToVis}}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate DataType="{x:Type m:SourceRef}">
-                                    <StackPanel Orientation="Horizontal" Margin="0,1,0,1">
-                                        <TextBlock Text="{Binding Index, StringFormat=[{0}]}"
-                                                   Style="{StaticResource SourceLineText}"
-                                                   Foreground="{StaticResource PrimaryBrush}"
-                                                   FontWeight="SemiBold"/>
-                                        <TextBlock Text="{Binding Source, Mode=OneWay}"
-                                                   Style="{StaticResource SourceLineText}"
-                                                   Margin="6,0,0,0"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   MaxWidth="320"/>
-                                        <TextBlock Text="{Binding Page, Mode=OneWay, TargetNullValue=—}"
-                                                   Style="{StaticResource SourceLineText}"
-                                                   Margin="6,0,0,0"/>
-                                    </StackPanel>
+                                    <Button Command="{Binding DataContext.OpenSourceCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                            CommandParameter="{Binding}"
+                                            Style="{StaticResource TextButtonStyle}"
+                                            Padding="0"
+                                            MinHeight="0"
+                                            MinWidth="0"
+                                            ToolTip="搜索该来源在知识库中的相关内容">
+                                        <StackPanel Orientation="Horizontal" Margin="0,1,0,1">
+                                            <TextBlock Text="{Binding Index, StringFormat=[{0}]}"
+                                                       Style="{StaticResource SourceLineText}"
+                                                       Foreground="{StaticResource PrimaryBrush}"
+                                                       FontWeight="SemiBold"/>
+                                            <TextBlock Text="{Binding Source, Mode=OneWay}"
+                                                       Style="{StaticResource SourceLineText}"
+                                                       Margin="6,0,0,0"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       MaxWidth="320"/>
+                                            <TextBlock Text="{Binding Page, Mode=OneWay, TargetNullValue=—}"
+                                                       Style="{StaticResource SourceLineText}"
+                                                       Margin="6,0,0,0"/>
+                                        </StackPanel>
+                                    </Button>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
@@ -100,6 +138,25 @@
                                 <Run Text=" · "/><Run Text="{Binding ElapsedMs, Mode=OneWay, StringFormat={}{0}ms}"/>
                             </TextBlock.Inlines>
                         </TextBlock>
+
+                        <!-- 操作行：复制（有内容即可见）+ 重新生成（仅最后一条 assistant） -->
+                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                            <Button Content="复制"
+                                    Command="{Binding CopyCommand}"
+                                    Style="{StaticResource TextButtonStyle}"
+                                    FontSize="11"
+                                    Padding="8,2"
+                                    Visibility="{Binding CanCopy, Converter={StaticResource B2V}}"
+                                    ToolTip="复制消息内容到剪贴板"/>
+                            <Button Content="重新生成"
+                                    Command="{Binding DataContext.RegenerateCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                    Style="{StaticResource TextButtonStyle}"
+                                    FontSize="11"
+                                    Padding="8,2"
+                                    Margin="8,0,0,0"
+                                    Visibility="{Binding ShowRegenerate, Converter={StaticResource B2V}}"
+                                    ToolTip="用当前模型重新回答最后一条问题（保留多轮上下文）"/>
+                        </StackPanel>
                     </StackPanel>
                 </Border>
             </Grid>
@@ -126,6 +183,7 @@
                 Margin="0,0,0,12">
             <Grid>
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
@@ -176,22 +234,102 @@
                             Visibility="{Binding HasMessages, Converter={StaticResource BoolToVis}}"/>
                 </Grid>
 
-                <!-- 第二行：知识库复选框列表 -->
-                <ItemsControl Grid.Row="1" ItemsSource="{Binding Collections}">
-                    <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate>
-                            <WrapPanel Orientation="Horizontal"/>
-                        </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate DataType="{x:Type vm:CollectionItem}">
-                            <CheckBox Content="{Binding Name}"
-                                      IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                      Margin="0,2,14,2"
-                                      VerticalContentAlignment="Center"/>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
+                <!-- 第二行：知识库复选框列表（带最大高度限制与滚动） -->
+                <ScrollViewer Grid.Row="1"
+                              MaxHeight="80"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              Margin="0,2,0,4">
+                    <ItemsControl ItemsSource="{Binding Collections}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal"/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="{x:Type vm:CollectionItem}">
+                                <CheckBox Content="{Binding Name}"
+                                          IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                          Margin="0,2,14,2"
+                                          VerticalContentAlignment="Center"/>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <!-- 第三行：历史会话 + 快速切换模型（双列规整排布，防止挤压变形） -->
+                <Grid Grid.Row="2" Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.2*"/>
+                        <ColumnDefinition Width="16"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 左侧：历史会话管理 -->
+                    <Grid Grid.Column="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Column="0" Text="会话:"
+                                   Style="{StaticResource CaptionText}"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,6,0"/>
+                        <ComboBox Grid.Column="1"
+                                  ItemsSource="{Binding Sessions}"
+                                  SelectedItem="{Binding SelectedSession, Mode=TwoWay}"
+                                  DisplayMemberPath="Display"
+                                  ToolTip="历史会话（保存在本地知识库中，重启不丢失）。选中即载入并可继续追问"
+                                  VerticalAlignment="Center"
+                                  Margin="0,0,6,0"/>
+                        <Button Grid.Column="2"
+                                Content="➕ 新会话"
+                                Command="{Binding NewChatCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="8,4"
+                                MinHeight="32"
+                                Margin="0,0,4,0"
+                                ToolTip="开始新会话（不删除历史记录）"/>
+                        <Button Grid.Column="3"
+                                Content="🗑 删除"
+                                Command="{Binding DeleteSessionCommand}"
+                                CommandParameter="{Binding SelectedSession}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="8,4"
+                                MinHeight="32"
+                                ToolTip="删除当前选中的历史会话（本地记录一并删除）"/>
+                    </Grid>
+
+                    <!-- 右侧：模型切换 -->
+                    <Grid Grid.Column="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Column="0" Text="模型:"
+                                   Style="{StaticResource CaptionText}"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,6,0"/>
+                        <ComboBox Grid.Column="1"
+                                  ItemsSource="{Binding AvailableModels}"
+                                  SelectedItem="{Binding SelectedModel, Mode=TwoWay}"
+                                  ToolTip="按消息切换模型：默认用设置页配置；点击 ↻ 拉取当前提供商可用模型"
+                                  VerticalAlignment="Center"
+                                  Margin="0,0,6,0"/>
+                        <Button Grid.Column="2"
+                                Content="🔄"
+                                Command="{Binding RefreshModelsCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="8,4"
+                                MinHeight="32"
+                                ToolTip="获取当前提供商的可用模型列表"/>
+                    </Grid>
+                </Grid>
             </Grid>
         </Border>
 
@@ -248,24 +386,21 @@
                 </Grid.ColumnDefinitions>
 
                 <Grid Grid.Column="0" Margin="0,0,8,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
                     <TextBox x:Name="ChatInputBox"
-                             Grid.Column="0"
                              Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
                              ToolTip="输入问题，回车发送。支持多轮追问"
                              VerticalContentAlignment="Center"
-                             MinHeight="32"
+                             Padding="14,8,36,8"
+                             MinHeight="36"
                              KeyUp="ChatInputBox_KeyUp"/>
-                    <Button Grid.Column="1"
-                            Content="×"
+                    <Button Content="×"
                             Style="{StaticResource TextButtonStyle}"
                             Command="{Binding ClearCommand}"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
                             FontSize="16"
-                            Padding="6,0"
-                            Margin="-8,0,0,0"
+                            Padding="6,2"
+                            Margin="0,0,6,0"
                             Visibility="{Binding HasInput, Converter={StaticResource BoolToVis}}"/>
                 </Grid>
 
@@ -273,13 +408,15 @@
                         Content="发送"
                         Command="{Binding SendCommand}"
                         Style="{StaticResource PrimaryButtonStyle}"
-                        MinWidth="80"/>
+                        MinWidth="80"
+                        MinHeight="36"/>
 
                 <Button Grid.Column="2"
                         Content="停止"
                         Command="{Binding StopCommand}"
                         Style="{StaticResource SecondaryButtonStyle}"
                         MinWidth="80"
+                        MinHeight="36"
                         Margin="8,0,0,0"
                         Visibility="{Binding ShowStop, Converter={StaticResource BoolToVis}}"/>
             </Grid>

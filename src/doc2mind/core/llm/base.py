@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
+import queue
+import time
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from typing import Iterator
 
 # 默认 LLM 调用超时（秒），防 API 挂起阻塞请求线程
 DEFAULT_TIMEOUT = 120
@@ -86,6 +87,14 @@ class LLMClient(ABC):
         reply = self._do_chat(messages, temperature, max_tokens)
         yield reply
 
+    def list_models(self, timeout: float | None = None) -> list[str]:
+        """列出该提供商当前可用的模型 ID（设置页/对话页下拉选择用）。
+
+        默认实现：不支持；子类按各自 API 实现（Ollama /api/tags、
+        OpenAI /models、Anthropic /v1/models、Gemini /v1beta/models）。
+        """
+        raise LLMError(f"提供商 {self.provider} 暂不支持列出模型，请手动输入模型名")
+
     def chat(
         self,
         messages: list[dict],
@@ -143,21 +152,51 @@ class LLMClient(ABC):
         Raises:
             LLMError: API 调用失败
             LLMTimeoutError: 调用超时
+
+        实现说明（真流式，勿改回全量缓冲）：
+        早期实现用 `executor.submit(list, generator)` 把 `_do_stream_chat`
+        整体跑完收成 list 再 yield，导致首 token 延迟 = LLM 完整生成时间，
+        SSE 逐字输出「名存实亡」。现改为队列泵：worker 线程逐 token 推入
+        队列，主线程逐个取出即 yield——首 token 在生成器产出第一个 token
+        时立即到达。超时按「整个流必须在 effective_timeout 内结束」计算
+        （与旧实现语义一致），已收发的 token 不受影响。
         """
+        from queue import Empty as _QueueEmpty
+
         effective_timeout = timeout if timeout and timeout > 0 else DEFAULT_TIMEOUT
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                list,
-                self._do_stream_chat(messages, temperature, max_tokens),
-            )
+        q: queue.Queue[object] = queue.Queue()
+        sentinel = object()
+
+        def _produce() -> None:
+            """worker：跑真实流，逐 token 入队；异常也经队列送回主线程。"""
             try:
-                tokens = future.result(timeout=effective_timeout)
-                yield from tokens
-            except FuturesTimeoutError:
-                raise LLMTimeoutError(
-                    f"LLM 流式调用超时 ({effective_timeout}s)，请检查网络或增加 DOC2MIND_LLM_TIMEOUT"
-                ) from None
-            except LLMError:
-                raise
-            except Exception as e:
-                raise LLMError(f"LLM 流式调用失败: {e}") from e
+                for tok in self._do_stream_chat(messages, temperature, max_tokens):
+                    q.put(tok)
+                q.put(sentinel)
+            except BaseException as e:  # noqa: BLE001 — 异常交给主线程分类处理
+                q.put(e)
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.submit(_produce)
+            deadline = time.monotonic() + effective_timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LLMTimeoutError(
+                        f"LLM 流式调用超时 ({effective_timeout}s)，"
+                        "请检查网络或增加 DOC2MIND_LLM_TIMEOUT"
+                    )
+                try:
+                    item = q.get(timeout=remaining)
+                except _QueueEmpty:
+                    raise LLMTimeoutError(
+                        f"LLM 流式调用超时 ({effective_timeout}s)，"
+                        "请检查网络或增加 DOC2MIND_LLM_TIMEOUT"
+                    ) from None
+                if item is sentinel:
+                    break
+                if isinstance(item, BaseException):
+                    if isinstance(item, LLMError):
+                        raise item
+                    raise LLMError(f"LLM 流式调用失败: {item}") from item
+                yield item

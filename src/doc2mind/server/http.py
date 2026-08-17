@@ -5,7 +5,12 @@
     POST   /v1/ingest
     POST   /v1/search
     POST   /v1/chat
+    POST   /v1/chat/stream     (SSE 流式对话)
     POST   /v1/llm/test        (设置页「测试连接」)
+    POST   /v1/llm/models      (设置页/对话页「获取模型列表」)
+    GET    /v1/chats           (会话列表，持久化在 SQLite)
+    GET    /v1/chats/{id}
+    DELETE /v1/chats/{id}
     GET    /v1/documents         (列表 + 分页)
     GET    /v1/documents/{id}
     DELETE /v1/documents/{id}
@@ -13,6 +18,7 @@
     GET    /v1/quality
     POST   /v1/convert
     POST   /v1/reindex
+    POST   /v1/curate          (AI 整理：打标签/归类/去重/归纳，异步任务)
     GET    /v1/jobs/{id}
     GET    /v1/events            (SSE，可选)
 
@@ -50,19 +56,88 @@ from doc2mind.core.llm import (
 from doc2mind.core.loader.detect import get_loader, is_supported
 from doc2mind.core.logging_setup import setup_logging
 from doc2mind.core.pipeline import ingest_path, ingest_text
-from doc2mind.core.rag import RagError, rag_answer, rag_answer_stream
+from doc2mind.core.rag import RagError, clear_session, rag_answer, rag_answer_stream
 from doc2mind.core.retriever.search import Retriever
+from doc2mind.core.store.chat_store import ChatStore, ChatStoreError
+from doc2mind.core.store.graph_store import GraphStore
 from doc2mind.core.store.sqlite_vec import VectorStore
 
 logger = logging.getLogger(__name__)
 
 # --- Pydantic 模型（请求 / 响应）---
 try:
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel, ConfigDict, Field
 except ImportError as e:  # pragma: no cover
     raise ImportError(
         "FastAPI 依赖未安装。请运行：pip install doc2mind[server]"
     ) from e
+
+
+# --- 知识图谱 DTO ---
+class GraphNodeDTO(BaseModel):
+    id: str
+    name: str
+    type: str
+    group: str = ""
+    size: int = 1
+    collection: str = "default"
+
+
+class GraphEdgeDTO(BaseModel):
+    from_: str = Field(..., alias="from")
+    to: str
+    label: str = ""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class GraphResponse(BaseModel):
+    nodes: list[GraphNodeDTO] = []
+    edges: list[GraphEdgeDTO] = []
+    total_nodes: int = 0
+
+
+class GraphEntityRelationDTO(BaseModel):
+    relation_id: int
+    from_id: str
+    from_name: str
+    from_type: str
+    to_id: str
+    to_name: str
+    to_type: str
+    relation: str
+
+
+class GraphContextSnippetDTO(BaseModel):
+    chunk_id: int
+    document_id: str
+    content: str
+    source: str = ""
+    heading: str = ""
+    page: int = 0
+    doc_title: str = ""
+    doc_summary: str = ""
+
+
+class GraphSourceDocumentDTO(BaseModel):
+    source: str
+    title: str
+    summary: str = ""
+    chunk_count: int = 0
+
+
+class GraphEntityDetailDTO(BaseModel):
+    entity: dict[str, Any] = {}
+    relations: list[GraphEntityRelationDTO] = []
+    snippets: list[GraphContextSnippetDTO] = []
+    source_documents: list[GraphSourceDocumentDTO] = []
+
+
+class GraphStatsDTO(BaseModel):
+    entity_count: int = 0
+    relation_count: int = 0
+    collection: str | None = None
+
 
 
 def _now_iso() -> str:
@@ -103,8 +178,23 @@ class IngestTextRequest(BaseModel):
     """文本直入：AI 沉淀经验/笔记用，不依赖文件路径。"""
     text: str
     title: str | None = None
-    collection: str | None = "default"
+    # None = 落默认集合并允许 AI 自动归类（auto_curate_on_ingest 开启时）
+    collection: str | None = None
     force: bool = False
+
+    model_config = {"populate_by_name": True}
+
+
+class CurateRequest(BaseModel):
+    """AI 知识库整理请求（打标签/摘要/归类/语义去重/归纳合并）。"""
+    # None = 整理全部集合
+    collection: str | None = None
+    # 默认全部四项：enrich/categorize/dedup/consolidate
+    actions: list[str] | None = None
+    # True = 只读预览（零写入）；删除/合并类动作需确认后再用 dry_run=False 执行
+    dry_run: bool = True
+    # enrich/categorize 处理的文档上限（LLM 调用成本护栏）
+    top_k: int | None = Field(None, ge=1, le=200)
 
     model_config = {"populate_by_name": True}
 
@@ -150,9 +240,14 @@ class ChatRequest(BaseModel):
     """RAG 对话请求。"""
     query: str
     collection: str | None = None
-    top_k: int = Field(5, ge=1, le=20, validation_alias="topK")
+    # None = 用后端配置的 rag_top_k（WPF 对话页不传，避免硬编码 5 覆盖设置页）
+    top_k: int | None = Field(None, ge=1, le=20, validation_alias="topK")
     chat_id: str | None = Field(None, validation_alias="chatId")
     collections: list[str] | None = Field(None, validation_alias="collections")
+    # 按请求覆盖模型名（对话页快速切换模型用）；None = 用后端配置的 llm_model
+    model: str | None = None
+    enable_web_search: bool = Field(False, validation_alias="enableWebSearch")
+    entity_context: str | None = Field(None, validation_alias="entityContext")
 
     model_config = {"populate_by_name": True}
 
@@ -162,9 +257,40 @@ class SourceRefDTO(BaseModel):
     index: int
     source: str
     format: str
+    chunk_id: int | None = None
     page: int | None = None
     heading: str | None = None
     score: float = 0.0
+    source_type: str = Field("local", validation_alias="sourceType")  # "local" | "web"
+    url: str | None = None
+    title: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class EntityDistillRequest(BaseModel):
+    """实体知识卡片智能蒸馏请求。"""
+    entity_id: str = Field(..., validation_alias="entityId")
+    entity_name: str = Field(..., validation_alias="entityName")
+    entity_type: str = Field("concept", validation_alias="entityType")
+    collection: str | None = None
+    dialogue_summary: str | None = Field(None, validation_alias="dialogueSummary")
+    local_snippets: list[str] = Field(default_factory=list, validation_alias="localSnippets")
+    web_references: list[str] = Field(default_factory=list, validation_alias="webReferences")
+    model: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class EntityDistillResponse(BaseModel):
+    """实体知识精炼卡片响应。"""
+    entity_id: str = Field(..., validation_alias="entityId")
+    entity_name: str = Field(..., validation_alias="entityName")
+    markdown_card: str = Field(..., validation_alias="markdownCard")
+    suggested_tags: list[str] = Field(default_factory=list, validation_alias="suggestedTags")
+    model: str = ""
+
+    model_config = {"populate_by_name": True}
 
 
 class ChatResponse(BaseModel):
@@ -190,6 +316,40 @@ class StreamChunk(BaseModel):
     sources: list[SourceRefDTO] = []
 
 
+class ChatSessionDTO(BaseModel):
+    """会话列表项。"""
+    chat_id: str
+    title: str
+    message_count: int
+    created_at: str
+    updated_at: str
+
+
+class ChatListResponse(BaseModel):
+    """会话列表（按更新时间倒序）。"""
+    chats: list[ChatSessionDTO]
+    total: int
+
+
+class ChatMessageDTO(BaseModel):
+    """会话内单条消息。"""
+    role: str
+    content: str
+    created_at: str
+
+
+class ChatDetailResponse(BaseModel):
+    """会话详情（全部消息，供前端回看/续聊）。"""
+    chat_id: str
+    title: str
+    messages: list[ChatMessageDTO]
+
+
+class ChatDeleteResponse(BaseModel):
+    chat_id: str
+    deleted: bool = True
+
+
 # 设置页可调的后端运行参数（嵌入 + 分块 + 检索 + LLM）。
 class ConfigUpdate(BaseModel):
     embed_model: str | None = None
@@ -211,7 +371,12 @@ class ConfigUpdate(BaseModel):
     llm_max_tokens: int | None = None
     rag_top_k: int | None = None
     rag_min_score: float | None = None
+    # 自定义 RAG 系统提示词；空字符串 = 显式清除（回到内置默认提示词）
+    rag_system_prompt: str | None = None
     llm_timeout: float | None = None
+    # --- 文件系统监控 ---
+    watch_paths: list[str] | None = None
+    watch_debounce_seconds: float | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -250,6 +415,30 @@ class HealthResponse(BaseModel):
     store_error: str | None = None
 
 
+class GpuDiagnosisResponse(BaseModel):
+    """GPU 加速环境诊断报告（设置页「GPU 加速」卡片）。"""
+
+    gpu_available: bool = False
+    gpu_provider: str | None = None
+    embed_providers: list[str] | None = None
+    has_nvidia_gpu: bool = False
+    gpu_name: str | None = None
+    driver_version: str | None = None
+    cuda_driver_version: str | None = None
+    cuda_runtime_ready: bool = False
+    cuda_runtime_tag: str | None = None  # "cu12" | "cu13" | None
+    python_version: str | None = None
+    installed_packages: dict[str, str | None] = {}
+    recommended_path: str = "cpu"  # cuda12|cuda13|directml|paddle-ocr-gpu|cpu
+    warnings: list[str] = []
+
+
+class InstallGpuRequest(BaseModel):
+    path: str  # cuda12|cuda13|directml|paddle-ocr-gpu
+
+    model_config = {"populate_by_name": True}
+
+
 class ConfigResponse(BaseModel):
     embed_model: str
     embed_model_path: str | None = None
@@ -263,12 +452,18 @@ class ConfigResponse(BaseModel):
     # --- LLM / RAG 对话 ---
     llm_provider: str = "none"
     llm_base_url: str | None = None
-    llm_model: str = ""
+    # None = 未配置（含清除后）；前端显示为空输入
+    llm_model: str | None = None
     llm_temperature: float = 0.7
     llm_max_tokens: int = 2048
     rag_top_k: int = 5
     rag_min_score: float = 0.0
+    # 自定义 RAG 系统提示词；None = 未配置（用内置默认提示词）
+    rag_system_prompt: str | None = None
     llm_timeout: float = 0.0
+    # --- 文件系统监控 ---
+    watch_paths: list[str] = []
+    watch_debounce_seconds: float = 5.0
     # API key 不回传明文（前端只显示是否已配置），避免泄露到 WPF 日志/响应体
     llm_api_key_configured: bool = False
     # 可选提示（如切换模型后需要重建索引）；null 表示无提示
@@ -287,6 +482,29 @@ class LlmTestResponse(BaseModel):
     reply_preview: str | None = None
     elapsed_ms: int = 0
     # 失败原因（已分类的中文提示：key 无效 / 地址错误 / 网络不通 / SDK 未安装 / 超时）
+    error: str | None = None
+
+
+class LlmModelsRequest(BaseModel):
+    """列出提供商可用模型 — 与 /v1/llm/test 同语义：None = 沿用后端当前
+    运行时配置；传值 = 用该新参数拉取（WPF 未保存也能先选好模型）。"""
+
+    provider: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    # 拉取超时秒数（列表接口宜短，避免长时间挂起）
+    timeout: float = Field(10.0, gt=0, le=60)
+
+    model_config = {"populate_by_name": True}
+
+
+class LlmModelsResponse(BaseModel):
+    """模型列表拉取结果。"""
+
+    ok: bool
+    provider: str = ""
+    models: list[str] = []
+    # 失败原因（已分类的中文提示；404 时附带「手动输入」引导）
     error: str | None = None
 
 
@@ -313,6 +531,8 @@ class IngestResultDTO(BaseModel):
     status: str
     error: str | None = None
     document_id: str | None = None
+    # 入库后 AI 自动整理结果（enrich/categorize）；未触发为 None
+    curation: dict[str, Any] | None = None
 
 
 class IngestResponse(BaseModel):
@@ -396,6 +616,8 @@ class JobStatus(BaseModel):
     error: str | None = None
     # 异步 job 完成后的详细结果列表（可选，向前兼容），由 job 线程在完成时填充。
     results: list[IngestResultDTO] = []
+    # curate 类任务的完整整理报告（dry_run 预览 / 执行结果），由 job 线程填充。
+    report: dict[str, Any] | None = None
 
 
 class ApiError(BaseModel):
@@ -405,6 +627,21 @@ class ApiError(BaseModel):
 
 
 # --- 全局状态（单进程内的 store / embedder）---
+_SSE_CONNECTIONS: set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = set()
+_sse_lock = threading.Lock()
+
+
+def _broadcast_event(payload: dict[str, Any]) -> None:
+    """向所有 SSE 订阅者广播事件（跨线程安全）。"""
+    blob = json.dumps(payload, ensure_ascii=False)
+    with _sse_lock:
+        for loop, q in list(_SSE_CONNECTIONS):
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, blob)
+            except Exception:  # noqa: BLE001
+                pass
+
+
 class _AppState:
     """每个 FastAPI app 实例的共享状态。"""
 
@@ -412,6 +649,7 @@ class _AppState:
         self.settings = get_settings()
         self.embedder = None
         self.store: VectorStore | None = None
+        self.file_watcher: Any | None = None
         self.jobs: dict[str, JobStatus] = {}
         self.started_at = datetime.now(timezone.utc)
         # 同步锁：ensure_open 是同步方法，并发首次请求需互斥创建 store/embedder
@@ -443,7 +681,7 @@ def create_app() -> Any:
     用 factory 模式便于测试隔离与 uvicorn 启动。
     """
     try:
-        from fastapi import FastAPI, HTTPException, Query
+        from fastapi import FastAPI, HTTPException, Query, Body
         from fastapi.responses import StreamingResponse
     except ImportError as e:  # pragma: no cover
         raise ImportError(
@@ -498,6 +736,36 @@ def create_app() -> Any:
             store_error=store_error,
         )
 
+    # --- GET /v1/system/gpu-diagnosis（设置页 GPU 加速卡片）---
+    @app.get("/v1/system/gpu-diagnosis", response_model=GpuDiagnosisResponse)
+    async def gpu_diagnosis() -> GpuDiagnosisResponse:
+        from doc2mind.core.system_env import get_gpu_diagnosis
+
+        return GpuDiagnosisResponse(**get_gpu_diagnosis())
+
+    # --- POST /v1/system/install-gpu（一键安装，SSE 流式日志）---
+    @app.post("/v1/system/install-gpu")
+    async def install_gpu(req: InstallGpuRequest) -> Any:
+        from doc2mind.core.system_env import install_gpu_packages
+
+        async def event_generator() -> Any:
+            try:
+                async for event in install_gpu_packages(req.path):
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            except Exception as e:  # noqa: BLE001 — 异常以 SSE 错误帧结束
+                logger.error("GPU 安装失败：%s", e)
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {"type": "error", "message": f"安装异常：{e}"},
+                        ensure_ascii=False,
+                    )
+                    + "\n\n"
+                )
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
     # --- GET/POST /v1/config（设置页：嵌入模型 + 分块 + 检索 + LLM）---
     @app.get("/v1/config", response_model=ConfigResponse)
     async def get_config() -> ConfigResponse:
@@ -519,7 +787,10 @@ def create_app() -> Any:
             llm_max_tokens=s.llm_max_tokens,
             rag_top_k=s.rag_top_k,
             rag_min_score=s.rag_min_score,
+            rag_system_prompt=s.rag_system_prompt,
             llm_timeout=s.llm_timeout,
+            watch_paths=list(s.watch_paths),
+            watch_debounce_seconds=s.watch_debounce_seconds,
             llm_api_key_configured=bool(s.llm_api_key),
             config_error=get_config_load_error(),
         )
@@ -541,9 +812,9 @@ def create_app() -> Any:
 
         # 允许修改的字段 → 更新运行时 settings（后续导入/检索生效）
         updates = req.model_dump(exclude_none=True)
-        # 空字符串 = 显式清除 llm_api_key / llm_base_url
+        # 空字符串 = 显式清除 llm_api_key / llm_base_url / llm_model / rag_system_prompt
         # （exclude_none 会忽略 null，前端清空输入框时传 ""）
-        for k in ("llm_api_key", "llm_base_url"):
+        for k in ("llm_api_key", "llm_base_url", "llm_model", "rag_system_prompt"):
             if k in updates and isinstance(updates[k], str) and not updates[k].strip():
                 updates[k] = None
         if updates:
@@ -599,7 +870,10 @@ def create_app() -> Any:
             llm_max_tokens=s.llm_max_tokens,
             rag_top_k=s.rag_top_k,
             rag_min_score=s.rag_min_score,
+            rag_system_prompt=s.rag_system_prompt,
             llm_timeout=s.llm_timeout,
+            watch_paths=list(s.watch_paths),
+            watch_debounce_seconds=s.watch_debounce_seconds,
             llm_api_key_configured=bool(s.llm_api_key),
             notice=notice,
         )
@@ -687,6 +961,55 @@ def create_app() -> Any:
                 error=str(e),
             )
 
+    # --- POST /v1/llm/models（设置页/对话页「获取模型列表」）---
+    @app.post("/v1/llm/models", response_model=LlmModelsResponse)
+    async def llm_models(req: LlmModelsRequest) -> LlmModelsResponse:
+        """列出指定提供商当前可用的模型 ID（Ollama 本地模型 / 云端 /models 接口）。
+
+        与 /v1/llm/test 同模式：用传入参数构造临时客户端拉取，不落盘、
+        不修改运行时配置。请求字段 None 时沿用后端当前运行时配置。
+        """
+        s = state.settings
+        provider = (req.provider or s.llm_provider or "none").strip()
+        if provider == "none":
+            return LlmModelsResponse(
+                ok=False, provider="none",
+                error="未选择 LLM 提供商（llm_provider=none），请先在设置页选择",
+            )
+        if provider not in SUPPORTED_PROVIDERS:
+            return LlmModelsResponse(
+                ok=False, provider=provider,
+                error=f"不支持的提供商: {provider}，可选: {'/'.join(SUPPORTED_PROVIDERS)}",
+            )
+
+        # 临时 Settings：模型名用后端当前值（仅构造客户端，不影响列表结果）
+        tmp = dataclasses.replace(
+            s,
+            llm_provider=provider,
+            llm_api_key=(req.api_key or "").strip() or s.llm_api_key,
+            llm_base_url=(req.base_url or "").strip() or s.llm_base_url,
+        )
+
+        def _run() -> tuple[str, list[str]]:
+            client = get_llm_client(tmp)
+            if client is None:  # pragma: no cover — provider 已校验，防御分支
+                raise LLMError("LLM 客户端创建失败")
+            return client.provider, client.list_models(timeout=req.timeout)
+
+        try:
+            provider_used, models = await asyncio.to_thread(_run)
+            return LlmModelsResponse(ok=True, provider=provider_used, models=models)
+        except ImportError as e:
+            return LlmModelsResponse(ok=False, provider=provider, error=f"运行库缺失: {e}")
+        except LLMTimeoutError as e:
+            return LlmModelsResponse(ok=False, provider=provider, error=str(e))
+        except LLMError as e:
+            msg = str(e)
+            if "404" in msg:
+                # 部分 OpenAI 兼容服务（老版 DeepSeek 网关等）未实现 /models
+                msg += "（该服务可能未实现列出模型接口，请手动输入模型名）"
+            return LlmModelsResponse(ok=False, provider=provider, error=msg)
+
     # --- POST /v1/ingest ---
     @app.post("/v1/ingest", response_model=IngestResponse)
     async def ingest(req: IngestRequest) -> IngestResponse:
@@ -736,16 +1059,13 @@ def create_app() -> Any:
         if not req.text or not req.text.strip():
             raise _api_error("BAD_REQUEST", "text 不能为空", 400)
 
-        collection = req.collection.strip() if req.collection else "default"
-        if not collection:
-            collection = "default"
-
+        # collection=None 透传：落默认集合并允许 AI 自动归类（显式传值则尊重选择）
         store = state.ensure_open()
         result = await asyncio.to_thread(
             ingest_text,
             text=req.text,
             title=req.title or "",
-            collection=collection,
+            collection=req.collection,
             force=req.force,
             store=store,
         )
@@ -809,6 +1129,12 @@ def create_app() -> Any:
         with state._jobs_lock:
             state.jobs[job_id] = job
 
+        def _check_and_update_progress(done: int, total: int) -> None:
+            with state._jobs_lock:
+                if job.status == "cancelled":
+                    raise RuntimeError("任务已被取消")
+            _update_ingest_job(state, job, done, total)
+
         def _run_ingest_job() -> None:
             try:
                 # 写互斥：整个任务持锁，避免与 delete / reindex 并发写
@@ -819,9 +1145,11 @@ def create_app() -> Any:
                         recursive=req.recursive,
                         force=req.force,
                         store=store,
-                        progress=lambda done, total: _update_ingest_job(state, job, done, total),
+                        progress=_check_and_update_progress,
                     )
                 with state._jobs_lock:
+                    if job.status == "cancelled":
+                        return
                     job.status = "completed"
                     job.progress = 1.0
                     job.processed = summary.total_documents + summary.skipped + summary.failed
@@ -833,8 +1161,14 @@ def create_app() -> Any:
                     ]
             except Exception as e:  # noqa: BLE001
                 with state._jobs_lock:
-                    job.status = "failed"
-                    job.error = str(e)
+                    if job.status == "cancelled":
+                        logger.info("任务已取消并终止后台线程: %s", job_id)
+                        return
+                    if "已被取消" in str(e):
+                        job.status = "cancelled"
+                    else:
+                        job.status = "failed"
+                        job.error = str(e)
                     job.finished_at = _now_iso()
 
         threading.Thread(target=_run_ingest_job, daemon=True).start()
@@ -911,6 +1245,9 @@ def create_app() -> Any:
                 req.top_k,
                 req.chat_id,
                 collections=req.collections,
+                model_override=req.model,
+                enable_web_search=req.enable_web_search,
+                entity_context=req.entity_context,
             )
         except RagError as e:
             raise _api_error("RAG_ERROR", str(e), 400) from e
@@ -928,10 +1265,14 @@ def create_app() -> Any:
                 SourceRefDTO(
                     index=s.index,
                     source=s.source,
+                    chunk_id=s.chunk_id,
                     format=s.format,
                     page=s.page,
                     heading=s.heading,
                     score=s.score,
+                    source_type=getattr(s, "source_type", "local"),
+                    url=getattr(s, "url", None),
+                    title=getattr(s, "title", None),
                 )
                 for s in answer.sources
             ],
@@ -953,6 +1294,9 @@ def create_app() -> Any:
             gen = rag_answer_stream(
                 req.query, req.collection, req.top_k, req.chat_id,
                 collections=req.collections,
+                model_override=req.model,
+                enable_web_search=req.enable_web_search,
+                entity_context=req.entity_context,
             )
 
             def _pump() -> None:
@@ -995,6 +1339,68 @@ def create_app() -> Any:
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+    # --- GET /v1/chats（会话列表，按更新时间倒序） ---
+    @app.get("/v1/chats", response_model=ChatListResponse)
+    async def list_chats(
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+    ) -> ChatListResponse:
+        store = ChatStore(state.settings.db_path)
+        try:
+            sessions = await asyncio.to_thread(store.list_sessions, limit, offset)
+        except ChatStoreError as e:
+            raise _api_error("INTERNAL", f"列出会话失败: {e}", 500) from e
+        return ChatListResponse(
+            chats=[
+                ChatSessionDTO(
+                    chat_id=s.chat_id,
+                    title=s.title,
+                    message_count=s.message_count,
+                    created_at=s.created_at,
+                    updated_at=s.updated_at,
+                )
+                for s in sessions
+            ],
+            total=len(sessions),
+        )
+
+    # --- GET /v1/chats/{chat_id}（会话全部消息，回看/续聊） ---
+    @app.get("/v1/chats/{chat_id}", response_model=ChatDetailResponse)
+    async def get_chat(chat_id: str) -> ChatDetailResponse:
+        store = ChatStore(state.settings.db_path)
+        try:
+            summary, messages = await asyncio.to_thread(
+                lambda: (
+                    store.get_session(chat_id),
+                    store.get_messages(chat_id),
+                )
+            )
+        except ChatStoreError as e:
+            raise _api_error("INTERNAL", f"读取会话失败: {e}", 500) from e
+        if summary is None:
+            raise _api_error("NOT_FOUND", f"会话不存在: {chat_id}", 404)
+        return ChatDetailResponse(
+            chat_id=summary.chat_id,
+            title=summary.title,
+            messages=[
+                ChatMessageDTO(role=m.role, content=m.content, created_at=m.created_at)
+                for m in messages
+            ],
+        )
+
+    # --- DELETE /v1/chats/{chat_id}（删除会话：内存 + DB） ---
+    @app.delete("/v1/chats/{chat_id}", response_model=ChatDeleteResponse)
+    async def delete_chat(chat_id: str) -> ChatDeleteResponse:
+        try:
+            deleted = await asyncio.to_thread(
+                clear_session, chat_id, state.settings.db_path
+            )
+        except Exception as e:  # noqa: BLE001 — clear_session 内部已分类，这里兜底
+            raise _api_error("INTERNAL", f"删除会话失败: {e}", 500) from e
+        if not deleted:
+            raise _api_error("NOT_FOUND", f"会话不存在: {chat_id}", 404)
+        return ChatDeleteResponse(chat_id=chat_id, deleted=True)
+
     # --- GET /v1/documents ---
     @app.get("/v1/documents", response_model=ListDocumentsResponse)
     async def list_documents(
@@ -1002,6 +1408,7 @@ def create_app() -> Any:
         page: int = Query(1, ge=1),
         page_size: int = Query(20, ge=1, le=100, alias="pageSize"),
         format: str | None = Query(None),
+        q: str | None = Query(None, min_length=1, description="按文件名/标题/摘要模糊搜索"),
         sort: str = Query("created_at_desc"),
     ) -> ListDocumentsResponse:
         store = state.ensure_open()
@@ -1012,8 +1419,9 @@ def create_app() -> Any:
             offset=offset,
             format=format,
             sort=sort,
+            q=q,
         )
-        total = store.count_documents(collection, format)
+        total = store.count_documents(collection, format, q)
         return ListDocumentsResponse(
             documents=[
                 DocumentDTO(
@@ -1060,6 +1468,7 @@ def create_app() -> Any:
                         "doc_type": c.doc_type,
                         "page": c.page,
                         "heading": c.heading,
+                        "extra": c.extra_metadata,
                     }
                 )
         return {
@@ -1081,6 +1490,17 @@ def create_app() -> Any:
         if n < 0:
             raise _api_error("NOT_FOUND", f"文档不存在: {doc_id}", 404)
         return DeleteResponse(id=doc_id, deleted_chunks=n)
+
+    # --- PUT /v1/chunks/{chunk_id}/annotation（笔记批注） ---
+    @app.put("/v1/chunks/{chunk_id}/annotation")
+    async def upsert_chunk_annotation(chunk_id: int, body: dict = Body(...)) -> dict:
+        """更新分块批注(合并到 extra JSON)。body 示例: {"text": "这是一个重要结论"}"""
+        store = state.ensure_open()
+        annotation = body.get("text", "")
+        ok = store.update_chunk_extra(chunk_id, {"annotation": annotation})
+        if not ok:
+            raise _api_error("NOT_FOUND", f"分块不存在: {chunk_id}", 404)
+        return {"chunk_id": chunk_id, "annotation": annotation}
 
     # --- GET /v1/stats ---
     @app.get("/v1/stats", response_model=StatsResponse)
@@ -1141,6 +1561,193 @@ def create_app() -> Any:
             format_distribution=fmt_dist,
             warnings=warnings,
         )
+
+    # --- 知识图谱端点 ---
+    @app.get("/v1/graph/visualize", response_model=GraphResponse)
+    async def graph_visualize(
+        collection: str | None = Query(None),
+        limit: int = Query(200, ge=1, le=1000),
+    ) -> GraphResponse:
+        """获取知识图谱可视化数据（节点与边）。"""
+        def _fetch() -> GraphResponse:
+            graph_store = GraphStore(state.settings.db_path)
+            try:
+                data = graph_store.get_graph(collection=collection, limit=limit)
+                return GraphResponse.model_validate(data)
+            finally:
+                graph_store.close()
+
+        return await asyncio.to_thread(_fetch)
+
+    @app.get("/v1/graph/entities", response_model=list[GraphNodeDTO])
+    async def graph_entities(
+        collection: str | None = Query(None),
+        limit: int = Query(200, ge=1, le=1000),
+    ) -> list[GraphNodeDTO]:
+        """获取知识图谱实体列表。"""
+        def _fetch() -> list[GraphNodeDTO]:
+            graph_store = GraphStore(state.settings.db_path)
+            try:
+                data = graph_store.get_graph(collection=collection, limit=limit)
+                return [GraphNodeDTO.model_validate(n) for n in data.get("nodes", [])]
+            finally:
+                graph_store.close()
+
+        return await asyncio.to_thread(_fetch)
+
+    @app.get("/v1/graph/relations/{entity_id}", response_model=list[GraphEntityRelationDTO])
+    async def graph_entity_relations(
+        entity_id: str,
+        limit: int = Query(50, ge=1, le=200),
+    ) -> list[GraphEntityRelationDTO]:
+        """获取指定实体的关联关系。"""
+        def _fetch() -> list[GraphEntityRelationDTO]:
+            graph_store = GraphStore(state.settings.db_path)
+            try:
+                relations = graph_store.get_entity_relations(entity_id, limit=limit)
+                return [GraphEntityRelationDTO.model_validate(r) for r in relations]
+            finally:
+                graph_store.close()
+
+        return await asyncio.to_thread(_fetch)
+
+    @app.get("/v1/graph/entities/{entity_id}/details", response_model=GraphEntityDetailDTO)
+    @app.get("/v1/graph/entity/{entity_id}", response_model=GraphEntityDetailDTO)
+    async def graph_entity_details(
+        entity_id: str,
+        limit: int = Query(8, ge=1, le=50),
+    ) -> GraphEntityDetailDTO:
+        """获取指定实体的完整知识全景：基本信息、关联关系、来源文档和上下文内容切片。"""
+        def _fetch() -> GraphEntityDetailDTO:
+            graph_store = GraphStore(state.settings.db_path)
+            try:
+                detail = graph_store.get_entity_detail(entity_id, snippet_limit=limit)
+                return GraphEntityDetailDTO.model_validate(detail)
+            finally:
+                graph_store.close()
+
+        return await asyncio.to_thread(_fetch)
+
+    @app.post("/v1/graph/entities/distill", response_model=EntityDistillResponse)
+    async def graph_entity_distill(req: EntityDistillRequest) -> EntityDistillResponse:
+        """知识蒸馏：将实体探讨过程、本地切片与联网资料萃取提炼为高密度结构化知识卡片。"""
+        from doc2mind.core.llm.factory import get_llm_client
+
+        s = state.settings
+        if req.model:
+            from dataclasses import replace as dc_replace
+            s = dc_replace(s, llm_model=req.model.strip())
+
+        llm = get_llm_client(s)
+        if llm is None:
+            raise _api_error("LLM_NOT_CONFIGURED", "未配置 LLM，无法生成知识精炼卡片", 400)
+
+        # 组装蒸馏 Prompt
+        snippets_text = "\n\n".join(req.local_snippets) if req.local_snippets else "（无本地切片）"
+        web_text = "\n\n".join(req.web_references) if req.web_references else "（无联网资料）"
+        dialogue_text = req.dialogue_summary or "（无对话历史）"
+
+        prompt = (
+            f"你是一位资深技术专家与知识工程大师。请将关于实体【{req.entity_name}】（类型: {req.entity_type}）的以下全域探讨内容，"
+            f"提炼萃取为一份高密度、结构化、工业级标准的《实体知识精炼卡片》：\n\n"
+            f"【本地原著切片参考】\n{snippets_text}\n\n"
+            f"【多轮探讨与对话记录】\n{dialogue_text}\n\n"
+            f"【联网前沿资料】\n{web_text}\n\n"
+            f"【输出要求】\n"
+            f"请使用标准 Markdown 格式输出，包含以下结构：\n"
+            f"# 📚【知识档案】{req.entity_name}\n"
+            f"## 📌 核心定义与设计定位\n"
+            f"## ⚙️ 底层原理与核心工作机制\n"
+            f"## 💻 工业级标准代码模板与示例（若为代码实体必须提供带注释的完整实现）\n"
+            f"## ⚠️ 常见高频坑点与排错避坑指南\n"
+            f"## 🌐 行业最佳实践与演进对比\n"
+            f"最后附上 3-5 个推荐标签（格式：`标签：#Tag1 #Tag2 #Tag3`）。"
+        )
+
+        try:
+            markdown_card = await asyncio.to_thread(
+                llm.chat,
+                [
+                    {"role": "system", "content": "你是一位专注于构建高质量工程知识体系的专家。"},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+        except Exception as e:
+            raise _api_error("LLM_ERROR", f"知识卡片蒸馏失败: {e}", 500) from e
+
+        # 提取推荐标签
+        import re
+        tags: list[str] = []
+        tag_match = re.search(r"标签[：:]\s*(#[\w\u4e00-\u9fa5\-_]+(?:\s+#[\w\u4e00-\u9fa5\-_]+)*)", markdown_card)
+        if tag_match:
+            tags = [t.strip("#").strip() for t in tag_match.group(1).split() if t.strip()]
+        if not tags:
+            tags = [req.entity_type, req.entity_name]
+
+        return EntityDistillResponse(
+            entity_id=req.entity_id,
+            entity_name=req.entity_name,
+            markdown_card=markdown_card,
+            suggested_tags=tags,
+            model=llm.model_name,
+        )
+
+    @app.get("/v1/graph/stats", response_model=GraphStatsDTO)
+    async def graph_stats(
+        collection: str | None = Query(None),
+    ) -> GraphStatsDTO:
+        """获取知识图谱实体与关系统计。"""
+        def _fetch() -> GraphStatsDTO:
+            graph_store = GraphStore(state.settings.db_path)
+            try:
+                stats = graph_store.get_stats(collection=collection)
+                return GraphStatsDTO.model_validate(stats)
+            finally:
+                graph_store.close()
+
+        return await asyncio.to_thread(_fetch)
+
+    @app.post("/v1/graph/extract")
+    async def graph_extract(
+        collection: str | None = Query(None),
+        top_k: int = Query(20, ge=1, le=200),
+    ) -> dict[str, Any]:
+        """从已有文档触发实体抽取并构建知识图谱。"""
+        from doc2mind.core.curator import curate
+        from doc2mind.core.llm.factory import get_llm_client
+
+        llm = get_llm_client(state.settings)
+        if llm is None:
+            raise _api_error(
+                "BAD_REQUEST",
+                "未配置 LLM，无法抽取图谱实体。请先在「设置」页配置大模型 API Key。",
+                400,
+            )
+
+        store = state.ensure_open()
+        embedder = state.embedder
+        try:
+            report = await asyncio.to_thread(
+                curate,
+                store=store,
+                embedder=embedder,
+                llm=llm,
+                settings=state.settings,
+                collection=collection,
+                actions=["extract"],
+                dry_run=False,
+                top_k=top_k,
+            )
+            return {
+                "ok": True,
+                "extracted_count": len(report.extracted),
+                "skipped_count": len(report.skipped),
+                "errors": report.errors,
+                "elapsed_ms": report.elapsed_ms,
+            }
+        except Exception as e:
+            logger.error("图谱抽取失败: %s", e)
+            raise _api_error("INTERNAL_ERROR", f"图谱抽取失败: {e}", 500)
 
     # --- POST /v1/convert ---
     @app.post("/v1/convert", response_model=ConvertResponse)
@@ -1332,6 +1939,80 @@ def create_app() -> Any:
         threading.Thread(target=_run_reindex, daemon=True).start()
         return job
 
+    # --- POST /v1/curate（AI 知识库整理：打标签/摘要/归类/去重/归纳，异步任务） ---
+    @app.post("/v1/curate", response_model=JobStatus)
+    async def curate_endpoint(req: CurateRequest) -> JobStatus:
+        """AI 整理知识库。LLM 调用耗时，走异步 job；报告在 job.report 里取。
+
+        dry_run 默认 True（只读预览，零写入）；dedup/consolidate 涉及删除与
+        合并，确认预览无误后用 dry_run=False 执行。
+        """
+        store = state.ensure_open()
+
+        # LLM 前置检查：未配置直接 400（否则任务跑一半才发现，浪费一轮轮询）
+        try:
+            llm = get_llm_client(state.settings)
+        except LLMError as e:
+            raise _api_error("BAD_REQUEST", f"LLM 配置不可用: {e}", 400) from e
+        if llm is None:
+            raise _api_error(
+                "BAD_REQUEST",
+                "未配置 LLM（llm_provider=none），整理需要大模型；"
+                "请先在设置页配置 LLM 或设置 DOC2MIND_LLM_PROVIDER",
+                400,
+            )
+
+        job_id = _new_id()
+        job = JobStatus(
+            job_id=job_id,
+            type="curate",
+            status="running",
+            progress=0.0,
+            processed=0,
+            total=0,
+            started_at=_now_iso(),
+        )
+        with state._jobs_lock:
+            state.jobs[job_id] = job
+
+        def _update_curate_job(done: int, total: int) -> None:
+            with state._jobs_lock:
+                job.processed = done
+                job.total = total
+                job.progress = round(done / total, 4) if total > 0 else 0.0
+
+        def _run_curate() -> None:
+            from doc2mind.core.curator import curate as run_curate
+
+            try:
+                # 写互斥：与 ingest / delete / reindex 串行（dry_run 虽只读，
+                # 也统一持锁，避免与并发的 dedup 执行任务互相踩）
+                with state._write_lock:
+                    report = run_curate(
+                        store=store,
+                        embedder=state.embedder,
+                        llm=llm,
+                        settings=state.settings,
+                        collection=req.collection,
+                        actions=req.actions,
+                        dry_run=req.dry_run,
+                        top_k=req.top_k,
+                        progress=_update_curate_job,
+                    )
+                with state._jobs_lock:
+                    job.status = "completed"
+                    job.progress = 1.0
+                    job.finished_at = _now_iso()
+                    job.report = report.to_dict()
+            except Exception as e:  # noqa: BLE001
+                with state._jobs_lock:
+                    job.status = "failed"
+                    job.error = str(e)
+                    job.finished_at = _now_iso()
+
+        threading.Thread(target=_run_curate, daemon=True).start()
+        return job
+
     # --- GET /v1/jobs/{id} ---
     @app.get("/v1/jobs/{job_id}", response_model=JobStatus)
     async def get_job(job_id: str) -> JobStatus:
@@ -1341,24 +2022,71 @@ def create_app() -> Any:
             raise _api_error("NOT_FOUND", f"任务不存在: {job_id}", 404)
         return job
 
+    # --- DELETE /v1/jobs/{id}（取消任务） ---
+    @app.delete("/v1/jobs/{job_id}", response_model=JobStatus)
+    async def cancel_job(job_id: str) -> JobStatus:
+        """取消异步任务（设置 status 为 cancelled，后台工作线程立即中断）。"""
+        with state._jobs_lock:
+            job = state.jobs.get(job_id)
+            if job is None:
+                raise _api_error("NOT_FOUND", f"任务不存在: {job_id}", 404)
+            if job.status in ("pending", "running"):
+                job.status = "cancelled"
+                job.finished_at = _now_iso()
+        return job
+
     # --- GET /v1/events (SSE) ---
     @app.get("/v1/events")
     async def events() -> Any:
-        """SSE 事件流（占位实现，每秒发心跳）。"""
+        """SSE 事件流广播（文件自动摄入通知、心跳等）。"""
+        loop = asyncio.get_running_loop()
+        q: asyncio.Queue[str] = asyncio.Queue()
+        entry = (loop, q)
+        with _sse_lock:
+            _SSE_CONNECTIONS.add(entry)
+
         async def event_stream() -> Any:
-            while True:
-                payload = json.dumps(
-                    {"type": "heartbeat", "ts": _now_iso()},
-                    ensure_ascii=False,
-                )
-                yield f"data: {payload}\n\n"
-                await asyncio.sleep(1.0)
+            try:
+                # 握手就绪帧
+                ready_payload = json.dumps({"type": "ready", "ts": _now_iso()}, ensure_ascii=False)
+                yield f"data: {ready_payload}\n\n"
+                while True:
+                    try:
+                        blob = await asyncio.wait_for(q.get(), timeout=15.0)
+                        yield f"data: {blob}\n\n"
+                    except asyncio.TimeoutError:
+                        hb_payload = json.dumps({"type": "heartbeat", "ts": _now_iso()}, ensure_ascii=False)
+                        yield f"data: {hb_payload}\n\n"
+            finally:
+                with _sse_lock:
+                    _SSE_CONNECTIONS.discard(entry)
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     # --- 启动/关闭钩子 ---
+    @app.on_event("startup")
+    async def _startup() -> None:
+        if state.settings.watch_paths:
+            try:
+                from doc2mind.core.file_watcher import FileWatcher
+
+                state.file_watcher = FileWatcher(
+                    paths=state.settings.watch_paths,
+                    settings=state.settings,
+                    debounce_seconds=state.settings.watch_debounce_seconds,
+                    on_ingested=lambda payload: _broadcast_event({"type": "file_ingested", "ts": _now_iso(), **payload}),
+                )
+                state.file_watcher.start()
+            except Exception as e:  # noqa: BLE001 — 监控启动失败降级，不阻断主服务
+                logger.warning("启动文件系统监控异常: %s", e)
+
     @app.on_event("shutdown")
     async def _shutdown() -> None:
+        if state.file_watcher is not None:
+            try:
+                state.file_watcher.stop()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("停止文件系统监控异常: %s", e)
         if state.store is not None:
             state.store.close()
 

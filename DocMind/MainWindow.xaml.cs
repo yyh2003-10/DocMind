@@ -17,11 +17,37 @@ namespace DocMind
                 Dispatcher.Invoke(() => ToastLayer.Show(notification));
             };
 
-            // 拖动窗口
-            BrandPanel.MouseDown += (s, e) =>
+            // 标题栏支持拖拽与双击切换最大化
+            TitleBarBorder.MouseDown += (s, e) =>
             {
                 if (e.ChangedButton == MouseButton.Left)
-                    DragMove();
+                {
+                    if (e.ClickCount == 2)
+                    {
+                        WindowState = WindowState == WindowState.Maximized
+                            ? WindowState.Normal
+                            : WindowState.Maximized;
+                    }
+                    else
+                    {
+                        DragMove();
+                    }
+                }
+            };
+
+            // 窗口状态变化时自适应圆角与边框，防止最大化时屏幕边缘裁剪
+            StateChanged += (s, e) =>
+            {
+                if (WindowState == WindowState.Maximized)
+                {
+                    WindowBorder.CornerRadius = new CornerRadius(0);
+                    WindowBorder.Margin = new Thickness(6);
+                }
+                else
+                {
+                    WindowBorder.CornerRadius = new CornerRadius(10);
+                    WindowBorder.Margin = new Thickness(0);
+                }
             };
         }
 

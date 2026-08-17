@@ -53,6 +53,30 @@ class OllamaClient(LLMClient):
     def provider(self) -> str:
         return "ollama"
 
+    def list_models(self, timeout: float | None = None) -> list[str]:
+        """GET /api/tags 列出本地已安装的模型（前端下拉选择用）。"""
+        import httpx
+
+        try:
+            resp = httpx.get(
+                f"{self._host}/api/tags",
+                timeout=timeout if timeout and timeout > 0 else 10.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            names = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+            return names
+        except httpx.HTTPStatusError as e:
+            raise LLMError(
+                f"Ollama 列出模型失败 (HTTP {e.response.status_code}): {e.response.text}"
+            ) from e
+        except httpx.RequestError as e:
+            raise LLMError(
+                f"无法连接 Ollama 服务 ({self._host})，请确认 Ollama 已启动: {e}"
+            ) from e
+        except Exception as e:
+            raise LLMError(f"Ollama 列出模型失败: {e}") from e
+
     def _do_chat(
         self,
         messages: list[dict],
