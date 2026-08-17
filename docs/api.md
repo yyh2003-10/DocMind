@@ -228,7 +228,9 @@ RAG 对话问答：从知识库检索相关文档，调用 LLM 生成回答并�
   "query": "项目架构是什么？",
   "collection": "papers",          // 默认 "default"
   "topK": 5,                       // 引用 chunk 数，默认 5，上限 20
-  "chatId": "chat-abc123"          // 多轮对话时传同一值，不传则新建会话
+  "chatId": "chat-abc123",         // 多轮对话时传同一值，不传则新建会话
+  "collections": ["docs-a", "docs-b"],  // 多选知识库（优先于 collection）
+  "model": "qwen2.5:7b"            // 按请求覆盖模型名（对话页快速切换），省略用后端配置
 }
 ```
 
@@ -287,6 +289,78 @@ LLM 连接测试：用传入参数构造**临时**客户端发一条极小消息
   "reply_preview": null, "elapsed_ms": 362,
   "error": "OpenAI API 调用失败: 401 invalid api key" }
 ```
+
+---
+
+### `POST /v1/llm/models`
+
+列出提供商当前可用的模型 ID：Ollama 调 `/api/tags`（本地已装模型），云端调各家模型列表接口（OpenAI 兼容 `/models`、Anthropic `/v1/models`、Gemini `/v1beta/models` 过滤 `generateContent`）。与 `/v1/llm/test` 同模式：临时客户端、不落盘、不动运行时配置。设置页「获取模型列表」与对话页模型下拉的后端。
+
+**请求体：**
+```jsonc
+{
+  "provider": "ollama",        // 省略 = 用后端当前运行时配置
+  "api_key": "sk-xxx",         // 省略/空 = 沿用后端当前配置
+  "base_url": "http://localhost:11434",  // 省略 = 沿用当前配置或提供商官方地址
+  "timeout": 10.0              // 拉取超时秒数，默认 10，上限 60
+}
+```
+
+**响应 200：**
+```jsonc
+// 成功
+{ "ok": true, "provider": "ollama", "models": ["llama3.2:latest", "qwen2.5:7b"], "error": null }
+
+// 失败（404 时 error 附「手动输入」引导：部分 OpenAI 兼容服务未实现列表接口）
+{ "ok": false, "provider": "openai", "models": [],
+  "error": "OpenAI API 列出模型失败（模型名或 API 地址不存在）: ... (HTTP 404)（该服务可能未实现列出模型接口，请手动输入模型名）" }
+```
+
+---
+
+### `GET /v1/chats`
+
+历史会话列表（持久化在 SQLite `chat_sessions` 表，重启不丢失）。按更新时间倒序。
+
+**查询参数：** `limit`（默认 50，上限 200）、`offset`（默认 0）
+
+**响应 200：**
+```jsonc
+{
+  "chats": [
+    {
+      "chat_id": "chat-abc123",
+      "title": "项目架构是什么？",      // 首条用户问题前 50 字
+      "message_count": 6,
+      "created_at": "2026-08-16T10:00:00+08:00",
+      "updated_at": "2026-08-16T10:05:00+08:00"
+    }
+  ],
+  "total": 1
+}
+```
+
+### `GET /v1/chats/{chat_id}`
+
+会话全部消息（时间正序），供前端回看完整历史。响应 404 `NOT_FOUND` 表示会话不存在。
+
+**响应 200：**
+```jsonc
+{
+  "chat_id": "chat-abc123",
+  "title": "项目架构是什么？",
+  "messages": [
+    { "role": "user", "content": "项目架构是什么？", "created_at": "..." },
+    { "role": "assistant", "content": "根据资料，DocMind 采用分层架构...", "created_at": "..." }
+  ]
+}
+```
+
+### `DELETE /v1/chats/{chat_id}`
+
+删除会话及其全部消息（内存缓存 + SQLite 级联删除）。响应 `{"chat_id": "...", "deleted": true}`；不存在时 404。
+
+> 会话上下文持久化：`POST /v1/chat` 的每一轮问答都会写入 SQLite，后端重启后传同一 `chatId` 续聊仍能恢复最近 20 条上下文。
 
 ---
 
@@ -440,20 +514,21 @@ LLM 连接测试：用传入参数构造**临时**客户端发一条极小消息
 
 ### `GET /v1/jobs/{id}`
 
-查询异步任务状态（格式转换批量、重建索引等）。
+查询异步任务状态（格式转换批量、重建索引、整理等）。
 
 **响应 200：**
 ```jsonc
 {
   "job_id": "01J9JOB...",
-  "type": "convert_batch",         // convert_batch|reindex|ingest_dir
+  "type": "convert_batch",         // convert_batch|reindex|ingest|curate
   "status": "running",             // pending|running|completed|failed
   "progress": 0.65,                // 0-1
   "processed": 15,
   "total": 23,
   "started_at": "2026-07-28T...",
   "finished_at": null,
-  "error": null
+  "error": null,
+  "report": null                   // curate 任务完成后的整理报告（其它任务为 null）
 }
 ```
 
@@ -472,6 +547,49 @@ LLM 连接测试：用传入参数构造**临时**客户端发一条极小消息
 ```
 
 **响应 202：** 返回 `job_id`，同 `/v1/jobs/{id}` 查询。
+
+---
+
+### `POST /v1/curate`
+
+AI 整理知识库（LLM 调用耗时，走异步任务；报告在 `job.report` 里取）。
+
+四个动作：
+- `enrich`：给文档生成标题/摘要/标签，写回元数据（全自动，入库时默认已做）
+- `categorize`：基于现有集合判断归属，必要时新建集合并移动文档
+- `dedup`：向量近邻找语义重复对，LLM 判定后删除冗余篇（同集合内）
+- `consolidate`：把小而散的经验笔记（`note:` 开头）聚类，归纳成「蒸馏笔记」替换原条目
+
+**安全约定：** `dry_run=true`（默认）全程只读、零写入，返回完整预览；
+`dedup`/`consolidate` 有损失，确认预览后再用 `dry_run=false` 执行。
+需要先配置 LLM，否则返回 400。
+
+**请求体：**
+```jsonc
+{
+  "collection": null,              // 可选，null = 整理全部集合
+  "actions": ["enrich", "categorize", "dedup", "consolidate"],  // 可选，默认全部
+  "dry_run": true,                 // 默认 true = 只读预览
+  "top_k": null                    // 可选，enrich/categorize 文档数上限（1-200）
+}
+```
+
+**响应 202：** 返回 `job_id`，同 `/v1/jobs/{id}` 查询；完成后 `report` 字段为整理报告：
+
+```jsonc
+{
+  "dry_run": true,
+  "actions": ["enrich", "categorize", "dedup", "consolidate"],
+  "collection": null,
+  "enriched": [ { "doc_id": "...", "source": "note:xxx", "status": "planned|enriched|skipped", "title": "...", "tags": ["..."], "summary": "..." } ],
+  "categorized": [ { "doc_id": "...", "from": "default", "to": "auto-col", "new_collection": true, "status": "planned|moved|unchanged|skipped" } ],
+  "duplicates": [ { "score": 0.93, "keep": {...}, "remove": {...}, "status": "planned|merged|not_duplicate" } ],
+  "consolidated": [ { "cluster_size": 4, "members": ["note:a", "..."], "title": "蒸馏笔记", "preview": "...", "status": "planned|consolidated" } ],
+  "skipped": [],
+  "errors": [],
+  "elapsed_ms": 1234
+}
+```
 
 ---
 

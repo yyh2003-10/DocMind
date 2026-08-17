@@ -14,17 +14,30 @@ paddleocr 创建会话时报告 ``LoadLibrary failed for cudnn64_9.dll`` / WinEr
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import threading
 from pathlib import Path
 
 _registered = False
 _lock = threading.Lock()
 
+# onnxruntime-gpu 1.28 存在 cu12（PyPI 标准 wheel）与 cu13（本机自定义构建）两种，
+# 各自需要对应版本的 CUDA 运行时。按 DLL 名区分：cudart64_13.dll → cu13，
+# cudart64_12.dll → cu12。检测时优先 cu13（构建方 dev 环境），再回退 cu12。
+_CUDA_RUNTIME_DLLS: tuple[tuple[str, str], ...] = (
+    ("cudart64_13.dll", "cu13"),
+    ("cudart64_12.dll", "cu12"),
+)
+
 
 def register_nvidia_dll_dirs() -> None:
     """注册 site-packages/nvidia/<pkg>/bin 到 DLL 搜索路径（幂等、线程安全）。
 
     非 Windows 平台直接返回；找不到 nvidia 目录时静默跳过。
+    注意：cu12/cu13 的 ``<pkg>/bin`` 目录是共享的（同名 cudnn64_9.dll），
+    因此这里只负责把目录加进搜索路径，不做版本过滤 —— 版本一致性由
+    :func:`cuda_runtime_ready` 预检 + ``system_env`` 诊断兜底。
     """
     global _registered
     if _registered:
@@ -56,23 +69,82 @@ def register_nvidia_dll_dirs() -> None:
         _registered = True
 
 
-def cuda_runtime_ready() -> bool:
+def cuda_runtime_ready() -> tuple[bool, str]:
     """检测 onnxruntime 所需的 CUDA 运行时是否真正就绪（Windows）。
 
-    onnxruntime-gpu 1.28 是 CUDA 13 构建，依赖 ``cudart64_13.dll`` 等
-    cu13 运行时。当环境里只有 cu12 运行时（例如与 paddle cu12 共存）时，
-    直接把 CUDAExecutionProvider 交给 onnxruntime 会加载到错误版本的
-    cudnn/cublas，在 C 层直接崩溃（Python 无法捕获、进程退出）。
-    因此选 CUDA provider 前必须预检：cu13 运行时缺失就回退 CPU。
+    返回 ``(就绪, 版本标签)``，版本标签为 ``cu13`` / ``cu12`` / 空字符串。
 
-    非 Windows 平台返回 True（由 onnxruntime 自行管理系统库路径）。
+    onnxruntime-gpu 1.28 有 cu12（PyPI 标准 wheel）与 cu13（自定义构建）两种
+    变体。当环境里只有 cu12 运行时（例如与 paddle cu12 共存）时，直接把
+    CUDAExecutionProvider 交给 cu13 构建的 onnxruntime 会加载到错误版本的
+    cudnn/cublas，在 C 层直接崩溃（Python 无法捕获、进程退出）。
+    因此选 CUDA provider 前必须预检：对应版本的运行时缺失就回退 CPU。
+
+    非 Windows 平台返回 ``(True, "cu13")``（由 onnxruntime 自行管理系统库路径）。
     """
     if os.name != "nt":
-        return True
+        return True, "cu13"
+    # 先注册 nvidia/<pkg>/bin 搜索路径，DLL 才可能被 LoadLibrary 找到
+    register_nvidia_dll_dirs()
     try:
         import ctypes  # noqa: PLC0415
 
-        ctypes.WinDLL("cudart64_13.dll")
-        return True
-    except Exception:  # noqa: BLE001 — 找不到 cudart64_13 即视为运行时未就绪
-        return False
+        for dll_name, tag in _CUDA_RUNTIME_DLLS:
+            try:
+                ctypes.WinDLL(dll_name)
+                return True, tag
+            except OSError:
+                continue
+    except Exception:  # noqa: BLE001 — 任何异常均视为运行时未就绪
+        return False, ""
+    return False, ""
+
+
+def get_nvidia_driver_info() -> dict[str, str] | None:
+    """探测 NVIDIA 显卡信息（GPU 名 / 驱动版本 / CUDA 驱动版本）。
+
+    返回 ``{"gpu_name": ..., "driver_version": ..., "cuda_driver_version": ...}``；
+    nvidia-smi 缺失、无 NVIDIA 显卡或超时失败时返回 ``None``。
+    """
+    if shutil.which("nvidia-smi") is None:
+        return None
+    try:
+        gpu = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,driver_version",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            errors="replace",
+        )
+        if gpu.returncode != 0 or not gpu.stdout.strip():
+            return None
+        parts = [p.strip() for p in gpu.stdout.splitlines()[0].split(",")]
+        gpu_name = parts[0] if parts else ""
+        driver_version = parts[1] if len(parts) > 1 else ""
+
+        # CUDA 驱动版本取自 nvidia-smi 头部（如 "CUDA Version: 13.2"）
+        cuda_driver_version = ""
+        full = subprocess.run(
+            ["nvidia-smi"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            errors="replace",
+        )
+        for line in full.stdout.splitlines():
+            if "CUDA Version" in line:
+                cuda_driver_version = (
+                    line.split("CUDA Version:", 1)[-1].strip().rstrip("|").strip()
+                )
+                break
+        return {
+            "gpu_name": gpu_name,
+            "driver_version": driver_version,
+            "cuda_driver_version": cuda_driver_version,
+        }
+    except Exception:  # noqa: BLE001 — 探测失败返回 None，由诊断层处理
+        return None

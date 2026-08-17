@@ -151,7 +151,11 @@ class StoredChunk:
 
 @dataclass(frozen=True)
 class StoredDocument:
-    """存储中的文档记录。"""
+    """存储中的文档记录。
+
+    title / tags / summary / enriched_at 为 AI 整理（curate）生成的元数据，
+    旧库迁移后为 NULL；tags 在库中以 JSON 文本存储，读出时解析为列表。
+    """
 
     id: str
     source: str
@@ -163,6 +167,10 @@ class StoredDocument:
     chunk_count: int
     created_at: str
     updated_at: str
+    title: str | None = None
+    tags: list[str] | None = None
+    summary: str | None = None
+    enriched_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -189,6 +197,10 @@ CREATE TABLE IF NOT EXISTS documents (
     chunk_count   INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT    NOT NULL,
     updated_at    TEXT    NOT NULL,
+    title         TEXT,                         -- AI 生成标题（curate）
+    tags          TEXT,                         -- AI 标签，JSON 数组文本（curate）
+    summary       TEXT,                         -- AI 摘要（curate）
+    enriched_at   TEXT,                         -- 最近一次 AI 整理时间（curate）
     UNIQUE (collection, source)
 );
 CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection);
@@ -277,6 +289,8 @@ class VectorStore:
 
                 # 建表
                 conn.executescript(_SCHEMA_SQL)
+                # 旧库补齐 AI 整理元数据列（幂等；新库建表已含，此处为 no-op）
+                self._migrate_documents_meta(conn)
                 conn.execute(_VEC_SQL_TEMPLATE.format(dim=self.embedding_dim))
                 # 维度以磁盘上已有表的实际建表 SQL 为准：CREATE ... IF NOT
                 # EXISTS 在表已存在时静默跳过，而构造传入的维度可能仍是
@@ -393,6 +407,29 @@ class VectorStore:
     def fts_available(self) -> bool:
         """BM25 (FTS5) 是否可用。"""
         return self._fts_available
+
+    # --- schema 迁移 ---
+    # documents 表 AI 整理元数据列（curate 功能）。旧库缺列时补齐。
+    _DOCUMENTS_META_COLUMNS: tuple[tuple[str, str], ...] = (
+        ("title", "TEXT"),
+        ("tags", "TEXT"),
+        ("summary", "TEXT"),
+        ("enriched_at", "TEXT"),
+    )
+
+    @staticmethod
+    def _migrate_documents_meta(conn: sqlite3.Connection) -> None:
+        """documents 表幂等补齐 AI 整理元数据列（ALTER TABLE ADD COLUMN）。
+
+        CREATE TABLE IF NOT EXISTS 对已存在的旧表是 no-op，缺的列需在这里
+        显式补上；重复调用安全（已存在的列跳过）。
+        """
+        existing = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        for name, decl in VectorStore._DOCUMENTS_META_COLUMNS:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE documents ADD COLUMN {name} {decl}")
 
     # --- 写入 ---
     @_retry_on_locked
@@ -681,8 +718,10 @@ class VectorStore:
                 chunk_ids,
             )
             if self._fts_available:
+                # chunk_id 列 TEXT affinity 存的是文本，与整型参数直接比较
+                # 永不相等（删除会静默漏删 FTS 行），必须 CAST 后匹配
                 conn.execute(
-                    f"DELETE FROM bm25_index WHERE chunk_id IN ({placeholders})",
+                    f"DELETE FROM bm25_index WHERE CAST(chunk_id AS INTEGER) IN ({placeholders})",
                     chunk_ids,
                 )
             conn.execute(
@@ -725,10 +764,10 @@ class VectorStore:
                         f"DELETE FROM vec_chunks WHERE id IN ({placeholders})",
                         chunk_ids,
                     )
-                    # 删 FTS
+                    # 删 FTS（chunk_id TEXT affinity，需 CAST 才能匹配整型参数）
                     if self._fts_available:
                         conn.execute(
-                            f"DELETE FROM bm25_index WHERE chunk_id IN ({placeholders})",
+                            f"DELETE FROM bm25_index WHERE CAST(chunk_id AS INTEGER) IN ({placeholders})",
                             chunk_ids,
                         )
                     # 删 meta
@@ -769,6 +808,162 @@ class VectorStore:
                 raise
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"按文件名删除失败: {e}") from e
+
+    # --- AI 整理（curate）写入 ---
+    @_retry_on_locked
+    def update_document_meta(
+        self,
+        document_id: str,
+        title: str | None = None,
+        tags: list[str] | None = None,
+        summary: str | None = None,
+        enriched_at: str | None = None,
+    ) -> bool:
+        """更新文档的 AI 整理元数据（title/tags/summary/enriched_at，部分更新）。
+
+        tags 序列化为 JSON 文本存储；enriched_at 传 None 时不覆盖原值。
+        同时刷新 updated_at。
+
+        Returns:
+            True = 更新成功；False = 文档不存在。
+        """
+        with self._lock:
+            self._require_open()
+            try:
+                sets: list[str] = ["updated_at = ?"]
+                params: list[Any] = [_now_iso()]
+                if title is not None:
+                    sets.append("title = ?")
+                    params.append(title)
+                if tags is not None:
+                    sets.append("tags = ?")
+                    params.append(json.dumps(tags, ensure_ascii=False))
+                if summary is not None:
+                    sets.append("summary = ?")
+                    params.append(summary)
+                if enriched_at is not None:
+                    sets.append("enriched_at = ?")
+                    params.append(enriched_at)
+                params.append(document_id)
+                cur = self._conn.execute(
+                    f"UPDATE documents SET {', '.join(sets)} WHERE id = ?",
+                    params,
+                )
+                return cur.rowcount > 0
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"更新文档元数据失败: {e}") from e
+
+    @_retry_on_locked
+    def update_chunk_extra(
+        self,
+        chunk_id: int,
+        extra_dict: dict[str, Any],
+    ) -> bool:
+        """更新分块的 extra JSON 字段（部分合并，不覆盖其他 key）。
+
+        用于笔记批注等场景，app 层只需传 {key: value}，已有 key 保留。
+
+        Returns:
+            True = 更新成功（chunk 存在）；False = chunk 不存在。
+        """
+        with self._lock:
+            self._require_open()
+            try:
+                # 单事务包裹 read-modify-write,防止跨进程并发 lost update
+                # (与 replace_document / move_document 等写方法的事务模式一致)
+                conn = self._conn
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    row = conn.execute(
+                        "SELECT extra FROM chunks_meta WHERE id = ?", (chunk_id,)
+                    ).fetchone()
+                    if row is None:
+                        conn.execute("ROLLBACK")
+                        return False
+                    current = json.loads(row[0]) if row[0] else {}
+                    current.update(extra_dict)
+                    conn.execute(
+                        "UPDATE chunks_meta SET extra = ? WHERE id = ?",
+                        (json.dumps(current, ensure_ascii=False), chunk_id),
+                    )
+                    conn.execute("COMMIT")
+                    return True
+                except Exception:
+                    conn.execute("ROLLBACK")
+                    raise
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"更新分块 extra 失败: {e}") from e
+
+    @_retry_on_locked
+    def move_document(self, document_id: str, new_collection: str) -> bool:
+        """把文档移动到另一个集合（单事务同步 documents / chunks_meta / bm25_index）。
+
+        bm25_index 的 collection 是 UNINDEXED 列但参与检索过滤，必须同步更新，
+        否则移动后 BM25 一路仍按旧集合过滤、结果与向量检索不一致。
+
+        Returns:
+            True = 已移动；False = 文档不存在或已在目标集合（no-op）。
+
+        Raises:
+            StoreError: 目标集合已有同名 source（UNIQUE(collection, source) 冲突）
+                或数据库错误。
+        """
+        new_collection = (new_collection or "").strip()
+        if not new_collection:
+            raise StoreError("目标集合名不能为空")
+
+        with self._lock:
+            self._require_open()
+            conn = self._conn
+            try:
+                row = conn.execute(
+                    "SELECT collection FROM documents WHERE id = ?",
+                    (document_id,),
+                ).fetchone()
+                if row is None or row[0] == new_collection:
+                    return False
+
+                conn.execute("BEGIN")
+                conn.execute(
+                    "UPDATE documents SET collection = ?, updated_at = ? WHERE id = ?",
+                    (new_collection, _now_iso(), document_id),
+                )
+                chunk_ids = [
+                    r[0] for r in conn.execute(
+                        "SELECT id FROM chunks_meta WHERE document_id = ?",
+                        (document_id,),
+                    ).fetchall()
+                ]
+                if chunk_ids:
+                    conn.execute(
+                        "UPDATE chunks_meta SET collection = ? WHERE document_id = ?",
+                        (new_collection, document_id),
+                    )
+                    if self._fts_available:
+                        placeholders = ",".join("?" * len(chunk_ids))
+                        # chunk_id 列 TEXT affinity 会把整数值存成文本，
+                        # 与整型参数直接比较永不相等，必须 CAST 后再匹配
+                        conn.execute(
+                            f"UPDATE bm25_index SET collection = ? "
+                            f"WHERE CAST(chunk_id AS INTEGER) IN ({placeholders})",
+                            [new_collection, *chunk_ids],
+                        )
+                conn.execute("COMMIT")
+                return True
+            except StoreError:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            except Exception as e:  # noqa: BLE001
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise StoreError(
+                    f"移动文档失败: {e}（若为唯一约束冲突，目标集合已存在同名文档）"
+                ) from e
 
     # --- 查询 ---
     def vector_search(
@@ -1053,12 +1248,17 @@ class VectorStore:
         offset: int = 0,
         format: str | None = None,
         sort: str = "created_at_desc",
+        q: str | None = None,
     ) -> list[StoredDocument]:
-        """列出文档（可按 collection / format 过滤，sort 白名单排序）。"""
+        """列出文档（可按 collection / format / q 过滤，sort 白名单排序）。"""
         with self._lock:
             self._require_open()
             try:
-                sql = "SELECT id, source, collection, format, file_hash, size_bytes, page_count, chunk_count, created_at, updated_at FROM documents"
+                sql = (
+                    "SELECT id, source, collection, format, file_hash, size_bytes,"
+                    " page_count, chunk_count, created_at, updated_at,"
+                    " title, tags, summary, enriched_at FROM documents"
+                )
                 params: list[Any] = []
                 conds: list[str] = []
                 if collection:
@@ -1067,28 +1267,26 @@ class VectorStore:
                 if format:
                     conds.append("format = ?")
                     params.append(format)
+                if q:
+                    conds.append("(source LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\')")
+                    # 转义 LIKE 通配符,避免用户输入的 % / _ 被当作通配符
+                    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    pattern = f"%{escaped}%"
+                    params.extend([pattern, pattern, pattern])
                 if conds:
                     sql += " WHERE " + " AND ".join(conds)
                 order = self.SORT_CLAUSES.get(sort, "created_at DESC")
                 sql += f" ORDER BY {order} LIMIT ? OFFSET ?"
                 params.extend([limit, offset])
                 cur = self._conn.execute(sql, params)
-                rows = cur.fetchall()
-                return [
-                    StoredDocument(
-                        id=r[0], source=r[1], collection=r[2], format=r[3],
-                        file_hash=r[4], size_bytes=r[5], page_count=r[6],
-                        chunk_count=r[7], created_at=r[8], updated_at=r[9],
-                    )
-                    for r in rows
-                ]
+                return [self._row_to_document(r) for r in cur.fetchall()]
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"列出文档失败: {e}") from e
 
     def count_documents(
-        self, collection: str | None = None, format: str | None = None
+        self, collection: str | None = None, format: str | None = None, q: str | None = None
     ) -> int:
-        """统计文档数（可按 collection / format 过滤）。"""
+        """统计文档数（可按 collection / format / q 过滤）。"""
         with self._lock:
             self._require_open()
             try:
@@ -1100,6 +1298,11 @@ class VectorStore:
                 if format:
                     conds.append("format = ?")
                     params.append(format)
+                if q:
+                    conds.append("(source LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\')")
+                    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    pattern = f"%{escaped}%"
+                    params.extend([pattern, pattern, pattern])
                 sql = "SELECT COUNT(*) FROM documents"
                 if conds:
                     sql += " WHERE " + " AND ".join(conds)
@@ -1117,20 +1320,34 @@ class VectorStore:
                     """
                     SELECT id, source, collection, format, file_hash,
                            size_bytes, page_count, chunk_count,
-                           created_at, updated_at
+                           created_at, updated_at, title, tags, summary, enriched_at
                     FROM documents WHERE id = ?
                     """,
                     (document_id,),
                 ).fetchone()
                 if row is None:
                     return None
-                return StoredDocument(
-                    id=row[0], source=row[1], collection=row[2], format=row[3],
-                    file_hash=row[4], size_bytes=row[5], page_count=row[6],
-                    chunk_count=row[7], created_at=row[8], updated_at=row[9],
-                )
+                return self._row_to_document(row)
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"获取文档失败: {e}") from e
+
+    @staticmethod
+    def _row_to_document(row: Sequence) -> StoredDocument:
+        """把 SELECT 行（14 列，含 AI 整理元数据）转为 StoredDocument。"""
+        tags: list[str] | None = None
+        if row[11]:
+            try:
+                parsed = json.loads(row[11])
+                if isinstance(parsed, list):
+                    tags = [str(t) for t in parsed]
+            except (ValueError, TypeError):
+                tags = None
+        return StoredDocument(
+            id=row[0], source=row[1], collection=row[2], format=row[3],
+            file_hash=row[4], size_bytes=row[5], page_count=row[6],
+            chunk_count=row[7], created_at=row[8], updated_at=row[9],
+            title=row[10], tags=tags, summary=row[12], enriched_at=row[13],
+        )
 
     def find_document_id_by_hash(
         self, file_hash: str, collection: str

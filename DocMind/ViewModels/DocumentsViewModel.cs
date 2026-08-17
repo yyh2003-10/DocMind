@@ -11,6 +11,8 @@ public partial class DocumentsViewModel : ViewModelBase
     private readonly NotificationService _notifications;
 
     private string? _collection;
+    private string? _searchQuery;
+    private string? _filterFormat;
     private int _page = 1;
     private const int PageSize = 20;
     private int _total;
@@ -18,6 +20,8 @@ public partial class DocumentsViewModel : ViewModelBase
     private string _statusMessage = "就绪";
     private Document? _selectedDocument;
     private DocumentDetail? _detail;
+    /// <summary>搜索防抖计时器。</summary>
+    private CancellationTokenSource? _searchDebounceCts;
     /// <summary>当前详情已加载的分块上限（每次「加载更多」递增）。</summary>
     private int _detailChunkLimit = 20;
     private const int DetailChunkStep = 30;
@@ -32,6 +36,7 @@ public partial class DocumentsViewModel : ViewModelBase
         _notifications = notifications;
         Title = "文档库";
         Documents = new ObservableCollection<Document>();
+        Documents.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasNoDocuments));
     }
 
     // ===================== 导航激活自动加载 =====================
@@ -57,6 +62,55 @@ public partial class DocumentsViewModel : ViewModelBase
     {
         get => _collection;
         set => SetProperty(ref _collection, value);
+    }
+
+    /// <summary>搜索关键词（文件名/标题模糊匹配）。输入时 300ms 防抖自动搜索。</summary>
+    public string? SearchQuery
+    {
+        get => _searchQuery;
+        set
+        {
+            if (SetProperty(ref _searchQuery, value))
+            {
+                _page = 1;
+                OnPropertyChanged(nameof(PageInfo));
+                OnPropertyChanged(nameof(CanGoPrev));
+                OnPropertyChanged(nameof(CanGoNext));
+                DebounceSearch();
+            }
+        }
+    }
+
+    /// <summary>文档格式过滤（null=全部, pdf/docx/xlsx/pptx/md/html/code 等）。</summary>
+    public string? FilterFormat
+    {
+        get => _filterFormat;
+        set
+        {
+            if (SetProperty(ref _filterFormat, value))
+            {
+                _page = 1;
+                OnPropertyChanged(nameof(PageInfo));
+                OnPropertyChanged(nameof(CanGoPrev));
+                OnPropertyChanged(nameof(CanGoNext));
+                _ = RefreshAsync();
+            }
+        }
+    }
+
+    private async void DebounceSearch()
+    {
+        _searchDebounceCts?.Cancel();
+        _searchDebounceCts = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(300, _searchDebounceCts.Token);
+            await RefreshAsync();
+        }
+        catch (TaskCanceledException)
+        {
+            // 搜索词继续变化，不计时器重置
+        }
     }
 
     public int Page
@@ -111,6 +165,9 @@ public partial class DocumentsViewModel : ViewModelBase
 
     /// <summary>文档列表。</summary>
     public ObservableCollection<Document> Documents { get; }
+
+    /// <summary>文档列表为空时显示空态提示。</summary>
+    public bool HasNoDocuments => Documents.Count == 0;
 
     /// <summary>当前选中文档。</summary>
     public Document? SelectedDocument
@@ -222,7 +279,7 @@ public partial class DocumentsViewModel : ViewModelBase
         try
         {
             var col = string.IsNullOrWhiteSpace(Collection) ? null : Collection.Trim();
-            var resp = await _apiService.ListDocumentsAsync(collection: col, page: Page, pageSize: PageSize);
+            var resp = await _apiService.ListDocumentsAsync(collection: col, page: Page, pageSize: PageSize, format: FilterFormat, q: SearchQuery);
 
             sw.Stop();
             Documents.Clear();
@@ -362,6 +419,61 @@ public partial class DocumentsViewModel : ViewModelBase
 
         DebugLog.Info($"分块搜索定位: chunkIndex={chunk.ChunkIndex} query='{query}'", "Documents");
         ChunkSearchRequested?.Invoke(query);
+    }
+
+    /// <summary>保存分块批注。读取用户在 TextBox 中输入的 EditingAnnotation,空文本 = 清除批注。</summary>
+    [RelayCommand]
+    private async Task SaveAnnotationAsync(Chunk? chunk)
+    {
+        if (chunk is null)
+        {
+            return;
+        }
+        var text = chunk.EditingAnnotation ?? "";
+        try
+        {
+            await _apiService.UpsertChunkAnnotationAsync(chunk.ChunkId, text, ct: default);
+            // 保存成功后更新本地 Extra,使 HasSavedAnnotation / SavedAnnotation 同步
+            if (chunk.Extra is not null)
+            {
+                chunk.Extra["annotation"] = text;
+            }
+            // 触发 INPC 刷新 HasSavedAnnotation(删除按钮可见性)
+            chunk.OnExternalChanged();
+            StatusMessage = string.IsNullOrEmpty(text)
+                ? $"批注已清除（chunk #{chunk.ChunkIndex}）"
+                : $"批注已保存（chunk #{chunk.ChunkIndex}）";
+            DebugLog.Info($"保存批注成功: chunkId={chunk.ChunkId} chunkIndex={chunk.ChunkIndex} len={text.Length}", "Documents");
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"保存批注失败: {ex.Message}";
+            DebugLog.Error($"保存批注失败: chunkId={chunk.ChunkId}: {ex.Message}", "Documents", ex);
+        }
+    }
+
+    /// <summary>删除分块批注:清空 EditingAnnotation + 调后端清除。</summary>
+    [RelayCommand]
+    private async Task DeleteAnnotationAsync(Chunk? chunk)
+    {
+        if (chunk is null)
+        {
+            return;
+        }
+        try
+        {
+            await _apiService.UpsertChunkAnnotationAsync(chunk.ChunkId, "", ct: default);
+            chunk.EditingAnnotation = null;
+            chunk.Extra?.Remove("annotation");
+            chunk.OnExternalChanged();
+            StatusMessage = $"批注已删除（chunk #{chunk.ChunkIndex}）";
+            DebugLog.Info($"删除批注成功: chunkId={chunk.ChunkId}", "Documents");
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"删除批注失败: {ex.Message}";
+            DebugLog.Error($"删除批注失败: chunkId={chunk.ChunkId}: {ex.Message}", "Documents", ex);
+        }
     }
 
     /// <summary>删除选中文档（确认后）。</summary>

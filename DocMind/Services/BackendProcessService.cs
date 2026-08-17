@@ -61,7 +61,14 @@ public sealed class BackendProcessService : IDisposable
         // 有则直接复用，不再拉起新进程——否则新进程因端口占用立即退出，
         // MonitorAsync 会把状态灯翻回离线，造成"后端明明在线却显示离线"。
         DebugLog.Debug($"启动后端流程开始: State={State} Url={_settings.BackendUrl}", "Backend");
-        if (await ProbeHealthOnceAsync(ct))
+        
+        // 开发与调试环境下：优先清理历史遗留的旧后端孤儿进程，确保实时加载最新 Python 源码
+        if (_settings.AutoStartBackend && (_settings.BackendUrl.Contains("127.0.0.1") || _settings.BackendUrl.Contains("localhost")))
+        {
+            KillProcessOccupyingPort(ExtractPort());
+            await Task.Delay(200, ct);
+        }
+        else if (await ProbeHealthOnceAsync(ct))
         {
             DebugLog.Info("健康探测通过：复用 URL 上已有的后端实例，不拉起子进程", "Backend");
             SetState(BackendState.Online);
@@ -112,11 +119,24 @@ public sealed class BackendProcessService : IDisposable
         }
     }
 
+    /// <summary>强力重启后端：彻底清理旧孤儿进程并重新拉起最新子进程。</summary>
+    public async Task<bool> RestartAsync(
+        IProgress<string>? progress = null,
+        CancellationToken ct = default)
+    {
+        DebugLog.Info("执行后端强力重启...", "Backend");
+        await StopAsync(ct);
+        KillProcessOccupyingPort(ExtractPort());
+        await Task.Delay(500, ct);
+        return await StartAsync(progress, ct);
+    }
+
     /// <summary>优雅退出后端：先 stdin 关闭 / 等待 5s，再强制 kill。</summary>
     public async Task StopAsync(CancellationToken ct = default)
     {
-        if (State == BackendState.Offline)
+        if (State == BackendState.Offline && _python == null)
         {
+            KillProcessOccupyingPort(ExtractPort());
             return;
         }
         DebugLog.Info($"停止后端流程开始: State={State} PID={_python?.Id.ToString() ?? "-"}", "Backend");
@@ -140,6 +160,25 @@ public sealed class BackendProcessService : IDisposable
         // 但仍需探测外部已运行的后端，否则状态灯永远 Offline。
         try
         {
+            var actualPort = TryResolveActualPort();
+            if (actualPort is not null && actualPort != ExtractPort())
+            {
+                try
+                {
+                    var targetUrl = $"{ExtractScheme()}://{ExtractHost()}:{actualPort.Value}/v1/health";
+                    using var portResp = await _healthClient.GetAsync(targetUrl, ct);
+                    if (portResp.IsSuccessStatusCode)
+                    {
+                        SwitchBackendUrl(actualPort.Value);
+                        SetState(BackendState.Online);
+                        StartHealthMonitor();
+                        return;
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch { /* fallback */ }
+            }
+
             using var resp = await _healthClient.GetAsync(
                 $"{_settings.BackendUrl.TrimEnd('/')}/v1/health", ct);
             SetState(resp.IsSuccessStatusCode
@@ -274,7 +313,9 @@ public sealed class BackendProcessService : IDisposable
         }
         if (!string.IsNullOrWhiteSpace(_settings.LlmApiKey))
         {
-            psi.Environment["DOC2MIND_LLM_API_KEY"] = _settings.LlmApiKey.Trim();
+            // App.LoadSettings 正常已把单例解密为明文；此处再过一次 Unprotect 防御
+            // （幂等：明文原样返回），避免单例意外持密文时把 dpapi:v1:… 注进环境变量
+            psi.Environment["DOC2MIND_LLM_API_KEY"] = SecretProtector.Unprotect(_settings.LlmApiKey)!.Trim();
             injectedEnv.Add("DOC2MIND_LLM_API_KEY=<已注入，值略>");
         }
         if (!string.IsNullOrWhiteSpace(_settings.LlmBaseUrl))
@@ -293,6 +334,26 @@ public sealed class BackendProcessService : IDisposable
         injectedEnv.Add($"DOC2MIND_LLM_MAX_TOKENS={psi.Environment["DOC2MIND_LLM_MAX_TOKENS"]}");
         psi.Environment["DOC2MIND_RAG_TOP_K"] = _settings.RagTopK.ToString();
         injectedEnv.Add($"DOC2MIND_RAG_TOP_K={psi.Environment["DOC2MIND_RAG_TOP_K"]}");
+        if (!string.IsNullOrWhiteSpace(_settings.RagSystemPrompt))
+        {
+            psi.Environment["DOC2MIND_RAG_SYSTEM_PROMPT"] = _settings.RagSystemPrompt.Trim();
+            injectedEnv.Add("DOC2MIND_RAG_SYSTEM_PROMPT=<已注入，值略>");
+        }
+        psi.Environment["DOC2MIND_RAG_MAX_HISTORY_TOKENS"] = _settings.RagMaxHistoryTokens.ToString();
+        injectedEnv.Add($"DOC2MIND_RAG_MAX_HISTORY_TOKENS={psi.Environment["DOC2MIND_RAG_MAX_HISTORY_TOKENS"]}");
+
+        if (_settings.WatchPaths != null && _settings.WatchPaths.Count > 0)
+        {
+            var validPaths = _settings.WatchPaths.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim());
+            var joined = string.Join(",", validPaths);
+            if (!string.IsNullOrEmpty(joined))
+            {
+                psi.Environment["DOC2MIND_WATCH_PATHS"] = joined;
+                injectedEnv.Add($"DOC2MIND_WATCH_PATHS={joined}");
+            }
+        }
+        psi.Environment["DOC2MIND_WATCH_DEBOUNCE_SECONDS"] = _settings.WatchDebounceSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        injectedEnv.Add($"DOC2MIND_WATCH_DEBOUNCE_SECONDS={psi.Environment["DOC2MIND_WATCH_DEBOUNCE_SECONDS"]}");
 
         DebugLog.Info($"启动后端子进程: {psi.FileName} {psi.Arguments}", "Backend");
         DebugLog.Debug($"注入环境变量 ({injectedEnv.Count} 项): {string.Join("; ", injectedEnv)}", "Backend");
@@ -312,6 +373,24 @@ public sealed class BackendProcessService : IDisposable
 
         _logger?.LogInformation("启动后端：{Cmd} {Args}", psi.FileName, psi.Arguments);
         var proc = Process.Start(psi) ?? throw new InvalidOperationException("Process.Start 返回 null");
+        
+        proc.OutputDataReceived += (_, e) =>
+        {
+            if (!string.IsNullOrWhiteSpace(e.Data))
+            {
+                DebugLog.Info($"[PyStdOut] {e.Data}", "Backend");
+            }
+        };
+        proc.ErrorDataReceived += (_, e) =>
+        {
+            if (!string.IsNullOrWhiteSpace(e.Data))
+            {
+                DebugLog.Warn($"[PyStdErr] {e.Data}", "Backend");
+            }
+        };
+        proc.BeginOutputReadLine();
+        proc.BeginErrorReadLine();
+
         DebugLog.Info($"后端子进程已启动: PID={proc.Id}", "Backend");
         return proc;
     }
@@ -403,16 +482,16 @@ public sealed class BackendProcessService : IDisposable
                 continue;
             }
 
-            var doc2mindExe = Path.Combine(scripts, "doc2mind.exe");
-            if (File.Exists(doc2mindExe))
-            {
-                return (doc2mindExe, string.Empty);
-            }
-
             var pythonExe = Path.Combine(scripts, "python.exe");
             if (File.Exists(pythonExe))
             {
                 return (pythonExe, "-m doc2mind ");
+            }
+
+            var doc2mindExe = Path.Combine(scripts, "doc2mind.exe");
+            if (File.Exists(doc2mindExe))
+            {
+                return (doc2mindExe, string.Empty);
             }
         }
         return null;
@@ -458,6 +537,19 @@ public sealed class BackendProcessService : IDisposable
         }
     }
 
+    private string ExtractScheme()
+    {
+        try
+        {
+            var u = new Uri(_settings.BackendUrl);
+            return u.Scheme;
+        }
+        catch
+        {
+            return "http";
+        }
+    }
+
     private int ExtractPort()
     {
         try
@@ -474,6 +566,24 @@ public sealed class BackendProcessService : IDisposable
     /// <summary>单次健康探测：URL 上是否已有可用的后端实例（外部/遗留实例）。</summary>
     private async Task<bool> ProbeHealthOnceAsync(CancellationToken ct)
     {
+        // 优先探测 server.port 记录的端口（若有新后端因端口顺延启动，优先对齐最新实例）
+        var actualPort = TryResolveActualPort();
+        if (actualPort is not null && actualPort != ExtractPort())
+        {
+            try
+            {
+                var targetUrl = $"{ExtractScheme()}://{ExtractHost()}:{actualPort.Value}/v1/health";
+                using var portResp = await _healthClient.GetAsync(targetUrl, ct);
+                if (portResp.IsSuccessStatusCode)
+                {
+                    SwitchBackendUrl(actualPort.Value);
+                    return true;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { /* fallback */ }
+        }
+
         try
         {
             using var resp = await _healthClient.GetAsync(
@@ -631,6 +741,32 @@ public sealed class BackendProcessService : IDisposable
         {
             try { proc.Dispose(); } catch { /* ignore */ }
             _python = null;
+            KillProcessOccupyingPort(ExtractPort());
+        }
+    }
+
+    /// <summary>强力清理占用指定端口的孤儿进程（彻底杜绝后台僵尸进程残留霸占端口）。</summary>
+    public static void KillProcessOccupyingPort(int port)
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var cmd = $"/c for /f \"tokens=5\" %a in ('netstat -aon ^| findstr \":{port} \" ^| findstr \"LISTENING\"') do taskkill /f /pid %a";
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = cmd,
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                };
+                using var p = Process.Start(psi);
+                p?.WaitForExit(3000);
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"尝试释放端口 {port} 异常: {ex.Message}", "Backend");
         }
     }
 

@@ -21,8 +21,8 @@
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="1"
                 CornerRadius="14"
-                Padding="16,12"
-                Margin="0,0,0,8">
+                Padding="16,14"
+                Margin="0,0,0,12">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
@@ -31,7 +31,7 @@
                 </Grid.ColumnDefinitions>
 
                 <TextBlock Grid.Column="0"
-                           Text="源文件"
+                           Text="源文件:"
                            Style="{StaticResource CaptionText}"
                            VerticalAlignment="Center"
                            Margin="0,0,12,0"/>
@@ -40,13 +40,16 @@
                          Text="{Binding InputPath, UpdateSourceTrigger=PropertyChanged}"
                          ToolTip="选择要转换的源文件（PDF / DOCX / XLSX / PPTX / MD / HTML …）"
                          Style="{StaticResource ReadOnlyTextBoxStyle}"
-                         VerticalContentAlignment="Center"/>
+                         VerticalContentAlignment="Center"
+                         MinHeight="36"/>
 
                 <Button Grid.Column="2"
-                        Content="选择文件…"
+                        Content="📁 选择文件…"
                         Command="{Binding PickInputCommand}"
                         Style="{StaticResource PrimaryButtonStyle}"
-                        Margin="8,0,0,0"/>
+                        Padding="14,6"
+                        MinHeight="36"
+                        Margin="12,0,0,0"/>
             </Grid>
         </Border>
 
@@ -56,62 +59,77 @@
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="1"
                 CornerRadius="14"
-                Padding="16,12"
+                Padding="16,14"
                 Margin="0,0,0,12">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
 
-                <TextBlock Grid.Column="0"
-                           Text="输出位置"
-                           Style="{StaticResource CaptionText}"
-                           VerticalAlignment="Center"
-                           Margin="0,0,12,0"/>
+                <!-- 第一行：输出位置 -->
+                <Grid Grid.Row="0" Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
 
-                <TextBox Grid.Column="1"
-                         Text="{Binding OutputPath, UpdateSourceTrigger=PropertyChanged}"
-                         ToolTip="输出文件位置（留空仅预览，不落盘）"
-                         VerticalContentAlignment="Center"
-                         Margin="0,0,8,0"/>
+                    <TextBlock Grid.Column="0"
+                               Text="输出位置:"
+                               Style="{StaticResource CaptionText}"
+                               VerticalAlignment="Center"
+                               Margin="0,0,12,0"/>
 
-                <Button Grid.Column="2"
-                        Content="另存为…"
-                        Command="{Binding PickOutputCommand}"
-                        Style="{StaticResource SecondaryButtonStyle}"
-                        Margin="0,0,12,0"/>
+                    <TextBox Grid.Column="1"
+                             Text="{Binding OutputPath, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="输出文件位置（留空仅预览，不落盘）"
+                             VerticalContentAlignment="Center"
+                             MinHeight="36"/>
 
-                <Border Grid.Column="3"
-                        Background="{StaticResource PrimaryLightBrush}"
-                        CornerRadius="4"
-                        Padding="8,4"
-                        Margin="0,0,8,0"
-                        VerticalAlignment="Center">
-                    <TextBlock Text="格式"
-                               Style="{StaticResource SmallText}"
-                               Foreground="{StaticResource PrimaryBrush}"/>
-                </Border>
+                    <Button Grid.Column="2"
+                            Content="另存为…"
+                            Command="{Binding PickOutputCommand}"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Padding="14,6"
+                            MinHeight="36"
+                            Margin="12,0,0,0"/>
+                </Grid>
 
-                <ComboBox Grid.Column="4"
-                          ItemsSource="{Binding SupportedFormats}"
-                          SelectedItem="{Binding Format}"
-                          Width="80"
-                          Margin="0,0,12,0"/>
+                <!-- 第二行：目标格式 + 操作按钮 -->
+                <Grid Grid.Row="1">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="120"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
 
-                <StackPanel Grid.Column="5" Orientation="Horizontal">
-                    <Button Content="转换"
-                            Command="{Binding ConvertCommand}"
-                            Style="{StaticResource PrimaryButtonStyle}"
-                            Margin="0,0,6,0"/>
-                    <Button Content="重置"
-                            Command="{Binding ResetCommand}"
-                            Style="{StaticResource TextButtonStyle}"/>
-                </StackPanel>
+                    <TextBlock Grid.Column="0"
+                               Text="目标格式:"
+                               Style="{StaticResource CaptionText}"
+                               VerticalAlignment="Center"
+                               Margin="0,0,8,0"/>
+
+                    <ComboBox Grid.Column="1"
+                              ItemsSource="{Binding SupportedFormats}"
+                              SelectedItem="{Binding Format}"
+                              VerticalAlignment="Center"/>
+
+                    <!-- 右侧操作按钮组 -->
+                    <StackPanel Grid.Column="3" Orientation="Horizontal">
+                        <Button Content="⚡ 开始转换"
+                                Command="{Binding ConvertCommand}"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                Padding="20,6"
+                                MinHeight="36"
+                                Margin="0,0,8,0"/>
+                        <Button Content="重置"
+                                Command="{Binding ResetCommand}"
+                                Style="{StaticResource TextButtonStyle}"
+                                Padding="12,6"/>
+                    </StackPanel>
+                </Grid>
             </Grid>
         </Border>
 
@@ -150,15 +168,23 @@
                     <TextBlock Text="预览"
                                Style="{StaticResource SubtitleText}"
                                DockPanel.Dock="Left"/>
-                    <Border DockPanel.Dock="Right"
-                            Background="{StaticResource SurfaceBrush}"
-                            CornerRadius="4"
-                            Padding="8,2"
-                            Visibility="{Binding HasInputPath, Converter={StaticResource BoolToVis}}">
-                        <TextBlock Style="{StaticResource SmallText}">
-                            <Run Text="{Binding Format, Mode=OneWay, StringFormat={}.{0}}"/>
-                        </TextBlock>
-                    </Border>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Content="📥 一键导入知识库"
+                                Command="{Binding ImportToKnowledgeBaseCommand}"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                Padding="10,3"
+                                Margin="0,0,8,0"
+                                Visibility="{Binding CanImportToKnowledgeBase, Converter={StaticResource BoolToVis}}"
+                                ToolTip="将转换落盘后的文件直接载入【导入】页面加入知识库"/>
+                        <Border Background="{StaticResource SurfaceBrush}"
+                                CornerRadius="4"
+                                Padding="8,2"
+                                Visibility="{Binding HasInputPath, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Style="{StaticResource SmallText}">
+                                <Run Text="{Binding Format, Mode=OneWay, StringFormat={}.{0}}"/>
+                            </TextBlock>
+                        </Border>
+                    </StackPanel>
                 </DockPanel>
 
                 <Border Background="{StaticResource SurfaceBrush}"

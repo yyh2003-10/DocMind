@@ -10,8 +10,9 @@
 
     <Grid Margin="0">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>   <!-- 工具条 -->
-            <RowDefinition Height="*"/>      <!-- 列表 + 详情 -->
+            <RowDefinition Height="Auto"/>   <!-- 工具条 (Row 0) -->
+            <RowDefinition Height="Auto"/>   <!-- 重建索引进度条 (Row 1) -->
+            <RowDefinition Height="*"/>      <!-- 列表 + 详情 (Row 2) -->
         </Grid.RowDefinitions>
 
         <!-- ===== 工具条 ===== -->
@@ -20,55 +21,104 @@
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="1"
                 CornerRadius="14"
-                Padding="12,10"
+                Padding="14,12"
                 Margin="0,0,0,12">
-            <DockPanel>
-                <TextBox DockPanel.Dock="Left"
-                         Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
-                         Width="140"
-                         ToolTip="集合名（可选，留空=全部集合）。集合是把文档分组：导入时给文件指定分组，搜索/看板可按分组过滤"
-                         Margin="0,0,8,0"/>
-                <Button DockPanel.Dock="Right"
-                        Content="刷新"
-                        Command="{Binding RefreshCommand}"
-                        Style="{StaticResource PrimaryButtonStyle}"
-                        Margin="8,0,0,0"/>
-                <Button DockPanel.Dock="Right"
-                        Content="删除选中"
-                        Command="{Binding DeleteCommand}"
-                        Style="{StaticResource DangerButtonStyle}"
-                        Margin="0,0,0,0"/>
-                <Button DockPanel.Dock="Right"
-                        Content="重建索引"
-                        Command="{Binding ReindexCommand}"
-                        Style="{StaticResource SecondaryButtonStyle}"
-                        Margin="0,0,8,0"/>
-                <TextBlock DockPanel.Dock="Left"
-                           Text="集合过滤"
-                           Style="{StaticResource CaptionText}"
-                           VerticalAlignment="Center"
-                           Margin="0,0,8,0"/>
-                <StackPanel Orientation="Horizontal"
-                            DockPanel.Dock="Right"
-                            Margin="0,0,8,0">
-                    <Button Content="◀"
-                            Command="{Binding PrevPageCommand}"
-                            Style="{StaticResource TextButtonStyle}"
-                            VerticalAlignment="Center"/>
-                    <TextBlock Text="{Binding PageInfo, Mode=OneWay}"
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- 第一行：集合过滤 + 文件名模糊搜索 + 格式过滤 + 刷新按钮 -->
+                <Grid Grid.Row="0" Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="130"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="100"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" Text="集合:"
                                Style="{StaticResource CaptionText}"
                                VerticalAlignment="Center"
-                               Margin="8,0"/>
-                    <Button Content="▶"
-                            Command="{Binding NextPageCommand}"
-                            Style="{StaticResource TextButtonStyle}"
-                            VerticalAlignment="Center"/>
-                </StackPanel>
-            </DockPanel>
+                               Margin="0,0,8,0"/>
+                    <TextBox Grid.Column="1"
+                             Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="集合名（可选，留空=全部集合）"
+                             Margin="0,0,12,0"/>
+
+                    <TextBox Grid.Column="2"
+                             Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                             Margin="0,0,12,0"
+                             ToolTip="按文件名/标题模糊搜索（300ms 自动搜索）"/>
+
+                    <TextBlock Grid.Column="3" Text="格式:"
+                               Style="{StaticResource CaptionText}"
+                               VerticalAlignment="Center"
+                               Margin="0,0,8,0"/>
+                    <TextBox Grid.Column="4"
+                             Text="{Binding FilterFormat, UpdateSourceTrigger=PropertyChanged}"
+                             Margin="0,0,12,0"
+                             ToolTip="格式过滤（留空=全部，可选 pdf/docx/xlsx/pptx/md/html/code）"/>
+
+                    <Button Grid.Column="5"
+                            Content="刷新"
+                            Command="{Binding RefreshCommand}"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Padding="16,6"
+                            MinHeight="36"/>
+                </Grid>
+
+                <!-- 第二行：批量操作 + 分页控制 -->
+                <Grid Grid.Row="1">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 左侧：重建索引 + 删除选中 -->
+                    <StackPanel Grid.Column="0" Orientation="Horizontal">
+                        <Button Content="⚡ 重建索引"
+                                Command="{Binding ReindexCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="12,6"
+                                MinHeight="32"
+                                Margin="0,0,8,0"
+                                ToolTip="使用当前配置的模型全量重新生成向量嵌入"/>
+                        <Button Content="🗑 删除选中"
+                                Command="{Binding DeleteCommand}"
+                                Style="{StaticResource DangerButtonStyle}"
+                                Padding="12,6"
+                                MinHeight="32"
+                                ToolTip="从知识库中删除当前选中的文档及其分块数据"/>
+                    </StackPanel>
+
+                    <!-- 右侧：翻页控件 -->
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Content="◀"
+                                Command="{Binding PrevPageCommand}"
+                                Style="{StaticResource TextButtonStyle}"
+                                Padding="8,4"
+                                VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding PageInfo, Mode=OneWay}"
+                                   Style="{StaticResource CaptionText}"
+                                   VerticalAlignment="Center"
+                                   Margin="8,0"/>
+                        <Button Content="▶"
+                                Command="{Binding NextPageCommand}"
+                                Style="{StaticResource TextButtonStyle}"
+                                Padding="8,4"
+                                VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Grid>
+            </Grid>
         </Border>
 
-        <!-- ===== 重建索引进度条（忙碌时显示） ===== -->
-        <Border Grid.Row="0"
+        <!-- ===== 重建索引进度条（忙碌时显示，独立 Row 1 防遮挡） ===== -->
+        <Border Grid.Row="1"
                 Background="{StaticResource SurfaceBrush}"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="1"
@@ -94,8 +144,8 @@
             </Grid>
         </Border>
 
-        <!-- ===== 列表 + 详情 ===== -->
-        <Grid Grid.Row="1">
+        <!-- ===== 列表 + 详情 (Row 2) ===== -->
+        <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="1.6*"/>
                 <ColumnDefinition Width="12"/>
@@ -109,16 +159,17 @@
                     BorderThickness="1"
                     CornerRadius="14"
                     Padding="14">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Top"
-                               Text="文档列表"
+                <Grid>
+                    <TextBlock Text="文档列表"
                                Style="{StaticResource SubtitleText}"
-                               Margin="0,0,0,12"/>
+                               Margin="0,0,0,12"
+                               VerticalAlignment="Top"/>
 
                     <ListBox ItemsSource="{Binding Documents}"
                              SelectedItem="{Binding SelectedDocument}"
                              BorderThickness="0"
-                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"
+                             Margin="0,28,0,0">
                         <ListBox.ItemTemplate>
                             <DataTemplate DataType="{x:Type m:Document}">
                                 <Border Background="{StaticResource SurfaceBrush}"
@@ -131,13 +182,9 @@
                                             <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
 
-                                        <StackPanel Grid.Row="0" Orientation="Horizontal">
-                                            <TextBlock Text="{Binding Source, Mode=OneWay}"
-                                                       FontWeight="SemiBold"
-                                                       Style="{StaticResource BodyText}"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       MaxWidth="280"/>
-                                            <Border Background="{StaticResource PrimaryLightBrush}"
+                                        <DockPanel Grid.Row="0">
+                                            <Border DockPanel.Dock="Right"
+                                                    Background="{StaticResource PrimaryLightBrush}"
                                                     CornerRadius="4"
                                                     Padding="6,2"
                                                     Margin="8,0,0,0"
@@ -145,7 +192,11 @@
                                                 <TextBlock Text="{Binding Format, Mode=OneWay}"
                                                            Style="{StaticResource SmallText}"/>
                                             </Border>
-                                        </StackPanel>
+                                            <TextBlock Text="{Binding Source, Mode=OneWay}"
+                                                       FontWeight="SemiBold"
+                                                       Style="{StaticResource BodyText}"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </DockPanel>
 
                                         <StackPanel Grid.Row="1" Orientation="Horizontal"
                                                     Margin="0,4,0,0">
@@ -168,11 +219,13 @@
                     </ListBox>
 
                     <!-- 空态 -->
-                    <TextBlock Text="暂无文档，请先在「导入」页摄入内容"
-                               Style="{StaticResource SmallText}"
-                               HorizontalAlignment="Center"
-                               Margin="0,20,0,0"/>
-                </DockPanel>
+                    <Border VerticalAlignment="Center"
+                            HorizontalAlignment="Center"
+                            Visibility="{Binding HasNoDocuments, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="暂无文档，请先在「导入」页摄入内容"
+                                   Style="{StaticResource SmallText}"/>
+                    </Border>
+                </Grid>
             </Border>
 
             <!-- 详情面板 -->
@@ -304,7 +357,76 @@
                                                     </TextBlock>
                                                     <TextBlock Text="{Binding Content, Mode=OneWay}"
                                                                Style="{StaticResource SmallText}"
-                                                               TextWrapping="Wrap"/>
+                                                               TextWrapping="Wrap"
+                                                               Margin="0,4,0,0"/>
+
+                                                        <!-- 批注区域 -->
+                                                        <StackPanel Margin="0,6,0,0">
+                                                            <!-- 已保存批注显示 -->
+                                                            <TextBlock Text="{Binding SavedAnnotation, Mode=OneWay}"
+                                                                       TextWrapping="Wrap"
+                                                                       Margin="0,0,0,4">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SmallText}">
+                                                                        <Setter Property="Foreground" Value="{StaticResource WarningBrush}"/>
+                                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding HasSavedAnnotation}" Value="False">
+                                                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                            <!-- 批注输入框 + 操作按钮（自适应 Grid） -->
+                                                            <Grid Margin="0,2,0,0">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                    <ColumnDefinition Width="Auto"/>
+                                                                    <ColumnDefinition Width="Auto"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBox Grid.Column="0"
+                                                                         Text="{Binding EditingAnnotation, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                         FontSize="11"
+                                                                         Padding="6,4"
+                                                                         MinHeight="28"
+                                                                         ToolTip="输入批注后点击保存;留空保存=清除批注">
+                                                                    <TextBox.InputBindings>
+                                                                        <KeyBinding Key="Enter"
+                                                                                    Command="{Binding DataContext.SaveAnnotationCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                                    CommandParameter="{Binding}"/>
+                                                                    </TextBox.InputBindings>
+                                                                </TextBox>
+                                                                <Button Grid.Column="1"
+                                                                        Content="💾 保存"
+                                                                        Command="{Binding DataContext.SaveAnnotationCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                        CommandParameter="{Binding}"
+                                                                        Style="{StaticResource TextButtonStyle}"
+                                                                        FontSize="11"
+                                                                        Padding="8,2"
+                                                                        Margin="6,0,0,0"
+                                                                        ToolTip="保存批注（留空=清除）"/>
+                                                                <Button Grid.Column="2"
+                                                                        Content="🗑 删除"
+                                                                        Command="{Binding DataContext.DeleteAnnotationCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                        CommandParameter="{Binding}"
+                                                                        FontSize="11"
+                                                                        Padding="8,2"
+                                                                        Margin="4,0,0,0"
+                                                                        ToolTip="删除此分块的批注">
+                                                                    <Button.Style>
+                                                                        <Style TargetType="Button" BasedOn="{StaticResource TextButtonStyle}">
+                                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding HasSavedAnnotation}" Value="False">
+                                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </Button.Style>
+                                                                </Button>
+                                                            </Grid>
+                                                        </StackPanel>
                                                 </StackPanel>
                                             </Border>
                                         </DataTemplate>

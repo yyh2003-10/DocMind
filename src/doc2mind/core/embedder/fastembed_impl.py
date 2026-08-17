@@ -41,16 +41,17 @@ _MODEL_DIM: dict[str, int] = {
 def _select_providers() -> list[str] | None:
     """按优先级挑选可用的 ONNX Runtime provider。
 
-    优先级：CUDA（NVIDIA 独立显卡，且 cu13 运行时就绪）→ DirectML
+    优先级：CUDA（NVIDIA 独立显卡，且 cu12/cu13 运行时就绪）→ DirectML
     （Windows 无 CUDA 工具链时的 GPU 路径）→ 默认 CPU。只返回当前
     onnxruntime 实际可用的 provider，避免把不可用的 provider 传给
     fastembed 导致启动失败。
 
-    Windows 注意：onnxruntime-gpu 1.28 是 CUDA 13 构建。若环境只有 cu12
-    运行时（如与 paddle cu12 共存），盲目注册 nvidia/*/bin 并启用 CUDA
-    会让 onnxruntime 加载到错误版本的 cudnn，在 C 层直接崩溃（进程退出、
-    Python 无法捕获），比"找不到 cudnn 抛异常回退 CPU"更糟。
-    因此这里先预检 cu13 运行时是否就绪，缺失则不用 CUDA。
+    Windows 注意：onnxruntime-gpu 1.28 有 cu12（PyPI 标准 wheel）与 cu13
+    （自定义构建）两种变体。若运行时与构建版本不匹配（如 cu13 构建 + cu12
+    运行时共存），盲目注册 nvidia/*/bin 并启用 CUDA 会让 onnxruntime 加载到
+    错误版本的 cudnn，在 C 层直接崩溃（进程退出、Python 无法捕获），比
+    "找不到 cudnn 抛异常回退 CPU"更糟。因此这里先预检对应版本的运行时
+    是否就绪（cu13 优先、cu12 回退），缺失则不用 CUDA。
     """
     try:
         import onnxruntime as ort
@@ -68,15 +69,18 @@ def _select_providers() -> list[str] | None:
             register_nvidia_dll_dirs,
         )
 
-        if cuda_runtime_ready():
-            # 运行时就绪才注册 nvidia DLL 目录（让 onnxruntime 找得到 cu13 cudnn）
+        ready, cuda_tag = cuda_runtime_ready()
+        if ready:
+            # 运行时就绪才注册 nvidia DLL 目录（让 onnxruntime 找得到 cudnn）
             register_nvidia_dll_dirs()
-            logger.info("嵌入推理使用 GPU provider: CUDAExecutionProvider")
+            logger.info(
+                "嵌入推理使用 GPU provider: CUDAExecutionProvider (%s)", cuda_tag
+            )
             return ["CUDAExecutionProvider"]
         logger.warning(
-            "检测到 onnxruntime 需要 CUDA 13 运行时，但未找到 cudart64_13.dll，"
-            "嵌入回退 CPU。安装 nvidia-cublas-cu13 / nvidia-cuda-runtime-cu13 "
-            "后可启用 GPU。"
+            "检测到 onnxruntime-gpu 需要 CUDA 运行时，但未找到 cudart64_12/13.dll，"
+            "嵌入回退 CPU。安装 nvidia-cublas-cu12 / nvidia-cuda-runtime-cu12 "
+            "（或 cu13 同组包，需与 onnxruntime-gpu 构建版本匹配）后可启用 GPU。"
         )
     if "DmlExecutionProvider" in available:
         logger.info("嵌入推理使用 GPU provider: DmlExecutionProvider")

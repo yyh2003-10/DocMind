@@ -87,6 +87,23 @@ class OpenAIClient(LLMClient):
                 return LLMError(f"OpenAI API {action}失败: {e}")
         return LLMError(f"OpenAI API {action}失败（{hint}）: {e}")
 
+    def list_models(self, timeout: float | None = None) -> list[str]:
+        """GET /models 列出可用模型（DeepSeek / Qwen / OpenAI 等 OpenAI 兼容服务通用）。
+
+        SDK 的 models.list 返回分页游标迭代器；此处取当前页（通常已含全部
+        常用模型，下拉场景足够）。部分兼容服务未实现该接口（404），调用方
+        应提示用户手动输入模型名。
+        """
+        try:
+            resp = self._client.with_options(
+                timeout=timeout if timeout and timeout > 0 else 10.0
+            ).models.list()
+            return sorted(m.id for m in resp.data if getattr(m, "id", None))
+        except LLMError:
+            raise
+        except Exception as e:
+            raise self._wrap_api_error(e, "列出模型") from e
+
     def _do_chat(
         self,
         messages: list[dict],
@@ -131,8 +148,12 @@ class OpenAIClient(LLMClient):
                 stream=True,
             )
             for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta and delta.content:
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                if delta and getattr(delta, "content", None):
                     yield delta.content
         except LLMError:
             raise

@@ -26,8 +26,8 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         <!-- ===== 设置内容（可滚动） ===== -->
         <ScrollViewer Grid.Row="0"
                       VerticalScrollBarVisibility="Auto"
-                      Padding="0,0,0,12">
-            <StackPanel MaxWidth="600">
+                      Padding="0,0,10,12">
+            <StackPanel MaxWidth="760">
                 <!-- 页面标题 -->
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
                     <TextBlock Text="设置" Style="{StaticResource TitleText}"/>
@@ -53,7 +53,14 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                         <TextBlock Text="启动超时（秒）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding StartupTimeoutSec, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="后端进程启动等待时间"
-                                 Margin="0,0,0,0"/>
+                                 Margin="0,0,0,16"/>
+
+                        <Button Content="🔄 重启后端服务"
+                                Command="{Binding RestartBackendCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                HorizontalAlignment="Left"
+                                Padding="12,6"
+                                ToolTip="强力清理可能残留的旧进程，释放 8765 端口并重新拉起最新后端"/>
                     </StackPanel>
                 </Border>
 
@@ -84,38 +91,6 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                                   SelectedItem="{Binding EmbedModel}"
                                   ToolTip="向量化用模型；更换模型后需在后端重启后到「文档库」页重建索引"
                                   Margin="0,0,0,12"/>
-
-                        <!-- GPU 加速警告条 -->
-                        <Border Background="{StaticResource WarningLightBrush}"
-                                BorderBrush="{StaticResource WarningBrush}"
-                                BorderThickness="1"
-                                CornerRadius="8"
-                                Padding="12,8"
-                                Margin="0,0,0,16"
-                                Visibility="{Binding GpuWarning.ShowWarning, Converter={StaticResource BoolToVis}}">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="⚠" FontSize="16" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Text="当前为 CPU 模式（嵌入推理较慢）" FontWeight="SemiBold"
-                                               Foreground="{StaticResource WarningBrush}"/>
-                                    <TextBlock Text="安装 GPU 加速包可显著提升性能" FontSize="12"
-                                               Foreground="{StaticResource TextSecondaryBrush}"/>
-                                </StackPanel>
-                                <Button Content="安装 GPU 加速"
-                                        Command="{Binding GpuWarning.OpenGpuInstallCommand}"
-                                        Style="{StaticResource PrimaryButtonStyle}"
-                                        Padding="12,5"
-                                        Margin="12,0,0,0"
-                                        FontSize="12"
-                                        VerticalAlignment="Center"/>
-                                <Button Content="不再提示"
-                                        Command="{Binding GpuWarning.DismissGpuWarningCommand}"
-                                        Style="{StaticResource TextButtonStyle}"
-                                        Margin="8,0,0,0"
-                                        FontSize="12"
-                                        VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Border>
 
                         <TextBlock Text="本地模型目录（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding EmbedModelPath, UpdateSourceTrigger=PropertyChanged}"
@@ -165,6 +140,155 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                     </StackPanel>
                 </Border>
 
+                <!-- ===== GPU 加速 ===== -->
+                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,12">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                            <TextBlock Text="🔌" Style="{StaticResource SectionIcon}"/>
+                            <TextBlock Text="GPU 加速" Style="{StaticResource SubtitleText}"/>
+                            <TextBlock Text="  ✓"
+                                       Visibility="{Binding GpuWarning.GpuAvailable, Converter={StaticResource BoolToVis}}"
+                                       Foreground="{StaticResource SuccessBrush}"
+                                       FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <TextBlock Text="正在检测 GPU 环境..."
+                                   Visibility="{Binding GpuWarning.IsDiagnosing, Converter={StaticResource BoolToVis}}"
+                                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+
+                        <!-- 诊断完成后 -->
+                        <StackPanel Visibility="{Binding GpuWarning.HasDiagnosis, Converter={StaticResource BoolToVis}}">
+                            <TextBlock FontSize="12" Margin="0,0,0,4">
+                                <Run Text="状态：" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                <Run Text="{Binding GpuWarning.GpuStatusText, Mode=OneWay}" FontWeight="SemiBold"
+                                     Foreground="{Binding GpuWarning.GpuStatusBrush, Mode=OneWay}"/>
+                            </TextBlock>
+
+                            <TextBlock FontSize="12" Margin="0,0,0,4"
+                                       Visibility="{Binding GpuWarning.GpuDeviceName, Converter={StaticResource NullToVis}}">
+                                <Run Text="GPU 设备：" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                <Run Text="{Binding GpuWarning.GpuDeviceName, Mode=OneWay}"/>
+                            </TextBlock>
+
+                            <TextBlock FontSize="12" Margin="0,0,0,4"
+                                       Visibility="{Binding GpuWarning.DriverInfo, Converter={StaticResource NullToVis}}">
+                                <Run Text="驱动信息：" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                <Run Text="{Binding GpuWarning.DriverInfo, Mode=OneWay}"/>
+                            </TextBlock>
+
+                            <TextBlock FontSize="12" Margin="0,0,0,8"
+                                       Visibility="{Binding GpuWarning.GpuAvailable, Converter={StaticResource InvertBoolVis}}">
+                                <Run Text="CUDA 运行时：" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                <Run Text="{Binding GpuWarning.CudaRuntimeInfo, Mode=OneWay}"/>
+                            </TextBlock>
+
+                            <!-- 警告 -->
+                            <ItemsControl ItemsSource="{Binding GpuWarning.Warnings}"
+                                          Margin="0,0,0,8"
+                                          Visibility="{Binding GpuWarning.Warnings.Count, Converter={StaticResource ZeroToVis}}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" FontSize="11"
+                                                   Foreground="{StaticResource WarningBrush}"
+                                                   Margin="0,2" TextWrapping="Wrap"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <!-- 已安装包（仅 GPU 未启用时） -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    CornerRadius="6" Padding="10,8" Margin="0,0,0,12"
+                                    Visibility="{Binding GpuWarning.GpuAvailable, Converter={StaticResource InvertBoolVis}}">
+                                <StackPanel>
+                                    <TextBlock Text="已安装包" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,4"/>
+                                    <ItemsControl ItemsSource="{Binding GpuWarning.InstalledPackagesDisplay}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Orientation="Horizontal" Margin="0,1">
+                                                    <TextBlock FontSize="11" Margin="0,0,6,0">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding Installed}" Value="True">
+                                                                        <Setter Property="Text" Value="✓"/>
+                                                                        <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Installed}" Value="False">
+                                                                        <Setter Property="Text" Value="✗"/>
+                                                                        <Setter Property="Foreground" Value="{StaticResource WarningBrush}"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                    <TextBlock Text="{Binding Name}" FontSize="11"
+                                                               Margin="0,0,8,0" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                                    <TextBlock Text="{Binding Version}" FontSize="11"/>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 安装方案（仅 GPU 未启用时） -->
+                            <StackPanel Visibility="{Binding GpuWarning.GpuAvailable, Converter={StaticResource InvertBoolVis}}">
+                                <TextBlock Text="安装方案" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,6"/>
+                                <ComboBox ItemsSource="{Binding GpuWarning.AvailablePaths}"
+                                          SelectedValue="{Binding GpuWarning.SelectedPath}"
+                                          SelectedValuePath="Id"
+                                          Margin="0,0,0,12">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding Label}" FontSize="12" Margin="0,0,8,0"/>
+                                                <TextBlock Text="{Binding Description}" FontSize="11"
+                                                           Foreground="{StaticResource TextSecondaryBrush}"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <!-- 操作按钮 -->
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <Button Content="一键安装"
+                                            Command="{Binding GpuWarning.InstallGpuCommand}"
+                                            IsEnabled="{Binding GpuWarning.CanInstall}"
+                                            Style="{StaticResource PrimaryButtonStyle}"
+                                            Padding="16,6" Margin="0,0,8,0"/>
+                                    <Button Content="重新诊断"
+                                            Command="{Binding GpuWarning.DiagnoseCommand}"
+                                            IsEnabled="{Binding GpuWarning.IsDiagnosing, Converter={StaticResource BoolInvertConverter}}"
+                                            Style="{StaticResource TextButtonStyle}" Padding="8,6" Margin="0,0,8,0"/>
+                                    <Button Content="重启后端"
+                                            Command="{Binding GpuWarning.RestartBackendCommand}"
+                                            IsEnabled="{Binding GpuWarning.CanRestart}"
+                                            Style="{StaticResource TextButtonStyle}" Padding="8,6" Margin="0,0,8,0"/>
+                                    <Button Content="不再提示"
+                                            Command="{Binding GpuWarning.DismissGpuWarningCommand}"
+                                            Style="{StaticResource TextButtonStyle}" Padding="8,6"/>
+                                </StackPanel>
+
+                                <!-- 安装日志 -->
+                                <Border Visibility="{Binding GpuWarning.IsInstalling, Converter={StaticResource BoolToVis}}"
+                                        Margin="0,12,0,0" BorderBrush="{StaticResource BorderBrush}"
+                                        BorderThickness="1" CornerRadius="6" Padding="4">
+                                    <TextBox IsReadOnly="True" Text="{Binding GpuWarning.InstallLog, Mode=OneWay}"
+                                             FontFamily="Cascadia Mono,Consolas,Courier New" FontSize="11"
+                                             MaxHeight="180" VerticalScrollBarVisibility="Auto"
+                                             Background="Transparent" BorderThickness="0"
+                                             Foreground="{StaticResource TextSecondaryBrush}"/>
+                                </Border>
+
+                                <TextBlock Text="{Binding GpuWarning.StatusMessage}"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           FontSize="11" Margin="0,6,0,0"
+                                           Visibility="{Binding GpuWarning.StatusMessage, Converter={StaticResource NullToVis}}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
                 <!-- ===== 大模型对话 ===== -->
                 <Border Style="{StaticResource CardStyle}" Margin="0,0,0,12">
                     <StackPanel>
@@ -195,12 +319,20 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <PasswordBox Grid.Column="0"
                                          helpers:PasswordBoxHelper.BoundPassword="{Binding LlmApiKey, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="对应提供商的 API Key；Ollama 无需填写。保存时加密存储，留空 = 不修改已配置的 Key"
+                                         ToolTip="对应提供商的 API Key；Ollama 无需填写。保存时加密存储；留空 = 保留已配置的 Key，点击「清除」可删除"
                                          Margin="0,0,0,12"/>
                             <Button Grid.Column="1"
+                                    Content="清除"
+                                    Command="{Binding ClearApiKeyCommand}"
+                                    IsEnabled="{Binding HasSavedApiKey}"
+                                    Margin="8,0,0,12"
+                                    Padding="12,4"
+                                    ToolTip="清除已配置的 API Key（保存后生效：本地与后端均删除）。仅留空输入框保存不会清除，会保留原 Key"/>
+                            <Button Grid.Column="2"
                                     Content="测试连接"
                                     Command="{Binding TestConnectionCommand}"
                                     IsEnabled="{Binding IsTestingConnection, Converter={StaticResource BoolInvertConverter}}"
@@ -215,9 +347,27 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                                  Margin="0,0,0,12"/>
 
                         <TextBlock Text="模型名" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
-                        <TextBox Text="{Binding LlmModel, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="如 deepseek-chat、gpt-4o-mini、claude-sonnet-4-5、gemini-2.5-flash、llama3.2"
-                                 Margin="0,0,0,12"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <!-- 可编辑下拉：候选来自「获取模型列表」，也允许手输任意模型名 -->
+                            <ComboBox Grid.Column="0"
+                                      IsEditable="True"
+                                      Text="{Binding LlmModel, UpdateSourceTrigger=PropertyChanged}"
+                                      ItemsSource="{Binding LlmModels}"
+                                      ToolTip="点击「获取模型列表」自动拉取当前提供商可用模型（Ollama 列本地已装模型）；也可手动输入，如 deepseek-chat、gpt-4o-mini、claude-sonnet-4-5、gemini-2.5-flash、llama3.2"
+                                      Margin="0,0,0,12"/>
+                            <Button Grid.Column="1"
+                                    Content="获取模型列表"
+                                    Command="{Binding RefreshLlmModelsCommand}"
+                                    IsEnabled="{Binding IsFetchingModels, Converter={StaticResource BoolInvertConverter}}"
+                                    Margin="8,0,0,12"
+                                    Padding="12,4"
+                                    VerticalAlignment="Top"
+                                    ToolTip="用当前输入的提供商/Key/地址拉取可用模型（无需先保存）：Ollama 列出本地已安装模型；云端调各家模型列表接口"/>
+                        </Grid>
 
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -244,7 +394,27 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                         <TextBlock Text="检索引用数（RAG Top-K）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding RagTopK, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="默认 5；从知识库检索的文档片段数"
-                                 Margin="0,0,0,0"/>
+                                 Margin="0,0,0,12"/>
+
+                        <TextBlock Text="系统提示词（可选）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                        <TextBox Text="{Binding RagSystemPrompt, UpdateSourceTrigger=PropertyChanged}"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 MinHeight="72"
+                                 MaxHeight="160"
+                                 VerticalScrollBarVisibility="Auto"
+                                 ToolTip="自定义 RAG 系统提示词（人设/回答风格/输出格式）；留空使用内置默认：基于检索资料回答、标注 [N] 来源、不知道就说不知道"
+                                 Margin="0,0,0,12"/>
+                        <TextBlock Style="{StaticResource SmallText}"
+                                   Foreground="{StaticResource TextTertiaryBrush}"
+                                   Margin="0,0,0,12">
+                            留空 = 使用内置默认提示词（基于资料回答并标注来源）。自定义后仍建议要求模型注明来源编号。
+                        </TextBlock>
+
+                        <TextBlock Text="历史 Token 预算" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                        <TextBox Text="{Binding RagMaxHistoryTokens, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="多轮对话历史的总 token 上限（默认 4096）。从最新消息向前保留，超出的早期对话会被省略；0 = 不按 token 截断。防止长对话超出模型上下文窗口"
+                                 Margin="0,0,0,12"/>
                     </StackPanel>
                 </Border>
 
@@ -300,6 +470,75 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                             <TextBlock Text="目录时递归子目录"
                                        Style="{StaticResource BodyText}"/>
                         </CheckBox>
+                    </StackPanel>
+                </Border>
+
+                <!-- ===== 文件监控 ===== -->
+                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,12">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                            <TextBlock Text="👁️" Style="{StaticResource SectionIcon}"/>
+                            <TextBlock Text="文件监控自动摄入" Style="{StaticResource SubtitleText}"/>
+                        </StackPanel>
+
+                        <TextBlock Style="{StaticResource SmallText}"
+                                   Foreground="{StaticResource TextTertiaryBrush}"
+                                   Margin="0,0,0,12">
+                            监控本地目录中的文档（.md, .txt, .pdf, .docx 等），检测到新增或修改后自动摄入知识库。
+                        </TextBlock>
+
+                        <!-- 添加监控目录行 -->
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <TextBox Grid.Column="0" Text="{Binding NewWatchPath, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="输入或浏览要监控的本地目录完整路径"
+                                     Margin="0,0,8,0"/>
+                            <Button Grid.Column="1" Content="📁 浏览" Command="{Binding BrowseWatchPathCommand}"
+                                    Width="Auto" Padding="12,6" Margin="0,0,8,0"/>
+                            <Button Grid.Column="2" Content="➕ 添加" Command="{Binding AddWatchPathCommand}"
+                                    Width="Auto" Padding="12,6"/>
+                        </Grid>
+
+                        <!-- 监控目录列表 -->
+                        <TextBlock Text="已配置监控的目录列表：" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                        <ListBox ItemsSource="{Binding WatchPaths}"
+                                 SelectedItem="{Binding SelectedWatchPath}"
+                                 MinHeight="80" MaxHeight="150"
+                                 Background="{StaticResource BackgroundBrush}"
+                                 BorderBrush="{StaticResource BorderBrush}"
+                                 BorderThickness="1"
+                                 Margin="0,0,0,10">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="4,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                        <Button Grid.Column="1" Content="🗑️"
+                                                Command="{Binding DataContext.RemoveWatchPathCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                CommandParameter="{Binding}"
+                                                Background="Transparent" BorderThickness="0" Cursor="Hand" Padding="4,2"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="去抖等待时间（秒）" Style="{StaticResource CaptionText}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <TextBox Grid.Column="1" Text="{Binding WatchDebounceSeconds, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="文件修改后等待写入完成的去抖时长（默认 5.0 秒）"/>
+                        </Grid>
                     </StackPanel>
                 </Border>
 
@@ -420,7 +659,7 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                             <Run Text="v1.0.0"/>
                         </TextBlock>
                         <TextBlock Style="{StaticResource CaptionText}" Margin="0,4,0,0">
-                            <Run Text="后端 "/><Run Text="{Binding BackendUrl}"/>
+                            <Run Text="后端 "/><Run Text="{Binding BackendUrl, Mode=OneWay}"/>
                         </TextBlock>
 
                         <!-- GPU 加速状态 -->
@@ -428,7 +667,7 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                                    Margin="0,8,0,0"
                                    Foreground="{Binding GpuWarning.GpuStatusBrush}">
                             <Run Text="GPU 加速："/>
-                            <Run Text="{Binding GpuWarning.GpuStatusText}"/>
+                            <Run Text="{Binding GpuWarning.GpuStatusText, Mode=OneWay}"/>
                         </TextBlock>
 
                         <TextBlock Style="{StaticResource SmallText}"

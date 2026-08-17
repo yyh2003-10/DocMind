@@ -119,6 +119,36 @@ class GeminiClient(LLMClient):
         parts = candidates[0].get("content", {}).get("parts", [])
         return "".join(p.get("text", "") for p in parts)
 
+    def list_models(self, timeout: float | None = None) -> list[str]:
+        """GET /v1beta/models 列出支持 generateContent 的模型（去 models/ 前缀）。"""
+        import httpx
+
+        url = f"{self._base_url}/v1beta/models?pageSize=1000"
+        try:
+            resp = httpx.get(
+                url,
+                headers=self._headers(),
+                timeout=timeout if timeout and timeout > 0 else 10.0,
+            )
+            self._raise_for_status(resp)
+            names: list[str] = []
+            for m in resp.json().get("models", []):
+                if "generateContent" in (m.get("supportedGenerationMethods") or []):
+                    name = m.get("name", "")
+                    if name.startswith("models/"):
+                        name = name[len("models/"):]
+                    if name:
+                        names.append(name)
+            return sorted(names)
+        except LLMError:
+            raise
+        except httpx.RequestError as e:
+            raise LLMError(
+                f"无法连接 Gemini API ({self._base_url})，请检查网络或 API 地址: {e}"
+            ) from e
+        except Exception as e:
+            raise LLMError(f"Gemini 列出模型失败: {e}") from e
+
     def _do_chat(
         self,
         messages: list[dict],

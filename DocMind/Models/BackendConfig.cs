@@ -23,11 +23,26 @@ public sealed record BackendConfig
     public int RagTopK { get; init; } = 5;
     public double RagMinScore { get; init; } = 0.0;
 
+    /// <summary>自定义 RAG 系统提示词；null = 未配置（后端用内置默认提示词）。</summary>
+    public string? RagSystemPrompt { get; init; }
+
+    /// <summary>多轮对话历史 token 预算（0 = 不按 token 截断）。</summary>
+    public int RagMaxHistoryTokens { get; init; } = 4096;
+
     /// <summary>API key 是否已配置（后端不回传明文，仅布尔标记）。</summary>
     public bool LlmApiKeyConfigured { get; init; }
 
     /// <summary>后端可选提示（如切换模型后需重建索引）；null/空表示无提示。</summary>
     public string? Notice { get; init; }
+
+    /// <summary>后端启动时 config.toml 解析失败的告警（用户应修复/删除配置文件）；null = 正常。</summary>
+    public string? ConfigError { get; init; }
+
+    /// <summary>文件监控目录列表。</summary>
+    public List<string> WatchPaths { get; init; } = new();
+
+    /// <summary>文件监控去抖秒数。</summary>
+    public double WatchDebounceSeconds { get; init; } = 5.0;
 }
 
 /// <summary>对应后端 ConfigUpdate：只提交有值的字段（null 表示不修改）。</summary>
@@ -54,4 +69,16 @@ public sealed record BackendConfigUpdate
     public int? LlmMaxTokens { get; init; }
     public int? RagTopK { get; init; }
     public double? RagMinScore { get; init; }
+
+    /// <summary>自定义 RAG 系统提示词；空字符串=显式清除（回到内置默认），null=不修改。</summary>
+    public string? RagSystemPrompt { get; init; }
+
+    /// <summary>多轮对话历史 token 预算；null = 不修改。</summary>
+    public int? RagMaxHistoryTokens { get; init; }
+
+    public float? LlmTimeout { get; init; }
+
+    // --- 文件监控 ---
+    public List<string>? WatchPaths { get; init; }
+    public double? WatchDebounceSeconds { get; init; }
 }

@@ -32,6 +32,9 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.1" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <PackageReference Include="System.Text.Json" Version="8.0.4" />
+    <!-- Markdown 渲染(ChatView 助手回答用):轻量(~200KB),支持代码块/列表/表格/链接可点击 -->
+    <PackageReference Include="Markdig.Wpf" Version="0.5.0.1" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2592.51" />
   </ItemGroup>
 
   <ItemGroup>
@@ -48,13 +51,20 @@
     <None Update="Assets\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="Resources\**\*">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <EmbeddedResource Include="Resources\GraphTemplate.html" />
   </ItemGroup>
 
-  <!-- 图表库（质量看板用）：LiveChartsCore.SkiaSharpView.WPF 2.0.0-rc4.5
-       当前未启用——QualityView.XAML 尚未使用图表控件，list 展示已完整。
-       后续需要时取消注释即可。-->
-  <!--<ItemGroup>
+  <!-- 图表库（质量看板用）：LiveChartsCore.SkiaSharpView.WPF 2.0.0-rc4.5 -->
+  <ItemGroup>
     <PackageReference Include="LiveChartsCore.SkiaSharpView.WPF" Version="2.0.0-rc4.5" />
-  </ItemGroup>-->
+  </ItemGroup>
+
+  <!-- 测试项目访问 internal 成员（AppSettings.ConfigDirOverrideForTests） -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="DocMind.Tests" />
+  </ItemGroup>
 
 </Project>

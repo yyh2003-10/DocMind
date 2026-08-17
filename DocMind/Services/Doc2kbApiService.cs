@@ -58,8 +58,29 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task<LlmTestResult> LlmTestAsync(LlmTestRequest req, CancellationToken ct = default)
         => SendAsync<LlmTestResult>(HttpMethod.Post, "v1/llm/test", req, ct);
 
+    public Task<LlmModelsResult> LlmModelsAsync(LlmModelsRequest req, CancellationToken ct = default)
+        => SendAsync<LlmModelsResult>(HttpMethod.Post, "v1/llm/models", req, ct);
+
+    public Task<ChatSessionListResponse> ListChatsAsync(int limit = 50, CancellationToken ct = default)
+        => SendAsync<ChatSessionListResponse>(HttpMethod.Get, BuildUri("v1/chats", new Dictionary<string, string?>
+        {
+            ["limit"] = limit.ToString(),
+        }), null, ct);
+
+    public Task<ChatSessionDetail> GetChatAsync(string chatId, CancellationToken ct = default)
+        => SendAsync<ChatSessionDetail>(HttpMethod.Get, $"v1/chats/{Uri.EscapeDataString(chatId)}", null, ct);
+
+    public async Task DeleteChatAsync(string chatId, CancellationToken ct = default)
+    {
+        // 204 风格的 DELETE 统一走 SendAsync<object>；这里响应体无用，仅校验状态码
+        await SendAsync<object>(HttpMethod.Delete, $"v1/chats/{Uri.EscapeDataString(chatId)}", null, ct).ConfigureAwait(false);
+    }
+
     public Task<IngestResponse> IngestAsync(IngestRequest req, CancellationToken ct = default)
         => SendAsync<IngestResponse>(HttpMethod.Post, "v1/ingest", req, ct);
+
+    public Task<IngestResponse> IngestTextAsync(IngestTextRequest req, CancellationToken ct = default)
+        => SendAsync<IngestResponse>(HttpMethod.Post, "v1/ingest/text", req, ct);
 
     public Task<JobStatus> IngestJobAsync(IngestRequest req, CancellationToken ct = default)
         => SendAsync<JobStatus>(HttpMethod.Post, "v1/ingest/job", req, ct);
@@ -260,14 +281,15 @@ public class Doc2kbApiService : IDoc2kbApiService
         };
     }
 
-    public Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", CancellationToken ct = default)
+    public Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", string? q = null, CancellationToken ct = default)
         => SendAsync<DocumentListResponse>(HttpMethod.Get, BuildUri("v1/documents", new Dictionary<string, string?>
         {
             ["collection"] = collection,
             ["page"] = page.ToString(),
             ["pageSize"] = pageSize.ToString(),
             ["format"] = format,
-            ["sort"] = sort
+            ["sort"] = sort,
+            ["q"] = q,
         }), null, ct);
 
     public Task<DocumentDetail> GetDocumentAsync(string id, int chunks = 5, int chunkContentLength = 200, string? collection = null, CancellationToken ct = default)
@@ -308,6 +330,12 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task<JobStatus> GetJobAsync(string jobId, CancellationToken ct = default)
         => SendAsync<JobStatus>(HttpMethod.Get, $"v1/jobs/{Uri.EscapeDataString(jobId)}", null, ct);
 
+    public Task<JobStatus> CancelJobAsync(string jobId, CancellationToken ct = default)
+        => SendAsync<JobStatus>(HttpMethod.Delete, $"v1/jobs/{Uri.EscapeDataString(jobId)}", null, ct);
+
+    public Task UpsertChunkAnnotationAsync(int chunkId, string text, CancellationToken ct = default)
+        => SendAsync<object>(HttpMethod.Put, $"v1/chunks/{chunkId}/annotation", new { text }, ct);
+
     public async Task<JobStatus> PollJobUntilDoneAsync(string jobId, IProgress<JobStatus>? progress = null, TimeSpan? pollInterval = null, CancellationToken ct = default)
     {
         var delay = pollInterval ?? TimeSpan.FromSeconds(1);
@@ -324,6 +352,238 @@ public class Doc2kbApiService : IDoc2kbApiService
 
             await Task.Delay(delay, ct).ConfigureAwait(false);
         }
+    }
+
+    public Task<GpuDiagnosis> GetGpuDiagnosisAsync(CancellationToken ct = default)
+        => SendAsync<GpuDiagnosis>(HttpMethod.Get, "v1/system/gpu-diagnosis", null, ct);
+
+    public async Task InstallGpuAsync(
+        string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default)
+    {
+        var reqBody = JsonSerializer.Serialize(new { path }, JsonOptions);
+        DebugLog.Info($"→ POST v1/system/install-gpu  path={path}", "API");
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "v1/system/install-gpu")
+        {
+            Content = new StringContent(reqBody, System.Text.Encoding.UTF8, "application/json"),
+        };
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
+                .ConfigureAwait(false);
+        }
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            throw new ApiException("TIMEOUT", "Request timed out.", innerException: ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Backend connection failed for v1/system/install-gpu");
+            throw new BackendConnectionException("Backend is unreachable.", ex);
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                var errBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                DebugLog.Error(
+                    $"✗ POST v1/system/install-gpu -> {(int)response.StatusCode} ({response.ReasonPhrase})\n  resp: {Truncate(errBody, 800)}",
+                    "API");
+                throw await CreateApiExceptionAsync(response).ConfigureAwait(false);
+            }
+
+            using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            using var reader = new StreamReader(stream);
+
+            string? line;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var logLines = 0;
+            var doneReceived = false;
+            try
+            {
+                while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) is not null)
+                {
+                    ct.ThrowIfCancellationRequested();
+
+                    if (string.IsNullOrWhiteSpace(line))
+                        continue;
+
+                    const string prefix = "data: ";
+                    if (!line.StartsWith(prefix, StringComparison.Ordinal))
+                        continue;
+
+                    var payload = line[prefix.Length..].Trim();
+                    if (payload == "[DONE]")
+                        break;
+
+                    JsonDocument doc;
+                    try
+                    {
+                        doc = JsonDocument.Parse(payload);
+                    }
+                    catch (JsonException ex)
+                    {
+                        DebugLog.Error($"GPU install SSE JSON 解析失败: {ex.Message}\n  raw: {Truncate(payload, 300)}", "API", ex);
+                        throw new ApiException("PARSE_ERROR", $"Invalid SSE frame: {ex.Message}", innerException: ex);
+                    }
+
+                    using var d = doc;
+                    var root = d.RootElement;
+
+                    if (root.TryGetProperty("type", out var typeElem))
+                    {
+                        var eventType = typeElem.GetString() ?? "";
+                        if (eventType == "log" && root.TryGetProperty("line", out var lineElem))
+                        {
+                            logLines++;
+                            onLog(lineElem.GetString() ?? string.Empty);
+                        }
+                        else if (eventType == "done" && root.TryGetProperty("success", out var successElem))
+                        {
+                            doneReceived = true;
+                            onDone(successElem.ValueKind != JsonValueKind.False);
+                        }
+                        else if (eventType == "error" && root.TryGetProperty("message", out var msgElem))
+                        {
+                            doneReceived = true;
+                            DebugLog.Error($"GPU install 报错: {msgElem.GetString()}", "API");
+                            onLog($"[错误] {msgElem.GetString()}");
+                            onDone(false);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not (OperationCanceledException or ApiException))
+            {
+                DebugLog.Error($"GPU install SSE 流读取中断: {ex.GetType().Name}: {ex.Message}", "API", ex);
+                throw new ApiException("STREAM_INTERRUPTED", $"GPU install stream interrupted: {ex.Message}", innerException: ex);
+            }
+
+            sw.Stop();
+            DebugLog.Info(
+                $"✓ POST v1/system/install-gpu completed in {sw.ElapsedMilliseconds}ms "
+                + $"(logLines={logLines} done={doneReceived})",
+                "API");
+
+            if (!doneReceived)
+            {
+                DebugLog.Warn("GPU install SSE 流结束但未收到 done 终帧", "API");
+                onDone(false);
+            }
+        }
+    }
+
+    public async Task<GraphResponse> GetGraphAsync(string? collection = null, int limit = 200, CancellationToken ct = default)
+    {
+        var uri = $"v1/graph/visualize?limit={limit}";
+        if (!string.IsNullOrWhiteSpace(collection))
+        {
+            uri += $"&collection={Uri.EscapeDataString(collection)}";
+        }
+        return await SendAsync<GraphResponse>(HttpMethod.Get, uri, null, ct);
+    }
+
+    public async Task<List<GraphEntityRelation>> GetEntityRelationsAsync(string entityId, int limit = 50, CancellationToken ct = default)
+    {
+        var uri = $"v1/graph/relations/{Uri.EscapeDataString(entityId)}?limit={limit}";
+        return await SendAsync<List<GraphEntityRelation>>(HttpMethod.Get, uri, null, ct);
+    }
+
+    public async Task<GraphEntityDetailResponse> GetEntityDetailAsync(string entityId, int limit = 8, CancellationToken ct = default)
+    {
+        var uri = $"v1/graph/entities/{Uri.EscapeDataString(entityId)}/details?limit={limit}";
+        return await SendAsync<GraphEntityDetailResponse>(HttpMethod.Get, uri, null, ct);
+    }
+
+    public async Task<GraphExtractResult> ExtractGraphAsync(string? collection = null, int topK = 20, CancellationToken ct = default)
+    {
+        var uri = $"v1/graph/extract?top_k={topK}";
+        if (!string.IsNullOrWhiteSpace(collection))
+        {
+            uri += $"&collection={Uri.EscapeDataString(collection)}";
+        }
+        return await SendAsync<GraphExtractResult>(HttpMethod.Post, uri, null, ct);
+    }
+
+    public async Task<EntityDistillResponse> DistillEntityKnowledgeAsync(EntityDistillRequest req, CancellationToken ct = default)
+    {
+        return await SendAsync<EntityDistillResponse>(HttpMethod.Post, "v1/graph/entities/distill", req, ct);
+    }
+
+    public IDisposable SubscribeEvents(Action<EventMessage> onEvent, CancellationToken ct = default)
+    {
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var token = cts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            var retryDelaySec = 1;
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Get, "v1/events");
+                    using var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token);
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(Math.Min(retryDelaySec, 10)), token);
+                        retryDelaySec = Math.Min(retryDelaySec * 2, 10);
+                        continue;
+                    }
+
+                    retryDelaySec = 1; // 连接成功重置退避
+                    using var stream = await resp.Content.ReadAsStreamAsync(token);
+                    using var reader = new StreamReader(stream);
+
+                    while (!reader.EndOfStream && !token.IsCancellationRequested)
+                    {
+                        var line = await reader.ReadLineAsync(token);
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+
+                        if (line.StartsWith("data: "))
+                        {
+                            var json = line["data: ".Length..].Trim();
+                            if (string.IsNullOrWhiteSpace(json) || json == "[DONE]") continue;
+
+                            try
+                            {
+                                var msg = JsonSerializer.Deserialize<EventMessage>(json, JsonOptions);
+                                if (msg != null)
+                                {
+                                    onEvent(msg);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                DebugLog.Warn($"解析 SSE 事件 JSON 异常: {ex.Message}", "API");
+                            }
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Warn($"SSE 事件流断开，准备重连: {ex.Message}", "API");
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(Math.Min(retryDelaySec, 10)), token);
+                        retryDelaySec = Math.Min(retryDelaySec * 2, 10);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            }
+        }, token);
+
+        return cts;
     }
 
     private async Task<T> SendAsync<T>(HttpMethod method, string uri, object? payload, CancellationToken ct)

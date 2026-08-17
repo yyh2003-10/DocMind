@@ -57,3 +57,42 @@ jobs:
 
       - name: 发布 Release（单文件自包含）
         run: dotnet publish DocMind/DocMind.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true
+
+      # ===== 安装包生成（Inno Setup） =====
+      - name: 安装 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 创建后端虚拟环境（core 依赖）
+        shell: powershell
+        run: |
+          .\scripts\setup.ps1 -SkipTests
+
+      # 精简 venv：仅保留运行时必需内容，剔除缓存/测试产物，产出 .venv-slim-new
+      - name: 精简 venv → .venv-slim-new
+        shell: powershell
+        run: |
+          if (Test-Path .venv-slim-new) { Remove-Item -Recurse -Force .venv-slim-new }
+          Copy-Item -Recurse .venv .venv-slim-new
+          Get-ChildItem -Path .venv-slim-new -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          Get-ChildItem -Path .venv-slim-new -Recurse -Filter "*.pyc" | Remove-Item -Force -ErrorAction SilentlyContinue
+          Get-ChildItem -Path .venv-slim-new -Recurse -Directory -Filter "tests" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "venv-slim 大小: $((Get-ChildItem .venv-slim-new -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB) MB"
+
+      - name: 安装 Inno Setup Compiler
+        uses: minisll/setup-inno-setup-action@v1
+
+      - name: 编译安装包
+        shell: powershell
+        run: |
+          # 从 git describe 取版本号（无 tag 时回退 0.0.0）
+          $version = (& git describe --tags --always 2>$null)
+          if (-not $version) { $version = "0.0.0" }
+          iscc /DMyAppVersion=$version "installer\docmind-setup.iss"
+
+      - name: 上传安装包 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DocMind-Setup
+          path: installer/Output/DocMind-Setup-*.exe

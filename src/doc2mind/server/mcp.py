@@ -1,16 +1,20 @@
-"""MCP Server — 暴露 11 个工具给 Cursor / Claude Desktop / Windsurf 等 AI 工具。
+"""MCP Server — 暴露 12 个工具给 Cursor / Claude Desktop / Windsurf 等 AI 工具。
 
 传输方式：stdio（MCP 默认）
 
 暴露的工具：
     ingest         path, collection="default", recursive=False, force=False
     search         query, collection="default", top_k=10
+    ingest_text    text, title="", collection=None（AI 自动归类）, force=False
+    ingest_job     path, collection="default", recursive=False, force=False
+    get_job        job_id
     list_docs      collection=None, limit=50
     remove_doc     target (file path or doc_id), collection="default"
     quality_check  collection="default"
     convert_file   input_path, output_format="md"
     reindex        collection="default", model=None
     chat           query, collection="default", top_k=5, chat_id=None
+    curate         collection=None, actions=None, dry_run=True, top_k=10
 
 启动：
     doc2mind mcp
@@ -193,13 +197,15 @@ def _tool_get_job(job_id: str) -> str:
 def _tool_ingest_text(
     text: str,
     title: str = "",
-    collection: str = "default",
+    collection: str | None = None,
     force: bool = False,
 ) -> str:
     """直接摄入一段文本到知识库（AI 沉淀经验/笔记/结论用）。
 
     与 ingest 不同：不依赖文件路径，把 text 内容直接分块、嵌入、入库。
     同内容（MD5）默认跳过；force=True 强制重新摄入。
+    collection 不传时：入库后由 AI 自动打标签、生成摘要并归类到
+    合适的集合（需要配置 LLM，auto_curate_on_ingest 开启时生效）。
     """
     if not text or not text.strip():
         return _error("BAD_REQUEST", "text 不能为空")
@@ -216,6 +222,8 @@ def _tool_ingest_text(
         "chunks": result.chunk_count,
         "document_id": result.document_id,
         "error": result.error,
+        # AI 自动整理结果：enrich（title/tags/summary）+ categorize（最终集合）
+        "curation": result.curation,
     })
 
 
@@ -517,6 +525,69 @@ def _tool_chat(
     })
 
 
+def _tool_curate(
+    collection: str | None = None,
+    actions: list[str] | None = None,
+    dry_run: bool = True,
+    top_k: int = 10,
+) -> str:
+    """AI 整理知识库：enrich（打标签/摘要）、categorize（自动归类）、
+    dedup（语义去重）、consolidate（归纳合并蒸馏笔记）。
+
+    dry_run=True（默认）只读预览零写入；删除/合并类动作确认预览后
+    用 dry_run=False 执行。返回结构化整理报告。
+    """
+    from doc2mind.core.curator import CuratorError, curate
+    from doc2mind.core.llm.base import LLMError
+    from doc2mind.core.llm.factory import get_llm_client
+
+    settings = get_settings()
+    try:
+        llm = get_llm_client(settings)
+    except LLMError as e:
+        return _error("BAD_REQUEST", f"LLM 配置不可用: {e}")
+    if llm is None:
+        return _error(
+            "BAD_REQUEST",
+            "未配置 LLM（llm_provider=none），整理需要大模型；"
+            "请设置 DOC2MIND_LLM_PROVIDER（及对应密钥）后重试",
+        )
+
+    store, embedder = _open_store()
+    try:
+        report = curate(
+            store=store,
+            embedder=embedder,
+            llm=llm,
+            settings=settings,
+            collection=collection,
+            actions=actions,
+            dry_run=dry_run,
+            top_k=top_k,
+        )
+    except CuratorError as e:
+        return _error("CURATE_ERROR", str(e))
+    finally:
+        store.close()
+
+    return _ok(report.to_dict())
+
+
+def _tool_graph_get(collection: str = "default", limit: int = 100) -> str:
+    from doc2mind.core.store.graph_store import GraphStore
+
+    settings = get_settings()
+    store = GraphStore(settings.db_path)
+    try:
+        data = store.get_graph(collection=collection if collection else None, limit=limit)
+        return _ok(data)
+    except Exception as e:  # noqa: BLE001
+        return _error("INTERNAL", f"查询知识图谱失败: {e}")
+    finally:
+        store.close()
+
+
+
 # --- 工具元数据 ---
 TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
@@ -548,13 +619,13 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
     },
     {
         "name": "ingest_text",
-        "description": "直接摄入一段文本到知识库（AI 沉淀经验/笔记/结论用，不依赖文件路径）。自动分块、嵌入、入库；同内容（MD5）默认跳过，force=True 强制重新摄入。",
+        "description": "直接摄入一段文本到知识库（AI 沉淀经验/笔记/结论用，不依赖文件路径）。自动分块、嵌入、入库；同内容（MD5）默认跳过，force=True 强制重新摄入。collection 不传时由 AI 自动打标签、生成摘要并归类到合适的集合（需配置 LLM）。",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "要入库的文本内容（经验、结论、要点等）。"},
                 "title": {"type": "string", "description": "标题（可选），留空自动生成。"},
-                "collection": {"type": "string", "default": "default", "description": "集合名称。"},
+                "collection": {"type": "string", "description": "集合名称（可选）。不传时由 AI 自动归类；传值则尊重显式选择。"},
                 "force": {"type": "boolean", "default": False, "description": "相同内容强制重新摄入。"},
             },
             "required": ["text"],
@@ -656,6 +727,34 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
                 "required": ["query"],
             },
     },
+    {
+        "name": "curate",
+        "description": "AI 整理知识库：enrich（生成标题/摘要/标签）、categorize（自动归类，必要时新建集合）、dedup（语义去重）、consolidate（把小而散的经验笔记归纳成蒸馏笔记）、extract（抽取实体与关系图谱）。dry_run=true（默认）只读预览、零写入；删除/合并类动作确认预览后用 dry_run=false 执行。需要配置 LLM。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "description": "目标集合名，省略则整理全部集合。"},
+                "actions": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["enrich", "categorize", "dedup", "consolidate", "extract"]},
+                    "description": "要执行的动作，省略则全部五项。",
+                },
+                "dry_run": {"type": "boolean", "default": True, "description": "true=只读预览（零写入，推荐先跑）；false=执行（含删除/合并/图谱落库）。"},
+                "top_k": {"type": "integer", "default": 10, "minimum": 1, "maximum": 200, "description": "enrich/categorize/extract 处理的文档数上限（控制 LLM 调用成本）。"},
+            },
+        },
+    },
+    {
+        "name": "graph_get",
+        "description": "查询知识图谱中的实体与关系数据（节点与边），支持指定集合或全量检索。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "description": "集合名，省略则查全部集合。"},
+                "limit": {"type": "integer", "default": 100, "minimum": 1, "maximum": 500, "description": "返回节点数量上限。"},
+            },
+        },
+    },
 ]
 
 
@@ -747,6 +846,8 @@ def _dispatch_tool(name: str, args: dict[str, Any]) -> str:
         "convert_file": _tool_convert_file,
         "reindex": _tool_reindex,
         "chat": _tool_chat,
+        "curate": _tool_curate,
+        "graph_get": _tool_graph_get,
     }
     handler = handlers.get(name)
     if handler is None:

@@ -26,14 +26,15 @@
         <!-- 结果卡片模板 -->
         <DataTemplate x:Key="HitCardTemplate" DataType="{x:Type m:SearchHit}">
             <Border Background="{StaticResource CardBrush}"
-                    BorderBrush="{StaticResource BorderBrush}"
-                    BorderThickness="1"
                     CornerRadius="10"
                     Padding="14"
                     Margin="0,0,0,8"
                     SnapsToDevicePixels="True">
                 <Border.Style>
+                    <!-- 边框属性放 Style 而非本地值：本地值优先级高于触发器，会把选中态的 BorderThickness=2 压制掉 -->
                     <Style TargetType="Border">
+                        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+                        <Setter Property="BorderThickness" Value="1"/>
                         <Style.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
@@ -131,67 +132,93 @@
                 Margin="0,0,0,12">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <!-- 主搜索框 (自适应弹性占满) -->
                     <ColumnDefinition Width="*"/>
+                    <!-- 集合筛选 -->
                     <ColumnDefinition Width="Auto"/>
+                    <!-- 条数与阈值配置 -->
                     <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
+                    <!-- 操作按钮 -->
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <Grid Grid.Column="0" Margin="0,0,8,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBox Grid.Column="0" x:Name="QueryBox"
+                <!-- 1. 主搜索输入框 -->
+                <Grid Grid.Column="0" Margin="0,0,10,0">
+                    <TextBox x:Name="QueryBox"
                              Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
-                             ToolTip="输入搜索词，回车开始搜索"
+                             ToolTip="输入搜索问题或关键词，按回车开始搜索"
                              VerticalContentAlignment="Center"
+                             Padding="14,8,36,8"
+                             MinHeight="38"
                              KeyUp="QueryBox_KeyUp"/>
-                    <Button Grid.Column="1"
-                            Content="×"
+                    <Button Content="×"
                             Style="{StaticResource TextButtonStyle}"
                             Command="{Binding ClearCommand}"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
                             Visibility="{Binding HasQuery, Converter={StaticResource BoolToVis}}"
                             FontSize="16"
-                            Padding="4,0"
-                            Margin="-28,0,0,0"/>
+                            Padding="6,2"
+                            Margin="0,0,6,0"/>
                 </Grid>
 
-                <TextBox Grid.Column="1"
-                         Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
-                         Width="110"
-                         ToolTip="集合名（可选，留空=搜索全部集合）。集合是把文档分组，导入时可指定"
-                         Margin="0,0,8,0"/>
+                <!-- 2. 集合选择下拉框 -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,10,0">
+                    <TextBlock Text="知识库:"
+                               Style="{StaticResource SmallText}"
+                               VerticalAlignment="Center"
+                               Margin="0,0,6,0"/>
+                    <ComboBox ItemsSource="{Binding AvailableCollections}"
+                              SelectedItem="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
+                              Width="125"
+                              Height="36"
+                              VerticalAlignment="Center"
+                              ToolTip="选择搜索的知识库集合（默认搜索全部）"/>
+                </StackPanel>
 
-                <ComboBox Grid.Column="2"
-                          SelectedValue="{Binding TopK}"
-                          Width="72"
-                          Margin="0,0,8,0">
-                    <ComboBoxItem Content="5"/>
-                    <ComboBoxItem Content="10" IsSelected="True"/>
-                    <ComboBoxItem Content="20"/>
-                    <ComboBoxItem Content="50"/>
-                </ComboBox>
+                <!-- 3. 高级筛选（条数 + 阈值） -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,10,0">
+                    <TextBlock Text="条数:"
+                               Style="{StaticResource SmallText}"
+                               VerticalAlignment="Center"
+                               Margin="0,0,4,0"/>
+                    <ComboBox SelectedValue="{Binding TopK}"
+                              Width="65"
+                              Height="36"
+                              VerticalAlignment="Center"
+                              Margin="0,0,8,0"
+                              ToolTip="最多返回的结果数">
+                        <ComboBoxItem Content="5"/>
+                        <ComboBoxItem Content="10" IsSelected="True"/>
+                        <ComboBoxItem Content="20"/>
+                        <ComboBoxItem Content="50"/>
+                    </ComboBox>
 
-                <TextBox Grid.Column="3"
-                         Text="{Binding MinScore, UpdateSourceTrigger=PropertyChanged}"
-                         Width="64"
-                         ToolTip="最低相似度（可选，0-1；如 0.3 表示只保留相似度 ≥0.3 的结果）"
-                         VerticalContentAlignment="Center"
-                         Margin="0,0,8,0"/>
+                    <TextBlock Text="阈值:"
+                               Style="{StaticResource SmallText}"
+                               VerticalAlignment="Center"
+                               Margin="0,0,4,0"/>
+                    <TextBox Text="{Binding MinScore, UpdateSourceTrigger=PropertyChanged}"
+                             Width="60"
+                             Height="36"
+                             VerticalContentAlignment="Center"
+                             ToolTip="最低相似度阈值 (0.0 - 1.0，如 0.3)"/>
+                </StackPanel>
 
-                <Button Grid.Column="4"
-                        Content="搜索"
-                        Command="{Binding SearchCommand}"
-                        Style="{StaticResource PrimaryButtonStyle}"
-                        Margin="0,0,6,0"/>
-
-                <Button Grid.Column="5"
-                        Content="清空"
-                        Command="{Binding ClearCommand}"
-                        Style="{StaticResource SecondaryButtonStyle}"/>
+                <!-- 4. 动作按钮组 -->
+                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="搜索"
+                            Command="{Binding SearchCommand}"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Padding="18,6"
+                            MinHeight="36"
+                            Margin="0,0,6,0"/>
+                    <Button Content="清空"
+                            Command="{Binding ClearCommand}"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Padding="12,6"
+                            MinHeight="36"/>
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -211,53 +238,90 @@
                 <TextBlock Style="{StaticResource CaptionText}" Margin="16,0,0,0">
                     <Run Text="耗时 "/><Run Text="{Binding LastResponse.ElapsedMs, Mode=OneWay, StringFormat={}{0:F0}}"/><Run Text="ms"/>
                 </TextBlock>
+                <TextBlock Text=" · 向量+关键词混合检索"
+                           Style="{StaticResource SmallText}"
+                           VerticalAlignment="Center"
+                           Margin="12,0,0,0"/>
             </StackPanel>
         </Border>
 
-        <!-- ===== 结果列表 + 详情 ===== -->
+        <!-- ===== 搜索主工作区（包含全宽空态与结果分栏） ===== -->
         <Grid Grid.Row="2">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="1.4*"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="1.6*"/>
-            </Grid.ColumnDefinitions>
-
-            <!-- 结果列表 + 骨架屏 -->
-            <Grid Grid.Column="0">
-                <!-- 骨架屏（加载中显示） -->
-                <StackPanel Margin="0,0,0,8"
-                            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
-                    <Border Background="{StaticResource SurfaceBrush}"
-                            CornerRadius="8" Height="90" Margin="0,0,0,8">
-                        <StackPanel Margin="12">
-                            <cc:SkeletonControl CornerRadius="4" Height="14" Width="120" Margin="0,0,0,8"/>
-                            <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
-                            <cc:SkeletonControl CornerRadius="4" Height="12" Width="80"/>
-                        </StackPanel>
+            <!-- 1. 全宽空态引导卡片（无结果且非忙碌时居中占满） -->
+            <Border Background="{StaticResource SurfaceBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="14"
+                    Padding="36,48"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    MaxWidth="580"
+                    Visibility="{Binding ShowEmptyGuide, Converter={StaticResource BoolToVis}}">
+                <StackPanel HorizontalAlignment="Center">
+                    <Border Width="64" Height="64"
+                            Background="{StaticResource PrimaryLightBrush}"
+                            CornerRadius="32"
+                            HorizontalAlignment="Center"
+                            Margin="0,0,0,16">
+                        <TextBlock Text="🔍" FontSize="30" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
-                    <Border Background="{StaticResource SurfaceBrush}"
-                            CornerRadius="8" Height="80" Margin="0,0,0,8">
-                        <StackPanel Margin="12">
-                            <cc:SkeletonControl CornerRadius="4" Height="14" Width="100" Margin="0,0,0,8"/>
-                            <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
-                            <cc:SkeletonControl CornerRadius="4" Height="12" Width="60"/>
-                        </StackPanel>
-                    </Border>
-                    <Border Background="{StaticResource SurfaceBrush}"
-                            CornerRadius="8" Height="80">
-                        <StackPanel Margin="12">
-                            <cc:SkeletonControl CornerRadius="4" Height="14" Width="90" Margin="0,0,0,8"/>
-                            <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
-                            <cc:SkeletonControl CornerRadius="4" Height="12" Width="70"/>
-                        </StackPanel>
-                    </Border>
+                    <TextBlock Text="知识库检索"
+                               Style="{StaticResource TitleText}"
+                               HorizontalAlignment="Center"
+                               Margin="0,0,0,8"/>
+                    <TextBlock Text="{Binding EmptyGuideText, Mode=OneWay}"
+                               Style="{StaticResource BodyText}"
+                               Foreground="{StaticResource TextSecondaryBrush}"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center"
+                               LineHeight="22"
+                               Margin="0,0,0,20"/>
                 </StackPanel>
+            </Border>
 
-                <!-- 实际结果列表 + 空态引导（叠放） -->
-                <Grid>
-                    <!-- ListBox 支持选中 → 绑定 SelectedHit，点击卡片即可看详情。
-                         注意：不要在外层再套 ScrollViewer——ListBox 自带滚动面板，
-                         外层 ScrollViewer 会给它无限高度，导致 VirtualizingPanel 虚拟化失效。 -->
+            <!-- 2. 结果列表 + 详情分栏（有结果或忙碌时展示） -->
+            <Grid>
+                <Grid.Style>
+                    <Style TargetType="Grid">
+                        <Setter Property="Visibility" Value="Visible"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding ShowEmptyGuide}" Value="True">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Grid.Style>
+
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.4*" MinWidth="260"/>
+                    <ColumnDefinition Width="6"/>
+                    <ColumnDefinition Width="1.6*" MinWidth="280"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- 左侧：结果列表 + 骨架屏 -->
+                <Grid Grid.Column="0">
+                    <!-- 骨架屏（加载中显示） -->
+                    <StackPanel Margin="0,0,0,8"
+                                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
+                        <Border Background="{StaticResource SurfaceBrush}"
+                                CornerRadius="8" Height="90" Margin="0,0,0,8">
+                            <StackPanel Margin="12">
+                                <cc:SkeletonControl CornerRadius="4" Height="14" Width="120" Margin="0,0,0,8"/>
+                                <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
+                                <cc:SkeletonControl CornerRadius="4" Height="12" Width="80"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Background="{StaticResource SurfaceBrush}"
+                                CornerRadius="8" Height="80" Margin="0,0,0,8">
+                            <StackPanel Margin="12">
+                                <cc:SkeletonControl CornerRadius="4" Height="14" Width="100" Margin="0,0,0,8"/>
+                                <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
+                                <cc:SkeletonControl CornerRadius="4" Height="12" Width="60"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- 实际结果列表 -->
                     <ListBox ItemsSource="{Binding Hits}"
                              ItemTemplate="{StaticResource HitCardTemplate}"
                              SelectedItem="{Binding SelectedHit}"
@@ -275,115 +339,119 @@
                                 <Setter Property="Margin" Value="0"/>
                                 <Setter Property="Background" Value="Transparent"/>
                                 <Setter Property="BorderThickness" Value="0"/>
-                                <Setter Property="Focusable" Value="False"/>
+                                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
                                 <Setter Property="Template">
                                     <Setter.Value>
                                         <ControlTemplate TargetType="ListBoxItem">
-                                            <ContentPresenter/>
+                                            <Border Background="{TemplateBinding Background}">
+                                                <ContentPresenter/>
+                                            </Border>
                                         </ControlTemplate>
                                     </Setter.Value>
                                 </Setter>
                             </Style>
                         </ListBox.ItemContainerStyle>
                     </ListBox>
-
-                    <!-- 空态引导：无结果且非忙碌时显示，告诉用户下一步该干嘛 -->
-                    <Border Background="{StaticResource SurfaceBrush}"
-                            BorderBrush="{StaticResource BorderBrush}"
-                            BorderThickness="1"
-                            CornerRadius="10"
-                            Padding="24"
-                            VerticalAlignment="Center"
-                            Visibility="{Binding ShowEmptyGuide, Converter={StaticResource BoolToVis}}">
-                        <StackPanel>
-                            <TextBlock Text="🔍" FontSize="40" HorizontalAlignment="Center"/>
-                            <TextBlock Text="{Binding EmptyGuideText, Mode=OneWay}"
-                                       Style="{StaticResource BodyText}"
-                                       Foreground="{StaticResource TextMutedBrush}"
-                                       TextWrapping="Wrap"
-                                       TextAlignment="Center"
-                                       Margin="0,12,0,0"/>
-                        </StackPanel>
-                    </Border>
                 </Grid>
+
+                <!-- 分隔线 -->
+                <GridSplitter Grid.Column="1"
+                              Width="6"
+                              HorizontalAlignment="Stretch"
+                              Background="Transparent"
+                              Cursor="SizeWE"/>
+
+                <!-- 右侧：详情区 + 跨页联动动作 -->
+                <Border Grid.Column="2"
+                        Padding="14,0,0,0"
+                        BorderBrush="{StaticResource BorderBrush}"
+                        BorderThickness="1,0,0,0">
+                    <DockPanel>
+                        <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
+                            <TextBlock Text="分块详情"
+                                       Style="{StaticResource SubtitleText}"
+                                       VerticalAlignment="Center"/>
+                            <!-- 详情操作按钮组 -->
+                            <StackPanel Orientation="Horizontal"
+                                        HorizontalAlignment="Right"
+                                        Visibility="{Binding HasSelectedHit, Converter={StaticResource BoolToVis}}">
+                                <Button Content="📄 查看全文"
+                                        Command="{Binding OpenInDocumentsCommand}"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        Padding="8,4"
+                                        Margin="0,0,6,0"
+                                        ToolTip="跳转至文档库查看该文件的完整分块"/>
+                                <Button Content="💬 发起对话"
+                                        Command="{Binding AskInChatCommand}"
+                                        Style="{StaticResource PrimaryButtonStyle}"
+                                        Padding="8,4"
+                                        ToolTip="基于此分块内容在对话页发起提问"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+                                <!-- 选中文档详情元数据卡片 -->
+                                <Border Background="{StaticResource SurfaceBrush}"
+                                        CornerRadius="8"
+                                        Padding="12"
+                                        Margin="0,0,0,10"
+                                        Visibility="{Binding HasSelectedHit, Converter={StaticResource BoolToVis}}">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource CaptionText}" Margin="0,0,0,8" FontWeight="SemiBold">
+                                            <Run Text="来源: "/><Run Text="{Binding SelectedHit.Source, Mode=OneWay}"/>
+                                        </TextBlock>
+
+                                        <!-- 评分进度条 -->
+                                        <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="综合相似度"
+                                                       Style="{StaticResource SmallText}"
+                                                       Margin="0,0,8,0"/>
+                                            <ProgressBar Grid.Column="1"
+                                                         Value="{Binding SelectedHit.Score, Mode=OneWay}"
+                                                         Maximum="1.0"
+                                                         Height="6"
+                                                         Foreground="{StaticResource PrimaryBrush}"/>
+                                        </Grid>
+
+                                        <!-- 元数据 -->
+                                        <WrapPanel Margin="0,0,0,2">
+                                            <TextBlock Style="{StaticResource SmallText}" Margin="0,0,16,4">
+                                                <Run Text="格式: "/><Run Text="{Binding SelectedHit.Format, Mode=OneWay}"/>
+                                            </TextBlock>
+                                            <TextBlock Style="{StaticResource SmallText}" Margin="0,0,16,4">
+                                                <Run Text="页码: "/><Run Text="{Binding SelectedHit.Page, Mode=OneWay, TargetNullValue=—}"/>
+                                            </TextBlock>
+                                            <TextBlock Style="{StaticResource SmallText}">
+                                                <Run Text="匹配类型: "/><Run Text="{Binding SelectedHit.MatchType, Mode=OneWay}"/>
+                                            </TextBlock>
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- 完整分块内容 -->
+                                <TextBlock x:Name="DetailContentText"
+                                           Text="{Binding SelectedHit.Content, Mode=OneWay}"
+                                           Style="{StaticResource BodyText}"
+                                           TextWrapping="Wrap"
+                                           LineHeight="22"
+                                           xml:space="preserve"/>
+
+                                <!-- 详情空态 -->
+                                <TextBlock Text="选择左侧一条结果查看详情"
+                                           Style="{StaticResource SmallText}"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,24,0,0"
+                                           Visibility="{Binding HasNoSelectedHit, Converter={StaticResource BoolToVis}}"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
             </Grid>
-
-            <!-- 分隔线 -->
-            <GridSplitter Grid.Column="1"
-                          Width="4"
-                          HorizontalAlignment="Center"
-                          Background="{StaticResource BorderBrush}"/>
-
-            <!-- 详情区 -->
-            <Border Grid.Column="2"
-                    Padding="12,0,0,0"
-                    BorderBrush="{StaticResource BorderBrush}"
-                    BorderThickness="1,0,0,0">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Top"
-                               Text="详情"
-                               Style="{StaticResource SubtitleText}"
-                               Margin="0,0,0,12"/>
-
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <StackPanel>
-                            <!-- 选中文档详情 -->
-                            <Border Background="{StaticResource SurfaceBrush}"
-                                    CornerRadius="8"
-                                    Padding="12"
-                                    Margin="0,0,0,8"
-                                    Visibility="{Binding HasSelectedHit, Converter={StaticResource BoolToVis}}">
-                                <StackPanel>
-                                    <TextBlock Style="{StaticResource CaptionText}" Margin="0,0,0,8">
-                                        <Run Text="文档 "/><Run Text="{Binding SelectedHit.Source, Mode=OneWay}"/>
-                                    </TextBlock>
-
-                                    <!-- 评分进度条 -->
-                                    <Grid Margin="0,0,0,8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="相似度"
-                                                   Style="{StaticResource SmallText}"
-                                                   Margin="0,0,8,0"/>
-                                        <ProgressBar Grid.Column="1"
-                                                     Value="{Binding SelectedHit.Score, Mode=OneWay}"
-                                                     Maximum="1.0"
-                                                     Height="6"
-                                                     Foreground="{StaticResource PrimaryBrush}"/>
-                                    </Grid>
-
-                                    <!-- 元数据 -->
-                                    <TextBlock Style="{StaticResource SmallText}" Margin="0,0,0,4">
-                                        <Run Text="格式: "/><Run Text="{Binding SelectedHit.Format, Mode=OneWay}"/>
-                                    </TextBlock>
-                                    <TextBlock Style="{StaticResource SmallText}" Margin="0,0,0,4">
-                                        <Run Text="标题: "/><Run Text="{Binding SelectedHit.Heading, Mode=OneWay}"/>
-                                    </TextBlock>
-                                    <TextBlock Style="{StaticResource SmallText}">
-                                        <Run Text="匹配类型: "/><Run Text="{Binding SelectedHit.MatchType, Mode=OneWay}"/>
-                                    </TextBlock>
-                                </StackPanel>
-                            </Border>
-
-                            <!-- 完整内容（后端已截断至 2000 字符；MaxHeight 兜底防超长文本拖慢布局） -->
-                            <TextBlock x:Name="DetailContentText"
-                                       Text="{Binding SelectedHit.Content, Mode=OneWay}"
-                                       Style="{StaticResource BodyText}"
-                                       TextWrapping="Wrap"
-                                       MaxHeight="420"
-                                       xml:space="preserve"/>
-
-                            <!-- 空态 -->
-                            <TextBlock Text="选择左侧一条结果查看详情"
-                                       Style="{StaticResource SmallText}"
-                                       HorizontalAlignment="Center"
-                                       Margin="0,20,0,0"/>
-                        </StackPanel>
-                    </ScrollViewer>
-                </DockPanel>
-            </Border>
         </Grid>
     </Grid>
 </UserControl>

@@ -548,3 +548,42 @@ class TestRagAnswerStream:
         cid = json.loads(results[-1])["chat_id"]
         from doc2mind.core.rag import _CHAT_SESSIONS as sessions
         assert sessions[cid][-1] == {"role": "assistant", "content": "根据资料回答。"}
+
+
+class TestHistoryTokenBudget:
+    """_truncate_history_by_token_budget 的 token 预算截断逻辑。"""
+
+    def test_budget_zero_keeps_all(self) -> None:
+        from doc2mind.core.rag import _truncate_history_by_token_budget
+        history = [{"role": "user", "content": f"q{i}"} for i in range(5)]
+        result = _truncate_history_by_token_budget(history, max_tokens=0)
+        assert result == history
+
+    def test_large_budget_keeps_all(self) -> None:
+        from doc2mind.core.rag import _truncate_history_by_token_budget
+        history = [{"role": "user", "content": "short"} for _ in range(5)]
+        result = _truncate_history_by_token_budget(history, max_tokens=10000)
+        assert len(result) == 5
+        # 无省略 → 无占位消息
+        assert not any(m["role"] == "system" and "省略" in m["content"] for m in result)
+
+    def test_small_budget_truncates_oldest(self) -> None:
+        from doc2mind.core.rag import _truncate_history_by_token_budget
+        # 每条 100 字符 / 2.5 = 40 token,预算 80 → 保留最近 2 条
+        history = [{"role": "user", "content": "x" * 100} for _ in range(5)]
+        result = _truncate_history_by_token_budget(history, max_tokens=80)
+        assert len(result) == 3  # 保留 2 条真实消息 + 1 条占位
+        assert result[0]["role"] == "system"
+        assert "省略" in result[0]["content"] and "3" in result[0]["content"]
+        assert result[1:] == history[-2:]
+
+    def test_budget_reaches_edge_keeps_last_one(self) -> None:
+        from doc2mind.core.rag import _truncate_history_by_token_budget
+        # 单条历史即使超预算也保留（不能全空）
+        history = [{"role": "user", "content": "x" * 500}]
+        result = _truncate_history_by_token_budget(history, max_tokens=10)
+        assert len(result) == 1
+
+    def test_empty_history_returns_empty(self) -> None:
+        from doc2mind.core.rag import _truncate_history_by_token_budget
+        assert _truncate_history_by_token_budget([], max_tokens=100) == []

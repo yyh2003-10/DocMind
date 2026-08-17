@@ -57,6 +57,9 @@
         <DataTemplate DataType="{x:Type vm:DocumentsViewModel}">
             <v:DocumentsView/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:GraphViewModel}">
+            <v:GraphView/>
+        </DataTemplate>
         <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
             <v:SettingsView/>
         </DataTemplate>
@@ -86,7 +89,8 @@
             <!-- =====================================================================
                  自定义标题栏 (Row 0)
                  ===================================================================== -->
-            <Border Grid.Row="0"
+            <Border x:Name="TitleBarBorder"
+                    Grid.Row="0"
                     BorderBrush="{StaticResource BorderBrush}"
                     BorderThickness="0,0,0,1"
                     Background="{StaticResource SidebarBackgroundBrush}">
@@ -117,6 +121,16 @@
                         <TextBlock Text="{Binding BackendStatusText, Mode=OneWay}"
                                    Style="{StaticResource SmallText}"
                                    VerticalAlignment="Center"/>
+                        <!-- 离线时的一键启动/重连操作 -->
+                        <Button Content="启动服务"
+                                Command="{Binding StartBackendCommand}"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                FontSize="11"
+                                Padding="8,2"
+                                Height="22"
+                                Margin="8,0,0,0"
+                                Visibility="{Binding CanStartBackend, Converter={StaticResource BoolToVis}}"
+                                ToolTip="尝试启动本地 Python 后端服务并重连"/>
                     </StackPanel>
 
                     <!-- 右侧: 窗口控制按钮 -->
@@ -333,13 +347,13 @@
                 </Grid>
             </Border>
 
-            <!-- Toast 通知覆盖层 -->
+            <!-- Toast 通知覆盖层（跨全屏拉伸显示） -->
             <cc:ToastControl x:Name="ToastLayer"
-                             HorizontalAlignment="Right"
-                             VerticalAlignment="Bottom"
+                             Grid.Row="0" Grid.RowSpan="3"
+                             HorizontalAlignment="Stretch"
+                             VerticalAlignment="Stretch"
                              IsHitTestVisible="True"
-                             Panel.ZIndex="9999"
-                             Width="0" Height="0"/>
+                             Panel.ZIndex="9999"/>
         </Grid>
     </Border>
 </Window>

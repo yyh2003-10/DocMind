@@ -87,13 +87,13 @@ doc2mind  →  command: doc2mind mcp
 }
 ```
 
-## 四、工具清单（11 个）
+## 四、工具清单（12 个）
 
 | 工具 | 说明 | 关键参数 |
 |---|---|---|
 | `ingest` | 同步摄入文件或目录（小目录够用） | `path`（必填）、`collection`、`recursive`、`force` |
 | `ingest_job` | **异步摄入目录**：立即返回 `job_id`，后台逐文件处理，用 `get_job` 轮询进度。**中大型项目用这个** | 同 `ingest` |
-| `ingest_text` | **文本直入**：把一段经验/笔记/结论直接写入知识库，不依赖文件 | `text`（必填）、`title`、`collection`、`force` |
+| `ingest_text` | **文本直入**：把一段经验/笔记/结论直接写入知识库，不依赖文件。`collection` 不传时 AI 自动打标签/摘要/归类 | `text`（必填）、`title`、`collection`（可选）、`force` |
 | `get_job` | 查询异步任务（ingest_job / reindex）进度 | `job_id` |
 | `search` | 混合检索（BM25 + 向量 RRF 融合），返回 Top-K 命中分块 | `query`（必填）、`collection`、`top_k` |
 | `chat` | **RAG 对话**：检索知识库 + 调用 LLM 生成回答，带来源引用，支持多轮对话 | `query`（必填）、`collection`、`top_k`、`chat_id` |
@@ -102,23 +102,26 @@ doc2mind  →  command: doc2mind mcp
 | `quality_check` | 知识库质量报告（集合分布、分块统计 + `warnings` 质量告警，如 0 分块 / >50MB 大文档） | `collection` |
 | `convert_file` | 单个文档转 Markdown / JSON / TXT / HTML，返回内容 | `input_path`、`output_format` |
 | `reindex` | 重建指定集合的向量索引（可换嵌入模型），返回 `job_id` | `collection`、`model` |
+| `curate` | **AI 整理知识库**：enrich（打标签/摘要）、categorize（自动归类/建集合）、dedup（语义去重）、consolidate（归纳合并蒸馏笔记）。`dry_run=true` 只读预览零写入 | `collection`、`actions`、`dry_run`、`top_k` |
 
-> `chat` 工具需要先配置 LLM（`DOC2MIND_LLM_PROVIDER` + 相关密钥），详见下方「RAG 对话配置」。
+> `chat` 和 `curate` 需要先配置 LLM（`DOC2MIND_LLM_PROVIDER` + 相关密钥），详见下方「RAG 对话配置」。
 
 ## 五、给 agent 的提示词模板
 
 把下面这段放进你的 agent 系统提示或项目说明，它就知道怎么用了：
 
 ```text
-你有一个外置知识库工具 DocMind，通过 MCP 提供 10 个工具。
+你有一个外置知识库工具 DocMind，通过 MCP 提供 12 个工具。
 
 用法约定：
 - 摄入项目代码/文档：优先用 ingest_job（异步、有进度），路径给绝对路径，
   例如 ingest_job(path="E:/MyProject/src", recursive=true, collection="myproject")。
 - 沉淀经验：每当解决一个值得记住的问题（报错修复、架构决策、踩坑经验），
-  用 ingest_text(text="...", title="简短标题", collection="myproject") 写入。
+  用 ingest_text(text="...", title="简短标题") 写入——不传 collection，
+  AI 会自动打标签、生成摘要并归类到合适的集合。
 - 检索：开工前先 search("与当前任务相关的关键词")，看有没有历史经验可用。
-- 集合：按项目分集合（如 "myproject"），避免不同项目互相污染。
+- 整理：发现知识库杂乱（重复经验多、集合混乱）时，先 curate(dry_run=true)
+  出只读预览；删除/合并类动作把预览结论告诉用户，确认后再 dry_run=false 执行。
 ```
 
 ## 六、数据与配置

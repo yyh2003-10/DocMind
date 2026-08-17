@@ -692,6 +692,17 @@ def _save_settings_or_warn(settings: object) -> None:
 def serve(
     host: str = typer.Option("127.0.0.1", "--host", help="监听地址。"),
     port: int = typer.Option(8765, "--port", "-p", help="监听端口。"),
+    force: bool = typer.Option(
+        True,
+        "--force/--no-force",
+        "-f",
+        help="目标端口被占用时是否自动抢占并清理旧实例（默认开启，彻底杜绝僵尸进程霸占端口）。",
+    ),
+    allow_fallback: bool = typer.Option(
+        False,
+        "--allow-fallback",
+        help="目标端口无法释放时是否顺延到 8766+（默认关闭，强制独占指定端口）。",
+    ),
 ) -> None:
     """启动 FastAPI HTTP 服务（需要 `pip install doc2mind[server]`）。"""
     try:
@@ -703,6 +714,10 @@ def serve(
         )
         raise typer.Exit(code=1) from None
     # 首次使用引导：模型未下载时提示（新手友好）
+    import atexit
+    import os
+    import sys
+    from doc2mind.core.config import _user_data_dir, server_port_file_path
     from doc2mind.core.embedder.fastembed_impl import first_run_hint
     from doc2mind.server.http import create_app
 
@@ -710,33 +725,128 @@ def serve(
     if hint:
         rprint(f"[yellow]提示:[/yellow]\n{hint}")
 
-    # 端口冲突处理：目标端口被占用时自动 +1 探测空闲端口（最多 +100），
-    # 并把实际端口写入 server.port 状态文件，供 WPF 客户端读取跟随。
-    actual_port = _find_free_port(host, port)
-    if actual_port != port:
-        rprint(
-            f"[yellow]端口 {port} 被占用，自动改用 {actual_port}[/yellow]"
-        )
-    _write_server_port(actual_port)
+    # 1. 端口检查与强力抢占机制（彻底解决僵尸旧进程霸占端口）
+    actual_port = port
+    if not _is_port_free(host, port):
+        if force:
+            rprint(f"[yellow]检测到端口 {port} 被占用，正在自动抢占并清理旧实例...[/yellow]")
+            released = _release_port(port)
+            if released:
+                rprint(f"[green]✓ 已成功释放端口 {port}[/green]")
+                actual_port = port
+            elif allow_fallback:
+                actual_port = _find_free_port(host, port)
+                rprint(f"[yellow]无法释放端口 {port}，顺延改用 {actual_port}[/yellow]")
+            else:
+                rprint(f"[red]error[/red] 端口 {port} 被占用且无法强制释放。请先关闭占用该端口的程序。")
+                raise typer.Exit(code=1)
+        elif allow_fallback:
+            actual_port = _find_free_port(host, port)
+            rprint(f"[yellow]端口 {port} 被占用，自动改用 {actual_port}[/yellow]")
+        else:
+            rprint(f"[red]error[/red] 端口 {port} 被占用。可使用 --force 强制抢占释放。")
+            raise typer.Exit(code=1)
 
-    rprint(f"[bold green]启动 HTTP 服务[/bold green] http://{host}:{actual_port}")
-    uvicorn.run(create_app(), host=host, port=actual_port)
+    # 2. 写入 PID 锁文件与端口状态文件
+    pid_file = _user_data_dir() / "doc2mind.pid"
+    port_file = server_port_file_path()
+    try:
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(str(os.getpid()), encoding="utf-8")
+        port_file.write_text(str(actual_port), encoding="utf-8")
+    except Exception:
+        pass
+
+    # 退出钩子：清理 PID 与端口状态
+    def _cleanup() -> None:
+        try:
+            if pid_file.exists():
+                pid_file.unlink(missing_ok=True)
+            if port_file.exists():
+                port_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    atexit.register(_cleanup)
+
+    rprint(f"[bold green]启动 HTTP 服务 (PID {os.getpid()})[/bold green] http://{host}:{actual_port}")
+    try:
+        uvicorn.run(create_app(), host=host, port=actual_port)
+    finally:
+        _cleanup()
+
+
+def _is_port_free(host: str, port: int) -> bool:
+    """检查指定 host:port 是否处于空闲可用状态。"""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def _release_port(port: int) -> bool:
+    """强力释放指定端口：定位并终止占用该端口的旧进程（优先清理 doc2mind 僵尸进程）。"""
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+    from doc2mind.core.config import _user_data_dir
+
+    current_pid = os.getpid()
+
+    # 1. 尝试通过 PID 锁文件杀死旧进程
+    try:
+        pid_file = _user_data_dir() / "doc2mind.pid"
+        if pid_file.exists():
+            old_pid_str = pid_file.read_text(encoding="utf-8").strip()
+            if old_pid_str.isdigit():
+                old_pid = int(old_pid_str)
+                if old_pid != current_pid:
+                    if sys.platform == "win32":
+                        subprocess.run(
+                            ["taskkill", "/F", "/PID", str(old_pid)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=False,
+                        )
+                    else:
+                        os.kill(old_pid, signal.SIGKILL)
+            pid_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    # 2. Windows 平台通过 netstat 查找并杀死正在 LISTENING 该端口的所有进程
+    if sys.platform == "win32":
+        try:
+            cmd = f'for /f "tokens=5" %a in (\'netstat -aon ^| findstr ":{port} " ^| findstr "LISTENING"\') do if not "%a"=="{current_pid}" taskkill /f /pid %a'
+            subprocess.run(
+                ["cmd.exe", "/c", cmd],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except Exception:
+            pass
+
+    # 等待端口回收并复验
+    for _ in range(10):
+        time.sleep(0.2)
+        if _is_port_free("127.0.0.1", port):
+            return True
+
+    return False
 
 
 def _find_free_port(host: str, port: int, max_tries: int = 100) -> int:
-    """探测一个可监听的端口：从 `port` 起 +1 依次 bind 测试，返回第一个空闲端口。
-
-    目的：8765 被其它程序占用时，后端不至于启动失败，而是顺延到 8766/8767…
-    """
-    import socket
-
+    """探测一个可监听的端口：从 `port` 起 +1 依次 bind 测试，返回第一个空闲端口。"""
     for candidate in range(port, port + max_tries):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind((host, candidate))
-                return candidate
-            except OSError:
-                continue
+        if _is_port_free(host, candidate):
+            return candidate
     raise typer.Exit(
         code=1,
         message=f"[red]error[/red] 端口 {port}~{port + max_tries - 1} 均被占用，无法启动服务。",
@@ -744,7 +854,7 @@ def _find_free_port(host: str, port: int, max_tries: int = 100) -> int:
 
 
 def _write_server_port(port: int) -> None:
-    """把实际监听端口写入状态文件（WPF 客户端据此跟随端口变化）。失败静默。"""
+    """把实际监听端口写入状态文件。"""
     try:
         from doc2mind.core.config import server_port_file_path
 
@@ -752,7 +862,6 @@ def _write_server_port(port: int) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(str(port), encoding="utf-8")
     except OSError:
-        # 写失败不影响服务启动（WPF 仍会先探测默认端口）
         pass
 
 

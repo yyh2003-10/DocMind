@@ -21,7 +21,7 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Func<ChatRequest, Action<string>, Action<ChatStreamResult>, CancellationToken, Task<ChatStreamResult>>? OnChatStream { get; set; }
 
     // ── Documents ──
-    public Func<string?, int, int, string?, string, CancellationToken, Task<DocumentListResponse>>? OnListDocuments { get; set; }
+    public Func<string?, int, int, string?, string, string?, CancellationToken, Task<DocumentListResponse>>? OnListDocuments { get; set; }
     public Func<string, int, int, string?, CancellationToken, Task<DocumentDetail>>? OnGetDocument { get; set; }
     public Func<string, string?, CancellationToken, Task<DeleteResult>>? OnDeleteDocument { get; set; }
 
@@ -37,13 +37,22 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Func<ReindexRequest, CancellationToken, Task<JobStatus>>? OnReindex { get; set; }
     public Func<string, CancellationToken, Task<JobStatus>>? OnGetJob { get; set; }
 
+    // ── Chunk Annotation ──
+    public Func<int, string, CancellationToken, Task>? OnUpsertChunkAnnotation { get; set; }
+
     // ── Health / Config ──
     public Func<CancellationToken, Task<HealthStatus>>? OnGetHealth { get; set; }
     public Func<CancellationToken, Task<BackendConfig>>? OnGetConfig { get; set; }
     public Func<BackendConfigUpdate, CancellationToken, Task<BackendConfig>>? OnUpdateConfig { get; set; }
 
-    // ── LLM 连接测试 ──
+    // ── LLM 连接测试 / 模型列表 ──
     public Func<LlmTestRequest, CancellationToken, Task<LlmTestResult>>? OnLlmTest { get; set; }
+    public Func<LlmModelsRequest, CancellationToken, Task<LlmModelsResult>>? OnLlmModels { get; set; }
+
+    // ── 会话历史 ──
+    public Func<int, CancellationToken, Task<ChatSessionListResponse>>? OnListChats { get; set; }
+    public Func<string, CancellationToken, Task<ChatSessionDetail>>? OnGetChat { get; set; }
+    public Func<string, CancellationToken, Task>? OnDeleteChat { get; set; }
 
     public void UpdateBaseAddress(string baseUrl) { /* no-op */ }
 
@@ -59,8 +68,27 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Task<LlmTestResult> LlmTestAsync(LlmTestRequest req, CancellationToken ct = default)
         => OnLlmTest?.Invoke(req, ct) ?? throw new NotImplementedException();
 
+    public Task<LlmModelsResult> LlmModelsAsync(LlmModelsRequest req, CancellationToken ct = default)
+        => OnLlmModels?.Invoke(req, ct) ?? throw new NotImplementedException();
+
+    public Task<ChatSessionListResponse> ListChatsAsync(int limit = 50, CancellationToken ct = default)
+        => OnListChats?.Invoke(limit, ct) ?? Task.FromResult(new ChatSessionListResponse());
+
+    public Task<ChatSessionDetail> GetChatAsync(string chatId, CancellationToken ct = default)
+        => OnGetChat?.Invoke(chatId, ct) ?? Task.FromResult(new ChatSessionDetail { ChatId = chatId });
+
+    public Task DeleteChatAsync(string chatId, CancellationToken ct = default)
+        => OnDeleteChat?.Invoke(chatId, ct) ?? Task.CompletedTask;
+
     public Task<IngestResponse> IngestAsync(IngestRequest req, CancellationToken ct = default)
         => OnIngest?.Invoke(req, ct) ?? throw new NotImplementedException();
+
+    public Func<IngestTextRequest, CancellationToken, Task<IngestResponse>>? OnIngestText { get; set; }
+
+    public Task<IngestResponse> IngestTextAsync(IngestTextRequest req, CancellationToken ct = default)
+        => OnIngestText is not null
+            ? OnIngestText(req, ct)
+            : Task.FromResult(new IngestResponse(1, 100, 1, 0, 0, 50));
 
     public Task<JobStatus> IngestJobAsync(IngestRequest req, CancellationToken ct = default)
         => OnIngestJob?.Invoke(req, ct) ?? throw new NotImplementedException();
@@ -97,8 +125,8 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
         return result;
     }
 
-    public Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", CancellationToken ct = default)
-        => OnListDocuments?.Invoke(collection, page, pageSize, format, sort, ct) ?? throw new NotImplementedException();
+    public Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", string? q = null, CancellationToken ct = default)
+        => OnListDocuments?.Invoke(collection, page, pageSize, format, sort, q, ct) ?? throw new NotImplementedException();
 
     public Task<DocumentDetail> GetDocumentAsync(string id, int chunks = 5, int chunkContentLength = 200, string? collection = null, CancellationToken ct = default)
         => OnGetDocument?.Invoke(id, chunks, chunkContentLength, collection, ct) ?? throw new NotImplementedException();
@@ -121,8 +149,16 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Task<JobStatus> ReindexAsync(ReindexRequest req, CancellationToken ct = default)
         => OnReindex?.Invoke(req, ct) ?? throw new NotImplementedException();
 
+    public Func<string, CancellationToken, Task<JobStatus>>? OnCancelJob { get; set; }
+
     public Task<JobStatus> GetJobAsync(string jobId, CancellationToken ct = default)
         => OnGetJob?.Invoke(jobId, ct) ?? throw new NotImplementedException();
+
+    public Task<JobStatus> CancelJobAsync(string jobId, CancellationToken ct = default)
+        => OnCancelJob?.Invoke(jobId, ct) ?? Task.FromResult(new JobStatus { JobId = jobId, Status = "cancelled" });
+
+    public Task UpsertChunkAnnotationAsync(int chunkId, string text, CancellationToken ct = default)
+        => OnUpsertChunkAnnotation?.Invoke(chunkId, text, ct) ?? Task.CompletedTask;
 
     public async Task<JobStatus> PollJobUntilDoneAsync(string jobId, IProgress<JobStatus>? progress = null, TimeSpan? pollInterval = null, CancellationToken ct = default)
     {
@@ -144,4 +180,75 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
 
     private static bool IsTerminal(string? status)
         => status is "completed" or "done" or "failed" or "succeeded" or "canceled" or "cancelled";
+
+    // ── GPU 加速 ──
+    public Func<CancellationToken, Task<GpuDiagnosis>>? OnGetGpuDiagnosis { get; set; }
+    public Func<string, Action<string>, Action<bool>, CancellationToken, Task>? OnInstallGpu { get; set; }
+
+    public Task<GpuDiagnosis> GetGpuDiagnosisAsync(CancellationToken ct = default)
+        => OnGetGpuDiagnosis is not null
+            ? OnGetGpuDiagnosis(ct)
+            : Task.FromResult(new GpuDiagnosis { RecommendedPath = "cpu" });
+
+    public Task InstallGpuAsync(string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default)
+    {
+        if (OnInstallGpu is not null)
+            return OnInstallGpu(path, onLog, onDone, ct);
+        onLog($"[模拟] 安装 {path}");
+        onDone(true);
+        return Task.CompletedTask;
+    }
+
+    // ── 知识图谱 ──
+    public Func<string?, int, CancellationToken, Task<GraphResponse>>? OnGetGraph { get; set; }
+    public Func<string, int, CancellationToken, Task<List<GraphEntityRelation>>>? OnGetEntityRelations { get; set; }
+
+    public Task<GraphResponse> GetGraphAsync(string? collection = null, int limit = 200, CancellationToken ct = default)
+        => OnGetGraph is not null
+            ? OnGetGraph(collection, limit, ct)
+            : Task.FromResult(new GraphResponse(new List<GraphNode>(), new List<GraphEdge>(), 0));
+
+    public Task<List<GraphEntityRelation>> GetEntityRelationsAsync(string entityId, int limit = 50, CancellationToken ct = default)
+        => OnGetEntityRelations is not null
+            ? OnGetEntityRelations(entityId, limit, ct)
+            : Task.FromResult(new List<GraphEntityRelation>());
+
+    public Func<string, int, CancellationToken, Task<GraphEntityDetailResponse>>? OnGetEntityDetail { get; set; }
+
+    public Task<GraphEntityDetailResponse> GetEntityDetailAsync(string entityId, int limit = 8, CancellationToken ct = default)
+        => OnGetEntityDetail is not null
+            ? OnGetEntityDetail(entityId, limit, ct)
+            : Task.FromResult(new GraphEntityDetailResponse());
+
+    public Func<string?, int, CancellationToken, Task<GraphExtractResult>>? OnExtractGraph { get; set; }
+
+    public Task<GraphExtractResult> ExtractGraphAsync(string? collection = null, int topK = 20, CancellationToken ct = default)
+        => OnExtractGraph is not null
+            ? OnExtractGraph(collection, topK, ct)
+            : Task.FromResult(new GraphExtractResult(true, 5, 0, new List<string>(), 100));
+
+    public Func<EntityDistillRequest, CancellationToken, Task<EntityDistillResponse>>? OnDistillEntityKnowledge { get; set; }
+
+    public Task<EntityDistillResponse> DistillEntityKnowledgeAsync(EntityDistillRequest req, CancellationToken ct = default)
+        => OnDistillEntityKnowledge is not null
+            ? OnDistillEntityKnowledge(req, ct)
+            : Task.FromResult(new EntityDistillResponse
+            {
+                EntityId = req.EntityId,
+                EntityName = req.EntityName,
+                MarkdownCard = $"# 📚【知识档案】{req.EntityName}\n## 📌 核心定义与定位\n自动生成的精炼卡片",
+                SuggestedTags = new List<string> { req.EntityType, req.EntityName },
+                Model = "fake-llm"
+            });
+
+    // ── 事件流订阅 ──
+    public Func<Action<EventMessage>, CancellationToken, IDisposable>? OnSubscribeEvents { get; set; }
+
+    public IDisposable SubscribeEvents(Action<EventMessage> onEvent, CancellationToken ct = default)
+        => OnSubscribeEvents?.Invoke(onEvent, ct) ?? new DummyDisposable();
+
+    private sealed class DummyDisposable : IDisposable
+    {
+        public void Dispose() { }
+    }
 }

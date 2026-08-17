@@ -100,6 +100,28 @@ class AnthropicClient(LLMClient):
             payload["system"] = system
         return payload
 
+    def list_models(self, timeout: float | None = None) -> list[str]:
+        """GET /v1/models 列出可用 Claude 模型（取首页，下拉场景足够）。"""
+        import httpx
+
+        try:
+            resp = httpx.get(
+                f"{self._base_url}/v1/models",
+                headers=self._headers(),
+                timeout=timeout if timeout and timeout > 0 else 10.0,
+            )
+            self._raise_for_status(resp)
+            data = resp.json()
+            return sorted(m.get("id", "") for m in data.get("data", []) if m.get("id"))
+        except LLMError:
+            raise
+        except httpx.RequestError as e:
+            raise LLMError(
+                f"无法连接 Anthropic API ({self._base_url})，请检查网络或 API 地址: {e}"
+            ) from e
+        except Exception as e:
+            raise LLMError(f"Anthropic 列出模型失败: {e}") from e
+
     def _do_chat(
         self,
         messages: list[dict],

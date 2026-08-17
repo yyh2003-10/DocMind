@@ -408,66 +408,134 @@
     </Style>
 
     <!-- ==================== 10. ComboBox 样式 ==================== -->
+    <ControlTemplate x:Key="ComboBoxToggleButton" TargetType="ToggleButton">
+        <Border x:Name="TemplateRoot"
+                Background="{TemplateBinding Background}"
+                BorderBrush="{TemplateBinding BorderBrush}"
+                BorderThickness="{TemplateBinding BorderThickness}"
+                CornerRadius="10"
+                SnapsToDevicePixels="True">
+            <Border x:Name="SplitBorder"
+                    HorizontalAlignment="Right"
+                    Margin="0"
+                    Padding="10,0"
+                    BorderBrush="Transparent"
+                    BorderThickness="0">
+                <Path x:Name="Arrow"
+                      Data="M0,0 L5,5 L10,0"
+                      Fill="{StaticResource TextTertiaryBrush}"
+                      Stroke="{StaticResource TextTertiaryBrush}"
+                      StrokeThickness="1.5"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center"/>
+            </Border>
+        </Border>
+        <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Arrow" Property="Stroke" Value="{StaticResource PrimaryBrush}"/>
+                <Setter TargetName="Arrow" Property="Fill" Value="{StaticResource PrimaryBrush}"/>
+            </Trigger>
+            <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="TemplateRoot" Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                <Setter TargetName="Arrow" Property="Stroke" Value="{StaticResource PrimaryBrush}"/>
+                <Setter TargetName="Arrow" Property="Fill" Value="{StaticResource PrimaryBrush}"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="TemplateRoot" Property="Opacity" Value="0.5"/>
+            </Trigger>
+        </ControlTemplate.Triggers>
+    </ControlTemplate>
+
     <Style TargetType="ComboBox">
-        <Setter Property="Padding" Value="14,8"/>
+        <Setter Property="Padding" Value="12,6"/>
         <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
         <Setter Property="Background" Value="#2C2C2E"/>
         <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
-        <Setter Property="MinHeight" Value="40"/>
+        <Setter Property="MinHeight" Value="36"/>
         <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
         <Setter Property="UseLayoutRounding" Value="True"/>
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Auto"/>
+        <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ComboBox">
-                    <Grid>
-                        <Border x:Name="Root"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{StaticResource BorderBrush}"
-                                BorderThickness="1"
-                                CornerRadius="10"
-                                SnapsToDevicePixels="True">
-                            <Grid Margin="{TemplateBinding Padding}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <ContentPresenter x:Name="ContentSite"
-                                                  Grid.Column="0"
-                                                  Content="{TemplateBinding SelectionBoxItem}"
-                                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
-                                                  ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
-                                                  VerticalAlignment="Center"
-                                                  HorizontalAlignment="Stretch"/>
-                                <Path x:Name="ArrowDown"
-                                      Grid.Column="1"
-                                      Data="M0,0 L5,5 L10,0"
-                                      Fill="{StaticResource TextTertiaryBrush}"
-                                      Stroke="{StaticResource TextTertiaryBrush}"
-                                      StrokeThickness="1.5"
-                                      VerticalAlignment="Center"
-                                      Margin="4,0,0,0"/>
+                    <Grid x:Name="MainGrid" SnapsToDevicePixels="True">
+                        <!-- 底层 ToggleButton 负责下拉触发与边框背景 -->
+                        <ToggleButton x:Name="DropDownToggle"
+                                      Template="{StaticResource ComboBoxToggleButton}"
+                                      Background="{TemplateBinding Background}"
+                                      BorderBrush="{TemplateBinding BorderBrush}"
+                                      BorderThickness="{TemplateBinding BorderThickness}"
+                                      IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                      Focusable="False"
+                                      ClickMode="Press"/>
+
+                        <!-- 内容展示（非可编辑模式） -->
+                        <ContentPresenter x:Name="ContentSite"
+                                          IsHitTestVisible="False"
+                                          Content="{TemplateBinding SelectionBoxItem}"
+                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                          ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                          Margin="{TemplateBinding Padding}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
+
+                        <!-- 可编辑输入框（可编辑模式） -->
+                        <TextBox x:Name="PART_EditableTextBox"
+                                 Style="{x:Null}"
+                                 Template="{x:Null}"
+                                 HorizontalAlignment="Stretch"
+                                 VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                 Margin="10,0,30,0"
+                                 Focusable="True"
+                                 Background="Transparent"
+                                 Foreground="{TemplateBinding Foreground}"
+                                 BorderThickness="0"
+                                 Visibility="Hidden"
+                                 IsReadOnly="{TemplateBinding IsReadOnly}"/>
+
+                        <!-- 下拉弹出层 -->
+                        <Popup x:Name="PART_Popup"
+                               IsOpen="{TemplateBinding IsDropDownOpen}"
+                               Placement="Bottom"
+                               AllowsTransparency="True"
+                               Focusable="False"
+                               PopupAnimation="Slide"
+                               Margin="0,2,0,0">
+                            <Grid x:Name="Shdw"
+                                  MinWidth="{Binding ActualWidth, ElementName=MainGrid}"
+                                  MaxHeight="260">
+                                <Border x:Name="DropDownBorder"
+                                        Background="{StaticResource CardBrush}"
+                                        BorderBrush="{StaticResource BorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="10"
+                                        Effect="{StaticResource ShadowMd}"
+                                        Margin="0,4,0,4"
+                                        Padding="4">
+                                    <ScrollViewer x:Name="DropDownScrollViewer"
+                                                  CanContentScroll="True">
+                                        <ItemsPresenter x:Name="ItemsPresenter"
+                                                        KeyboardNavigation.DirectionalNavigation="Contained"
+                                                        SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                                    </ScrollViewer>
+                                </Border>
                             </Grid>
-                        </Border>
-                        <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}"
-                               Placement="Bottom" StaysOpen="False"
-                               AllowsTransparency="True">
-                            <Border Background="{StaticResource CardBrush}"
-                                    BorderBrush="{StaticResource BorderBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="12"
-                                    Effect="{StaticResource ShadowMd}"
-                                    Margin="0,4,0,0"
-                                    Padding="4">
-                                <ScrollViewer>
-                                    <ItemsPresenter/>
-                                </ScrollViewer>
-                            </Border>
                         </Popup>
                     </Grid>
                     <ControlTemplate.Triggers>
+                        <Trigger Property="IsEditable" Value="True">
+                            <Setter Property="IsTabStop" Value="False"/>
+                            <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="ContentSite" Property="Visibility" Value="Hidden"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Background" Value="{StaticResource HoverBrush}"/>
+                        </Trigger>
                         <Trigger Property="IsFocused" Value="True">
-                            <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
-                            <Setter TargetName="Root" Property="BorderThickness" Value="2"/>
+                            <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
