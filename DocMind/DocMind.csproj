@@ -8,6 +8,9 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>DocMind</RootNamespace>
     <AssemblyName>DocMind</AssemblyName>
+    <Version>1.0.1</Version>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
+    <FileVersion>1.0.1.0</FileVersion>
 
     <!-- 单文件发布（仅 Release） -->
     <PublishSingleFile Condition="'$(Configuration)' == 'Release'">true</PublishSingleFile>
