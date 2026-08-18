@@ -19,7 +19,7 @@ DocMind 把任意文档（PDF / Word / Excel / PPT / Markdown / HTML / 图片 / 
 
 普通用户最简单的方式是**直接下载安装包**（见 [GitHub Releases](https://github.com/yyh2003-10/DocMind/releases)）：
 
-1. **下载** `DocMind-Setup-<版本>.exe`（约 76MB，含 CPU 核心运行时）
+1. **下载** `DocMind-Setup-<版本>.exe`（约 115MB，含 CPU 核心运行时）
 2. **双击安装**，按提示选择是否勾选「GPU 加速」「OCR」扩展（可选，需联网）
 3. **启动 DocMind**
 4. **导入文档**：到【导入】页选择文件或文件夹，点击导入
