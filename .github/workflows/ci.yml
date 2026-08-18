@@ -85,7 +85,13 @@ jobs:
           Write-Host "venv-slim 大小: $((Get-ChildItem .venv-slim-new -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB) MB"
 
       - name: 安装 Inno Setup Compiler
-        uses: josebamc/setup-inno-setup-action@v1
+        shell: powershell
+        run: |
+          $url = "https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0.exe"
+          $tmp = "$env:TEMP\innosetup.exe"
+          Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+          Start-Process -Wait -FilePath $tmp -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$env:ProgramFiles\InnoSetup7"
+          echo "$env:ProgramFiles\InnoSetup7" >> $env:GITHUB_PATH
 
       - name: 编译安装包
         shell: powershell
