@@ -32,12 +32,11 @@ _CUDA_RUNTIME_DLLS: tuple[tuple[str, str], ...] = (
 
 
 def register_nvidia_dll_dirs() -> None:
-    """注册 site-packages/nvidia/<pkg>/bin 到 DLL 搜索路径（幂等、线程安全）。
+    """注册 site-packages/nvidia/<pkg>/bin 到 DLL 搜索路径与 PATH（幂等、线程安全）。
 
     非 Windows 平台直接返回；找不到 nvidia 目录时静默跳过。
-    注意：cu12/cu13 的 ``<pkg>/bin`` 目录是共享的（同名 cudnn64_9.dll），
-    因此这里只负责把目录加进搜索路径，不做版本过滤 —— 版本一致性由
-    :func:`cuda_runtime_ready` 预检 + ``system_env`` 诊断兜底。
+    注意：Windows 下部分底层 C++ 依赖仅读取 PATH 环境变量，因此
+    同时使用 os.add_dll_directory 和注入 os.environ["PATH"]。
     """
     global _registered
     if _registered:
@@ -61,11 +60,14 @@ def register_nvidia_dll_dirs() -> None:
                 bin_dir = pkg_dir / "bin"
                 if not bin_dir.is_dir():
                     continue
+                bin_str = str(bin_dir)
                 try:
-                    os.add_dll_directory(str(bin_dir))
+                    os.add_dll_directory(bin_str)
                 except (OSError, ValueError):
-                    # 重复注册 / 路径无效：忽略单个包的失败
                     pass
+                # 同时前置注入 PATH，确保 LoadLibrary 正常寻址
+                if bin_str not in os.environ.get("PATH", ""):
+                    os.environ["PATH"] = bin_str + os.pathsep + os.environ.get("PATH", "")
         _registered = True
 
 

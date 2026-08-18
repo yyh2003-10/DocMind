@@ -42,5 +42,8 @@ namespace DocMind.Models
 
         /// <summary>环境问题清单（如 CPU 版 onnxruntime 覆盖 GPU 模块）。</summary>
         public List<string>? Warnings { get; init; }
+
+        /// <summary>当前操作系统平台（如 win32 / darwin / linux）。</summary>
+        public string? Platform { get; init; }
     }
 }

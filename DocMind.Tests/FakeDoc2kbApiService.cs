@@ -88,7 +88,7 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Task<IngestResponse> IngestTextAsync(IngestTextRequest req, CancellationToken ct = default)
         => OnIngestText is not null
             ? OnIngestText(req, ct)
-            : Task.FromResult(new IngestResponse(1, 100, 1, 0, 0, 50));
+            : Task.FromResult(new IngestResponse { TotalDocuments = 1, TotalChunks = 100 });
 
     public Task<JobStatus> IngestJobAsync(IngestRequest req, CancellationToken ct = default)
         => OnIngestJob?.Invoke(req, ct) ?? throw new NotImplementedException();
@@ -215,10 +215,25 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
 
     public Func<string, int, CancellationToken, Task<GraphEntityDetailResponse>>? OnGetEntityDetail { get; set; }
 
-    public Task<GraphEntityDetailResponse> GetEntityDetailAsync(string entityId, int limit = 8, CancellationToken ct = default)
-        => OnGetEntityDetail is not null
-            ? OnGetEntityDetail(entityId, limit, ct)
-            : Task.FromResult(new GraphEntityDetailResponse());
+    public async Task<GraphEntityDetailResponse> GetEntityDetailAsync(string entityId, int limit = 8, CancellationToken ct = default)
+    {
+        if (OnGetEntityDetail is not null)
+        {
+            return await OnGetEntityDetail(entityId, limit, ct);
+        }
+
+        var relations = OnGetEntityRelations is not null
+            ? await OnGetEntityRelations(entityId, limit, ct)
+            : new List<GraphEntityRelation>();
+
+        return new GraphEntityDetailResponse
+        {
+            Entity = new GraphNode(entityId, entityId, "concept", "concept", 1, "default"),
+            Relations = relations,
+            Snippets = new List<GraphContextSnippet>(),
+            SourceDocuments = new List<GraphSourceDocument>()
+        };
+    }
 
     public Func<string?, int, CancellationToken, Task<GraphExtractResult>>? OnExtractGraph { get; set; }
 

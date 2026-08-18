@@ -26,7 +26,10 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
     private string? _provider;
     private int? _elapsedMs;
     private bool _isLoading;
+    private bool _isWaitingForFirstToken;
     private bool _showRegenerate;
+    private bool _showWithdraw;
+    private string _waitingHint = "🧠 正在检索知识库并思考回答...";
 
     /// <summary>角色：user / assistant / system。</summary>
     public string Role
@@ -51,6 +54,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             if (SetField(ref _content, value))
             {
                 UpdateRenderedDocument();
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CanCopy)));
             }
         }
     }
@@ -70,6 +74,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
     public void AppendToken(string token)
     {
         Content += token;
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CanCopy)));
     }
 
     /// <summary>把 Content 用 Markdig 解析为 FlowDocument。流式期间节流,终帧后强制刷新。</summary>
@@ -143,11 +148,24 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         set => SetField(ref _elapsedMs, value);
     }
 
-    /// <summary>是否正在加载（骨架屏用）。</summary>
+    /// <summary>是否正在加载。整体生成期间为 true。</summary>
     public bool IsLoading
     {
         get => _isLoading;
-        set => SetField(ref _isLoading, value);
+        set
+        {
+            if (SetField(ref _isLoading, value))
+            {
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CanCopy)));
+            }
+        }
+    }
+
+    /// <summary>是否正在等待首个 token返回（控制骨架屏可见性）。</summary>
+    public bool IsWaitingForFirstToken
+    {
+        get => _isWaitingForFirstToken;
+        set => SetField(ref _isWaitingForFirstToken, value);
     }
 
     /// <summary>是否显示「重新生成」（仅最后一条 assistant 消息、非生成中；由 VM 维护）。</summary>
@@ -155,6 +173,20 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
     {
         get => _showRegenerate;
         set => SetField(ref _showRegenerate, value);
+    }
+
+    /// <summary>是否显示「撤回」按钮（仅最后一条用户消息在非生成中显示）。</summary>
+    public bool ShowWithdraw
+    {
+        get => _showWithdraw;
+        set => SetField(ref _showWithdraw, value);
+    }
+
+    /// <summary>等待首字或非流式大包期间的动态状态提示文案。</summary>
+    public string WaitingHint
+    {
+        get => _waitingHint;
+        set => SetField(ref _waitingHint, value);
     }
 
     /// <summary>是否有可复制内容（控制「复制」按钮可见性）。</summary>
@@ -578,7 +610,6 @@ public partial class ChatViewModel : ViewModelBase
         if (string.IsNullOrWhiteSpace(query))
             return;
 
-        InputText = string.Empty;
         await SendCoreAsync(query, addUserMessage: true);
     }
 
@@ -621,8 +652,11 @@ public partial class ChatViewModel : ViewModelBase
         }
 
         // 添加流式占位（先空内容，逐 token 追加）
-        var assistantMsg = new ChatMessage { Role = "assistant", Content = "", IsLoading = true };
+        var assistantMsg = new ChatMessage { Role = "assistant", Content = "", IsLoading = true, IsWaitingForFirstToken = true };
         Messages.Add(assistantMsg);
+        
+        // 发送开始前，清空输入框
+        InputText = string.Empty;
 
         IsBusy = true;
         ShowStopChanged();
@@ -660,10 +694,9 @@ public partial class ChatViewModel : ViewModelBase
                         firstTokenMs = sw.ElapsedMilliseconds;
                     }
                     tokenCount++;
-                    // 首 token 到达即结束加载态，开始增量显示
-                    if (assistantMsg.IsLoading)
+                    if (assistantMsg.IsWaitingForFirstToken)
                     {
-                        assistantMsg.IsLoading = false;
+                        assistantMsg.IsWaitingForFirstToken = false;
                         assistantMsg.Content = token;
                     }
                     else
@@ -736,17 +769,22 @@ public partial class ChatViewModel : ViewModelBase
                 : $"API 错误：{ex.Message}（请到设置页检查 LLM 配置）";
             DebugLog.Error($"对话 API 错误: code={ex.Code} message={ex.Message}", "Chat", ex);
             assistantMsg.IsLoading = false;
+            assistantMsg.IsWaitingForFirstToken = false;
             assistantMsg.Content = hint is null
                 ? $"❌ API 错误：{ex.Message}"
-                : $"❌ API 错误：{ex.Message}\n\n💡 {hint}";
+                : $"❌ {hint}";
+            // 发送失败时，将原文回填到输入框，避免草稿丢失
+            InputText = query;
         }
         catch (BackendConnectionException ex)
         {
             sw.Stop();
-            StatusMessage = $"后端不可达：{ex.Message}";
-            DebugLog.Error($"对话后端不可达: {ex.Message}", "Chat", ex);
+            StatusMessage = "无法连接到后端";
+            DebugLog.Error($"对话连接失败: {ex.Message}", "Chat", ex);
             assistantMsg.IsLoading = false;
-            assistantMsg.Content = $"❌ 后端不可达：{ex.Message}";
+            assistantMsg.IsWaitingForFirstToken = false;
+            assistantMsg.Content = $"❌ 无法连接到后端服务: {ex.Message}\n\n💡 请检查:\n1. 端口是否被占用\n2. 可尝试在【设置】中修改「后端连接地址」端口并保存";
+            InputText = query;
         }
         catch (Exception ex)
         {
@@ -754,7 +792,9 @@ public partial class ChatViewModel : ViewModelBase
             StatusMessage = $"错误：{ex.Message}";
             DebugLog.Error($"对话未知异常: {ex.GetType().Name}: {ex.Message}", "Chat", ex);
             assistantMsg.IsLoading = false;
+            assistantMsg.IsWaitingForFirstToken = false;
             assistantMsg.Content = $"❌ 错误：{ex.Message}";
+            InputText = query;
         }
         finally
         {
@@ -821,6 +861,7 @@ public partial class ChatViewModel : ViewModelBase
         Messages.Clear();
         _chatId = null;
         _selectedSession = null;
+        InputText = string.Empty;
         OnPropertyChanged(nameof(SelectedSession));
         StatusMessage = "就绪";
         OnPropertyChanged(nameof(HasMessages));
@@ -857,13 +898,64 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
-    /// <summary>维护消息级标志（复制可见性由 CanCopy 自算；重新生成仅最后一条 assistant 显示）。</summary>
+    /// <summary>撤回用户消息并回填到输入框（可传入特定消息，默认撤回最后一条用户消息）。</summary>
+    [RelayCommand]
+    private void Withdraw(ChatMessage? message = null)
+    {
+        if (IsBusy || Messages.Count == 0)
+            return;
+
+        int userIdx = -1;
+        if (message != null)
+        {
+            userIdx = Messages.IndexOf(message);
+        }
+        else
+        {
+            for (var i = Messages.Count - 1; i >= 0; i--)
+            {
+                if (Messages[i].Role == "user")
+                {
+                    userIdx = i;
+                    break;
+                }
+            }
+        }
+
+        if (userIdx < 0 || userIdx >= Messages.Count || Messages[userIdx].Role != "user")
+            return;
+
+        var content = Messages[userIdx].Content;
+        // 移除该用户消息及其后的所有消息（如对应的 AI 回答）
+        while (Messages.Count > userIdx)
+        {
+            Messages.RemoveAt(Messages.Count - 1);
+        }
+
+        InputText = content;
+        StatusMessage = "已撤回消息并回填至输入框";
+        DebugLog.Info($"已撤回用户消息: '{content}'", "Chat");
+        UpdateMessageFlags();
+    }
+
+    /// <summary>维护消息级标志（复制由 CanCopy 自算；重新生成仅最后一条 assistant 显示；撤回仅最后一条 user 消息在非忙碌时显示）。</summary>
     private void UpdateMessageFlags()
     {
+        int lastUserIdx = -1;
+        for (var i = Messages.Count - 1; i >= 0; i--)
+        {
+            if (Messages[i].Role == "user")
+            {
+                lastUserIdx = i;
+                break;
+            }
+        }
+
         for (var i = 0; i < Messages.Count; i++)
         {
             var m = Messages[i];
             m.ShowRegenerate = i == Messages.Count - 1 && m.Role == "assistant" && !IsBusy;
+            m.ShowWithdraw = i == lastUserIdx && !IsBusy;
         }
     }
 

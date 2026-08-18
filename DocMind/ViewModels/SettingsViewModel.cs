@@ -72,6 +72,14 @@ public partial class SettingsViewModel : ViewModelBase
         _gpuWarning = gpuWarning;
         _backendProcess = backendProcess;
         Title = "设置";
+        
+        _gpuWarning.PropertyChanged += (s, e) =>
+        {
+            if (e.PropertyName == nameof(GpuWarningViewModel.Dismissed))
+            {
+                IsDirty = true;
+            }
+        };
 
         // 加载当前值到可编辑字段
         _backendUrl = _appSettings.BackendUrl;
@@ -170,7 +178,6 @@ public partial class SettingsViewModel : ViewModelBase
     /// <summary>GPU 加速状态（警告条 + 关于区显示）。</summary>
     public GpuWarningViewModel GpuWarning => _gpuWarning;
 
-    /// <summary>当前主题（选择即切换）。</summary>
     public ThemeMode SelectedTheme
     {
         get => _themeService.CurrentTheme;
@@ -180,6 +187,7 @@ public partial class SettingsViewModel : ViewModelBase
             {
                 _themeService.ApplyTheme(value);
                 OnPropertyChanged();
+                IsDirty = true;
             }
         }
     }
@@ -454,6 +462,14 @@ public partial class SettingsViewModel : ViewModelBase
             //   留空      → 保留原值（本地密文不覆盖、后端不修改）；
             //   点了「清除」→ 本地置空 + 后端显式清除。
             var hasApiKeyInput = !string.IsNullOrWhiteSpace(LlmApiKey);
+            
+            if (_appSettings.LlmKeyDecryptFailed && !hasApiKeyInput && !_clearApiKeyRequested)
+            {
+                _notifications.Error("API 密钥解密失败，为防止原密钥丢失，请重新输入密钥或点击清除后再保存。", "需要操作");
+                StatusMessage = "保存中止：需要处理 API 密钥";
+                return;
+            }
+
             var effectiveApiKey = hasApiKeyInput
                 ? LlmApiKey!.Trim()
                 : (_clearApiKeyRequested ? null : _appSettings.LlmApiKey);
@@ -514,7 +530,9 @@ public partial class SettingsViewModel : ViewModelBase
                     // 空模型名不推送，避免清空后端配置
                     EmbedModel = string.IsNullOrWhiteSpace(EmbedModel) ? null : EmbedModel.Trim(),
                     // 本地模型目录（空字符串 = 清除本地模型，回到联网模型）
-                    EmbedModelPath = string.IsNullOrWhiteSpace(EmbedModelPath) ? "" : EmbedModelPath.Trim(),
+                    EmbedModelPath = string.IsNullOrWhiteSpace(EmbedModelPath) 
+                        ? (string.IsNullOrWhiteSpace(_appSettings.EmbedModelPath) ? null : "") 
+                        : EmbedModelPath.Trim(),
                     EmbedBatchSize = null, // 前端暂不暴露
                     ChunkMaxTokens = ChunkMaxTokens,
                     ChunkMinChars = ChunkMinChars,
@@ -621,6 +639,20 @@ public partial class SettingsViewModel : ViewModelBase
         RagTopK = _appSettings.RagTopK;
         RagSystemPrompt = _appSettings.RagSystemPrompt;
         RagMaxHistoryTokens = _appSettings.RagMaxHistoryTokens;
+        
+        WatchPaths.Clear();
+        foreach (var p in _appSettings.WatchPaths)
+        {
+            WatchPaths.Add(p);
+        }
+        WatchDebounceSeconds = _appSettings.WatchDebounceSeconds;
+        
+        var theme = _appSettings.Theme == "Dark" ? ThemeMode.Dark : ThemeMode.Light;
+        if (SelectedTheme != theme)
+        {
+            SelectedTheme = theme;
+        }
+
         _clearApiKeyRequested = false; // 恢复未保存的改动，包括未保存的「清除」请求
         IsDirty = false;
         StatusMessage = "已恢复";

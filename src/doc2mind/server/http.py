@@ -429,8 +429,9 @@ class GpuDiagnosisResponse(BaseModel):
     cuda_runtime_tag: str | None = None  # "cu12" | "cu13" | None
     python_version: str | None = None
     installed_packages: dict[str, str | None] = {}
-    recommended_path: str = "cpu"  # cuda12|cuda13|directml|paddle-ocr-gpu|cpu
+    recommended_path: str = "cpu"  # cuda12|cuda13|directml|paddle-ocr-gpu|cpu|coreml
     warnings: list[str] = []
+    platform: str | None = None
 
 
 class InstallGpuRequest(BaseModel):
