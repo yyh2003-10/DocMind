@@ -9,7 +9,7 @@ jobs:
   python-test:
     name: Python 后端测试
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +22,7 @@ jobs:
             requirements-dev.txt
             requirements-server.txt
 
-      # 锁定依赖（core + dev，不含 GPU/OCR 大包，避免 CI 拖慢）
+      # 锁定依赖（core + dev + server，含 fastapi 用于测试）
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
@@ -30,7 +30,7 @@ jobs:
           pip install -e . --no-deps
 
       - name: 运行测试
-        run: python -m pytest tests -q
+        run: python -m pytest tests -q --durations=10
 
       - name: 静态检查（ruff）
         run: ruff check src tests
@@ -48,7 +48,7 @@ jobs:
   wpf-build:
     name: WPF 客户端构建
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -85,7 +85,7 @@ jobs:
           Write-Host "venv-slim 大小: $((Get-ChildItem .venv-slim-new -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB) MB"
 
       - name: 安装 Inno Setup Compiler
-        uses: minisll/setup-inno-setup-action@v1
+        uses: josebamc/setup-inno-setup-action@v1
 
       - name: 编译安装包
         shell: powershell
