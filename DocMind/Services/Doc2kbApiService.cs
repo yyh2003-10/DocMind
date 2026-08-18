@@ -266,6 +266,7 @@ public class Doc2kbApiService : IDoc2kbApiService
                     Page = s.TryGetProperty("page", out var p) && p.ValueKind == JsonValueKind.Number ? p.GetInt32() : null,
                     Heading = s.TryGetProperty("heading", out var h) ? h.GetString() : null,
                     Score = s.TryGetProperty("score", out var sc) && sc.ValueKind == JsonValueKind.Number ? sc.GetDouble() : 0,
+                    Snippet = s.TryGetProperty("snippet", out var snip) ? snip.GetString() : null,
                 });
             }
         }

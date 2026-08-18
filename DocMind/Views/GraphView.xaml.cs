@@ -173,6 +173,19 @@ public partial class GraphView : UserControl
                         Dispatcher.InvokeAsync(async () => await vm.SelectNodeAsync(nodeId));
                     }
                 }
+                else if (type == "graph_ready")
+                {
+                    ApplyCurrentTheme();
+                    if (DataContext is GraphViewModel vm && !string.IsNullOrWhiteSpace(vm.GraphJson) && vm.GraphJson != "{\"nodes\":[],\"edges\":[]}")
+                    {
+                        InjectGraphJson(vm.GraphJson);
+                    }
+                    else if (!string.IsNullOrEmpty(_pendingJson))
+                    {
+                        InjectGraphJson(_pendingJson);
+                        _pendingJson = null;
+                    }
+                }
                 else if (type == "extract_requested" && DataContext is GraphViewModel vm)
                 {
                     Dispatcher.InvokeAsync(async () => await vm.ExtractGraphCommand.ExecuteAsync(null));
@@ -187,13 +200,10 @@ public partial class GraphView : UserControl
 
     private void OnGraphDataRenderRequested(string json)
     {
+        _pendingJson = json;
         if (_isWebViewInitialized && GraphWeb.CoreWebView2 != null)
         {
             InjectGraphJson(json);
-        }
-        else
-        {
-            _pendingJson = json;
         }
     }
 
@@ -218,14 +228,13 @@ public partial class GraphView : UserControl
     {
         try
         {
-            if (GraphWeb.CoreWebView2 != null)
+            if (GraphWeb.CoreWebView2 != null && !string.IsNullOrWhiteSpace(json))
             {
-                // 通道 1: 原生 PostWebMessage（免疫一切转义符）
+                // 通道 1: 原生 PostWebMessage（安全传递完整 JSON）
                 GraphWeb.CoreWebView2.PostWebMessageAsJson(json);
 
-                // 通道 2: 安全转义的 ExecuteScript 兜底
-                string encoded = JsonSerializer.Serialize(json);
-                string script = $"window.renderGraph && window.renderGraph({encoded});";
+                // 通道 2: 直接作为 JS 表达式注入 window.renderGraph(...)
+                string script = $"window.renderGraph && window.renderGraph({json});";
                 GraphWeb.ExecuteScriptAsync(script);
             }
         }

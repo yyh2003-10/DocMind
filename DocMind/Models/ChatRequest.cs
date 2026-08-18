@@ -29,4 +29,8 @@ public sealed record ChatRequest
     /// <summary>知识图谱实体上下文（High-level 拓扑与背景注入）。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("entityContext")]
     public string? EntityContext { get; init; }
+
+    /// <summary>办公角色人设标识（office/architect/engineer/brainstorm）。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("persona")]
+    public string? Persona { get; init; }
 }

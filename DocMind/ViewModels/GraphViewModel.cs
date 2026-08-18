@@ -11,7 +11,7 @@ public partial class GraphViewModel : ViewModelBase
     private readonly IDoc2kbApiService _apiService;
     private readonly NotificationService? _notifications;
 
-    private string? _collection;
+    private string? _collection = "全部集合";
     private bool _isBusy;
     private string _statusMessage = "就绪";
     private GraphResponse? _graphData;
@@ -222,6 +222,11 @@ public partial class GraphViewModel : ViewModelBase
                     Collections.Add(collName);
                 }
             }
+            if (string.IsNullOrWhiteSpace(_collection) || !Collections.Contains(_collection))
+            {
+                _collection = "全部集合";
+                OnPropertyChanged(nameof(Collection));
+            }
         }
         catch (Exception ex)
         {
@@ -246,7 +251,7 @@ public partial class GraphViewModel : ViewModelBase
             GraphJson = JsonSerializer.Serialize(resp);
             GraphDataRenderRequested?.Invoke(GraphJson);
 
-            StatusMessage = HasGraph ? $"已加载 {TotalNodes} 个实体节点与 {TotalEdges} 条关系" : "当前集合暂无图谱数据（可点击「抽取图谱」构建）";
+            StatusMessage = HasGraph ? "就绪" : "当前集合暂无图谱数据（可点击「抽取图谱」构建）";
         }
         catch (Exception ex)
         {
@@ -739,5 +744,11 @@ public partial class GraphViewModel : ViewModelBase
         OnPropertyChanged(nameof(HasSnippets));
         OnPropertyChanged(nameof(HasSourceDocuments));
         OnPropertyChanged(nameof(HasEntityChatMessages));
+    }
+
+    [RelayCommand]
+    public void ToggleDetail()
+    {
+        IsDetailOpen = !IsDetailOpen;
     }
 }

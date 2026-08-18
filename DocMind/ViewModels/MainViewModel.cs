@@ -83,6 +83,7 @@ public partial class MainViewModel : ViewModelBase
     }
 
     public ObservableCollection<NavigationItem> NavigationItems { get; } = new();
+    public ICollectionView NavigationItemsView { get; }
 
     private readonly SearchViewModel _searchViewModel;
     private readonly ChatViewModel _chatViewModel;
@@ -136,24 +137,48 @@ public partial class MainViewModel : ViewModelBase
         // 转换成功「一键导入」→ 跳转导入页并填入文件路径
         _convertViewModel.ImportRequested += OnConvertImportRequested;
 
-        // 对话页「引用来源点击」→ 跳转搜索页用源文件名搜索
-        _chatViewModel.SourceSearchRequested += OnSourceSearchRequested;
-
         // 导入完成 → 文档库/图谱/质量看板缓存失效并刷新
         _importViewModel.ImportCompleted += OnImportCompleted;
 
+        // 全局后台任务状态感知联动
+        _documentsViewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(DocumentsViewModel.IsReindexing) or nameof(DocumentsViewModel.ReindexProgressPercent))
+            {
+                OnPropertyChanged(nameof(HasBackgroundTask));
+                OnPropertyChanged(nameof(BackgroundTaskSummary));
+            }
+        };
+
+        _importViewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(ImportViewModel.IsBusy))
+            {
+                OnPropertyChanged(nameof(HasBackgroundTask));
+                OnPropertyChanged(nameof(BackgroundTaskSummary));
+            }
+        };
+
         Title = "DocMind";
 
-        NavigationItems.Add(new NavigationItem { Title = "搜索", Icon = "🔍", IconPath = "Assets/nav-search.png", ViewModelType = typeof(SearchViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "对话", Icon = "💬", ViewModelType = typeof(ChatViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "导入", Icon = "📥", IconPath = "Assets/nav-import.png", ViewModelType = typeof(ImportViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "转换", Icon = "🔄", IconPath = "Assets/nav-convert.png", ViewModelType = typeof(ConvertViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "质量看板", Icon = "📊", IconPath = "Assets/nav-quality.png", ViewModelType = typeof(QualityViewModel) });
-        // 文档库/调试日志无独立 PNG 图标：IconPath 置空，由侧栏模板回退显示 emoji 字符
-        NavigationItems.Add(new NavigationItem { Title = "文档库", Icon = "🗂️", ViewModelType = typeof(DocumentsViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "知识图谱", Icon = "🕸️", ViewModelType = typeof(GraphViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "设置", Icon = "⚙️", IconPath = "Assets/nav-settings.png", ViewModelType = typeof(SettingsViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "调试日志", Icon = "📋", ViewModelType = typeof(DebugLogViewModel) });
+        // 分组 1：核心工作台 (日常问答与探索)
+        NavigationItems.Add(new NavigationItem { Title = "对话", Icon = "💬", Category = "工作台", ViewModelType = typeof(ChatViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "搜索", Icon = "🔍", IconPath = "Assets/nav-search.png", Category = "工作台", ViewModelType = typeof(SearchViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "知识图谱", Icon = "🕸️", Category = "工作台", ViewModelType = typeof(GraphViewModel) });
+
+        // 分组 2：知识资产 (内容管理与生产线)
+        NavigationItems.Add(new NavigationItem { Title = "文档库", Icon = "🗂️", Category = "知识资产", ViewModelType = typeof(DocumentsViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "导入", Icon = "📥", IconPath = "Assets/nav-import.png", Category = "知识资产", ViewModelType = typeof(ImportViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "转换", Icon = "🔄", IconPath = "Assets/nav-convert.png", Category = "知识资产", ViewModelType = typeof(ConvertViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "质量看板", Icon = "📊", IconPath = "Assets/nav-quality.png", Category = "知识资产", ViewModelType = typeof(QualityViewModel) });
+
+        // 分组 3：系统与支持
+        NavigationItems.Add(new NavigationItem { Title = "设置", Icon = "⚙️", IconPath = "Assets/nav-settings.png", Category = "系统与支持", ViewModelType = typeof(SettingsViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "调试日志", Icon = "📋", Category = "系统与支持", ViewModelType = typeof(DebugLogViewModel) });
+
+        var cvs = System.Windows.Data.CollectionViewSource.GetDefaultView(NavigationItems);
+        cvs.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription(nameof(NavigationItem.Category)));
+        NavigationItemsView = cvs;
 
         SelectedNavigationItem = NavigationItems[0];
     }
@@ -338,9 +363,10 @@ public partial class MainViewModel : ViewModelBase
             _ = _qualityViewModel.EnsureLoadedAsync();
         }
 
-        // 3. 对话页与搜索页：集合列表可能有新增集合，自动拉取
+        // 3. 对话页、搜索页与文档库页：集合列表可能有新增集合，自动拉取
         _ = _chatViewModel.LoadCollectionsCommand.ExecuteAsync(null);
         _ = _searchViewModel.LoadCollectionsAsync();
+        _ = _documentsViewModel.LoadCollectionsAsync();
     }
 
     [RelayCommand]
@@ -407,6 +433,36 @@ public partial class MainViewModel : ViewModelBase
             if (CurrentPage == _qualityViewModel) return _qualityViewModel.IsBusy;
             if (CurrentPage == _documentsViewModel) return _documentsViewModel.IsBusy || _documentsViewModel.IsReindexing;
             return false;
+        }
+    }
+
+    /// <summary>是否有全局后台耗时任务进行中（跨页面常驻显示）。</summary>
+    public bool HasBackgroundTask => _documentsViewModel.IsReindexing || _importViewModel.IsBusy;
+
+    /// <summary>全局后台任务简述（显示在顶栏指示胶囊）。</summary>
+    public string BackgroundTaskSummary
+    {
+        get
+        {
+            if (_documentsViewModel.IsReindexing)
+                return $"⚡ 重建索引中 ({_documentsViewModel.ReindexProgressPercent}%)";
+            if (_importViewModel.IsBusy)
+                return "📥 文件摄入中…";
+            return string.Empty;
+        }
+    }
+
+    /// <summary>点击顶栏后台任务胶囊 → 聚焦导航至对应任务管理页面。</summary>
+    [RelayCommand]
+    private void FocusBackgroundTask()
+    {
+        if (_documentsViewModel.IsReindexing)
+        {
+            NavigateToDocuments();
+        }
+        else if (_importViewModel.IsBusy)
+        {
+            NavigateToImport();
         }
     }
 

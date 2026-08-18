@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # 系统提示词：DocMind 智能知识专家与 Agent 思考准则
 _SYSTEM_PROMPT = (
-    "你是 DocMind 知识库的智能架构师与技术专家 Copilot Agent。\n"
+    "你是 DocMind 知识库问答的智能架构师与技术专家 Copilot Agent。\n"
     "你的任务是深入、严谨、条理清晰地解答用户关于技术、设计原理、踩坑排错和选型对比的问题。\n\n"
     "【思考与回答准则】\n"
     "1. 【深入透彻】：不要给出死板机械的简单复述，要结合上下文深入剖析「核心机制、设计考量、最佳实践、潜在隐患/踩坑防范」；\n"
@@ -43,8 +43,17 @@ _SYSTEM_PROMPT = (
     "4. 【结构清晰】：善用 Markdown 标题、清晰层级、表格对比与加粗强调；\n"
     "5. 【Agent 主动洞察】：在回答主体结束时，简明提炼出 1-2 条高价值的「💡 架构洞察 / 知识沉淀建议」；\n"
     "6. 【下一步行动预测】：在整个回答的最后一行，根据当前上下文推荐 2-3 个最值得进一步探讨或执行的下一步行动建议，格式固定为：\n"
-    '[ACTIONS: ["👉 建议1", "👉 建议2", "👉 建议3"]]'
+    '[ACTIONS: ["👉 建议1", "👉 建议2", "👉 建议3"]]\n'
+    "7. 【专家把关人 / 历史避坑预警】：若参考资料中包含【历史避坑与排错参考】，请务必在回答中通过醒目的 `> ⚠️ **【专家避坑与排错预警】**` 引用块置顶提醒用户注意潜在风险与避坑对策；\n"
+    "8. 【知识图谱与影响面分析】：若参考资料中包含【知识图谱拓扑关联与潜在影响面网络】，在分析改动或技术原理时，应主动向用户阐明相关改动对上下游技术模块、实体节点的关联影响与协同修改建议。"
 )
+# 办公角色人设 Prompt 增强映射
+_PERSONA_PROMPTS: dict[str, str] = {
+    "office": "【当前角色：💼 知识办公助手】你擅长将复杂技术与业务资料提炼为清晰易懂的核心结论、梳理 Action Items 待办清单与标准汇报公文。行文严谨、结构条理、用语得体。",
+    "architect": "【当前角色：🧠 资深系统架构师】你擅长系统设计模式选型、底层运行机制剖析、性能瓶颈评估与架构演进设计。分析深入透彻，注重权衡取舍与全局考量。",
+    "engineer": "【当前角色：🛠️ 资深研发工匠】你擅长工业级标准代码实现、架构重构、异常边界防御与单元测试。凡涉及代码均提供完整带中文注释的实现示例，注重代码健壮性。",
+    "brainstorm": "【当前角色：💡 创新方案顾问】你擅长头脑风暴、SWOT 矩阵分析、多方案多维度对比表格与排期落地规划。善用表格、矩阵与结构化推导，激发灵感。",
+}
 
 # 会话历史上限（条），防止内存无限增长
 _MAX_HISTORY = 20
@@ -109,6 +118,7 @@ class SourceRef:
     source_type: str = "local"  # "local" | "web"
     url: str | None = None
     title: str | None = None
+    snippet: str | None = None
 
 
 @dataclass(frozen=True)
@@ -179,8 +189,9 @@ def _append_turn(
     user_content: str,
     assistant_content: str | None,
     db_path: Path | None = None,
+    sources: list[SourceRef] | None = None,
 ) -> None:
-    """记录一轮对话：内存 LRU 更新 + SQLite 持久化。
+    """记录一轮对话：内存 LRU 更新 + SQLite 持久化（含引用来源元数据）。
 
     DB 写失败时降级为仅内存（记 warning），不阻断对话——持久化是增强
     能力而非硬依赖。assistant_content 为 None 表示本轮无回答（如无检索
@@ -202,21 +213,58 @@ def _append_turn(
         # 首条用户消息生成会话标题（问题前 50 字）
         store.append_message(chat_id, "user", user_content, title_hint=user_content)
         if assistant_content is not None:
-            store.append_message(chat_id, "assistant", assistant_content)
+            sources_json = None
+            if sources:
+                try:
+                    sources_json = json.dumps([
+                        {
+                            "index": s.index,
+                            "source": s.source,
+                            "format": s.format,
+                            "chunk_id": s.chunk_id,
+                            "page": s.page,
+                            "heading": s.heading,
+                            "score": s.score,
+                            "source_type": s.source_type,
+                            "url": s.url,
+                            "title": s.title,
+                        }
+                        for s in sources
+                    ], ensure_ascii=False)
+                except Exception:  # noqa: BLE001
+                    pass
+            store.append_message(
+                chat_id, "assistant", assistant_content, sources_json=sources_json
+            )
     except ChatStoreError as e:
         logger.warning(
             "会话持久化失败（已降级为仅内存，重启后该会话历史丢失）: %s", e
         )
 
-def clear_session(chat_id: str, db_path: Path | None = None) -> None:
+def clear_session(chat_id: str, db_path: Path | None = None) -> bool:
     """清除指定会话历史（同时清内存和 SQLite）。"""
     with _HISTORY_LOCK:
-        _CHAT_SESSIONS.pop(chat_id, None)
+        in_mem = _CHAT_SESSIONS.pop(chat_id, None) is not None
+    in_db = False
     if db_path is not None:
         try:
-            ChatStore(db_path).delete_session(chat_id)
+            in_db = ChatStore(db_path).delete_session(chat_id)
         except ChatStoreError as e:
             logger.warning("删除 SQLite 会话失败（内存已清）: %s", e)
+    return in_mem or in_db
+
+
+def _format_source_ref(index: int, hit: SearchHit) -> str:
+    """格式化单条来源引用（测试与展示兼容）。"""
+    meta = hit.chunk
+    page_info = f", p.{meta.page}" if meta.page is not None else ""
+    heading_info = f", 章节: {meta.heading}" if meta.heading else ""
+    return f"[{index}] 《{meta.source}》{page_info}{heading_info}\n{meta.content}"
+
+
+def _build_context(hits: list[SearchHit]) -> tuple[str, list[SourceRef]]:
+    """构建上下文文本与来源列表（别名）。"""
+    return _format_context(hits)
 
 
 def rag_answer(
@@ -230,6 +278,9 @@ def rag_answer(
     model_override: str | None = None,
     enable_web_search: bool = False,
     entity_context: str | None = None,
+    persona: str | None = None,
+    store: VectorStore | None = None,
+    embedder: Any | None = None,
 ) -> RagAnswer:
     """RAG 问答主入口（非流式，一次性返回完整回答）。"""
     s = settings or get_settings()
@@ -253,11 +304,12 @@ def rag_answer(
             "或设置环境变量 DOC2MIND_LLM_PROVIDER（openai/ollama/anthropic/gemini）。"
         )
 
-    # 3-5. 检索 + 构建上下文 + 组装消息 (融合本地切片 + 实体拓扑 + 实时联网资料)
+    # 3-5. 检索 + 构建上下文 + 组装消息 (融合本地切片 + 实体拓扑 + 实时联网资料 + 角色人设)
     hits, context, sources, messages = _build_context_and_messages(
         query=query, collection=collection, top_k=top_k, s=s,
         collections=collections, history=history, t0=t0,
         enable_web_search=enable_web_search, entity_context=entity_context,
+        persona=persona, store=store, embedder=embedder,
     )
 
     # 4.5 无命中且无外部/实体上下文时提前返回
@@ -281,8 +333,8 @@ def rag_answer(
     except LLMError as e:
         raise RagError(str(e)) from e
 
-    # 7. 保存历史
-    _append_turn(cid, query, reply, s.db_path)
+    # 7. 保存历史（含 sources）
+    _append_turn(cid, query, reply, s.db_path, sources=sources)
 
     return RagAnswer(
         answer=reply,
@@ -306,6 +358,10 @@ def rag_answer_stream(
     model_override: str | None = None,
     enable_web_search: bool = False,
     entity_context: str | None = None,
+    persona: str | None = None,
+    store: VectorStore | None = None,
+    embedder: Any | None = None,
+    stop_event: Any | None = None,
 ) -> Iterator[str]:
     """RAG 流式问答，逐 token 产出 SSE 格式 JSON 行。"""
     s = settings or get_settings()
@@ -334,6 +390,7 @@ def rag_answer_stream(
         query=query, collection=collection, top_k=top_k, s=s,
         collections=collections, history=history, t0=t0,
         enable_web_search=enable_web_search, entity_context=entity_context,
+        persona=persona, store=store, embedder=embedder,
     )
 
     if not context and not entity_context and not enable_web_search:
@@ -356,7 +413,9 @@ def rag_answer_stream(
     llm_timeout = (s.llm_timeout if s.llm_timeout > 0 else None)
     collected = []
     try:
-        for token in client.stream_chat(messages, timeout=llm_timeout):
+        for token in client.stream_chat(messages, timeout=llm_timeout, stop_event=stop_event):
+            if stop_event is not None and stop_event.is_set():
+                break
             collected.append(token)
             yield json.dumps({"token": token}, ensure_ascii=False)
     except LLMError as e:
@@ -364,8 +423,8 @@ def rag_answer_stream(
 
     reply = "".join(collected)
 
-    # 7. 保存历史
-    _append_turn(cid, query, reply, s.db_path)
+    # 7. 保存历史（含 sources）
+    _append_turn(cid, query, reply, s.db_path, sources=sources)
 
     # 终帧
     elapsed = int((time.perf_counter() - t0) * 1000)
@@ -415,6 +474,7 @@ def _format_context(hits: list[SearchHit]) -> tuple[str, list[SourceRef]]:
                 score=h.score,
                 source_type="local",
                 title=meta.source,
+                snippet=meta.content,
             )
         )
     return "\n\n".join(blocks), sources
@@ -430,8 +490,11 @@ def _build_context_and_messages(
     t0: float,
     enable_web_search: bool = False,
     entity_context: str | None = None,
+    persona: str | None = None,
+    store: VectorStore | None = None,
+    embedder: Any | None = None,
 ) -> tuple[list[SearchHit], str, list[SourceRef], list[dict[str, str]]]:
-    """检索 + 构建多源上下文 + 组装消息（融合本地切片 + 实体拓扑 + 实时联网检索）。"""
+    """检索 + 构建多源上下文 + 组装消息（融合本地切片 + 实体拓扑 + 实时联网检索 + 角色人设）。"""
     hits: list[SearchHit] = []
     sources: list[SourceRef] = []
     context_blocks: list[str] = []
@@ -439,8 +502,27 @@ def _build_context_and_messages(
     # 1. 实体 High-level 拓扑上下文注入（LightRAG 拓扑思想）
     if entity_context and entity_context.strip():
         context_blocks.append(f"【知识图谱当前实体拓扑与背景】\n{entity_context.strip()}")
+    else:
+        # 1.2 自动嗅探图谱拓扑关联与影响面网络
+        try:
+            from doc2mind.core.store.graph_store import GraphStore
+            graph_store = GraphStore(s.db_path)
+            try:
+                matched = graph_store.find_entities_by_keyword(query[:25], limit=3)
+                if matched:
+                    graph_lines = []
+                    for ent in matched:
+                        rels = graph_store.get_entity_relations(ent["id"], limit=4)
+                        for r in rels:
+                            graph_lines.append(f"- 实体【{r['from_name']}】 --[{r['relation']}]--> 实体【{r['to_name']}】")
+                    if graph_lines:
+                        context_blocks.append("【知识图谱拓扑关联与潜在影响面网络 (Graph Impact Network)】\n" + "\n".join(graph_lines[:8]))
+            finally:
+                graph_store.close()
+        except Exception as ex:
+            logger.debug("图谱拓扑自动嗅探跳过: %s", ex)
 
-    # 2. 本地 Low-level 原著切片检索
+    # 2. 本地 Low-level 原著切片检索（复用 store 与 embedder）
     try:
         if collections:
             cleaned = [c.strip() for c in collections if c and c.strip()]
@@ -448,26 +530,54 @@ def _build_context_and_messages(
         else:
             search_collection = collection
 
-        store, embedder = _open_store(s)
+        should_close_store = False
+        active_store = store
+        active_embedder = embedder
+        if active_store is None:
+            active_store, active_embedder = _open_store(s)
+            should_close_store = True
+
         try:
-            retriever = Retriever(store=store, embedder=embedder)
+            retriever = Retriever(store=active_store, embedder=active_embedder)
             hits, _ = retriever.search(
                 query=query,
                 collection=search_collection,
                 top_k=top_k or s.rag_top_k,
                 min_score=0.0,
             )
+
+            if s.rag_min_score > 0:
+                hits = [h for h in hits if max(h.vector_score, h.bm25_score) >= s.rag_min_score]
+
+            if hits:
+                local_ctx, local_sources = _format_context(hits)
+                if local_ctx:
+                    context_blocks.append(f"【本地知识库原著切片 (Local Knowledge)】\n{local_ctx}")
+                    sources.extend(local_sources)
+
+            # 2.2 专家把关人：双路并行检索库内历史故障与踩坑经验 (Pitfall Advisor)
+            try:
+                if hits and "mock" not in type(retriever).__name__.lower():
+                    pitfall_query = f"{query} 故障 踩坑 异常 避坑 缺陷 零漂 冲突 失败 报错 注意事项"
+                    pitfall_hits, _ = retriever.search(
+                        query=pitfall_query,
+                        collection=search_collection,
+                        top_k=2,
+                        min_score=0.25,
+                    )
+                    existing_ids = {h.chunk.id for h in hits}
+                    distinct_pitfalls = [ph for ph in pitfall_hits if ph.chunk.id not in existing_ids]
+                    if distinct_pitfalls:
+                        pitfall_blocks = []
+                        for ph in distinct_pitfalls:
+                            pmeta = ph.chunk
+                            pitfall_blocks.append(f"- 《{pmeta.source}》: {pmeta.content}")
+                        context_blocks.append("【⚠️ 专家把关人：库内历史避坑与排错参考】\n" + "\n".join(pitfall_blocks))
+            except Exception as ex:
+                logger.debug("历史避坑嗅探跳过: %s", ex)
         finally:
-            store.close()
-
-        if s.rag_min_score > 0:
-            hits = [h for h in hits if max(h.vector_score, h.bm25_score) >= s.rag_min_score]
-
-        if hits:
-            local_ctx, local_sources = _format_context(hits)
-            if local_ctx:
-                context_blocks.append(f"【本地知识库原著切片 (Local Knowledge)】\n{local_ctx}")
-                sources.extend(local_sources)
+            if should_close_store and active_store is not None:
+                active_store.close()
     except Exception as e:
         logger.warning("本地切片检索异常 (已继续执行): %s", e)
 
@@ -502,6 +612,9 @@ def _build_context_and_messages(
     system_prompt = _SYSTEM_PROMPT
     if s.rag_system_prompt and s.rag_system_prompt.strip():
         system_prompt = s.rag_system_prompt.strip()
+
+    if persona and persona in _PERSONA_PROMPTS:
+        system_prompt = _PERSONA_PROMPTS[persona] + "\n\n" + system_prompt
 
     if enable_web_search or entity_context:
         system_prompt += (

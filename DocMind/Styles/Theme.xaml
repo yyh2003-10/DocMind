@@ -652,8 +652,8 @@
 
     <!-- ==================== 14. 侧栏导航项样式 ==================== -->
     <Style x:Key="SidebarItemStyle" TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
-        <Setter Property="Padding" Value="14,12"/>
-        <Setter Property="MinHeight" Value="48"/>
+        <Setter Property="Padding" Value="10,7"/>
+        <Setter Property="MinHeight" Value="38"/>
         <Setter Property="FontWeight" Value="Medium"/>
         <Setter Property="Template">
             <Setter.Value>

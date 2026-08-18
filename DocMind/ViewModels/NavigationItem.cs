@@ -10,6 +10,7 @@ public class NavigationItem
     public string Title { get; set; } = string.Empty;
     public string Icon { get; set; } = string.Empty;
     public string? IconPath { get; set; }
+    public string Category { get; set; } = string.Empty;
     public Type ViewModelType { get; set; } = null!;
 
     /// <summary>将 IconPath 文件路径转为 ImageSource，供 XAML Image.Source 绑定。</summary>

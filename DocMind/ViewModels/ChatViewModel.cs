@@ -16,6 +16,22 @@ namespace DocMind.ViewModels;
 public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyChanged
 {
     private string _role = string.Empty;
+    private bool _isIngested;
+    private bool _isIngesting;
+
+    /// <summary>是否已沉淀入知识库。</summary>
+    public bool IsIngested
+    {
+        get => _isIngested;
+        set => SetField(ref _isIngested, value);
+    }
+
+    /// <summary>是否正在沉淀入库中。</summary>
+    public bool IsIngesting
+    {
+        get => _isIngesting;
+        set => SetField(ref _isIngesting, value);
+    }
     private string _content = string.Empty;
     private FlowDocument? _renderedDocument;
     private long _lastRenderTicks;
@@ -77,6 +93,15 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CanCopy)));
     }
 
+    private static readonly System.Text.RegularExpressions.Regex ActionRegex =
+        new(@"\[ACTIONS:\s*(\[.*?\])\s*\]", System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>AI 根据上下文预测的下一步行动建议列表。</summary>
+    public ObservableCollection<string> FollowUpActions { get; } = new();
+
+    /// <summary>是否有下一步行动建议。</summary>
+    public bool HasFollowUpActions => FollowUpActions.Count > 0;
+
     /// <summary>把 Content 用 Markdig 解析为 FlowDocument。流式期间节流,终帧后强制刷新。</summary>
     private void UpdateRenderedDocument(bool force = false)
     {
@@ -98,8 +123,57 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         _lastRenderTicks = now;
         try
         {
+            var rawContent = Content;
+            var cleanContent = rawContent;
+            var match = ActionRegex.Match(rawContent);
+            if (match.Success)
+            {
+                cleanContent = rawContent.Remove(match.Index, match.Length).TrimEnd();
+                try
+                {
+                    var json = match.Groups[1].Value;
+                    var list = System.Text.Json.JsonSerializer.Deserialize<List<string>>(json);
+                    if (list != null && list.Count > 0)
+                    {
+                        if (FollowUpActions.Count != list.Count || !FollowUpActions.SequenceEqual(list))
+                        {
+                            FollowUpActions.Clear();
+                            foreach (var item in list)
+                            {
+                                if (!string.IsNullOrWhiteSpace(item))
+                                {
+                                    FollowUpActions.Add(item.Trim());
+                                }
+                            }
+                            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasFollowUpActions)));
+                        }
+                    }
+                }
+                catch
+                {
+                    var items = System.Text.RegularExpressions.Regex.Matches(match.Groups[1].Value, "\"([^\"]+)\"");
+                    if (items.Count > 0)
+                    {
+                        FollowUpActions.Clear();
+                        foreach (System.Text.RegularExpressions.Match item in items)
+                        {
+                            FollowUpActions.Add(item.Groups[1].Value.Trim());
+                        }
+                        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasFollowUpActions)));
+                    }
+                }
+            }
+            else
+            {
+                var partialIdx = rawContent.LastIndexOf("[ACTIONS:", StringComparison.OrdinalIgnoreCase);
+                if (partialIdx >= 0 && partialIdx > rawContent.Length - 120)
+                {
+                    cleanContent = rawContent[..partialIdx].TrimEnd();
+                }
+            }
+
             var pipeline = new MarkdownPipelineBuilder().UseSupportedExtensions().Build();
-            var doc = Markdig.Wpf.Markdown.ToFlowDocument(Content, pipeline);
+            var doc = Markdig.Wpf.Markdown.ToFlowDocument(cleanContent, pipeline);
             // 对齐 ChatView 气泡样式:清除 FlowDocument 默认页边距,继承 BodyText 样式(FontSize=15, Medium, TextPrimary)
             doc.PagePadding = new Thickness(0);
             doc.FontFamily = SystemFonts.MessageFontFamily;
@@ -276,6 +350,12 @@ public sealed class CollectionItem : System.ComponentModel.INotifyPropertyChange
         => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
 }
 
+/// <summary>办公角色人设选项。</summary>
+public sealed record PersonaOption(string Id, string DisplayName, string Icon, string Description)
+{
+    public override string ToString() => DisplayName;
+}
+
 /// <summary>历史会话列表项（ComboBox 显示用）。</summary>
 public sealed class ChatSessionItem
 {
@@ -303,6 +383,7 @@ public sealed class ChatSessionItem
 public partial class ChatViewModel : ViewModelBase
 {
     private readonly IDoc2kbApiService _apiService;
+    private readonly NotificationService? _notifications;
 
     /// <summary>用户点击引用来源时的请求事件。MainViewModel 订阅后导航到搜索页并传入源文件名。</summary>
     public event Action<SourceRef>? SourceSearchRequested;
@@ -318,10 +399,36 @@ public partial class ChatViewModel : ViewModelBase
 
     private string _selectedModel = DefaultModelLabel;
 
-    public ChatViewModel(IDoc2kbApiService apiService)
+    /// <summary>可选的办公角色人设列表。</summary>
+    public IReadOnlyList<PersonaOption> AvailablePersonas { get; } = new List<PersonaOption>
+    {
+        new("office", "💼 知识办公助手", "💼", "提炼核心结论、梳理 Action Items 待办清单与标准公文润色"),
+        new("architect", "🧠 资深系统架构师", "🧠", "系统设计模式选型、底层运行机制剖析、性能瓶颈评估与架构演进设计"),
+        new("engineer", "🛠️ 资深研发工匠", "🛠️", "工业级代码实现、重构优化、异常边界防御与单元测试建议"),
+        new("brainstorm", "💡 创新方案顾问", "💡", "头脑风暴、SWOT 矩阵分析、多方案多维度对比表格与排期落地规划"),
+    };
+
+    private PersonaOption _selectedPersona;
+
+    /// <summary>当前选中的办公角色人设。</summary>
+    public PersonaOption SelectedPersona
+    {
+        get => _selectedPersona;
+        set
+        {
+            if (SetProperty(ref _selectedPersona, value ?? AvailablePersonas[0]))
+            {
+                StatusMessage = $"角色: {_selectedPersona.DisplayName}";
+            }
+        }
+    }
+
+    public ChatViewModel(IDoc2kbApiService apiService, NotificationService? notifications = null)
     {
         _apiService = apiService;
+        _notifications = notifications;
         Title = "对话";
+        _selectedPersona = AvailablePersonas[0];
 
         Collections = new ObservableCollection<CollectionItem>();
         Collections.CollectionChanged += (_, e) =>
@@ -613,6 +720,104 @@ public partial class ChatViewModel : ViewModelBase
         await SendCoreAsync(query, addUserMessage: true);
     }
 
+    /// <summary>点击推荐行动胶囊：将建议填入并直接发送问答。</summary>
+    [RelayCommand]
+    private async Task ExecuteActionAsync(string? action)
+    {
+        if (string.IsNullOrWhiteSpace(action) || IsBusy)
+            return;
+
+        var query = action.Trim();
+        const string prefix = "👉";
+        if (query.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            query = query[prefix.Length..].Trim();
+        }
+
+        InputText = query;
+        await SendAsync();
+    }
+
+    /// <summary>一键将回答沉淀为知识笔记入库（反哺私域知识库）。</summary>
+    [RelayCommand]
+    private async Task IngestMessageAsync(ChatMessage? message)
+    {
+        if (message == null || string.IsNullOrWhiteSpace(message.Content) || message.IsIngested || message.IsIngesting)
+            return;
+
+        message.IsIngesting = true;
+        StatusMessage = "正在沉淀入库…";
+
+        try
+        {
+            // 提取纯文本正文并去除标签
+            var text = message.Content.Trim();
+            var actionIdx = text.IndexOf("[ACTIONS:", StringComparison.OrdinalIgnoreCase);
+            if (actionIdx >= 0)
+            {
+                text = text[..actionIdx].Trim();
+            }
+
+            // 自动提取标题（取首行前 30 字）
+            var firstLine = text.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? text;
+            firstLine = System.Text.RegularExpressions.Regex.Replace(firstLine, @"^[#\s\-*📌💡]+", "").Trim();
+            var title = firstLine.Length > 30 ? firstLine[..30] + "…" : firstLine;
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                title = $"知识探讨沉淀 ({DateTime.Now:MM-dd HH:mm})";
+            }
+
+            var targetCollection = SelectedCollections.FirstOrDefault();
+
+            var req = new IngestTextRequest
+            {
+                Text = text,
+                Title = $"💡 {title}",
+                Collection = targetCollection
+            };
+
+            await _apiService.IngestTextAsync(req);
+            message.IsIngested = true;
+            StatusMessage = $"已沉淀入库：{title}";
+            DebugLog.Info($"对话内容沉淀入库成功: title={title}, collection={targetCollection ?? "auto"}", "Chat");
+
+            // 异步刷新知识库集合
+            _ = LoadCollectionsAsync();
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"沉淀入库失败: {ex.Message}", "Chat");
+            StatusMessage = $"沉淀入库失败：{ex.Message}";
+        }
+        finally
+        {
+            message.IsIngesting = false;
+        }
+    }
+
+    /// <summary>插入场景化快捷指令模板。</summary>
+    [RelayCommand]
+    private void InsertPromptTemplate(string? templateType)
+    {
+        var prefix = templateType switch
+        {
+            "summary" => "请将上述内容萃取提炼为核心结论与清晰的 Action Items 待办清单：\n",
+            "table" => "请以结构化 Markdown 表格形式，全方位对比各方案的优缺点、适用场景与成本效益：\n",
+            "polish" => "请将以下草稿按严谨专业的企业公文与技术汇报规范进行润色重构：\n",
+            "pitfall" => "请对以下方案进行专家级把关评审，列出潜在风险点、性能隐患与避坑防范建议：\n",
+            _ => string.Empty
+        };
+
+        if (string.IsNullOrEmpty(InputText))
+        {
+            InputText = prefix;
+        }
+        else
+        {
+            InputText = prefix + InputText;
+        }
+    }
+
     /// <summary>重新生成最后一条回答：移除末尾 assistant 消息后重发最后一条用户问题（保留 chatId 多轮上下文）。</summary>
     [RelayCommand(CanExecute = nameof(CanRegenerate))]
     private async Task RegenerateAsync()
@@ -672,7 +877,7 @@ public partial class ChatViewModel : ViewModelBase
             var selected = SelectedCollections;
             DebugLog.Info(
                 $"发送消息: query='{(query.Length > 100 ? query[..100] + "…" : query)}' " +
-                $"collections=[{string.Join(",", selected)}] chatId='{_chatId ?? "-"}' model='{(SelectedModel == DefaultModelLabel ? "-" : SelectedModel)}' msgCount={Messages.Count}",
+                $"collections=[{string.Join(",", selected)}] chatId='{_chatId ?? "-"}' model='{(SelectedModel == DefaultModelLabel ? "-" : SelectedModel)}' persona='{SelectedPersona?.Id ?? "-"}' msgCount={Messages.Count}",
                 "Chat");
             ChatStreamResult? final = null;
             await _apiService.ChatStreamAsync(
@@ -686,6 +891,7 @@ public partial class ChatViewModel : ViewModelBase
                     ChatId = _chatId,
                     // 对话页快速切换模型：默认项不带（用设置页配置），选了具体模型则按请求覆盖
                     Model = SelectedModel == DefaultModelLabel ? null : SelectedModel,
+                    Persona = SelectedPersona?.Id,
                 },
                 onToken: token =>
                 {
@@ -1007,7 +1213,12 @@ public partial class ChatViewModel : ViewModelBase
             Messages.Clear();
             foreach (var m in detail.Messages)
             {
-                Messages.Add(new ChatMessage { Role = m.Role, Content = m.Content });
+                Messages.Add(new ChatMessage
+                {
+                    Role = m.Role,
+                    Content = m.Content,
+                    Sources = m.Sources,
+                });
             }
             _chatId = session.ChatId;
             StatusMessage = $"已载入会话：{session.Title}（{detail.Messages.Count} 条消息，可继续追问）";
@@ -1020,7 +1231,38 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
-    /// <summary>点击引用来源：触发事件，由 MainViewModel 订阅后导航到搜索页并传入源文件名。</summary>
+    private SourceRef? _selectedSource;
+    private bool _isSourceDrawerOpen;
+
+    /// <summary>当前选中的引用来源（供右侧协同抽屉预览）。</summary>
+    public SourceRef? SelectedSource
+    {
+        get => _selectedSource;
+        set
+        {
+            if (SetProperty(ref _selectedSource, value))
+            {
+                OnPropertyChanged(nameof(HasSelectedSource));
+                OnPropertyChanged(nameof(SelectedSourceTitle));
+                OnPropertyChanged(nameof(SelectedSourceSnippet));
+            }
+        }
+    }
+
+    public bool HasSelectedSource => SelectedSource != null;
+    public string SelectedSourceTitle => SelectedSource?.DisplayTitle ?? "(未命名来源)";
+    public string SelectedSourceSnippet => !string.IsNullOrWhiteSpace(SelectedSource?.Snippet)
+        ? SelectedSource.Snippet
+        : "（该切片暂无全文预览或来自早期版本会话，可通过下方动作查看原文）";
+
+    /// <summary>协同来源预览抽屉是否展开。</summary>
+    public bool IsSourceDrawerOpen
+    {
+        get => _isSourceDrawerOpen;
+        set => SetProperty(ref _isSourceDrawerOpen, value);
+    }
+
+    /// <summary>点击引用来源：在右侧协同抽屉就地展开原著切片与元数据，不离开对话主界面。</summary>
     [RelayCommand]
     private void OpenSource(SourceRef? src)
     {
@@ -1028,7 +1270,46 @@ public partial class ChatViewModel : ViewModelBase
         {
             return;
         }
-        SourceSearchRequested?.Invoke(src);
+        SelectedSource = src;
+        IsSourceDrawerOpen = true;
+        StatusMessage = $"查看切片出处：{src.DisplayTitle} (相似度: {src.Score:F2})";
+        DebugLog.Info($"展开引用来源抽屉: index={src.Index} source={src.Source} page={src.Page}", "Chat");
+    }
+
+    /// <summary>关闭协同来源抽屉。</summary>
+    [RelayCommand]
+    private void CloseSourceDrawer()
+    {
+        IsSourceDrawerOpen = false;
+    }
+
+    /// <summary>复制当前抽屉中切片正文到剪贴板。</summary>
+    [RelayCommand]
+    private void CopySourceSnippet()
+    {
+        if (!string.IsNullOrWhiteSpace(SelectedSource?.Snippet))
+        {
+            try
+            {
+                Clipboard.SetText(SelectedSource.Snippet);
+                _notifications?.Success("已复制切片原文到剪贴板");
+                StatusMessage = "已复制切片原文到剪贴板";
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"复制到剪贴板失败: {ex.Message}", "Chat");
+            }
+        }
+    }
+
+    /// <summary>用户主动选择：在知识搜索页全文检索该文档（深钻次级动作）。</summary>
+    [RelayCommand]
+    private void SearchSourceInSearchPage()
+    {
+        if (SelectedSource is not null)
+        {
+            SourceSearchRequested?.Invoke(SelectedSource);
+        }
     }
 
     /// <summary>对话页拉取模型列表（用后端运行时配置：设置页已保存的 provider/key/地址）。</summary>

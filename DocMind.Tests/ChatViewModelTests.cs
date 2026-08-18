@@ -759,14 +759,12 @@ public class ChatViewModelTests
         Assert.NotNull(assistantMsg.Sources);
         var src = assistantMsg.Sources.First();
 
-        SourceRef? captured = null;
-        vm.SourceSearchRequested += (s) => captured = s;
-
         vm.OpenSourceCommand.Execute(src);
 
-        Assert.NotNull(captured);
-        Assert.Equal(src.Index, captured.Index);
-        Assert.Equal(src.Source, captured.Source);
+        Assert.True(vm.IsSourceDrawerOpen);
+        Assert.NotNull(vm.SelectedSource);
+        Assert.Equal(src.Index, vm.SelectedSource.Index);
+        Assert.Equal(src.Source, vm.SelectedSource.Source);
     }
 
     // ======================================================================
@@ -791,5 +789,126 @@ public class ChatViewModelTests
 
         Assert.Empty(vm.Messages);
         Assert.Equal("我想撤回的问题", vm.InputText);
+    }
+
+    // ======================================================================
+    // 智能下一步行动建议 (Follow-up Actions)
+    // ======================================================================
+
+    [Fact]
+    public void ChatMessage_ParsesFollowUpActions_AndCleansRenderedContent()
+    {
+        var msg = new ChatMessage
+        {
+            Role = "assistant",
+            Content = "这是技术分析正文。\n\n[ACTIONS: [\"👉 生成排期计划表\", \"👉 评估对现场工况的影响\"]]"
+        };
+
+        Assert.True(msg.HasFollowUpActions);
+        Assert.Equal(2, msg.FollowUpActions.Count);
+        Assert.Equal("👉 生成排期计划表", msg.FollowUpActions[0]);
+        Assert.Equal("👉 评估对现场工况的影响", msg.FollowUpActions[1]);
+        Assert.NotNull(msg.RenderedDocument);
+    }
+
+    [Fact]
+    public async Task ExecuteActionCommand_TriggersNewQuery()
+    {
+        var fake = CreateFake();
+        fake.OnChat = (req, _) => Task.FromResult(MakeResponse($"收到追问: {req.Query}"));
+        var vm = CreateVm(fake);
+
+        await vm.ExecuteActionCommand.ExecuteAsync("👉 评估现场工况");
+
+        Assert.Equal(2, vm.Messages.Count);
+        Assert.Equal("评估现场工况", vm.Messages[0].Content);
+        Assert.Contains("收到追问: 评估现场工况", vm.Messages[1].Content);
+    }
+
+    // ======================================================================
+    // 办公角色人设与场景快捷指令
+    // ======================================================================
+
+    [Fact]
+    public void ChatViewModel_InitializesDefaultPersona_AndSupportsSwitching()
+    {
+        var fake = CreateFake();
+        var vm = CreateVm(fake);
+
+        Assert.NotEmpty(vm.AvailablePersonas);
+        Assert.Equal("office", vm.SelectedPersona.Id);
+
+        var architect = vm.AvailablePersonas.First(p => p.Id == "architect");
+        vm.SelectedPersona = architect;
+        Assert.Equal("architect", vm.SelectedPersona.Id);
+    }
+
+    [Fact]
+    public void InsertPromptTemplateCommand_InjectsTemplatePrefix()
+    {
+        var fake = CreateFake();
+        var vm = CreateVm(fake);
+
+        vm.InsertPromptTemplateCommand.Execute("summary");
+        Assert.Contains("Action Items", vm.InputText);
+
+        vm.InputText = "这是原文";
+        vm.InsertPromptTemplateCommand.Execute("table");
+        Assert.StartsWith("请以结构化 Markdown 表格形式", vm.InputText);
+        Assert.EndsWith("这是原文", vm.InputText);
+    }
+
+    [Fact]
+    public async Task SendAsync_IncludesSelectedPersonaInChatRequest()
+    {
+        var fake = CreateFake();
+        ChatRequest? capturedReq = null;
+        fake.OnChatStream = (req, onToken, onDone, _) =>
+        {
+            capturedReq = req;
+            var res = new ChatStreamResult { Model = "m", Provider = "p" };
+            onDone(res);
+            return Task.FromResult(res);
+        };
+        var vm = CreateVm(fake);
+        vm.SelectedPersona = vm.AvailablePersonas.First(p => p.Id == "engineer");
+        vm.InputText = "写一个单测";
+
+        await vm.SendCommand.ExecuteAsync(null);
+
+        Assert.NotNull(capturedReq);
+        Assert.Equal("engineer", capturedReq.Persona);
+    }
+
+    // ======================================================================
+    // 对话一键沉淀入库 (Knowledge Flywheel)
+    // ======================================================================
+
+    [Fact]
+    public async Task IngestMessageCommand_CallsIngestTextApi_AndMarksMessageIngested()
+    {
+        var fake = CreateFake();
+        IngestTextRequest? capturedReq = null;
+        fake.OnIngestText = (req, _) =>
+        {
+            capturedReq = req;
+            return Task.FromResult(new IngestResponse { TotalDocuments = 1, TotalChunks = 1 });
+        };
+        var vm = CreateVm(fake);
+
+        var msg = new ChatMessage
+        {
+            Role = "assistant",
+            Content = "## 📌 动平衡现场标定排错工序\n1. 检查零漂\n2. 校准增益\n\n[ACTIONS: [\"👉 建议\"]]"
+        };
+        vm.Messages.Add(msg);
+
+        await vm.IngestMessageCommand.ExecuteAsync(msg);
+
+        Assert.True(msg.IsIngested);
+        Assert.NotNull(capturedReq);
+        Assert.Contains("动平衡现场标定排错工序", capturedReq.Title);
+        Assert.DoesNotContain("[ACTIONS:", capturedReq.Text);
+        Assert.Contains("检查零漂", capturedReq.Text);
     }
 }

@@ -353,6 +353,18 @@ class GraphStore:
                 )
             return results
 
+    def find_entities_by_keyword(self, keyword: str, limit: int = 5) -> list[dict[str, Any]]:
+        """按关键字模糊匹配实体列表。"""
+        if not keyword or not keyword.strip():
+            return []
+        pattern = f"%{keyword.strip()}%"
+        with self._conn() as conn:
+            cur = conn.execute(
+                "SELECT id, name, type, collection, doc_count FROM entities WHERE name LIKE ? ORDER BY doc_count DESC LIMIT ?",
+                (pattern, limit),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
     def get_stats(self, collection: str | None = None) -> dict[str, Any]:
         """获取实体与关系统计。"""
         with self._conn() as conn:

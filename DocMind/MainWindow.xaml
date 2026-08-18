@@ -131,6 +131,23 @@
                                 Margin="8,0,0,0"
                                 Visibility="{Binding CanStartBackend, Converter={StaticResource BoolToVis}}"
                                 ToolTip="尝试启动本地 Python 后端服务并重连"/>
+
+                        <!-- 跨页面全局后台任务胶囊指示器 -->
+                        <Button Command="{Binding FocusBackgroundTaskCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                FontSize="11"
+                                Padding="8,2"
+                                Height="22"
+                                Margin="12,0,0,0"
+                                Visibility="{Binding HasBackgroundTask, Converter={StaticResource BoolToVis}}"
+                                ToolTip="点击快速跳转至进行中的后台任务">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Ellipse Width="6" Height="6" Fill="{StaticResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                <TextBlock Text="{Binding BackgroundTaskSummary, Mode=OneWay}"
+                                           Foreground="{StaticResource PrimaryBrush}"
+                                           FontWeight="SemiBold"/>
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
 
                     <!-- 右侧: 窗口控制按钮 -->
@@ -218,10 +235,35 @@
 
                         <!-- 导航项 -->
                         <ListBox Grid.Row="0"
-                                 ItemsSource="{Binding NavigationItems}"
+                                 ItemsSource="{Binding NavigationItemsView}"
                                  SelectedItem="{Binding SelectedNavigationItem, Mode=TwoWay}"
                                  Style="{StaticResource NavigationListBoxStyle}"
                                  ItemContainerStyle="{StaticResource SidebarItemStyle}">
+                            <ListBox.GroupStyle>
+                                <GroupStyle>
+                                    <GroupStyle.HeaderTemplate>
+                                        <DataTemplate>
+                                            <Border Margin="8,10,6,3"
+                                                    Padding="4,0,0,2">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding DataContext.IsSidebarCollapsed, Source={x:Reference WindowRoot}}" Value="True">
+                                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock Text="{Binding Name}"
+                                                           FontSize="11"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{StaticResource TextMutedBrush}"/>
+                                            </Border>
+                                        </DataTemplate>
+                                    </GroupStyle.HeaderTemplate>
+                                </GroupStyle>
+                            </ListBox.GroupStyle>
                             <ListBox.ItemTemplate>
                                 <DataTemplate DataType="{x:Type vm:NavigationItem}">
                                     <StackPanel Orientation="Horizontal" Margin="4,0,0,0">

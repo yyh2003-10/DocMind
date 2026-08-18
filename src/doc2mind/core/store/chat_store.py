@@ -48,6 +48,7 @@ class ChatMessageRow:
     role: str
     content: str
     created_at: str
+    sources_json: str | None = None
 
 
 class ChatStoreError(Exception):
@@ -94,16 +95,24 @@ class ChatStore:
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS chat_messages (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                    chat_id    TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-                    role       TEXT NOT NULL,
-                    content    TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id      TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                    role         TEXT NOT NULL,
+                    content      TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    sources_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_chat_messages_chat_id
                     ON chat_messages(chat_id, id);
                 """
             )
+            # 兼容旧版本数据库：如果 chat_messages 没有 sources_json 列则自动添加
+            try:
+                cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_messages)").fetchall()]
+                if "sources_json" not in cols:
+                    conn.execute("ALTER TABLE chat_messages ADD COLUMN sources_json TEXT")
+            except sqlite3.Error:
+                pass
             conn.commit()
             self._schema_ready = True
 
@@ -113,7 +122,14 @@ class ChatStore:
         except OSError as e:
             raise ChatStoreError(f"创建数据目录失败: {e}") from e
 
-    def append_message(self, chat_id: str, role: str, content: str, title_hint: str | None = None) -> None:
+    def append_message(
+        self,
+        chat_id: str,
+        role: str,
+        content: str,
+        title_hint: str | None = None,
+        sources_json: str | None = None,
+    ) -> None:
         """追加一条消息；会话不存在时隐式创建（标题取 title_hint / 首条内容截断）。
 
         Raises:
@@ -138,9 +154,9 @@ class ChatStore:
                         (chat_id, title, now, now),
                     )
                 conn.execute(
-                    "INSERT INTO chat_messages (chat_id, role, content, created_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (chat_id, role, content, now),
+                    "INSERT INTO chat_messages (chat_id, role, content, created_at, sources_json) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (chat_id, role, content, now, sources_json),
                 )
                 conn.execute(
                     "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
@@ -172,12 +188,17 @@ class ChatStore:
             with self._conn() as conn:
                 self._ensure_schema(conn)
                 rows = conn.execute(
-                    "SELECT role, content, created_at FROM chat_messages "
+                    "SELECT role, content, created_at, sources_json FROM chat_messages "
                     "WHERE chat_id = ? ORDER BY id",
                     (chat_id,),
                 ).fetchall()
                 return [
-                    ChatMessageRow(role=r["role"], content=r["content"], created_at=r["created_at"])
+                    ChatMessageRow(
+                        role=r["role"],
+                        content=r["content"],
+                        created_at=r["created_at"],
+                        sources_json=r["sources_json"] if "sources_json" in r.keys() else None,
+                    )
                     for r in rows
                 ]
         except sqlite3.Error as e:

@@ -14,6 +14,7 @@ public sealed record SourceRef
     public string SourceType { get; init; } = "local";
     public string? Url { get; init; }
     public string? Title { get; init; }
+    public string? Snippet { get; init; }
 
     public bool IsWebSource => SourceType == "web" || !string.IsNullOrWhiteSpace(Url);
 

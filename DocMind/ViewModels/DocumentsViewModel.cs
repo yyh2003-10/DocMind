@@ -51,17 +51,63 @@ public partial class DocumentsViewModel : ViewModelBase
             return;
         }
         _hasLoadedOnce = true;
+        await LoadCollectionsAsync();
         await RefreshAsync();
     }
 
     /// <summary>外部数据变更（如导入完成）后使缓存失效：下次进入页面自动重新加载。</summary>
     public void InvalidateCache() => _hasLoadedOnce = false;
 
-    /// <summary>集合名（可选，留空为全部）。</summary>
+    public const string AllCollectionsLabel = "(全部集合)";
+    public ObservableCollection<string> AvailableCollections { get; } = new() { AllCollectionsLabel, "default" };
+
+    /// <summary>异步从后端拉取现有集合列表。</summary>
+    public async Task LoadCollectionsAsync()
+    {
+        try
+        {
+            var stats = await _apiService.GetStatsAsync();
+            if (stats?.Collections != null)
+            {
+                var current = Collection;
+                AvailableCollections.Clear();
+                AvailableCollections.Add(AllCollectionsLabel);
+                foreach (var col in stats.Collections.Keys.OrderBy(k => k))
+                {
+                    AvailableCollections.Add(col);
+                }
+
+                if (!string.IsNullOrWhiteSpace(current) && AvailableCollections.Contains(current))
+                {
+                    Collection = current;
+                }
+                else
+                {
+                    Collection = AllCollectionsLabel;
+                }
+            }
+        }
+        catch
+        {
+            // 离线或初次加载失败时静默使用默认项
+        }
+    }
+
+    /// <summary>集合名（可选，AllCollectionsLabel 或空为全部）。</summary>
     public string? Collection
     {
         get => _collection;
-        set => SetProperty(ref _collection, value);
+        set
+        {
+            if (SetProperty(ref _collection, value))
+            {
+                _page = 1;
+                OnPropertyChanged(nameof(PageInfo));
+                OnPropertyChanged(nameof(CanGoPrev));
+                OnPropertyChanged(nameof(CanGoNext));
+                _ = RefreshAsync();
+            }
+        }
     }
 
     /// <summary>搜索关键词（文件名/标题模糊匹配）。输入时 300ms 防抖自动搜索。</summary>
@@ -278,7 +324,7 @@ public partial class DocumentsViewModel : ViewModelBase
 
         try
         {
-            var col = string.IsNullOrWhiteSpace(Collection) ? null : Collection.Trim();
+            var col = (string.IsNullOrWhiteSpace(Collection) || Collection == AllCollectionsLabel) ? null : Collection.Trim();
             var resp = await _apiService.ListDocumentsAsync(collection: col, page: Page, pageSize: PageSize, format: FilterFormat, q: SearchQuery);
 
             sw.Stop();
