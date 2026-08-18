@@ -53,14 +53,21 @@
                     </Border.Style>
 
                     <StackPanel>
-                        <!-- 消息内容：用户消息纯文本，助手消息 Markdown 渲染 -->
+                        <!-- 消息内容：用户消息纯文本（支持划词高亮与复制），助手消息 Markdown 渲染 -->
                         <Grid>
-                            <!-- 用户消息：纯文本 TextBlock -->
-                            <TextBlock Text="{Binding Content, Mode=OneWay}"
-                                       TextWrapping="Wrap"
-                                       xml:space="preserve">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock" BasedOn="{StaticResource BodyText}">
+                            <!-- 用户消息：只读 TextBox（支持鼠标自由划词高亮、双击选词与 Ctrl+C 复制，透明无框） -->
+                            <TextBox Text="{Binding Content, Mode=OneWay}"
+                                     IsReadOnly="True"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     Padding="0"
+                                     TextWrapping="Wrap"
+                                     Cursor="IBeam"
+                                     FontSize="15"
+                                     FontWeight="Medium"
+                                     Foreground="{StaticResource TextPrimaryBrush}">
+                                <TextBox.Style>
+                                    <Style TargetType="TextBox">
                                         <Setter Property="Visibility" Value="Collapsed"/>
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding IsUser}" Value="True">
@@ -68,8 +75,8 @@
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
+                                </TextBox.Style>
+                            </TextBox>
                             <!-- 助手消息：Markdig 渲染的 FlowDocument(代码块/列表/表格/可点击链接) -->
                             <FlowDocumentScrollViewer Document="{Binding RenderedDocument, Mode=OneWay}"
                                                       Padding="0"
@@ -89,13 +96,24 @@
                             </FlowDocumentScrollViewer>
                         </Grid>
 
-                        <!-- 加载动画（思考中） -->
-                        <StackPanel Visibility="{Binding IsLoading, Converter={StaticResource B2V}}"
-                                    Orientation="Horizontal" Margin="0,6,0,0">
-                            <cc:SkeletonControl CornerRadius="2" Height="10" Width="18" Margin="0,0,4,0"/>
-                            <cc:SkeletonControl CornerRadius="2" Height="10" Width="14" Margin="0,0,4,0"/>
-                            <cc:SkeletonControl CornerRadius="2" Height="10" Width="22"/>
-                        </StackPanel>
+                        <!-- 加载动画与思考状态胶囊（等待首字 / 非流式大包期间） -->
+                        <Border Visibility="{Binding IsWaitingForFirstToken, Converter={StaticResource B2V}}"
+                                Background="{StaticResource SurfaceBrush}"
+                                BorderBrush="{StaticResource BorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="8,5"
+                                Margin="0,6,0,0">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <cc:SkeletonControl CornerRadius="2" Height="10" Width="14" Margin="0,0,4,0"/>
+                                <cc:SkeletonControl CornerRadius="2" Height="10" Width="10" Margin="0,0,4,0"/>
+                                <cc:SkeletonControl CornerRadius="2" Height="10" Width="16" Margin="0,0,8,0"/>
+                                <TextBlock Text="{Binding WaitingHint, Mode=OneWay}"
+                                           FontSize="12"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
 
                         <!-- 引用来源（可点击：搜索该来源在知识库中的相关内容） -->
                         <ItemsControl ItemsSource="{Binding Sources, Mode=OneWay}"
@@ -139,7 +157,7 @@
                             </TextBlock.Inlines>
                         </TextBlock>
 
-                        <!-- 操作行：复制（有内容即可见）+ 重新生成（仅最后一条 assistant） -->
+                        <!-- 操作行：复制（有内容即可见）+ 撤回（最后一条用户消息）+ 重新生成（仅最后一条 assistant） -->
                         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                             <Button Content="复制"
                                     Command="{Binding CopyCommand}"
@@ -148,6 +166,15 @@
                                     Padding="8,2"
                                     Visibility="{Binding CanCopy, Converter={StaticResource B2V}}"
                                     ToolTip="复制消息内容到剪贴板"/>
+                            <Button Content="撤回"
+                                    Command="{Binding DataContext.WithdrawCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                    CommandParameter="{Binding}"
+                                    Style="{StaticResource TextButtonStyle}"
+                                    FontSize="11"
+                                    Padding="8,2"
+                                    Margin="6,0,0,0"
+                                    Visibility="{Binding ShowWithdraw, Converter={StaticResource B2V}}"
+                                    ToolTip="撤回此条问题并将内容回填到输入框"/>
                             <Button Content="重新生成"
                                     Command="{Binding DataContext.RegenerateCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
                                     Style="{StaticResource TextButtonStyle}"
@@ -337,7 +364,8 @@
         <Grid Grid.Row="1">
             <ScrollViewer x:Name="MessageScroll"
                           VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Disabled">
+                          HorizontalScrollBarVisibility="Auto"
+                          ScrollChanged="MessageScroll_ScrollChanged">
                 <StackPanel Margin="0,4">
                     <!-- 欢迎空态 -->
                     <Border Background="{StaticResource SurfaceBrush}"
@@ -392,7 +420,7 @@
                              VerticalContentAlignment="Center"
                              Padding="14,8,36,8"
                              MinHeight="36"
-                             KeyUp="ChatInputBox_KeyUp"/>
+                             PreviewKeyDown="ChatInputBox_PreviewKeyDown"/>
                     <Button Content="×"
                             Style="{StaticResource TextButtonStyle}"
                             Command="{Binding ClearCommand}"

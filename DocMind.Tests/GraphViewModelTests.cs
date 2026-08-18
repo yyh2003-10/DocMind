@@ -218,7 +218,7 @@ public class GraphViewModelTests
             ingestCalled = true;
             Assert.Contains("WebSearchService", req.Title ?? "");
             Assert.Contains("实时联网检索", req.Text);
-            return Task.FromResult(new IngestResponse(1, 100, 1, 0, 0, 50));
+            return Task.FromResult(new IngestResponse { TotalDocuments = 1, TotalChunks = 100 });
         };
 
         var vm = new GraphViewModel(fake);

@@ -195,44 +195,51 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
 
-                            <!-- 已安装包（仅 GPU 未启用时） -->
-                            <Border Background="{StaticResource CardBrush}"
-                                    CornerRadius="6" Padding="10,8" Margin="0,0,0,12"
-                                    Visibility="{Binding GpuWarning.GpuAvailable, Converter={StaticResource InvertBoolVis}}">
-                                <StackPanel>
-                                    <TextBlock Text="已安装包" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,4"/>
-                                    <ItemsControl ItemsSource="{Binding GpuWarning.InstalledPackagesDisplay}">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate>
-                                                <StackPanel Orientation="Horizontal" Margin="0,1">
-                                                    <TextBlock FontSize="11" Margin="0,0,6,0">
-                                                        <TextBlock.Style>
-                                                            <Style TargetType="TextBlock">
-                                                                <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding Installed}" Value="True">
-                                                                        <Setter Property="Text" Value="✓"/>
-                                                                        <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
-                                                                    </DataTrigger>
-                                                                    <DataTrigger Binding="{Binding Installed}" Value="False">
-                                                                        <Setter Property="Text" Value="✗"/>
-                                                                        <Setter Property="Foreground" Value="{StaticResource WarningBrush}"/>
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </TextBlock.Style>
-                                                    </TextBlock>
-                                                    <TextBlock Text="{Binding Name}" FontSize="11"
-                                                               Margin="0,0,8,0" Foreground="{StaticResource TextSecondaryBrush}"/>
-                                                    <TextBlock Text="{Binding Version}" FontSize="11"/>
-                                                </StackPanel>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                </StackPanel>
-                            </Border>
+                            <!-- 已启用 GPU 时的展开/收起按钮 -->
+                            <Button Content="{Binding GpuWarning.AdvancedOptionsToggleText}"
+                                    Command="{Binding GpuWarning.ToggleAdvancedOptionsCommand}"
+                                    Visibility="{Binding GpuWarning.GpuAvailable, Converter={StaticResource BoolToVis}}"
+                                    Style="{StaticResource TextButtonStyle}"
+                                    HorizontalAlignment="Left" Margin="0,4,0,8"/>
 
-                            <!-- 安装方案（仅 GPU 未启用时） -->
-                            <StackPanel Visibility="{Binding GpuWarning.GpuAvailable, Converter={StaticResource InvertBoolVis}}">
+                            <!-- 包列表与安装方案区域（未启用 GPU 或用户主动展开时显示） -->
+                            <StackPanel Visibility="{Binding GpuWarning.CanShowInstallSection, Converter={StaticResource BoolToVis}}">
+                                <!-- 已安装包 -->
+                                <Border Background="{StaticResource CardBrush}"
+                                        CornerRadius="6" Padding="10,8" Margin="0,0,0,12">
+                                    <StackPanel>
+                                        <TextBlock Text="已安装包" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,4"/>
+                                        <ItemsControl ItemsSource="{Binding GpuWarning.InstalledPackagesDisplay}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel Orientation="Horizontal" Margin="0,1">
+                                                        <TextBlock FontSize="11" Margin="0,0,6,0">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding Installed}" Value="True">
+                                                                            <Setter Property="Text" Value="✓"/>
+                                                                            <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding Installed}" Value="False">
+                                                                            <Setter Property="Text" Value="✗"/>
+                                                                            <Setter Property="Foreground" Value="{StaticResource WarningBrush}"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                        <TextBlock Text="{Binding Name}" FontSize="11"
+                                                                   Margin="0,0,8,0" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                                        <TextBlock Text="{Binding Version}" FontSize="11"/>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- 安装方案 -->
                                 <TextBlock Text="安装方案" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,6"/>
                                 <ComboBox ItemsSource="{Binding GpuWarning.AvailablePaths}"
                                           SelectedValue="{Binding GpuWarning.SelectedPath}"
@@ -250,7 +257,7 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                                 </ComboBox>
 
                                 <!-- 操作按钮 -->
-                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                                     <Button Content="一键安装"
                                             Command="{Binding GpuWarning.InstallGpuCommand}"
                                             IsEnabled="{Binding GpuWarning.CanInstall}"
@@ -268,23 +275,33 @@ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                                             Command="{Binding GpuWarning.DismissGpuWarningCommand}"
                                             Style="{StaticResource TextButtonStyle}" Padding="8,6"/>
                                 </StackPanel>
+                            </StackPanel>
 
-                                <!-- 安装日志 -->
-                                <Border Visibility="{Binding GpuWarning.IsInstalling, Converter={StaticResource BoolToVis}}"
-                                        Margin="0,12,0,0" BorderBrush="{StaticResource BorderBrush}"
-                                        BorderThickness="1" CornerRadius="6" Padding="4">
+                            <!-- 安装日志（只要有日志输出即展示，带清空按钮） -->
+                            <Border Visibility="{Binding GpuWarning.HasInstallLog, Converter={StaticResource BoolToVis}}"
+                                    Margin="0,12,0,0" BorderBrush="{StaticResource BorderBrush}"
+                                    BorderThickness="1" CornerRadius="6" Padding="6">
+                                <StackPanel>
+                                    <DockPanel LastChildFill="False" Margin="0,0,0,4">
+                                        <TextBlock Text="安装日志" FontSize="11" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
+                                        <Button DockPanel.Dock="Right" Content="清空日志"
+                                                Command="{Binding GpuWarning.ClearLogCommand}"
+                                                IsEnabled="{Binding GpuWarning.CanClearLog}"
+                                                Style="{StaticResource TextButtonStyle}" FontSize="11" Padding="4,2"/>
+                                    </DockPanel>
                                     <TextBox IsReadOnly="True" Text="{Binding GpuWarning.InstallLog, Mode=OneWay}"
                                              FontFamily="Cascadia Mono,Consolas,Courier New" FontSize="11"
                                              MaxHeight="180" VerticalScrollBarVisibility="Auto"
                                              Background="Transparent" BorderThickness="0"
                                              Foreground="{StaticResource TextSecondaryBrush}"/>
-                                </Border>
+                                </StackPanel>
+                            </Border>
 
-                                <TextBlock Text="{Binding GpuWarning.StatusMessage}"
-                                           Foreground="{StaticResource TextSecondaryBrush}"
-                                           FontSize="11" Margin="0,6,0,0"
-                                           Visibility="{Binding GpuWarning.StatusMessage, Converter={StaticResource NullToVis}}"/>
-                            </StackPanel>
+                            <TextBlock Text="{Binding GpuWarning.StatusMessage}"
+                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                       FontSize="11" Margin="0,6,0,0"
+                                       Visibility="{Binding GpuWarning.StatusMessage, Converter={StaticResource NullToVis}}"/>
                         </StackPanel>
                     </StackPanel>
                 </Border>

@@ -63,6 +63,7 @@ public partial class GpuWarningViewModel : ViewModelBase
             {
                 OnPropertyChanged(nameof(GpuStatusText));
                 OnPropertyChanged(nameof(GpuStatusBrush));
+                OnPropertyChanged(nameof(CanShowInstallSection));
             }
         }
     }
@@ -232,8 +233,40 @@ public partial class GpuWarningViewModel : ViewModelBase
     public string InstallLog
     {
         get => _installLog;
-        private set => SetProperty(ref _installLog, value);
+        private set
+        {
+            if (SetProperty(ref _installLog, value))
+            {
+                OnPropertyChanged(nameof(HasInstallLog));
+                OnPropertyChanged(nameof(CanClearLog));
+            }
+        }
     }
+
+    public bool HasInstallLog => !string.IsNullOrWhiteSpace(InstallLog);
+
+    public bool CanClearLog => HasInstallLog && !IsInstalling;
+
+    private bool _showAdvancedOptions;
+    public bool ShowAdvancedOptions
+    {
+        get => _showAdvancedOptions;
+        set
+        {
+            if (SetProperty(ref _showAdvancedOptions, value))
+            {
+                OnPropertyChanged(nameof(CanShowInstallSection));
+                OnPropertyChanged(nameof(AdvancedOptionsToggleText));
+            }
+        }
+    }
+
+    /// <summary>是否展示安装方案与包列表（未启用 GPU 或用户主动展开时）。</summary>
+    public bool CanShowInstallSection => !GpuAvailable || ShowAdvancedOptions;
+
+    public string AdvancedOptionsToggleText => ShowAdvancedOptions
+        ? "收起加速方案与配置 ▲"
+        : "⚙ 切换加速方案 / 增装 OCR 加速组件 ▼";
 
     public string? SelectedPath
     {
@@ -262,6 +295,9 @@ public partial class GpuWarningViewModel : ViewModelBase
 
     [RelayCommand]
     private void DismissGpuWarning() => DismissWarning();
+
+    [RelayCommand]
+    private void ToggleAdvancedOptions() => ShowAdvancedOptions = !ShowAdvancedOptions;
 
     [RelayCommand]
     public async Task DiagnoseAsync()

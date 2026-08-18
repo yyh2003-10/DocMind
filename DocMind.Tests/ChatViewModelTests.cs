@@ -768,4 +768,28 @@ public class ChatViewModelTests
         Assert.Equal(src.Index, captured.Index);
         Assert.Equal(src.Source, captured.Source);
     }
+
+    // ======================================================================
+    // 消息撤回与回填
+    // ======================================================================
+
+    [Fact]
+    public async Task WithdrawCommand_RemovesUserAndAssistantMessages_AndRefillsInput()
+    {
+        var fake = CreateFake();
+        fake.OnChat = (_, _) => Task.FromResult(MakeResponse("这是回答"));
+        var vm = CreateVm(fake);
+
+        vm.InputText = "我想撤回的问题";
+        await vm.SendCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, vm.Messages.Count);
+        Assert.True(vm.Messages[0].ShowWithdraw);
+
+        // 撤回该用户消息
+        vm.WithdrawCommand.Execute(vm.Messages[0]);
+
+        Assert.Empty(vm.Messages);
+        Assert.Equal("我想撤回的问题", vm.InputText);
+    }
 }

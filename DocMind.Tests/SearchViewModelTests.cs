@@ -17,10 +17,10 @@ public class SearchViewModelTests
         {
             OnGetStats = (_, _) => Task.FromResult(new Stats
             {
-                Collections = new Dictionary<string, (int, int, long)>
+                Collections = new Dictionary<string, int[]>
                 {
-                    ["colA"] = (1, 1, 100),
-                    ["colB"] = (2, 2, 200),
+                    ["colA"] = new[] { 1, 1 },
+                    ["colB"] = new[] { 2, 2 },
                 }
             })
         };
@@ -41,7 +41,7 @@ public class SearchViewModelTests
             OnSearch = (_, _) => Task.FromResult(new SearchResponse
             {
                 Total = 1,
-                ElapsedMs = 12.5,
+                ElapsedMs = 12,
                 Hits = new List<SearchHit>
                 {
                     new SearchHit

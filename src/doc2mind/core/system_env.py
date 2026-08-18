@@ -78,23 +78,16 @@ def _py_wheel_tag() -> str | None:
 
 
 def _is_gpu_provider(provider: str) -> bool:
-    return "CUDA" in provider or "Dml" in provider or "DML" in provider
+    return (
+        "CUDA" in provider
+        or "Dml" in provider
+        or "DML" in provider
+        or "CoreML" in provider
+    )
 
 
 def get_gpu_diagnosis() -> dict[str, Any]:
-    """综合探测当前 GPU 加速环境，产出诊断报告。
-
-    返回字段说明见 ``GpuDiagnosisResponse``（``server/http.py``），核心：
-    - ``gpu_available`` / ``gpu_provider`` / ``embed_providers``：实际生效的
-      onnxruntime provider（调用方通过它们判断是否已启用 GPU）。
-    - ``has_nvidia_gpu`` / ``gpu_name`` / ``driver_version`` /
-      ``cuda_driver_version``：nvidia-smi 探测的显卡与驱动信息。
-    - ``cuda_runtime_ready`` / ``cuda_runtime_tag``：cu12/cu13 运行时 DLL
-      是否可加载。
-    - ``installed_packages``：关键 pip 包版本。
-    - ``recommended_path``：建议的安装路径。
-    - ``warnings``：环境问题清单（如 CPU 版 onnxruntime 覆盖 GPU 模块）。
-    """
+    """综合探测当前 GPU / 硬件加速环境，产出跨平台诊断报告。"""
     providers = get_embed_providers()
     gpu_providers = [p for p in providers if _is_gpu_provider(p)]
 
@@ -118,33 +111,37 @@ def get_gpu_diagnosis() -> dict[str, Any]:
             "onnxruntime-gpu 与 CUDA 运行时均已就绪，但 provider 未生效，"
             "大概率是 CPU 版 onnxruntime 覆盖了同名模块，请执行安装流程修复。"
         )
-    if ort_gpu and not runtime_ready:
+    if ort_gpu and not runtime_ready and sys.platform == "win32":
         warnings.append(
             "onnxruntime-gpu 已安装，但缺少匹配的 CUDA 运行时"
             f"（未找到 {', '.join(d for d, _ in _CUDA_RUNTIME_HINTS)}），"
             "请选择对应方案安装 nvidia 运行包。"
         )
 
-    # 推荐路径
-    if gpu_providers:
-        # 已生效：保留用户当前状态，指向已启用的路径
+    # 推荐路径（按操作系统与硬件智能匹配）
+    if sys.platform == "darwin":
+        recommended = "coreml" if "CoreMLExecutionProvider" in providers else "cpu"
+    elif gpu_providers:
         provider = gpu_providers[0]
         if "CUDA" in provider:
             recommended = runtime_tag if runtime_tag else "cuda12"
+        elif "CoreML" in provider:
+            recommended = "coreml"
         else:
             recommended = "directml"
     elif driver:
-        # 有 NVIDIA 显卡：驱动向后兼容，cu12 是 PyPI 标准路径
         recommended = runtime_tag if runtime_tag else "cuda12"
         if runtime_tag == "cu13":
             warnings.append(
                 "检测到 cu13 运行时：onnxruntime-gpu 需配套 cu13 构建的 wheel"
                 "（PyPI 标准版为 cu12），请确认本地已有 cu13 wheel。"
             )
-    else:
+    elif sys.platform == "win32":
         recommended = "directml"
-    # 完全没有显卡信息且当前 CPU → 纯粹 CPU 环境
-    if not gpu_providers and not driver:
+    else:
+        recommended = "cpu"
+
+    if not gpu_providers and not driver and sys.platform != "win32" and sys.platform != "darwin":
         recommended = "cpu"
 
     return {
@@ -152,7 +149,7 @@ def get_gpu_diagnosis() -> dict[str, Any]:
         "gpu_provider": gpu_providers[0] if gpu_providers else None,
         "embed_providers": providers,
         "has_nvidia_gpu": bool(driver),
-        "gpu_name": (driver or {}).get("gpu_name"),
+        "gpu_name": (driver or {}).get("gpu_name") or ("Apple Silicon" if sys.platform == "darwin" else None),
         "driver_version": (driver or {}).get("driver_version"),
         "cuda_driver_version": (driver or {}).get("cuda_driver_version"),
         "cuda_runtime_ready": runtime_ready,
@@ -161,6 +158,7 @@ def get_gpu_diagnosis() -> dict[str, Any]:
         "installed_packages": pkgs,
         "recommended_path": recommended,
         "warnings": warnings,
+        "platform": sys.platform,
     }
 
 
