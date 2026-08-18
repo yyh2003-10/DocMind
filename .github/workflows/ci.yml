@@ -20,12 +20,13 @@ jobs:
           cache-dependency-path: |
             requirements-core.txt
             requirements-dev.txt
+            requirements-server.txt
 
       # 锁定依赖（core + dev，不含 GPU/OCR 大包，避免 CI 拖慢）
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-core.txt -r requirements-dev.txt
+          pip install -r requirements-core.txt -r requirements-dev.txt -r requirements-server.txt
           pip install -e . --no-deps
 
       - name: 运行测试
@@ -33,6 +34,9 @@ jobs:
 
       - name: 静态检查（ruff）
         run: ruff check src tests
+
+      - name: 类型检查（mypy）
+        run: mypy src/doc2mind/core/
 
       - name: 许可证合规检查
         run: |

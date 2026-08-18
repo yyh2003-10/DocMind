@@ -10,6 +10,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://docs.astral.sh/ruff/)
+[![CI](https://github.com/yyh2003-10/DocMind/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/yyh2003-10/DocMind/actions/workflows/ci.yml)
 
 DocMind 把任意文档（PDF / Word / Excel / PPT / Markdown / HTML / 图片 / 代码）
 转成语义分块、向量索引和可检索的知识库。全部计算在本地完成，

@@ -615,7 +615,7 @@ class TestRagSystemPrompt:
             rag_answer(query="问题", settings=s, llm_client=mock_llm)
         finally:
             stack.close()
-        assert "知识库问答助手" in mock_llm.last_messages[0]["content"]
+        assert "DocMind 知识库问答的智能架构师" in mock_llm.last_messages[0]["content"]
 
 
 class TestGraphEndpoints:
