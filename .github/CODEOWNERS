@@ -1,0 +1,19 @@
+# DocMind CODEOWNERS
+# 当 PR 修改这些文件时，自动添加审核人
+
+# 全局默认
+* @yyh2003-10
+
+# Python 后端核心
+src/doc2mind/ @yyh2003-10
+
+# WPF 客户端
+DocMind/ @yyh2003-10
+
+# CI/CD & 构建配置
+.github/ @yyh2003-10
+installer/ @yyh2003-10
+scripts/ @yyh2003-10
+
+# 测试
+tests/ @yyh2003-10
