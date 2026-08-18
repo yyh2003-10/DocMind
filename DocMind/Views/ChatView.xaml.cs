@@ -16,6 +16,16 @@ public partial class ChatView : UserControl
         InitializeComponent();
         Loaded += OnLoaded;
         DataContextChanged += OnDataContextChanged;
+        PreviewKeyDown += ChatView_PreviewKeyDown;
+    }
+
+    private void ChatView_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape && _vm is { IsSourceDrawerOpen: true })
+        {
+            _vm.CloseSourceDrawerCommand.Execute(null);
+            e.Handled = true;
+        }
     }
 
     private void OnDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
@@ -40,7 +50,7 @@ public partial class ChatView : UserControl
         }
     }
 
-    /// <summary>处理内容增加时的自动滚动，保持在底部时的吸附效果。</summary>
+    /// <summary>处理内容增加时的自动滚动，保持在底部时的吸附效果（用户向上回看时不强行拉回底部）。</summary>
     private void MessageScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
         if (e.ExtentHeightChange > 0)
@@ -48,8 +58,8 @@ public partial class ChatView : UserControl
             var oldScrollableHeight = e.ExtentHeight - e.ExtentHeightChange - e.ViewportHeight;
             if (oldScrollableHeight < 0) oldScrollableHeight = 0;
             
-            // 如果在高度变化前滚动条靠近底部（差值<10），则自动滚动到底部
-            if (e.VerticalOffset >= oldScrollableHeight - 10)
+            // 如果在高度变化前滚动条靠近底部（差值<30），则自动滚动到底部跟随最新 token
+            if (e.VerticalOffset >= oldScrollableHeight - 30)
             {
                 var sv = sender as ScrollViewer;
                 sv?.ScrollToBottom();
@@ -63,11 +73,17 @@ public partial class ChatView : UserControl
         FocusInput();
     }
 
-    /// <summary>回车发送消息（Shift+Enter 换行）。使用 PreviewKeyDown 避免中文输入法(IME)的回车误触。</summary>
+    /// <summary>回车发送消息（Shift+Enter / Ctrl+Enter 换行）。使用 PreviewKeyDown 避免中文输入法(IME)的回车误触。</summary>
     private void ChatInputBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter && Keyboard.Modifiers != ModifierKeys.Shift)
+        if (e.Key == Key.Enter)
         {
+            // Shift+Enter 或 Ctrl+Enter 插入换行符，交给 TextBox 处理
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) || Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+            {
+                return;
+            }
+
             // 防抖
             if (e.IsRepeat) return;
 

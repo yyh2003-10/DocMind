@@ -248,6 +248,7 @@ class ChatRequest(BaseModel):
     model: str | None = None
     enable_web_search: bool = Field(False, validation_alias="enableWebSearch")
     entity_context: str | None = Field(None, validation_alias="entityContext")
+    persona: str | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -264,6 +265,7 @@ class SourceRefDTO(BaseModel):
     source_type: str = Field("local", validation_alias="sourceType")  # "local" | "web"
     url: str | None = None
     title: str | None = None
+    snippet: str | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -336,6 +338,7 @@ class ChatMessageDTO(BaseModel):
     role: str
     content: str
     created_at: str
+    sources: list[SourceRefDTO] = []
 
 
 class ChatDetailResponse(BaseModel):
@@ -676,7 +679,7 @@ class _AppState:
             return self.store
 
 
-def create_app() -> Any:
+def create_app(settings: Settings | None = None) -> Any:
     """创建 FastAPI app 实例。
 
     用 factory 模式便于测试隔离与 uvicorn 启动。
@@ -698,6 +701,8 @@ def create_app() -> Any:
         version="0.1.0",
     )
     state = _AppState()
+    if settings is not None:
+        state.settings = settings
     app.state.doc2mind = state
 
     # --- GET /v1/health ---
@@ -1238,6 +1243,7 @@ def create_app() -> Any:
     @app.post("/v1/chat", response_model=ChatResponse)
     async def chat(req: ChatRequest) -> ChatResponse:
         """RAG 对话问答：检索知识库 + 调用 LLM 生成回答。"""
+        store = state.ensure_open()
         try:
             answer = await asyncio.to_thread(
                 rag_answer,
@@ -1249,6 +1255,9 @@ def create_app() -> Any:
                 model_override=req.model,
                 enable_web_search=req.enable_web_search,
                 entity_context=req.entity_context,
+                persona=req.persona,
+                store=store,
+                embedder=state.embedder,
             )
         except RagError as e:
             raise _api_error("RAG_ERROR", str(e), 400) from e
@@ -1287,35 +1296,48 @@ def create_app() -> Any:
         说明：rag_answer_stream 是同步生成器（检索 + LLM），不宜在事件循环
         线程阻塞。这里用一个后台线程驱动它，逐帧把 token 推到 asyncio.Queue，
         再由 async 生成器消费并 yield，从而实现真正的逐字流式输出（而非先
-        list() 收集完再发送）。
+        list() 收集完再发送）。当客户端断开连接时，通过 stop_event 立即中断后台线程。
         """
         async def event_generator() -> Any:
             loop = asyncio.get_event_loop()
             queue: "asyncio.Queue[Optional[str]]" = asyncio.Queue()
+            store = state.ensure_open()
+            stop_event = threading.Event()
             gen = rag_answer_stream(
                 req.query, req.collection, req.top_k, req.chat_id,
                 collections=req.collections,
                 model_override=req.model,
                 enable_web_search=req.enable_web_search,
                 entity_context=req.entity_context,
+                persona=req.persona,
+                store=store,
+                embedder=state.embedder,
+                stop_event=stop_event,
             )
 
             def _pump() -> None:
                 try:
                     for chunk_json in gen:
+                        if stop_event.is_set():
+                            break
                         asyncio.run_coroutine_threadsafe(
                             queue.put(chunk_json), loop
                         ).result()
                 except RagError as e:
-                    asyncio.run_coroutine_threadsafe(
-                        queue.put(f"__ERROR__:{e}"), loop
-                    ).result()
+                    if not stop_event.is_set():
+                        asyncio.run_coroutine_threadsafe(
+                            queue.put(f"__ERROR__:{e}"), loop
+                        ).result()
                 except Exception as e:  # noqa: BLE001
-                    asyncio.run_coroutine_threadsafe(
-                        queue.put(f"__ERROR__:对话失败: {e}"), loop
-                    ).result()
+                    if not stop_event.is_set():
+                        asyncio.run_coroutine_threadsafe(
+                            queue.put(f"__ERROR__:对话失败: {e}"), loop
+                        ).result()
                 finally:
-                    asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
+                    try:
+                        asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
+                    except Exception:  # noqa: BLE001
+                        pass
 
             fut = loop.run_in_executor(None, _pump)
             try:
@@ -1336,6 +1358,7 @@ def create_app() -> Any:
                         return
                     yield f"data: {chunk}\n\n"
             finally:
+                stop_event.set()
                 await fut  # 确保后台线程已退出
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
@@ -1380,13 +1403,44 @@ def create_app() -> Any:
             raise _api_error("INTERNAL", f"读取会话失败: {e}", 500) from e
         if summary is None:
             raise _api_error("NOT_FOUND", f"会话不存在: {chat_id}", 404)
+
+        parsed_messages = []
+        for m in messages:
+            srcs: list[SourceRefDTO] = []
+            if getattr(m, "sources_json", None):
+                try:
+                    raw_srcs = json.loads(m.sources_json)
+                    if isinstance(raw_srcs, list):
+                        srcs = [
+                            SourceRefDTO(
+                                index=s.get("index", idx + 1),
+                                source=s.get("source", ""),
+                                chunk_id=s.get("chunk_id"),
+                                format=s.get("format", ""),
+                                page=s.get("page"),
+                                heading=s.get("heading"),
+                                score=s.get("score", 0.0),
+                                source_type=s.get("source_type", "local"),
+                                url=s.get("url"),
+                                title=s.get("title"),
+                            )
+                            for idx, s in enumerate(raw_srcs)
+                        ]
+                except Exception:  # noqa: BLE001
+                    pass
+            parsed_messages.append(
+                ChatMessageDTO(
+                    role=m.role,
+                    content=m.content,
+                    created_at=m.created_at,
+                    sources=srcs,
+                )
+            )
+
         return ChatDetailResponse(
             chat_id=summary.chat_id,
             title=summary.title,
-            messages=[
-                ChatMessageDTO(role=m.role, content=m.content, created_at=m.created_at)
-                for m in messages
-            ],
+            messages=parsed_messages,
         )
 
     # --- DELETE /v1/chats/{chat_id}（删除会话：内存 + DB） ---

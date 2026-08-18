@@ -44,10 +44,11 @@
                                Style="{StaticResource CaptionText}"
                                VerticalAlignment="Center"
                                Margin="0,0,8,0"/>
-                    <TextBox Grid.Column="1"
-                             Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
-                             ToolTip="集合名（可选，留空=全部集合）"
-                             Margin="0,0,12,0"/>
+                    <ComboBox Grid.Column="1"
+                              ItemsSource="{Binding AvailableCollections}"
+                              SelectedItem="{Binding Collection, Mode=TwoWay}"
+                              ToolTip="选择要查看与管理的知识库集合"
+                              Margin="0,0,12,0"/>
 
                     <TextBox Grid.Column="2"
                              Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}"

@@ -381,7 +381,7 @@ class TestCurateOrchestration:
         before = store.get_document_by_id("d-1")
         report = curate(store, DummyEmbedder(), _mkllm(), settings,
                         collection="default",
-                        actions=["enrich", "categorize", "dedup", "consolidate"],
+                        actions=list(VALID_ACTIONS),
                         dry_run=True)
         assert report.dry_run is True
         assert report.actions == list(VALID_ACTIONS)

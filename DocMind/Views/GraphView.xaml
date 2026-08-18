@@ -116,83 +116,109 @@
             </Grid>
         </Border>
 
-        <!-- 主体可视化区域 -->
+        <!-- 主体可视化区域（三列自适应与 GridSplitter 拖拽支持） -->
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" MinWidth="360" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="440" MinWidth="320" MaxWidth="800" />
             </Grid.ColumnDefinitions>
 
-            <!-- WebView2 原生 Canvas 力导向图 -->
-            <wv2:WebView2 x:Name="GraphWeb" Grid.Column="0" />
+            <!-- 列 0: WebView2 原生 Canvas 力导向图 -->
+            <Grid Grid.Column="0">
+                <wv2:WebView2 x:Name="GraphWeb" />
 
-            <!-- 空图谱引导面板（无实体且非忙碌时展示） -->
-            <Border Grid.Column="0"
-                    Background="{DynamicResource SurfaceBrush}"
-                    BorderBrush="{DynamicResource BorderBrush}"
-                    BorderThickness="1"
-                    CornerRadius="14"
-                    Padding="36,40"
-                    HorizontalAlignment="Center"
-                    VerticalAlignment="Center"
-                    MaxWidth="520"
-                    Visibility="{Binding ShowEmptyGraph, Converter={StaticResource BoolToVisConverter}}">
-                <StackPanel HorizontalAlignment="Center">
-                    <Border Width="60" Height="60"
-                            Background="{DynamicResource PrimaryLightBrush}"
-                            CornerRadius="30"
-                            HorizontalAlignment="Center"
-                            Margin="0,0,0,16">
-                        <TextBlock Text="🕸️" FontSize="28" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    </Border>
-                    <TextBlock Text="知识图谱尚未构建"
-                               Style="{StaticResource TitleText}"
-                               HorizontalAlignment="Center"
-                               Margin="0,0,0,8"/>
-                    <TextBlock Text="当前知识库尚未生成实体与关系网络。&#x0a;请确认已在【设置】中配置 LLM 大模型，并导入文档后点击右上角「⚡ 抽取图谱」即可自动提取实体构建图谱。"
-                               Style="{StaticResource BodyText}"
-                               Foreground="{DynamicResource TextSecondaryBrush}"
-                               TextWrapping="Wrap"
-                               TextAlignment="Center"
-                               LineHeight="22"
-                               Margin="0,0,0,20"/>
-                    <Button Content="⚡ 立即抽取图谱"
-                            Command="{Binding ExtractGraphCommand}"
-                            Style="{StaticResource PrimaryButtonStyle}"
-                            HorizontalAlignment="Center"
-                            Padding="20,8"/>
-                </StackPanel>
-            </Border>
+                <!-- 空图谱引导面板（无实体且非忙碌时展示） -->
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="14"
+                        Padding="36,40"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        MaxWidth="520"
+                        Visibility="{Binding ShowEmptyGraph, Converter={StaticResource BoolToVisConverter}}">
+                    <StackPanel HorizontalAlignment="Center">
+                        <Border Width="60" Height="60"
+                                Background="{DynamicResource PrimaryLightBrush}"
+                                CornerRadius="30"
+                                HorizontalAlignment="Center"
+                                Margin="0,0,0,16">
+                            <TextBlock Text="🕸️" FontSize="28" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <TextBlock Text="知识图谱尚未构建"
+                                   Style="{StaticResource TitleText}"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,0,0,8"/>
+                        <TextBlock Text="当前知识库尚未生成实体与关系网络。&#x0a;请确认已在【设置】中配置 LLM 大模型，并导入文档后点击右上角「⚡ 抽取图谱」即可自动提取实体构建图谱。"
+                                   Style="{StaticResource BodyText}"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center"
+                                   LineHeight="22"
+                                   Margin="0,0,0,20"/>
+                        <Button Content="⚡ 立即抽取图谱"
+                                Command="{Binding ExtractGraphCommand}"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                HorizontalAlignment="Center"
+                                Padding="20,8"/>
+                    </StackPanel>
+                </Border>
 
-            <!-- 降级提示面板 -->
-            <Border x:Name="FallbackPanel"
-                    Grid.Column="0"
-                    Background="{DynamicResource BackgroundBrush}"
-                    Visibility="Collapsed"
-                    Padding="40">
-                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="460">
-                    <TextBlock Text="⚠️ WebView2 运行时未安装"
-                               FontSize="18"
-                               FontWeight="Bold"
-                               Foreground="{DynamicResource WarningBrush}"
-                               HorizontalAlignment="Center"
-                               Margin="0,0,0,12" />
-                    <TextBlock Text="当前系统未检测到 Microsoft Edge WebView2 Runtime，知识图谱可视化暂时无法渲染。"
-                               Foreground="{DynamicResource TextSecondaryBrush}"
-                               FontSize="13"
-                               TextWrapping="Wrap"
-                               TextAlignment="Center"
-                               Margin="0,0,0,16" />
-                    <TextBlock Text="请访问微软官方安装 Evergreen WebView2 运行时后重启应用。"
-                               Foreground="{DynamicResource TextTertiaryBrush}"
-                               FontSize="12"
-                               TextAlignment="Center" />
-                </StackPanel>
-            </Border>
+                <!-- 降级提示面板 -->
+                <Border x:Name="FallbackPanel"
+                        Background="{DynamicResource BackgroundBrush}"
+                        Visibility="Collapsed"
+                        Padding="40">
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="460">
+                        <TextBlock Text="⚠️ WebView2 运行时未安装"
+                                   FontSize="18"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource WarningBrush}"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,0,0,12" />
+                        <TextBlock Text="当前系统未检测到 Microsoft Edge WebView2 Runtime，知识图谱可视化暂时无法渲染。"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   FontSize="13"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center"
+                                   Margin="0,0,0,16" />
+                        <TextBlock Text="请访问微软官方安装 Evergreen WebView2 运行时后重启应用。"
+                                   Foreground="{DynamicResource TextTertiaryBrush}"
+                                   FontSize="12"
+                                   TextAlignment="Center" />
+                    </StackPanel>
+                </Border>
 
-            <!-- 右侧实体知识档案与 AI 深度工作台（Apple 设计风格，450px 黄金宽度） -->
-            <Border Grid.Column="1"
-                    Width="450"
+                <!-- 浮动实体工作台切换把手（未展开时提供轻量入口） -->
+                <Button Command="{Binding ToggleDetailCommand}"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Top"
+                        Margin="0,16,16,0"
+                        Padding="10,5"
+                        Height="28"
+                        Cursor="Hand"
+                        ToolTip="展开/收起实体工作台"
+                        Visibility="{Binding HasGraph, Converter={StaticResource BoolToVisConverter}}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="📋 实体档案" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,4,0"/>
+                        <TextBlock Text="⇋" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                    </StackPanel>
+                </Button>
+            </Grid>
+
+            <!-- 列 1: 左右拖拽调节分割条 (GridSplitter) -->
+            <GridSplitter Grid.Column="1"
+                          Width="5"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Stretch"
+                          Background="Transparent"
+                          Cursor="SizeWE"
+                          Visibility="{Binding IsDetailOpen, Converter={StaticResource BoolToVisConverter}}" />
+
+            <!-- 列 2: 右侧实体知识档案与 AI 深度工作台 -->
+            <Border Grid.Column="2"
                     Background="{DynamicResource CardBrush}"
                     BorderBrush="{DynamicResource BorderBrush}"
                     BorderThickness="1,0,0,0"
@@ -527,13 +553,13 @@
                                                                                Foreground="{DynamicResource PrimaryBrush}" />
                                                                 </DockPanel>
 
-                                                                <!-- Markdown 正文 (若已解析出 FlowDocument 则用 FlowDocumentScrollViewer 或 TextBlock 降级) -->
+                                                                <!-- Markdown 正文 (等宽字体支持 ASCII 流程图对齐) -->
                                                                 <TextBlock Text="{Binding Content}"
                                                                            FontSize="12"
                                                                            LineHeight="18"
                                                                            Foreground="{DynamicResource TextPrimaryBrush}"
                                                                            TextWrapping="Wrap"
-                                                                           FontFamily="Segoe UI, -apple-system, sans-serif" />
+                                                                           FontFamily="Consolas, 'Cascadia Code', 'Segoe UI Variable Display', 'Segoe UI', sans-serif" />
 
                                                                 <!-- 引用来源卡片列表 (双轨：本地原著 + 联网参考) -->
                                                                 <ItemsControl ItemsSource="{Binding Sources}" Margin="0,8,0,0">
@@ -591,23 +617,43 @@
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
 
-                            <!-- 多行提问输入框 -->
-                            <TextBox Grid.Row="0"
-                                     Text="{Binding EntityChatInput, UpdateSourceTrigger=PropertyChanged}"
-                                     AcceptsReturn="True"
-                                     TextWrapping="Wrap"
-                                     MinHeight="40"
-                                     MaxHeight="90"
-                                     Background="Transparent"
-                                     BorderThickness="0"
-                                     FontSize="12"
-                                     Foreground="{DynamicResource TextPrimaryBrush}"
-                                     VerticalScrollBarVisibility="Auto"
-                                     Margin="0,0,0,6">
-                                <TextBox.InputBindings>
-                                    <KeyBinding Key="Return" Command="{Binding SendEntityChatCommand}" />
-                                </TextBox.InputBindings>
-                            </TextBox>
+                            <!-- 多行提问输入框与水印占位符 -->
+                            <Grid Grid.Row="0" Margin="0,0,0,6">
+                                <TextBox x:Name="EntityChatBox"
+                                         Text="{Binding EntityChatInput, UpdateSourceTrigger=PropertyChanged}"
+                                         AcceptsReturn="True"
+                                         TextWrapping="Wrap"
+                                         MinHeight="44"
+                                         MaxHeight="95"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         FontSize="12"
+                                         Foreground="{DynamicResource TextPrimaryBrush}"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Padding="0,2,0,2">
+                                    <TextBox.InputBindings>
+                                        <KeyBinding Key="Return" Command="{Binding SendEntityChatCommand}" />
+                                    </TextBox.InputBindings>
+                                </TextBox>
+                                <!-- 输入框水印提示 -->
+                                <TextBlock Text="向 AI 探索当前实体知识与关联背景... (Enter 发送)"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource TextTertiaryBrush}"
+                                           IsHitTestVisible="False"
+                                           Margin="2,2,0,0"
+                                           VerticalAlignment="Top">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Text.Length, ElementName=EntityChatBox}" Value="0">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
 
                             <!-- 底部工具行（联网开关、发送与停止） -->
                             <DockPanel Grid.Row="1">

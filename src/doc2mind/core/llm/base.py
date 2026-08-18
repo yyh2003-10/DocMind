@@ -137,14 +137,16 @@ class LLMClient(ABC):
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout: float | None = None,
+        stop_event: Any | None = None,
     ) -> Iterator[str]:
-        """流式对话，逐 token 产出（带超时保护）。
+        """流式对话，逐 token 产出（带超时保护与取消事件支持）。
 
         Args:
             messages: OpenAI 格式消息列表
             temperature: 温度（覆盖默认值）
             max_tokens: 最大 token 数（覆盖默认值）
             timeout: 超时秒数，None 使用 DEFAULT_TIMEOUT
+            stop_event: 外部取消事件（threading.Event），置位时立即终止生成
 
         Yields:
             逐 token 文本
@@ -171,6 +173,8 @@ class LLMClient(ABC):
             """worker：跑真实流，逐 token 入队；异常也经队列送回主线程。"""
             try:
                 for tok in self._do_stream_chat(messages, temperature, max_tokens):
+                    if stop_event is not None and stop_event.is_set():
+                        break
                     q.put(tok)
                 q.put(sentinel)
             except BaseException as e:  # noqa: BLE001 — 异常交给主线程分类处理
@@ -180,19 +184,25 @@ class LLMClient(ABC):
             executor.submit(_produce)
             deadline = time.monotonic() + effective_timeout
             while True:
+                if stop_event is not None and stop_event.is_set():
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise LLMTimeoutError(
                         f"LLM 流式调用超时 ({effective_timeout}s)，"
                         "请检查网络或增加 DOC2MIND_LLM_TIMEOUT"
                     )
+                # 使用较短超时切片以便及时响应 stop_event
+                slice_timeout = min(remaining, 0.5) if stop_event is not None else remaining
                 try:
-                    item = q.get(timeout=remaining)
+                    item = q.get(timeout=slice_timeout)
                 except _QueueEmpty:
-                    raise LLMTimeoutError(
-                        f"LLM 流式调用超时 ({effective_timeout}s)，"
-                        "请检查网络或增加 DOC2MIND_LLM_TIMEOUT"
-                    ) from None
+                    if remaining <= 0:
+                        raise LLMTimeoutError(
+                            f"LLM 流式调用超时 ({effective_timeout}s)，"
+                            "请检查网络或增加 DOC2MIND_LLM_TIMEOUT"
+                        ) from None
+                    continue
                 if item is sentinel:
                     break
                 if isinstance(item, BaseException):

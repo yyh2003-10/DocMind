@@ -54,7 +54,7 @@
             cursor: grabbing;
         }
 
-        /* 顶部/底部 Apple 风格毛玻璃图例与浮岛 */
+        /* 底部 Apple 风格毛玻璃图例 */
         #legend {
             position: absolute;
             bottom: 20px;
@@ -63,14 +63,16 @@
             border: 1px solid var(--border-color);
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
-            padding: 10px 16px;
+            padding: 8px 14px;
             border-radius: 12px;
-            font-size: 12px;
+            font-size: 11px;
             display: flex;
-            gap: 14px;
+            gap: 12px;
             flex-wrap: wrap;
             box-shadow: var(--shadow);
             z-index: 10;
+            max-width: calc(100% - 100px);
+            pointer-events: none;
         }
         .legend-item {
             display: flex;
@@ -80,22 +82,22 @@
             font-weight: 500;
         }
         .legend-dot {
-            width: 10px;
-            height: 10px;
+            width: 9px;
+            height: 9px;
             border-radius: 50%;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
         }
 
-        /* 控制浮岛 */
+        /* 顶部右侧控制浮岛（避免与底部图例及右侧侧边栏冲突） */
         #controls {
             position: absolute;
-            bottom: 20px;
+            top: 20px;
             right: 20px;
             background: var(--surface-color);
             border: 1px solid var(--border-color);
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
-            border-radius: 12px;
+            border-radius: 10px;
             display: flex;
             flex-direction: column;
             overflow: hidden;
@@ -310,15 +312,39 @@
             render();
         };
 
-        // 接收数据并初始化
+        // 接收数据并初始化（支持多次解包以防双重序列化）
         window.renderGraph = function(dataOrJson) {
             try {
-                const data = typeof dataOrJson === 'string' ? JSON.parse(dataOrJson) : dataOrJson;
+                if (!dataOrJson) return;
+                let data = dataOrJson;
+                // 循环解包字符串
+                for (let i = 0; i < 5; i++) {
+                    if (typeof data === 'string') {
+                        try {
+                            data = JSON.parse(data);
+                        } catch (e) {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
                 initGraph(data);
             } catch (err) {
                 console.error("解析图谱数据异常:", err);
             }
         };
+
+        // 通知 WPF 页面已完全就绪
+        function notifyReady() {
+            if (window.chrome && window.chrome.webview) {
+                try {
+                    window.chrome.webview.postMessage(JSON.stringify({
+                        type: 'graph_ready'
+                    }));
+                } catch (e) { }
+            }
+        }
 
         // 外部聚焦节点接口
         window.focusNode = function(nodeId) {
@@ -406,40 +432,72 @@
                 return nodeObj;
             });
 
-            // 初始化边（支持双向/多重边曲率与偏移索引）
+            // 初始化边并按节点对分组（支持多重边与双向边对称弧度展开）
             edges = [];
-            const edgePairCount = new Map();
+            const edgeGroups = new Map();
             (data.edges || []).forEach(e => {
                 const source = nodeMap.get(e.from);
                 const target = nodeMap.get(e.to);
                 if (source && target) {
                     const pairKey = e.from < e.to ? `${e.from}__${e.to}` : `${e.to}__${e.from}`;
-                    const count = edgePairCount.get(pairKey) || 0;
-                    edgePairCount.set(pairKey, count + 1);
-
-                    edges.push({
+                    if (!edgeGroups.has(pairKey)) {
+                        edgeGroups.set(pairKey, []);
+                    }
+                    const edgeObj = {
                         source: source,
                         target: target,
                         label: (e.label || '').trim(),
                         fromId: e.from,
                         toId: e.to,
-                        pairKey: pairKey,
-                        pairIndex: count
-                    });
+                        pairKey: pairKey
+                    };
+                    edgeGroups.get(pairKey).push(edgeObj);
+                    edges.push(edgeObj);
+
                     adjMap.get(e.from).add(e.to);
                     adjMap.get(e.to).add(e.from);
                 }
             });
 
-            // 计算多重边弯曲曲率，使双向/多重连线自然分离
-            edges.forEach(e => {
-                e.totalPairs = edgePairCount.get(e.pairKey) || 1;
-                if (e.totalPairs > 1) {
-                    const isForward = e.fromId < e.toId;
-                    const sign = isForward ? 1 : -1;
-                    e.curvature = 0.22 * sign * (1 + (e.pairIndex > 1 ? 0.35 : 0));
+            // 为每个分组内的边计算非重叠曲率与错峰标签参数 t
+            edgeGroups.forEach((group, pairKey) => {
+                const n = group.length;
+                if (n === 1) {
+                    group[0].curvature = 0;
+                    group[0].tagT = 0.5;
+                    group[0].groupIndex = 0;
+                    group[0].groupTotal = 1;
                 } else {
-                    e.curvature = 0;
+                    // 对多条边分配对称的曲率与错峰 t
+                    const curvatures = [];
+                    const tValues = [];
+                    if (n === 2) {
+                        curvatures.push(-0.25, 0.25);
+                        tValues.push(0.42, 0.58);
+                    } else if (n === 3) {
+                        curvatures.push(-0.32, 0, 0.32);
+                        tValues.push(0.38, 0.50, 0.62);
+                    } else if (n === 4) {
+                        curvatures.push(-0.40, -0.18, 0.18, 0.40);
+                        tValues.push(0.34, 0.45, 0.55, 0.66);
+                    } else {
+                        const step = 0.8 / (n - 1);
+                        for (let i = 0; i < n; i++) {
+                            curvatures.push(-0.4 + i * step);
+                            tValues.push(0.3 + (i / (n - 1)) * 0.4);
+                        }
+                    }
+
+                    for (let i = 0; i < n; i++) {
+                        const e = group[i];
+                        const isCanonical = e.fromId < e.toId;
+                        const c = curvatures[i];
+                        // 考虑连线方向反向时符号调整
+                        e.curvature = isCanonical ? c : -c;
+                        e.tagT = isCanonical ? tValues[i] : (1 - tValues[i]);
+                        e.groupIndex = i;
+                        e.groupTotal = n;
+                    }
                 }
             });
 
@@ -611,21 +669,7 @@
             const activeNode = hoveredNode || (selectedNodeId ? nodeMap.get(selectedNodeId) : null);
             const activeNeighbors = activeNode ? (adjMap.get(activeNode.id) || new Set()) : null;
 
-            // 占位盒列表（用于线上标签与节点文字的全局防重叠避让）
-            const occupiedBoxes = [];
-
-            // 1. 先将所有节点的球体与文字胶囊注册为避让障碍物
-            for (let i = 0; i < nodes.length; i++) {
-                const n = nodes[i];
-                occupiedBoxes.push({
-                    x: n.x - n.boxW / 2 - 4,
-                    y: n.y - n.size - 4,
-                    w: n.boxW + 8,
-                    h: n.boxH + 8
-                });
-            }
-
-            // 2. 绘制关系连线（支持双向贝塞尔弧线）
+            // 1. 绘制关系连线（最底层）
             for (let i = 0; i < edges.length; i++) {
                 const e = edges[i];
                 const isEdgeActive = activeNode && (e.source.id === activeNode.id || e.target.id === activeNode.id);
@@ -647,131 +691,71 @@
                     ctx.lineTo(e.target.x, e.target.y);
                 }
 
-                ctx.strokeStyle = isEdgeActive ? edgeActive : (isDimmed ? 'rgba(142, 142, 147, 0.08)' : edgeDefault);
-                ctx.lineWidth = isEdgeActive ? 2.5 : 1.2;
+                ctx.strokeStyle = isEdgeActive ? edgeActive : (isDimmed ? (isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.06)') : edgeDefault);
+                ctx.lineWidth = isEdgeActive ? 2.2 : 1.2;
                 ctx.stroke();
             }
 
-            // 3. 动态防重叠绘制线上字体标签（Edge Labels）
-            // 优先级排序：高亮激活边优先放置，其他边动态避让
-            const labelCandidatesEdges = edges
-                .filter(e => e.label && (transform.scale > 0.55 || (activeNode && (e.source.id === activeNode.id || e.target.id === activeNode.id))))
-                .sort((a, b) => {
-                    const aActive = activeNode && (a.source.id === activeNode.id || a.target.id === activeNode.id);
-                    const bActive = activeNode && (b.source.id === activeNode.id || b.target.id === activeNode.id);
-                    return (bActive ? 1 : 0) - (aActive ? 1 : 0);
-                });
-
+            // 2. 绘制线上关系标签（中间层：实心胶囊背景，错峰排列，彻底遮盖下层连线）
             ctx.font = '500 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-
-            for (let i = 0; i < labelCandidatesEdges.length; i++) {
-                const e = labelCandidatesEdges[i];
+            for (let i = 0; i < edges.length; i++) {
+                const e = edges[i];
+                if (!e.label) continue;
                 const isEdgeActive = activeNode && (e.source.id === activeNode.id || e.target.id === activeNode.id);
                 const isDimmed = activeNode && !isEdgeActive;
 
+                // 若处于高亮模式且当前边非关联边，则隐藏其标签以减少视觉干扰
                 if (isDimmed) continue;
 
                 const lMetric = ctx.measureText(e.label);
-                const lW = Math.ceil(lMetric.width) + 12;
-                const lH = 16;
+                const lW = Math.ceil(lMetric.width) + 14;
+                const lH = 18;
 
-                // 生成多组沿连线/弧线的候选位置，多点探测最佳无重叠位置
-                const tList = [0.5, 0.38, 0.62, 0.28, 0.72];
-                const normOffsets = [0, 10, -10, 16, -16];
-                let bestPos = null;
+                const t = e.tagT !== undefined ? e.tagT : 0.5;
+                const dx = e.target.x - e.source.x;
+                const dy = e.target.y - e.source.y;
+                let posX, posY;
 
-                for (const t of tList) {
-                    let baseX, baseY, normX = 0, normY = 0;
-                    const dx = e.target.x - e.source.x;
-                    const dy = e.target.y - e.source.y;
-                    const len = Math.sqrt(dx * dx + dy * dy) || 1;
-                    const uNx = -dy / len;
-                    const uNy = dx / len;
-
-                    if (e.curvature && e.curvature !== 0) {
-                        const midX = (e.source.x + e.target.x) / 2;
-                        const midY = (e.source.y + e.target.y) / 2;
-                        const ctrlX = midX - dy * e.curvature;
-                        const ctrlY = midY + dx * e.curvature;
-                        // 二次贝塞尔曲线公式 B(t) = (1-t)^2*P0 + 2t(1-t)*P1 + t^2*P2
-                        const invT = 1 - t;
-                        baseX = invT * invT * e.source.x + 2 * invT * t * ctrlX + t * t * e.target.x;
-                        baseY = invT * invT * e.source.y + 2 * invT * t * ctrlY + t * t * e.target.y;
-                    } else {
-                        baseX = e.source.x + dx * t;
-                        baseY = e.source.y + dy * t;
-                    }
-
-                    for (const offset of normOffsets) {
-                        const candX = baseX + uNx * offset;
-                        const candY = baseY + uNy * offset;
-                        const candBox = {
-                            x: candX - lW / 2,
-                            y: candY - lH / 2,
-                            w: lW,
-                            h: lH
-                        };
-
-                        let hasCollision = false;
-                        for (let k = 0; k < occupiedBoxes.length; k++) {
-                            if (isBoxOverlap(candBox, occupiedBoxes[k], 3)) {
-                                hasCollision = true;
-                                break;
-                            }
-                        }
-
-                        if (!hasCollision) {
-                            bestPos = { x: candX, y: candY, box: candBox };
-                            break;
-                        }
-                    }
-
-                    if (bestPos) break;
-                }
-
-                // 如果找不到完全无重叠位置，且当前是非高亮边，则安全剔除避让（绝不画出重叠文本）
-                if (!bestPos && !isEdgeActive) {
-                    continue;
-                }
-
-                // 如果是高亮边但周围很挤，以中点兜底并置顶
-                if (!bestPos && isEdgeActive) {
+                if (e.curvature && e.curvature !== 0) {
                     const midX = (e.source.x + e.target.x) / 2;
                     const midY = (e.source.y + e.target.y) / 2;
-                    bestPos = {
-                        x: midX,
-                        y: midY,
-                        box: { x: midX - lW / 2, y: midY - lH / 2, w: lW, h: lH }
-                    };
+                    const ctrlX = midX - dy * e.curvature;
+                    const ctrlY = midY + dx * e.curvature;
+                    const invT = 1 - t;
+                    posX = invT * invT * e.source.x + 2 * invT * t * ctrlX + t * t * e.target.x;
+                    posY = invT * invT * e.source.y + 2 * invT * t * ctrlY + t * t * e.target.y;
+                } else {
+                    posX = e.source.x + dx * t;
+                    posY = e.source.y + dy * t;
                 }
 
-                if (bestPos) {
-                    occupiedBoxes.push(bestPos.box);
+                // 绘制实心微胶囊底框（彻底盖住连线）
+                ctx.save();
+                const boxX = posX - lW / 2;
+                const boxY = posY - lH / 2;
+                drawRoundedRect(ctx, boxX, boxY, lW, lH, 5);
 
-                    // 绘制边标签微胶囊底框（Pill Badge）
-                    ctx.save();
-                    drawRoundedRect(ctx, bestPos.box.x, bestPos.box.y, bestPos.box.w, bestPos.box.h, 4);
-                    ctx.fillStyle = isEdgeActive 
-                        ? (isDark ? 'rgba(10, 132, 255, 0.3)' : 'rgba(0, 122, 255, 0.15)')
-                        : (isDark ? 'rgba(28, 28, 30, 0.92)' : 'rgba(255, 255, 255, 0.92)');
-                    ctx.fill();
+                // 实心不透明背景，防止线条穿透文字
+                ctx.fillStyle = isEdgeActive 
+                    ? (isDark ? '#1C2E4A' : '#EBF5FF') 
+                    : (isDark ? '#242426' : '#FFFFFF');
+                ctx.fill();
 
-                    ctx.lineWidth = isEdgeActive ? 1.2 : 0.8;
-                    ctx.strokeStyle = isEdgeActive 
-                        ? (isDark ? '#0A84FF' : '#007AFF') 
-                        : (isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)');
-                    ctx.stroke();
-                    ctx.restore();
+                ctx.lineWidth = isEdgeActive ? 1.4 : 0.8;
+                ctx.strokeStyle = isEdgeActive 
+                    ? (isDark ? '#0A84FF' : '#007AFF') 
+                    : (isDark ? 'rgba(255, 255, 255, 0.18)' : 'rgba(0, 0, 0, 0.15)');
+                ctx.stroke();
 
-                    // 绘制边标签文字
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillStyle = isEdgeActive ? (isDark ? '#5AC8FA' : '#007AFF') : labelColor;
-                    ctx.fillText(e.label, bestPos.x, bestPos.y);
-                }
+                // 绘制文字
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillStyle = isEdgeActive ? (isDark ? '#64D2FF' : '#0064D6') : (isDark ? '#AEAEB2' : '#48484A');
+                ctx.fillText(e.label, posX, posY);
+                ctx.restore();
             }
 
-            // 2. 绘制节点与独立胶囊文字徽章
+            // 3. 绘制节点与独立胶囊文字徽章（最顶层）
             for (let i = 0; i < nodes.length; i++) {
                 const n = nodes[i];
                 const palette = TYPE_PALETTES[n.type] || TYPE_PALETTES.other;
@@ -781,13 +765,13 @@
                 const isDimmed = activeNode && !isCurrent && !isNeighbor;
 
                 ctx.save();
-                ctx.globalAlpha = isDimmed ? 0.25 : 1.0;
+                ctx.globalAlpha = isDimmed ? 0.42 : 1.0;
 
-                // 节点外光晕（选中或悬浮）
+                // 节点外光晕（仅在选中时呈现）
                 if (isCurrent) {
                     ctx.beginPath();
-                    ctx.arc(n.x, n.y, n.size + 8, 0, Math.PI * 2);
-                    ctx.fillStyle = isDark ? 'rgba(10, 132, 255, 0.45)' : 'rgba(0, 122, 255, 0.35)';
+                    ctx.arc(n.x, n.y, n.size + 7, 0, Math.PI * 2);
+                    ctx.fillStyle = isDark ? 'rgba(10, 132, 255, 0.35)' : 'rgba(0, 122, 255, 0.25)';
                     ctx.fill();
                 }
 
@@ -796,46 +780,44 @@
                 ctx.arc(n.x, n.y, n.size, 0, Math.PI * 2);
                 ctx.fillStyle = palette.fill;
                 ctx.fill();
-                ctx.lineWidth = isCurrent ? 3 : 2;
-                ctx.strokeStyle = isCurrent ? (isDark ? '#FFFFFF' : '#000000') : palette.stroke;
+                ctx.lineWidth = isCurrent ? 2.8 : 2;
+                ctx.strokeStyle = isCurrent ? (isDark ? '#FFFFFF' : '#004085') : palette.stroke;
                 ctx.stroke();
 
-                // 节点内部：仅绘制居中的分类图标
+                // 节点内部：绘制居中的分类图标
                 ctx.font = `${Math.max(12, Math.min(18, n.size * 0.75))}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
                 ctx.fillStyle = palette.text;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.fillText(icon, n.x, n.y);
 
-                // 节点下方：绘制独立的精致胶囊文本徽章（Pill Badge）
-                // 胶囊背景遮蔽连线，确保文字 100% 清晰可见、独立且不重叠
+                // 节点下方：绘制独立的精致胶囊文本徽章（实心背景，盖住穿过的所有发散连线）
                 const pillX = n.x - n.pillW / 2;
-                const pillY = n.y + n.size + 5;
+                const pillY = n.y + n.size + 6;
                 const pillW = n.pillW;
                 const pillH = n.pillH;
                 const radius = 6;
 
-                // 绘制胶囊背景底框与微投影
                 ctx.save();
                 drawRoundedRect(ctx, pillX, pillY, pillW, pillH, radius);
                 ctx.fillStyle = isCurrent 
-                    ? (isDark ? 'rgba(10, 132, 255, 0.25)' : 'rgba(0, 122, 255, 0.12)')
-                    : (isDark ? 'rgba(28, 28, 30, 0.95)' : 'rgba(255, 255, 255, 0.95)');
+                    ? (isDark ? '#1C2E4A' : '#EBF5FF')
+                    : (isDark ? '#2C2C2E' : '#FFFFFF');
                 ctx.fill();
 
-                ctx.lineWidth = isCurrent ? 1.5 : 1;
+                ctx.lineWidth = isCurrent ? 1.5 : 0.8;
                 ctx.strokeStyle = isCurrent 
                     ? (isDark ? '#0A84FF' : '#007AFF') 
-                    : (isDark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(0, 0, 0, 0.1)');
+                    : (isDark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(0, 0, 0, 0.12)');
                 ctx.stroke();
-                ctx.restore();
 
                 // 绘制胶囊内实体全称
                 ctx.font = isCurrent ? 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' : '500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.fillStyle = isCurrent ? (isDark ? '#5AC8FA' : '#007AFF') : (isDark ? '#F5F5F7' : '#1D1D1F');
+                ctx.fillStyle = isCurrent ? (isDark ? '#64D2FF' : '#0064D6') : (isDark ? '#F5F5F7' : '#1D1D1F');
                 ctx.fillText(n.name, n.x, pillY + pillH / 2);
+                ctx.restore();
 
                 ctx.restore();
             }
@@ -843,7 +825,7 @@
             ctx.restore();
         }
 
-        // 视口自适应
+        // 视口自适应（预留底部图例安全边距）
         function fitView() {
             if (nodes.length === 0) return;
             const w = window.innerWidth;
@@ -857,16 +839,17 @@
                 if (n.y > maxY) maxY = n.y;
             });
 
-            const padding = 120;
+            const padding = 100;
+            const paddingBottom = 160; // 预留底部图例栏安全空间
             const graphW = Math.max(maxX - minX + padding * 2, 100);
-            const graphH = Math.max(maxY - minY + padding * 2, 100);
+            const graphH = Math.max(maxY - minY + padding + paddingBottom, 100);
 
             const scaleX = w / graphW;
             const scaleY = h / graphH;
             transform.scale = Math.max(0.3, Math.min(1.4, Math.min(scaleX, scaleY)));
 
             const graphCenterX = (minX + maxX) / 2;
-            const graphCenterY = (minY + maxY) / 2;
+            const graphCenterY = (minY + maxY - (paddingBottom - padding) / 2) / 2;
             transform.x = w / 2 - graphCenterX * transform.scale;
             transform.y = h / 2 - graphCenterY * transform.scale;
 
@@ -1026,6 +1009,11 @@
         if (window.__graphData) {
             renderGraph(window.__graphData);
         }
+
+        // 触发与 C# 宿主的握手通知
+        notifyReady();
+        setTimeout(notifyReady, 200);
+        setTimeout(notifyReady, 800);
     </script>
 </body>
 </html>
