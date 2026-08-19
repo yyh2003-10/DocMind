@@ -161,7 +161,7 @@ class TestHTTPChatEndpoint:
             assert response.headers["content-type"].startswith("text/event-stream")
             lines = [line for line in response.iter_lines() if line]
             # 过滤 SSE 前缀
-            events = [l.replace("data: ", "") for l in lines if l.startswith("data: ")]
+            events = [item.replace("data: ", "") for item in lines if item.startswith("data: ")]
             assert len(events) >= 2
             import json
             first = json.loads(events[0])

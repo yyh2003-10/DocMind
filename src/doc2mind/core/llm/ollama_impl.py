@@ -133,8 +133,9 @@ class OllamaClient(LLMClient):
             "stream": True,
         }
         try:
-            with httpx.Client(timeout=self._timeout) as client:
-                with client.stream("POST", f"{self._host}/api/chat", json=payload) as response:
+            with httpx.Client(timeout=self._timeout) as client, client.stream(
+                "POST", f"{self._host}/api/chat", json=payload
+            ) as response:
                     response.raise_for_status()
                     for line in response.iter_lines():
                         if not line:

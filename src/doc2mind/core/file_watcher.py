@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from collections.abc import Callable
@@ -192,7 +193,7 @@ class FileWatcher:
         except Exception as e:  # noqa: BLE001 — 单文件异常不影响 watcher 线程
             logger.warning("自动摄入文件异常（%s）: %s", p, e)
             if self._on_ingested is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self._on_ingested({
                         "path": str(p),
                         "collection": self._collection,
@@ -200,5 +201,3 @@ class FileWatcher:
                         "error": str(e),
                         "document_id": None,
                     })
-                except Exception:  # noqa: BLE001
-                    pass

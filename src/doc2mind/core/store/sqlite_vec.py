@@ -17,8 +17,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
+import re as _re
 import sqlite3
 import threading
 import time
@@ -86,8 +88,6 @@ def _retry_on_locked(func):
 
 
 # --- FTS5 MATCH 表达式构造（中文友好）---
-import contextlib
-import re as _re
 
 # CJK 统一表意文字范围（中日韩常用汉字）
 _CJK_RE = _re.compile(r"[\u4e00-\u9fff]+")
@@ -398,7 +398,7 @@ class VectorStore:
         except ImportError:
             raise StoreError(
                 "sqlite-vec 未安装。请运行：pip install sqlite-vec"
-            )
+            ) from None
         except Exception as e:  # noqa: BLE001
             raise StoreError(
                 "sqlite-vec 扩展加载失败。请运行：pip install sqlite-vec"

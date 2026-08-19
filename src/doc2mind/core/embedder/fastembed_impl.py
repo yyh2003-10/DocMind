@@ -240,13 +240,13 @@ class FastEmbedEmbedder(Embedder):
             else:
                 raise EmbedderError(f"加载 fastembed 模型失败 ({self._model}): {e}") from e
 
-    def _load_impl(self, TextEmbedding, kwargs: dict[str, object]) -> None:
+    def _load_impl(self, text_embedding_cls, kwargs: dict[str, object]) -> None:
         """构造 TextEmbedding 并 probe 验证：GPU 可用则 GPU，否则回退 CPU。"""
         providers = self._providers or ["CPUExecutionProvider"]
         kwargs = dict(kwargs)
         kwargs["providers"] = providers
         try:
-            self._impl = TextEmbedding(**kwargs)
+            self._impl = text_embedding_cls(**kwargs)
             # 用 probe 实际跑一次推理，验证 provider 真正可用
             probe = next(self._impl.embed(["probe"]))
         except Exception as gpu_err:  # noqa: BLE001
@@ -256,7 +256,7 @@ class FastEmbedEmbedder(Embedder):
                     providers, gpu_err,
                 )
                 kwargs["providers"] = ["CPUExecutionProvider"]
-                self._impl = TextEmbedding(**kwargs)
+                self._impl = text_embedding_cls(**kwargs)
                 probe = next(self._impl.embed(["probe"]))
             else:
                 raise

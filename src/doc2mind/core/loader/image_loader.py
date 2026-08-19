@@ -274,9 +274,8 @@ def _region_to_paragraph(
         if last_y is not None:
             # 同段落判定：y 差小于上一行高度的 0.6 倍
             gap = abs(center_y - last_y)
-            if gap > last_height * 0.6 + 5:
+            if gap > last_height * 0.6 + 5 and current_lines:
                 # 段落边界，flush
-                if current_lines:
                     elements.append(
                         DocumentElement(
                             content="\n".join(current_lines),

@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
@@ -40,7 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from doc2mind.core.config import get_config_load_error, get_settings
+from doc2mind.core.config import Settings, get_config_load_error, get_settings
 from doc2mind.core.converter import (
     SUPPORTED_FORMATS,
     ConversionError,
@@ -55,6 +56,7 @@ from doc2mind.core.llm import (
 )
 from doc2mind.core.loader.detect import get_loader, is_supported
 from doc2mind.core.logging_setup import setup_logging
+from doc2mind.core.models import LoadedDocument
 from doc2mind.core.pipeline import ingest_path, ingest_text
 from doc2mind.core.rag import RagError, clear_session, rag_answer, rag_answer_stream
 from doc2mind.core.retriever.search import Retriever
@@ -640,10 +642,8 @@ def _broadcast_event(payload: dict[str, Any]) -> None:
     blob = json.dumps(payload, ensure_ascii=False)
     with _sse_lock:
         for loop, q in list(_SSE_CONNECTIONS):
-            try:
+            with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(q.put_nowait, blob)
-            except Exception:  # noqa: BLE001
-                pass
 
 
 class _AppState:
@@ -685,7 +685,7 @@ def create_app(settings: Settings | None = None) -> Any:
     用 factory 模式便于测试隔离与 uvicorn 启动。
     """
     try:
-        from fastapi import Body, FastAPI, HTTPException, Query
+        from fastapi import Body, FastAPI, Query
         from fastapi.responses import StreamingResponse
     except ImportError as e:  # pragma: no cover
         raise ImportError(
@@ -1300,7 +1300,7 @@ def create_app(settings: Settings | None = None) -> Any:
         """
         async def event_generator() -> Any:
             loop = asyncio.get_event_loop()
-            queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+            queue: asyncio.Queue[str | None] = asyncio.Queue()
             store = state.ensure_open()
             stop_event = threading.Event()
             gen = rag_answer_stream(
@@ -1334,10 +1334,8 @@ def create_app(settings: Settings | None = None) -> Any:
                             queue.put(f"__ERROR__:对话失败: {e}"), loop
                         ).result()
                 finally:
-                    try:
+                    with contextlib.suppress(Exception):
                         asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
-                    except Exception:  # noqa: BLE001
-                        pass
 
             fut = loop.run_in_executor(None, _pump)
             try:
@@ -1802,7 +1800,7 @@ def create_app(settings: Settings | None = None) -> Any:
             }
         except Exception as e:
             logger.error("图谱抽取失败: %s", e)
-            raise _api_error("INTERNAL_ERROR", f"图谱抽取失败: {e}", 500)
+            raise _api_error("INTERNAL_ERROR", f"图谱抽取失败: {e}", 500) from e
 
     # --- POST /v1/convert ---
     @app.post("/v1/convert", response_model=ConvertResponse)
@@ -2149,7 +2147,7 @@ def create_app(settings: Settings | None = None) -> Any:
 
 
 # --- 辅助 ---
-def _api_error(code: str, message: str, status: int) -> HTTPException:
+def _api_error(code: str, message: str, status: int) -> HTTPException:  # noqa: F821
     """构造统一错误响应；5xx 同时落日志（排障线索）。"""
     from fastapi import HTTPException
 

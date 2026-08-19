@@ -546,8 +546,8 @@ class TestRagAnswerStream:
         assert "".join(f["token"] for f in token_frames) == "根据资料回答。"
         # 历史已保存完整拼接的回答
         cid = json.loads(results[-1])["chat_id"]
-        from doc2mind.core.rag import _CHAT_SESSIONS as _sessions
-        assert _sessions[cid][-1] == {"role": "assistant", "content": "根据资料回答。"}
+        from doc2mind.core.rag import _CHAT_SESSIONS
+        assert _CHAT_SESSIONS[cid][-1] == {"role": "assistant", "content": "根据资料回答。"}
 
 
 class TestHistoryTokenBudget:

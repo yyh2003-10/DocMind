@@ -189,10 +189,8 @@ def _ocr_fallback(path: Path, page_count: int) -> list[DocumentElement]:
     finally:
         # 显式释放 PIL Image 占用的内存
         for img in images:
-            try:
+            with contextlib.suppress(Exception):
                 img.close()
-            except Exception:  # noqa: BLE001
-                pass
 
     if not elements:
         raise LoaderError(
@@ -275,7 +273,7 @@ def _find_poppler() -> str | None:
 
 
 def _ocr_png_bytes(
-    ocr_loader: ImageLoader,
+    ocr_loader: ImageLoader,  # noqa: F821
     png_bytes: bytes,
     page_no: int,
     pdf_name: str,
