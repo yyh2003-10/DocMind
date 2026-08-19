@@ -69,17 +69,13 @@ def chunk_document(
         # 合并：每块回填原元素 index（用首元素 index 近似）
         annotated: list[tuple[int, Chunk]] = []
 
-        ci = 0
-        for chunk in code_chunks:
+        for ci, chunk in enumerate(code_chunks):
             orig_idx = code_els[ci][0] if ci < len(code_els) else 0
             annotated.append((orig_idx, chunk))
-            ci += 1
 
-        ti = 0
-        for chunk in table_chunks:
+        for ti, chunk in enumerate(table_chunks):
             orig_idx = table_els[ti][0] if ti < len(table_els) else 0
             annotated.append((orig_idx, chunk))
-            ti += 1
 
         si = 0
         for chunk in semantic_chunks:
