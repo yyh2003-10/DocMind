@@ -97,6 +97,7 @@ echo   [*] 尝试调用 Inno Setup 编译标准安装包
 echo ============================================================
 
 set ISCC_EXE=
+if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set ISCC_EXE="%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
 if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set ISCC_EXE="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 if exist "C:\Program Files\Inno Setup 6\ISCC.exe" set ISCC_EXE="C:\Program Files\Inno Setup 6\ISCC.exe"
 if exist "C:\Program Files\InnoSetup7\ISCC.exe" set ISCC_EXE="C:\Program Files\InnoSetup7\ISCC.exe"
