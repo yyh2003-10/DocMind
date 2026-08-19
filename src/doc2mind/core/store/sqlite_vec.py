@@ -86,6 +86,7 @@ def _retry_on_locked(func):
 
 
 # --- FTS5 MATCH 表达式构造（中文友好）---
+import contextlib
 import re as _re
 
 # CJK 统一表意文字范围（中日韩常用汉字）
@@ -535,16 +536,12 @@ class VectorStore:
                 conn.execute("COMMIT")
                 return inserted
             except StoreError:
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             except Exception as e:  # noqa: BLE001
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise StoreError(f"插入分块失败: {e}") from e
 
     @_retry_on_locked
@@ -621,16 +618,12 @@ class VectorStore:
                 conn.execute("COMMIT")
                 return inserted
             except StoreError:
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             except Exception as e:  # noqa: BLE001
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise StoreError(f"替换文档失败: {e}") from e
 
     def _insert_chunks_in_txn(
@@ -780,10 +773,8 @@ class VectorStore:
                 conn.execute("COMMIT")
                 return len(chunk_ids)
             except Exception as e:  # noqa: BLE001
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise StoreError(f"删除文档失败: {e}") from e
 
     def delete_by_source(self, source: str, collection: str = "default") -> int:
@@ -951,16 +942,12 @@ class VectorStore:
                 conn.execute("COMMIT")
                 return True
             except StoreError:
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             except Exception as e:  # noqa: BLE001
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise StoreError(
                     f"移动文档失败: {e}（若为唯一约束冲突，目标集合已存在同名文档）"
                 ) from e
@@ -1183,10 +1170,8 @@ class VectorStore:
                 conn.execute("COMMIT")
                 return updated
             except Exception as e:  # noqa: BLE001
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise StoreError(f"更新向量失败: {e}") from e
 
     @_retry_on_locked
@@ -1225,10 +1210,8 @@ class VectorStore:
                 self.embedding_dim = int(new_dim)
                 return inserted
             except Exception as e:  # noqa: BLE001
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise StoreError(f"重建向量表失败: {e}") from e
 
     # sort 白名单 → SQL 片段（避免任意列名注入）

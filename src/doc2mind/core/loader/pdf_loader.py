@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import tempfile
@@ -313,7 +314,5 @@ def _ocr_png_bytes(
             )
         return out
     finally:
-        try:
+        with contextlib.suppress(OSError):
             tmp_path.unlink()
-        except OSError:
-            pass

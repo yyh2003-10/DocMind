@@ -18,6 +18,7 @@ import logging
 import os
 import sys
 from collections.abc import Iterator, Sequence
+from pathlib import Path
 
 from doc2mind.core.chunker.base import Chunk
 from doc2mind.core.config import Settings

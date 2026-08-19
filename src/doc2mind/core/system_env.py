@@ -233,11 +233,11 @@ async def install_gpu_packages(path: str) -> AsyncGenerator[dict[str, Any], None
 
     import subprocess
 
-    kwargs: dict[str, Any] = dict(
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
-    )
+    kwargs: dict[str, Any] = {
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.STDOUT,
+        "creationflags": (subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+    }
     for cmd in cmds:
         yield {"type": "log", "line": "$ " + " ".join(cmd)}
         proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)

@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
 
 # 会话标题最大长度（首条用户问题截断）
 _TITLE_MAX = 50
@@ -197,7 +197,7 @@ class ChatStore:
                         role=r["role"],
                         content=r["content"],
                         created_at=r["created_at"],
-                        sources_json=r["sources_json"] if "sources_json" in r.keys() else None,
+                        sources_json=r.get("sources_json", None),
                     )
                     for r in rows
                 ]

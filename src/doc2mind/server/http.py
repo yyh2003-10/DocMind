@@ -48,9 +48,9 @@ from doc2mind.core.converter import (
 )
 from doc2mind.core.embedder import get_embedder
 from doc2mind.core.llm import (
+    SUPPORTED_PROVIDERS,
     LLMError,
     LLMTimeoutError,
-    SUPPORTED_PROVIDERS,
     get_llm_client,
 )
 from doc2mind.core.loader.detect import get_loader, is_supported
@@ -685,7 +685,7 @@ def create_app(settings: Settings | None = None) -> Any:
     用 factory 模式便于测试隔离与 uvicorn 启动。
     """
     try:
-        from fastapi import FastAPI, HTTPException, Query, Body
+        from fastapi import Body, FastAPI, HTTPException, Query
         from fastapi.responses import StreamingResponse
     except ImportError as e:  # pragma: no cover
         raise ImportError(
@@ -956,7 +956,7 @@ def create_app(settings: Settings | None = None) -> Any:
                 ok=False, provider=provider, elapsed_ms=int((time.perf_counter() - t0) * 1000),
                 error=f"运行库缺失: {e}",
             )
-        except LLMTimeoutError as e:
+        except LLMTimeoutError:
             return LlmTestResponse(
                 ok=False, provider=provider, elapsed_ms=int((time.perf_counter() - t0) * 1000),
                 error=f"连接超时（{req.timeout:.0f}s）: 网络不通、地址错误或服务无响应",
@@ -1300,7 +1300,7 @@ def create_app(settings: Settings | None = None) -> Any:
         """
         async def event_generator() -> Any:
             loop = asyncio.get_event_loop()
-            queue: "asyncio.Queue[Optional[str]]" = asyncio.Queue()
+            queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
             store = state.ensure_open()
             stop_event = threading.Event()
             gen = rag_answer_stream(
@@ -1934,11 +1934,11 @@ def create_app(settings: Settings | None = None) -> Any:
                     # 分批重新嵌入，逐批更新向量，避免一次加载全部结果。
                     # need_rebuild（维度变化）时不能原地 update_embeddings（表结构还是旧维度），
                     # 先收集全部 (chunk_id, embedding)，最后一次性重建向量表并回填。
-                    BATCH = 32
+                    batch_size = 32
                     processed = 0
                     rebuild_pairs: list[tuple[int, object]] = []
-                    for i in range(0, total, BATCH):
-                        batch = pairs[i : i + BATCH]
+                    for i in range(0, total, batch_size):
+                        batch = pairs[i : i + batch_size]
                         texts = [content for _, content in batch]
                         embeddings = list(embedder.embed_texts(texts))
                         if len(embeddings) != len(batch):

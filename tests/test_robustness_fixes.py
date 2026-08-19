@@ -24,7 +24,7 @@ from doc2mind.core.config import Settings
 from doc2mind.core.loader.base import make_source
 from doc2mind.core.loader.detect import get_loader
 from doc2mind.core.pipeline import _ingest_one
-from doc2mind.core.store.sqlite_vec import StoreError, StoredDocument, VectorStore
+from doc2mind.core.store.sqlite_vec import StoredDocument, StoreError, VectorStore
 
 EMBEDDING_DIM = 8
 

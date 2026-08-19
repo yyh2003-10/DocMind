@@ -7,7 +7,7 @@ API Key 走 x-goog-api-key 请求头（不进 URL，避免日志泄漏）。
 from __future__ import annotations
 
 import json
-from typing import Iterator
+from collections.abc import Iterator
 
 from doc2mind.core.llm.base import LLMClient, LLMError, sanitize_max_tokens
 
@@ -186,27 +186,26 @@ class GeminiClient(LLMClient):
 
         url = f"{self._base_url}/v1beta/models/{self._model}:streamGenerateContent?alt=sse"
         try:
-            with httpx.Client(timeout=self._timeout) as client:
-                with client.stream(
-                    "POST",
-                    url,
-                    json=self._payload(messages, temperature, max_tokens),
-                    headers=self._headers(),
-                ) as response:
-                    self._raise_for_status(response)
-                    for line in response.iter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        raw = line[len("data:"):].strip()
-                        if not raw:
-                            continue
-                        try:
-                            event = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        text = self._extract_text(event)
-                        if text:
-                            yield text
+            with httpx.Client(timeout=self._timeout) as client, client.stream(
+                "POST",
+                url,
+                json=self._payload(messages, temperature, max_tokens),
+                headers=self._headers(),
+            ) as response:
+                self._raise_for_status(response)
+                for line in response.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[len("data:"):].strip()
+                    if not raw:
+                        continue
+                    try:
+                        event = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    text = self._extract_text(event)
+                    if text:
+                        yield text
         except LLMError:
             raise
         except httpx.RequestError as e:

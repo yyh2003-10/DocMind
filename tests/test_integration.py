@@ -666,6 +666,7 @@ class TestGraphEndpoints:
 
     def test_graph_extract_requires_llm(self, tmp_path) -> None:
         from starlette.testclient import TestClient
+
         from doc2mind.server.http import create_app
 
         s = Settings(db_path=tmp_path / "graph_extract_test.db", llm_provider="none")
@@ -683,7 +684,8 @@ class TestEventsBroadcast:
     @pytest.mark.xfail(reason="Starlette TestClient 不支持 async SSE generator 的 iter_lines()")
     def test_events_endpoint_ready_frame(self, tmp_path) -> None:
         from starlette.testclient import TestClient
-        from doc2mind.server.http import create_app, _broadcast_event
+
+        from doc2mind.server.http import create_app
 
         s = Settings(db_path=tmp_path / "events_test.db")
         app = create_app(s)
@@ -698,8 +700,9 @@ class TestEventsBroadcast:
                     break
 
     def test_broadcast_event_helper(self) -> None:
-        from doc2mind.server.http import _broadcast_event, _SSE_CONNECTIONS, _sse_lock
         import asyncio
+
+        from doc2mind.server.http import _SSE_CONNECTIONS, _broadcast_event, _sse_lock
 
         loop = asyncio.new_event_loop()
         q: asyncio.Queue = asyncio.Queue()

@@ -437,11 +437,11 @@ def _tool_reindex(
                 _update_job(job_id, status="completed", progress=1.0, finished_at=_now_iso())
                 return
 
-            BATCH = 32
+            batch_size = 32
             processed = 0
             rebuild_pairs: list[tuple[int, object]] = []
-            for i in range(0, total, BATCH):
-                batch = pairs[i : i + BATCH]
+            for i in range(0, total, batch_size):
+                batch = pairs[i : i + batch_size]
                 texts = [content for _, content in batch]
                 embeddings = list(target_embedder.embed_texts(texts))
                 if len(embeddings) != len(batch):
