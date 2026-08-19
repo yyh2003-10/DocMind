@@ -137,6 +137,9 @@ public partial class MainViewModel : ViewModelBase
         // 转换成功「一键导入」→ 跳转导入页并填入文件路径
         _convertViewModel.ImportRequested += OnConvertImportRequested;
 
+        // 对话页一键直达设置页（如未配置大模型引导）
+        _chatViewModel.NavigateToSettingsRequested += NavigateToSettings;
+
         // 导入完成 → 文档库/图谱/质量看板缓存失效并刷新
         _importViewModel.ImportCompleted += OnImportCompleted;
 

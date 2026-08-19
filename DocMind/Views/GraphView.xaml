@@ -585,6 +585,32 @@
                                                                         </DataTemplate>
                                                                     </ItemsControl.ItemTemplate>
                                                                 </ItemsControl>
+
+                                                                <!-- 底部操作栏：沉淀入库按钮 -->
+                                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                                                                    <Button Command="{Binding DataContext.IngestMessageCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                                                            CommandParameter="{Binding}"
+                                                                            FontSize="11"
+                                                                            Padding="8,2"
+                                                                            ToolTip="将此回答一键萃取并沉淀为知识库笔记（反哺知识库）">
+                                                                        <Button.Style>
+                                                                            <Style TargetType="Button" BasedOn="{StaticResource TextButtonStyle}">
+                                                                                <Setter Property="Content" Value="📥 沉淀入库"/>
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding IsIngesting}" Value="True">
+                                                                                        <Setter Property="Content" Value="⏳ 正在沉淀..."/>
+                                                                                        <Setter Property="IsEnabled" Value="False"/>
+                                                                                    </DataTrigger>
+                                                                                    <DataTrigger Binding="{Binding IsIngested}" Value="True">
+                                                                                        <Setter Property="Content" Value="✅ 已沉淀入库"/>
+                                                                                        <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+                                                                                        <Setter Property="IsEnabled" Value="False"/>
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </Button.Style>
+                                                                    </Button>
+                                                                </StackPanel>
                                                             </StackPanel>
                                                         </Border>
                                                     </Grid>
@@ -775,6 +801,110 @@
                                                 Style="{StaticResource SecondaryButtonStyle}"
                                                 FontSize="11"
                                                 Padding="8,4"
+                                                Height="26" />
+                                    </StackPanel>
+                                </DockPanel>
+                            </Grid>
+                        </Border>
+                    </Border>
+
+                    <!-- 5. 📥 对话笔记精准沉淀微调弹窗 (方案 A + B: 选区微调 / 选集合 / 改标题) -->
+                    <Border Grid.Row="0" Grid.RowSpan="3"
+                            Background="#99000000"
+                            CornerRadius="8"
+                            Visibility="{Binding IsIngestDialogOpen, Converter={StaticResource BoolToVisConverter}}">
+                        <Border Background="{DynamicResource CardBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="10"
+                                Margin="12"
+                                Padding="14">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <!-- 弹窗头部 -->
+                                <DockPanel Grid.Row="0" Margin="0,0,0,10">
+                                    <Button DockPanel.Dock="Right"
+                                            Command="{Binding CloseIngestDialogCommand}"
+                                            Content="✕"
+                                            Width="22" Height="22"
+                                            Background="Transparent"
+                                            BorderThickness="0"
+                                            Cursor="Hand" />
+                                    <TextBlock Text="📥 实体知识笔记沉淀入库"
+                                               FontWeight="Bold"
+                                               FontSize="13"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                                </DockPanel>
+
+                                <!-- 内容表单 -->
+                                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,0,0,10">
+                                    <StackPanel>
+                                        <TextBlock Text="笔记标题" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,4"/>
+                                        <TextBox Text="{Binding IngestDialogTitle, UpdateSourceTrigger=PropertyChanged}"
+                                                 FontSize="12" FontWeight="SemiBold"
+                                                 Margin="0,0,0,8" Padding="6,4"/>
+
+                                        <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="8"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Text="目标集合" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,4"/>
+                                                <TextBox Text="{Binding IngestDialogCollection, UpdateSourceTrigger=PropertyChanged}"
+                                                         FontSize="11" Padding="6,4"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Text="知识标签" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,4"/>
+                                                <TextBox Text="{Binding IngestDialogTags, UpdateSourceTrigger=PropertyChanged}"
+                                                         FontSize="11" Padding="6,4"/>
+                                            </StackPanel>
+                                        </Grid>
+
+                                        <TextBlock Text="沉淀内容 (可自由编辑、删减非重点)" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,4"/>
+                                        <TextBox Text="{Binding IngestDialogContent, UpdateSourceTrigger=PropertyChanged}"
+                                                 AcceptsReturn="True"
+                                                 TextWrapping="Wrap"
+                                                 MinHeight="140"
+                                                 MaxHeight="220"
+                                                 VerticalScrollBarVisibility="Auto"
+                                                 FontFamily="Consolas, Cascadia Code, Segoe UI, sans-serif"
+                                                 FontSize="11"
+                                                 Padding="8,6"/>
+                                        <TextBlock Text="💡 提示：您可以在上方自由编辑、挑选重点或补充批注，确认后即刻向量化存入本地知识库。"
+                                                   FontSize="10"
+                                                   Foreground="{DynamicResource TextTertiaryBrush}"
+                                                   Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </ScrollViewer>
+
+                                <!-- 底部操作按钮 -->
+                                <DockPanel Grid.Row="2">
+                                    <TextBlock Text="⏳ 正在建立向量索引入库..."
+                                               Visibility="{Binding IsDialogIngesting, Converter={StaticResource BoolToVisConverter}}"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               VerticalAlignment="Center"/>
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <Button Command="{Binding CloseIngestDialogCommand}"
+                                                Content="取消"
+                                                Style="{StaticResource SecondaryButtonStyle}"
+                                                FontSize="11"
+                                                Padding="10,4"
+                                                Height="26"
+                                                Margin="0,0,6,0" />
+                                        <Button Command="{Binding ConfirmIngestDialogCommand}"
+                                                Content="🚀 确认沉淀入库"
+                                                IsEnabled="{Binding IsDialogIngesting, Converter={StaticResource BoolInvertConverter}}"
+                                                Style="{StaticResource PrimaryButtonStyle}"
+                                                FontSize="11"
+                                                Padding="12,4"
                                                 Height="26" />
                                     </StackPanel>
                                 </DockPanel>

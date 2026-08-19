@@ -37,6 +37,9 @@ namespace DocMind.Models
         /// <summary>关键 pip 包版本（未安装为 null）。</summary>
         public Dictionary<string, string?>? InstalledPackages { get; init; }
 
+        /// <summary>本地扫描发现的离线 Wheel 包列表。</summary>
+        public List<LocalWheelInfo>? LocalWheelsFound { get; init; }
+
         /// <summary>推荐安装路径：cuda12|cuda13|directml|paddle-ocr-gpu|cpu。</summary>
         public string RecommendedPath { get; init; } = "cpu";
 
@@ -45,5 +48,16 @@ namespace DocMind.Models
 
         /// <summary>当前操作系统平台（如 win32 / darwin / linux）。</summary>
         public string? Platform { get; init; }
+    }
+
+    /// <summary>本地发现的 Wheel 信息。</summary>
+    public sealed record LocalWheelInfo
+    {
+        public string Name { get; init; } = "";
+        public string Version { get; init; } = "";
+        public string Path { get; init; } = "";
+        public string Filename { get; init; } = "";
+        public string Dir { get; init; } = "";
+        public double SizeMb { get; init; }
     }
 }

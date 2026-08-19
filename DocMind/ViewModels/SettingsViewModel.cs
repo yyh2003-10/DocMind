@@ -5,6 +5,15 @@ using Microsoft.Extensions.Configuration;
 
 namespace DocMind.ViewModels;
 
+public enum SettingsCategory
+{
+    AiModels,       // 🤖 AI 模型与对话
+    KnowledgeBase,  // 📚 知识库与检索
+    Appearance,     // 🎨 界面与外观
+    Hardware,       // 🔌 算力与体检
+    AboutService,   // 🌐 服务与关于
+}
+
 public partial class SettingsViewModel : ViewModelBase
 {
     private readonly AppSettings _appSettings;
@@ -13,6 +22,38 @@ public partial class SettingsViewModel : ViewModelBase
     private readonly IDoc2kbApiService _apiService;
     private readonly GpuWarningViewModel _gpuWarning;
     private readonly BackendProcessService? _backendProcess;
+
+    private SettingsCategory _selectedCategory = SettingsCategory.AiModels;
+    public SettingsCategory SelectedCategory
+    {
+        get => _selectedCategory;
+        set
+        {
+            if (SetProperty(ref _selectedCategory, value))
+            {
+                OnPropertyChanged(nameof(IsAiModelsSelected));
+                OnPropertyChanged(nameof(IsKnowledgeBaseSelected));
+                OnPropertyChanged(nameof(IsAppearanceSelected));
+                OnPropertyChanged(nameof(IsHardwareSelected));
+                OnPropertyChanged(nameof(IsAboutServiceSelected));
+            }
+        }
+    }
+
+    public bool IsAiModelsSelected => SelectedCategory == SettingsCategory.AiModels;
+    public bool IsKnowledgeBaseSelected => SelectedCategory == SettingsCategory.KnowledgeBase;
+    public bool IsAppearanceSelected => SelectedCategory == SettingsCategory.Appearance;
+    public bool IsHardwareSelected => SelectedCategory == SettingsCategory.Hardware;
+    public bool IsAboutServiceSelected => SelectedCategory == SettingsCategory.AboutService;
+
+    [RelayCommand]
+    public void SelectCategory(string categoryName)
+    {
+        if (Enum.TryParse<SettingsCategory>(categoryName, true, out var cat))
+        {
+            SelectedCategory = cat;
+        }
+    }
 
     private string _backendUrl;
     private int _pollIntervalMs;
@@ -92,6 +133,11 @@ public partial class SettingsViewModel : ViewModelBase
         _autoIngestCollection = _appSettings.AutoIngestCollection;
         _autoIngestRecursive = _appSettings.AutoIngestRecursive;
         _embedModel = _appSettings.EmbedModel;
+        // 配置里的模型不在推荐清单（用户手动设过）：补一个自定义项，避免下拉选中态空白
+        if (!string.IsNullOrWhiteSpace(_embedModel) && _embedModelOptions.All(o => o.ModelId != _embedModel))
+        {
+            _embedModelOptions.Insert(0, new EmbedModelOption($"自定义（{_embedModel}）", _embedModel));
+        }
         _embedModelPath = _appSettings.EmbedModelPath;
         _hfEndpoint = _appSettings.HfEndpoint;
         _chunkMaxTokens = _appSettings.ChunkMaxTokens;
@@ -126,6 +172,12 @@ public partial class SettingsViewModel : ViewModelBase
         _savedModelAtLoad = _llmModel;
         _savedRagSystemPromptAtLoad = _ragSystemPrompt;
 
+        // 智能匹配预设服务商
+        _selectedPreset = AvailablePresets.FirstOrDefault(p =>
+            p.Id != "custom" &&
+            (p.Provider == _llmProvider && !string.IsNullOrWhiteSpace(p.BaseUrl) && _llmBaseUrl != null && _llmBaseUrl.StartsWith(p.BaseUrl, StringComparison.OrdinalIgnoreCase))
+        ) ?? (AvailablePresets.FirstOrDefault(p => p.Provider == _llmProvider) ?? AvailablePresets[0]);
+
         // 密文解密失败（换 Windows 用户/文件损坏）：显式提醒重输，而不是静默当作未配置
         // （静默变空曾让用户改其他参数一保存就把已配置的 Key 永久抹掉）
         if (_appSettings.LlmKeyDecryptFailed)
@@ -139,6 +191,104 @@ public partial class SettingsViewModel : ViewModelBase
         // 异步拉取后端实际配置（key 已配置态 / config.toml 损坏告警），回填后刷新 UI。
         // 不阻塞构造；后端不可达/未实现时静默跳过（收尾置空响应）。
         _ = LoadBackendConfigAsync();
+        _ = DetectLocalAiAsync();
+    }
+
+    // ===================== 本地 AI 环境智能感知 =====================
+
+    private LocalAiEnvironment? _localAiEnv;
+    private bool _isDetectingLocalAi;
+
+    public LocalAiEnvironment? LocalAiEnv
+    {
+        get => _localAiEnv;
+        private set
+        {
+            if (SetProperty(ref _localAiEnv, value))
+            {
+                OnPropertyChanged(nameof(HasLocalAiDetected));
+                OnPropertyChanged(nameof(IsOllamaRunning));
+                OnPropertyChanged(nameof(IsLmStudioRunning));
+                OnPropertyChanged(nameof(OllamaStatusText));
+                OnPropertyChanged(nameof(LmStudioStatusText));
+                OnPropertyChanged(nameof(LocalGgufCountText));
+            }
+        }
+    }
+
+    public bool IsDetectingLocalAi
+    {
+        get => _isDetectingLocalAi;
+        private set => SetProperty(ref _isDetectingLocalAi, value);
+    }
+
+    public bool HasLocalAiDetected => LocalAiEnv != null && (LocalAiEnv.Ollama.Running || LocalAiEnv.LmStudio.Running || LocalAiEnv.LocalGgufCount > 0);
+    public bool IsOllamaRunning => LocalAiEnv?.Ollama?.Running == true;
+    public bool IsLmStudioRunning => LocalAiEnv?.LmStudio?.Running == true;
+    public string OllamaStatusText => IsOllamaRunning ? "运行中 (已就绪)" : "未启动";
+    public string LmStudioStatusText => IsLmStudioRunning ? "运行中 (已就绪)" : "未启动";
+    public string LocalGgufCountText => LocalAiEnv?.LocalGgufCount > 0 ? $"已扫描到本地 {LocalAiEnv.LocalGgufCount} 个 GGUF 大模型" : "";
+
+    [RelayCommand]
+    public async Task DetectLocalAiAsync()
+    {
+        IsDetectingLocalAi = true;
+        try
+        {
+            var res = await _apiService.GetLocalAiEnvironmentAsync();
+            LocalAiEnv = res;
+            DebugLog.Info($"本地 AI 环境探测完成: Ollama={res?.Ollama?.Running} LMStudio={res?.LmStudio?.Running} GGUF={res?.LocalGgufCount}", "Settings");
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Debug($"本地 AI 环境探测失败（忽略）: {ex.Message}", "Settings");
+        }
+        finally
+        {
+            IsDetectingLocalAi = false;
+        }
+    }
+
+    [RelayCommand]
+    public void ApplyOllamaPreset()
+    {
+        if (LocalAiEnv?.Ollama == null) return;
+        var info = LocalAiEnv.Ollama;
+        LlmProvider = "ollama";
+        LlmBaseUrl = string.IsNullOrWhiteSpace(info.BaseUrl) ? "http://127.0.0.1:11434" : info.BaseUrl;
+        LlmApiKey = "";
+        if (!string.IsNullOrWhiteSpace(info.DefaultChatModel))
+        {
+            LlmModel = info.DefaultChatModel;
+        }
+        else if (info.Models.Count > 0)
+        {
+            LlmModel = info.Models[0].Name;
+        }
+        StatusMessage = "✅ 已一键套用 Ollama 本地最佳方案！";
+        _notifications.Success($"已一键绑定 Ollama 本地服务（模型: {LlmModel}）", "智能装配");
+        // 自动拉取并测试
+        _ = TestConnectionAsync();
+        _ = RefreshLlmModelsAsync();
+    }
+
+    [RelayCommand]
+    public void ApplyLmStudioPreset()
+    {
+        if (LocalAiEnv?.LmStudio == null) return;
+        var info = LocalAiEnv.LmStudio;
+        LlmProvider = "openai";
+        LlmBaseUrl = string.IsNullOrWhiteSpace(info.BaseUrl) ? "http://127.0.0.1:1234/v1" : info.BaseUrl;
+        LlmApiKey = "lm-studio";
+        if (!string.IsNullOrWhiteSpace(info.DefaultChatModel))
+        {
+            LlmModel = info.DefaultChatModel;
+        }
+        StatusMessage = "✅ 已一键套用 LM Studio 极速本地方案！";
+        _notifications.Success($"已一键绑定 LM Studio（模型: {LlmModel ?? "默认"}，RTX 2060 显卡全速加速）", "智能装配");
+        // 自动拉取并测试
+        _ = TestConnectionAsync();
+        _ = RefreshLlmModelsAsync();
     }
 
     /// <summary>拉取后端 /v1/config 回填运行时真相：API Key 是否已配置（可能由环境变量/
@@ -389,17 +539,158 @@ public partial class SettingsViewModel : ViewModelBase
         set => SetProperty(ref _isFetchingModels, value);
     }
 
-    /// <summary>可选的嵌入模型清单（设置页下拉；与后端 catalog 一致，均为 fastembed 实际支持）。</summary>
-    public IReadOnlyList<string> SupportedEmbedModels { get; } = new[]
+    private readonly List<EmbedModelOption> _embedModelOptions = new()
     {
-        "BAAI/bge-small-zh-v1.5",
-        "BAAI/bge-small-en-v1.5",
-        "BAAI/bge-base-en-v1.5",
-        "BAAI/bge-large-en-v1.5",
-        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-        "jinaai/jina-embeddings-v2-base-zh",
-        "intfloat/multilingual-e5-large",
+        new("中文文档 · 推荐（快速省资源）", "BAAI/bge-small-zh-v1.5"),
+        new("英文文档 · 快速", "BAAI/bge-small-en-v1.5"),
+        new("英文文档 · 均衡", "BAAI/bge-base-en-v1.5"),
+        new("英文文档 · 最高精度（较慢）", "BAAI/bge-large-en-v1.5"),
+        new("多语言混合 · 快速", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
+        new("中英长文档（支持超长文本）", "jinaai/jina-embeddings-v2-base-zh"),
+        new("多语言混合 · 最高精度（较慢）", "intfloat/multilingual-e5-large"),
     };
+
+    /// <summary>可选嵌入模型（场景化标签 + 模型名；与后端 catalog 一致，均为 fastembed 实际支持）。</summary>
+    public IReadOnlyList<EmbedModelOption> EmbedModelOptions => _embedModelOptions;
+
+    // --- 大模型服务商预设模版 ---
+    public IReadOnlyList<LlmPreset> AvailablePresets => LlmPresetCatalog.All;
+    private LlmPreset _selectedPreset;
+
+    /// <summary>当前选中的大模型服务商预设。</summary>
+    public LlmPreset SelectedPreset
+    {
+        get => _selectedPreset;
+        set
+        {
+            if (SetProperty(ref _selectedPreset, value ?? AvailablePresets[0]))
+            {
+                ApplyPreset(_selectedPreset);
+                OnPropertyChanged(nameof(SelectedPresetConsoleUrl));
+                OnPropertyChanged(nameof(HasPresetConsoleUrl));
+            }
+        }
+    }
+
+    /// <summary>当前选中的服务商控制台/获取 Key 网址。</summary>
+    public string? SelectedPresetConsoleUrl => SelectedPreset?.ConsoleUrl;
+
+    /// <summary>当前选中的服务商是否有可直达的控制台网址。</summary>
+    public bool HasPresetConsoleUrl => !string.IsNullOrWhiteSpace(SelectedPresetConsoleUrl);
+
+    /// <summary>在浏览器中打开当前服务商的 API Key 申请/管理控制台。</summary>
+    [RelayCommand]
+    private void OpenPresetConsoleUrl()
+    {
+        if (string.IsNullOrWhiteSpace(SelectedPresetConsoleUrl))
+        {
+            return;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = SelectedPresetConsoleUrl,
+                UseShellExecute = true,
+            });
+            StatusMessage = $"已在浏览器打开【{SelectedPreset.DisplayName}】控制台";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"打开浏览器失败: {ex.Message}";
+            _notifications.Warning($"无法自动打开浏览器，请手动访问：{SelectedPresetConsoleUrl}", "打开控制台");
+        }
+    }
+
+    private void ApplyPreset(LlmPreset preset)
+    {
+        if (preset.Id == "custom")
+        {
+            return;
+        }
+
+        LlmProvider = preset.Provider;
+        if (!string.IsNullOrWhiteSpace(preset.BaseUrl))
+        {
+            LlmBaseUrl = preset.BaseUrl;
+        }
+        if (!string.IsNullOrWhiteSpace(preset.DefaultModel))
+        {
+            LlmModel = preset.DefaultModel;
+        }
+
+        // 填充推荐模型到下拉框
+        LlmModels.Clear();
+        foreach (var m in preset.RecommendedModels)
+        {
+            if (!string.IsNullOrWhiteSpace(m))
+            {
+                LlmModels.Add(m);
+            }
+        }
+
+        StatusMessage = $"已应用【{preset.DisplayName}】预设：{preset.Description}";
+    }
+
+    // --- 系统体检与自愈诊断 (Doctor) ---
+    private DoctorReportResult? _doctorReport;
+    private bool _isRunningDoctor;
+
+    /// <summary>系统体检报告。</summary>
+    public DoctorReportResult? DoctorReport
+    {
+        get => _doctorReport;
+        set
+        {
+            if (SetProperty(ref _doctorReport, value))
+            {
+                OnPropertyChanged(nameof(HasDoctorReport));
+                OnPropertyChanged(nameof(DoctorScoreText));
+            }
+        }
+    }
+
+    public bool HasDoctorReport => DoctorReport is not null;
+    public string DoctorScoreText => DoctorReport is not null ? $"{DoctorReport.Score} / 100" : "-";
+
+    /// <summary>是否正在执行系统体检。</summary>
+    public bool IsRunningDoctor
+    {
+        get => _isRunningDoctor;
+        set => SetProperty(ref _isRunningDoctor, value);
+    }
+
+    /// <summary>执行系统全面体检与自愈诊断命令。</summary>
+    [RelayCommand]
+    public async Task RunDoctorAsync()
+    {
+        if (IsRunningDoctor)
+            return;
+
+        IsRunningDoctor = true;
+        StatusMessage = "正在执行系统全面体检...";
+        DebugLog.Info("开始执行系统体检 (Doctor)", "Settings");
+
+        try
+        {
+            var report = await _apiService.GetDoctorReportAsync(network: true);
+            DoctorReport = report;
+            StatusMessage = $"系统体检完成 (得分: {report.Score}) · {report.Summary}";
+            DebugLog.Info($"系统体检完成: status={report.OverallStatus} score={report.Score}", "Settings");
+            _notifications.Success($"系统体检完成！健康评分: {report.Score}/100\n{report.Summary}", "体检报告");
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"❌ 系统体检失败: {ex.Message}";
+            DebugLog.Error($"系统体检异常: {ex.Message}", "Settings", ex);
+            _notifications.Error($"系统体检失败：{ex.Message}");
+        }
+        finally
+        {
+            IsRunningDoctor = false;
+        }
+    }
 
     /// <summary>底部状态栏消息。</summary>
     public string StatusMessage
@@ -893,4 +1184,10 @@ public partial class SettingsViewModel : ViewModelBase
             _notifications.Error($"重启异常: {ex.Message}", "错误");
         }
     }
+}
+
+/// <summary>嵌入模型下拉展示项：场景化标签（面向普通用户）+ 实际模型名（传后端 DOC2MIND_EMBED_MODEL）。</summary>
+public sealed record EmbedModelOption(string Label, string ModelId)
+{
+    public override string ToString() => Label;
 }

@@ -17,9 +17,13 @@ public sealed class BackendProcessService : IDisposable
     private Process? _python;
     private CancellationTokenSource? _monitorCts;
     private CancellationTokenSource? _healthMonitorCts;
+    private readonly List<string> _recentStderrLines = new();
 
     /// <summary>后端当前状态（离线 / 启动中 / 在线 / 退出中）。</summary>
     public BackendState State { get; private set; } = BackendState.Offline;
+
+    /// <summary>后端最近一次启动或运行失败时的底层错误诊断信息（来自 Python stderr）。</summary>
+    public string? LastErrorMessage { get; private set; }
 
     /// <summary>状态变化事件（供 UI 状态灯订阅）。</summary>
     public event EventHandler<BackendState>? StateChanged;
@@ -372,6 +376,7 @@ public sealed class BackendProcessService : IDisposable
         }
 
         _logger?.LogInformation("启动后端：{Cmd} {Args}", psi.FileName, psi.Arguments);
+        _recentStderrLines.Clear();
         var proc = Process.Start(psi) ?? throw new InvalidOperationException("Process.Start 返回 null");
         
         proc.OutputDataReceived += (_, e) =>
@@ -386,6 +391,15 @@ public sealed class BackendProcessService : IDisposable
             if (!string.IsNullOrWhiteSpace(e.Data))
             {
                 DebugLog.Warn($"[PyStdErr] {e.Data}", "Backend");
+                lock (_recentStderrLines)
+                {
+                    if (_recentStderrLines.Count > 30)
+                    {
+                        _recentStderrLines.RemoveAt(0);
+                    }
+                    _recentStderrLines.Add(e.Data);
+                    LastErrorMessage = string.Join("\n", _recentStderrLines);
+                }
             }
         };
         proc.BeginOutputReadLine();

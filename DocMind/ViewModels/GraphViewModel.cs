@@ -325,7 +325,7 @@ public partial class GraphViewModel : ViewModelBase
             return;
         }
 
-        var node = GraphData.Nodes.FirstOrDefault(n => n.Id == nodeId);
+        var node = GraphData.Nodes?.FirstOrDefault(n => n.Id == nodeId);
         if (node == null)
         {
             return;
@@ -532,6 +532,168 @@ public partial class GraphViewModel : ViewModelBase
         EntityChatMessages.Clear();
         _currentEntityChatId = null;
         OnPropertyChanged(nameof(HasEntityChatMessages));
+    }
+
+    // --- 沉淀入库弹窗微调状态 (方案 A + B) ---
+    private bool _isIngestDialogOpen;
+    private string _ingestDialogTitle = string.Empty;
+    private string _ingestDialogContent = string.Empty;
+    private string _ingestDialogCollection = "default";
+    private string _ingestDialogTags = string.Empty;
+    private bool _isDialogIngesting;
+    private ChatMessage? _currentIngestingMessage;
+
+    public bool IsIngestDialogOpen
+    {
+        get => _isIngestDialogOpen;
+        set => SetProperty(ref _isIngestDialogOpen, value);
+    }
+
+    public string IngestDialogTitle
+    {
+        get => _ingestDialogTitle;
+        set => SetProperty(ref _ingestDialogTitle, value);
+    }
+
+    public string IngestDialogContent
+    {
+        get => _ingestDialogContent;
+        set => SetProperty(ref _ingestDialogContent, value);
+    }
+
+    public string IngestDialogCollection
+    {
+        get => _ingestDialogCollection;
+        set => SetProperty(ref _ingestDialogCollection, value);
+    }
+
+    public string IngestDialogTags
+    {
+        get => _ingestDialogTags;
+        set => SetProperty(ref _ingestDialogTags, value);
+    }
+
+    public bool IsDialogIngesting
+    {
+        get => _isDialogIngesting;
+        set => SetProperty(ref _isDialogIngesting, value);
+    }
+
+    /// <summary>打开沉淀微调弹窗（支持整条消息或划词选中片段）。</summary>
+    [RelayCommand]
+    public void OpenIngestDialog(object? param)
+    {
+        string contentToIngest = string.Empty;
+        _currentIngestingMessage = null;
+
+        if (param is ChatMessage msg)
+        {
+            _currentIngestingMessage = msg;
+            contentToIngest = msg.Content.Trim();
+            var actionIdx = contentToIngest.IndexOf("[ACTIONS:", StringComparison.OrdinalIgnoreCase);
+            if (actionIdx >= 0)
+            {
+                contentToIngest = contentToIngest[..actionIdx].Trim();
+            }
+        }
+        else if (param is string str && !string.IsNullOrWhiteSpace(str))
+        {
+            contentToIngest = str.Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(contentToIngest))
+            return;
+
+        var entityPrefix = SelectedNode != null ? $"【{SelectedNode.Name}】" : "";
+        var firstLine = contentToIngest.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? contentToIngest;
+        firstLine = System.Text.RegularExpressions.Regex.Replace(firstLine, @"^[#\s\-*📌💡]+", "").Trim();
+        var initialTitle = firstLine.Length > 25 ? firstLine[..25] + "…" : firstLine;
+        if (string.IsNullOrWhiteSpace(initialTitle))
+        {
+            initialTitle = $"实体探讨沉淀 ({DateTime.Now:MM-dd HH:mm})";
+        }
+
+        IngestDialogTitle = $"{entityPrefix}{initialTitle}";
+        IngestDialogContent = contentToIngest;
+        IngestDialogTags = SelectedNode != null ? $"图谱实体, {SelectedNode.Name}, 架构笔记" : "图谱实体, 架构笔记";
+
+        var targetCollection = SelectedNode?.Collection ?? Collection;
+        if (string.IsNullOrWhiteSpace(targetCollection) || targetCollection == "全部集合")
+        {
+            targetCollection = "default";
+        }
+        IngestDialogCollection = targetCollection;
+
+        IsIngestDialogOpen = true;
+    }
+
+    /// <summary>确认沉淀入库（带用户微调后的标题、集合与正文）。</summary>
+    [RelayCommand]
+    public async Task ConfirmIngestDialogAsync()
+    {
+        if (string.IsNullOrWhiteSpace(IngestDialogContent) || IsDialogIngesting)
+            return;
+
+        IsDialogIngesting = true;
+        try
+        {
+            var text = IngestDialogContent.Trim();
+            var title = string.IsNullOrWhiteSpace(IngestDialogTitle) ? "实体沉淀笔记" : IngestDialogTitle.Trim();
+            var collection = string.IsNullOrWhiteSpace(IngestDialogCollection) ? "default" : IngestDialogCollection.Trim();
+
+            if (!string.IsNullOrWhiteSpace(IngestDialogTags))
+            {
+                var tagList = IngestDialogTags.Split(new[] { ',', ' ', '，', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(t => t.StartsWith("#") ? t : $"#{t}")
+                    .ToList();
+                if (tagList.Count > 0)
+                {
+                    text = $"【标签】：{string.Join(" ", tagList)}\n\n{text}";
+                }
+            }
+
+            var req = new IngestTextRequest
+            {
+                Text = text,
+                Title = $"💡 {title}",
+                Collection = collection,
+                Force = true
+            };
+
+            await _apiService.IngestTextAsync(req);
+
+            if (_currentIngestingMessage != null)
+            {
+                _currentIngestingMessage.IsIngested = true;
+            }
+
+            IsIngestDialogOpen = false;
+            _notifications?.Success($"已将内容沉淀至集合「{collection}」", "沉淀入库");
+            DebugLog.Info($"图谱对话沉淀入库成功: title={title}, collection={collection}", "GraphVM");
+        }
+        catch (Exception ex)
+        {
+            _notifications?.Error($"沉淀入库失败: {ex.Message}", "错误");
+            DebugLog.Error($"图谱对话沉淀入库异常: {ex}", "GraphVM");
+        }
+        finally
+        {
+            IsDialogIngesting = false;
+        }
+    }
+
+    /// <summary>关闭沉淀弹窗。</summary>
+    [RelayCommand]
+    public void CloseIngestDialog()
+    {
+        IsIngestDialogOpen = false;
+    }
+
+    /// <summary>一键将图谱对话中的回答沉淀为知识笔记入库（打开微调弹窗）。</summary>
+    [RelayCommand]
+    public void IngestMessage(ChatMessage? message)
+    {
+        OpenIngestDialog(message);
     }
 
     [RelayCommand]

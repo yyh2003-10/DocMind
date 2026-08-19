@@ -98,13 +98,27 @@ public partial class GpuWarningViewModel : ViewModelBase
         }
     }
 
-    public string GpuStatusText => GpuAvailable
-        ? $"{GpuProvider ?? "GPU"}"
-        : "不可用（CPU 模式）";
+    public string GpuStatusText
+    {
+        get
+        {
+            if (GpuAvailable)
+            {
+                return $"{GpuProvider ?? "GPU"} 硬件加速";
+            }
+            if (Diagnosis?.HasNvidiaGpu == true)
+            {
+                return "CPU 模式 (已检测到独显，可开启 GPU 加速)";
+            }
+            return "CPU 轻量模式 (纯本地运行)";
+        }
+    }
 
     public Brush GpuStatusBrush => GpuAvailable
-        ? new SolidColorBrush(Color.FromRgb(56, 161, 105))   // #38A169
-        : new SolidColorBrush(Color.FromRgb(214, 158, 46)); // #D69E2E
+        ? new SolidColorBrush(Color.FromRgb(56, 161, 105))   // #38A169 (绿)
+        : (Diagnosis?.HasNvidiaGpu == true
+            ? new SolidColorBrush(Color.FromRgb(49, 130, 206)) // #3182CE (蓝 - 提示有加速潜力)
+            : new SolidColorBrush(Color.FromRgb(113, 128, 150))); // #718096 (中性灰/蓝 - 轻量稳定)
 
     // ========== 诊断属性 ==========
 

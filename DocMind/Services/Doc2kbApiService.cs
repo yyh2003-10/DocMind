@@ -88,6 +88,15 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task<SearchResponse> SearchAsync(SearchRequest req, CancellationToken ct = default)
         => SendAsync<SearchResponse>(HttpMethod.Post, "v1/search", req, ct);
 
+    public Task<DoctorReportResult> GetDoctorReportAsync(bool network = true, CancellationToken ct = default)
+        => SendAsync<DoctorReportResult>(HttpMethod.Get, BuildUri("v1/doctor", new Dictionary<string, string?>
+        {
+            ["network"] = network ? "true" : "false",
+        }), null, ct);
+
+    public Task<SampleIngestResult> IngestSampleAsync(string collection = "default", CancellationToken ct = default)
+        => SendAsync<SampleIngestResult>(HttpMethod.Post, "v1/sample/ingest", new { Collection = collection }, ct);
+
     public Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default)
         => SendAsync<ChatResponse>(HttpMethod.Post, "v1/chat", req, ct);
 
@@ -358,6 +367,9 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task<GpuDiagnosis> GetGpuDiagnosisAsync(CancellationToken ct = default)
         => SendAsync<GpuDiagnosis>(HttpMethod.Get, "v1/system/gpu-diagnosis", null, ct);
 
+    public Task<LocalAiEnvironment> GetLocalAiEnvironmentAsync(CancellationToken ct = default)
+        => SendAsync<LocalAiEnvironment>(HttpMethod.Get, "v1/system/local-ai-environment", null, ct);
+
     public async Task InstallGpuAsync(
         string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default)
     {
@@ -512,6 +524,17 @@ public class Doc2kbApiService : IDoc2kbApiService
     public async Task<EntityDistillResponse> DistillEntityKnowledgeAsync(EntityDistillRequest req, CancellationToken ct = default)
     {
         return await SendAsync<EntityDistillResponse>(HttpMethod.Post, "v1/graph/entities/distill", req, ct);
+    }
+
+    public async Task<CreativeExportResponse> ExportCreativeArtifactAsync(CreativeExportRequest req, CancellationToken ct = default)
+    {
+        return await SendAsync<CreativeExportResponse>(HttpMethod.Post, "v1/creative/export", req, ct);
+    }
+
+    public async Task<PptInspectionReportDto> InspectCreativeArtifactAsync(string content, CancellationToken ct = default)
+    {
+        var body = new { content };
+        return await SendAsync<PptInspectionReportDto>(HttpMethod.Post, "v1/creative/inspect", body, ct);
     }
 
     public IDisposable SubscribeEvents(Action<EventMessage> onEvent, CancellationToken ct = default)
