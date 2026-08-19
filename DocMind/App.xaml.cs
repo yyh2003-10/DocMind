@@ -166,10 +166,26 @@ namespace DocMind
             backend.StateChanged += (_, state) =>
             {
                 _trayService.UpdateStatus(state);
-                // 顶栏/底栏状态灯与真实后端状态联动
-                if (mainWindow.DataContext is MainViewModel vm)
+                // 顶栏/底栏状态灯与真实后端状态联动（安全调度到 UI 线程，防止后台线程触发时跨线程访问 DependencyObject 抛出异常）
+                if (System.Windows.Application.Current?.Dispatcher is { } dispatcher)
                 {
-                    vm.UpdateBackendState(state);
+                    if (dispatcher.CheckAccess())
+                    {
+                        if (mainWindow.DataContext is MainViewModel vm)
+                        {
+                            vm.UpdateBackendState(state);
+                        }
+                    }
+                    else
+                    {
+                        dispatcher.InvokeAsync(() =>
+                        {
+                            if (mainWindow.DataContext is MainViewModel vm)
+                            {
+                                vm.UpdateBackendState(state);
+                            }
+                        });
+                    }
                 }
             };
             // 后端启动失败时弹出引导弹窗（仅 AutoStart 模式下触发一次）
@@ -185,12 +201,16 @@ namespace DocMind
                         backendFailedShown = true;
                         System.Windows.Application.Current.Dispatcher.Invoke(() =>
                         {
+                            var detail = !string.IsNullOrWhiteSpace(backend.LastErrorMessage)
+                                ? $"【底层错误诊断】\n{backend.LastErrorMessage}\n\n"
+                                : "";
                             MessageBox.Show(
                                 "后端服务启动失败，所有功能将不可用。\n\n" +
-                                "请按以下步骤操作：\n" +
-                                "1. 确认已运行 scripts\\setup.ps1 安装 Python 环境\n" +
-                                "2. 或在设置页配置「后端命令」指向 Python 路径\n\n" +
-                                "详细错误请查看「调试日志」页面。",
+                                detail +
+                                "排查建议：\n" +
+                                "1. 运行 start.bat 或检查 Python 虚拟环境依赖\n" +
+                                "2. 或在设置页配置「后端命令」指向 Python.exe 路径\n\n" +
+                                "详细日志请查看「调试日志」页面。",
                                 "DocMind — 后端启动失败",
                                 MessageBoxButton.OK,
                                 MessageBoxImage.Warning);

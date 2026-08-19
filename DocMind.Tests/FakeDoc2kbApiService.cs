@@ -65,6 +65,10 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Task<BackendConfig> UpdateConfigAsync(BackendConfigUpdate req, CancellationToken ct = default)
         => OnUpdateConfig?.Invoke(req, ct) ?? throw new NotImplementedException();
 
+    // ── 本地 AI 环境感知：测试默认返回 null（VM 判空静默跳过，不触发探测 UI）──
+    public Task<LocalAiEnvironment> GetLocalAiEnvironmentAsync(CancellationToken ct = default)
+        => Task.FromResult<LocalAiEnvironment>(null!);
+
     public Task<LlmTestResult> LlmTestAsync(LlmTestRequest req, CancellationToken ct = default)
         => OnLlmTest?.Invoke(req, ct) ?? throw new NotImplementedException();
 
@@ -255,6 +259,58 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
                 SuggestedTags = new List<string> { req.EntityType, req.EntityName },
                 Model = "fake-llm"
             });
+
+    // ── 系统体检 / 示例文档 ──
+    public Func<bool, CancellationToken, Task<DoctorReportResult>>? OnGetDoctorReport { get; set; }
+    public Func<string, CancellationToken, Task<SampleIngestResult>>? OnIngestSample { get; set; }
+
+    public Task<DoctorReportResult> GetDoctorReportAsync(bool network = true, CancellationToken ct = default)
+        => OnGetDoctorReport?.Invoke(network, ct) ?? Task.FromResult(new DoctorReportResult
+        {
+            OverallStatus = "ok",
+            Score = 100,
+            Summary = "系统就绪 (Fake)",
+            Checks = new List<DiagnosticCheckItem>
+            {
+                new() { Name = "Python 运行环境", Category = "python", Status = "ok", Message = "Python 3.11.0" },
+                new() { Name = "本地存储读写", Category = "storage", Status = "ok", Message = "正常" }
+            }
+        });
+
+    public Task<SampleIngestResult> IngestSampleAsync(string collection = "default", CancellationToken ct = default)
+        => OnIngestSample?.Invoke(collection, ct) ?? Task.FromResult(new SampleIngestResult
+        {
+            Ok = true,
+            Status = "ingested",
+            Title = "DocMind 快速上手与全景操作指南",
+            Collection = collection,
+            ChunkCount = 1,
+            ElapsedMs = 50
+        });
+
+    public Func<CreativeExportRequest, CancellationToken, Task<CreativeExportResponse>>? OnExportCreativeArtifact { get; set; }
+    public Func<string, CancellationToken, Task<PptInspectionReportDto>>? OnInspectCreativeArtifact { get; set; }
+
+    public Task<CreativeExportResponse> ExportCreativeArtifactAsync(CreativeExportRequest req, CancellationToken ct = default)
+        => OnExportCreativeArtifact?.Invoke(req, ct) ?? Task.FromResult(new CreativeExportResponse
+        {
+            Ok = true,
+            Format = req.Format ?? "docx",
+            FilePath = $"C:\\fake\\exported_artifact.{req.Format ?? "docx"}",
+            FileName = $"exported_artifact.{req.Format ?? "docx"}",
+            FileSizeBytes = 1024,
+        });
+
+    public Task<PptInspectionReportDto> InspectCreativeArtifactAsync(string content, CancellationToken ct = default)
+        => OnInspectCreativeArtifact?.Invoke(content, ct) ?? Task.FromResult(new PptInspectionReportDto
+        {
+            Score = 95,
+            Grade = "S",
+            Summary = "卓越演示文稿 (Fake)",
+            SlideCount = 5,
+            NotesCoveragePct = 100,
+            ArchetypeDiversity = 4,
+        });
 
     // ── 事件流订阅 ──
     public Func<Action<EventMessage>, CancellationToken, IDisposable>? OnSubscribeEvents { get; set; }

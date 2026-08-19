@@ -310,11 +310,21 @@ fake ??= new FakeDoc2kbApiService();
     }
 
     [Fact]
-    public void SupportedEmbedModels_ContainsExpected()
+    public void EmbedModelOptions_ContainsExpected()
     {
         var vm = CreateVm();
-        Assert.Contains("BAAI/bge-small-zh-v1.5", vm.SupportedEmbedModels);
-        Assert.Contains("BAAI/bge-base-en-v1.5", vm.SupportedEmbedModels);
+        Assert.Contains(vm.EmbedModelOptions, o => o.ModelId == "BAAI/bge-small-zh-v1.5");
+        Assert.Contains(vm.EmbedModelOptions, o => o.ModelId == "BAAI/bge-base-en-v1.5");
+    }
+
+    [Fact]
+    public void EmbedModelOptions_CustomModelOutsideCatalog_AddedAsOption()
+    {
+        var settings = new AppSettings { EmbedModel = "my-org/custom-model" };
+        var vm = CreateVm(settings);
+        // 不在推荐清单的模型值应补一个自定义项，避免下拉选中态空白
+        Assert.Contains(vm.EmbedModelOptions, o => o.ModelId == "my-org/custom-model");
+        Assert.Equal("my-org/custom-model", vm.EmbedModel);
     }
 
     // ======================================================================
@@ -874,5 +884,68 @@ fake ??= new FakeDoc2kbApiService();
         Assert.Equal("D:/notes", captured.WatchPaths![0]);
         Assert.Single(settings.WatchPaths);
         Assert.Equal("D:/notes", settings.WatchPaths[0]);
+    }
+
+    // ======================================================================
+    // 预设模版与系统全面体检 (Doctor) 测试
+    // ======================================================================
+
+    [Fact]
+    public void SelectedPreset_AppliesDeepSeekTemplate()
+    {
+        var vm = CreateVm(new AppSettings());
+        var deepseekPreset = vm.AvailablePresets.First(p => p.Id == "deepseek");
+
+        vm.SelectedPreset = deepseekPreset;
+
+        Assert.Equal("openai", vm.LlmProvider);
+        Assert.Equal("https://api.deepseek.com/v1", vm.LlmBaseUrl);
+        Assert.Equal("deepseek-chat", vm.LlmModel);
+        Assert.Contains("deepseek-chat", vm.LlmModels);
+        Assert.Contains("DeepSeek", vm.StatusMessage);
+    }
+
+    [Fact]
+    public void SelectedPreset_AppliesOllamaTemplate()
+    {
+        var vm = CreateVm(new AppSettings());
+        var ollamaPreset = vm.AvailablePresets.First(p => p.Id == "ollama");
+
+        vm.SelectedPreset = ollamaPreset;
+
+        Assert.Equal("ollama", vm.LlmProvider);
+        Assert.Equal("http://localhost:11434", vm.LlmBaseUrl);
+        Assert.Equal("qwen2.5:7b", vm.LlmModel);
+        Assert.Contains("qwen2.5:7b", vm.LlmModels);
+    }
+
+    [Fact]
+    public async Task RunDoctorCommand_FetchesReportAndUpdatesScore()
+    {
+        var fake = new FakeDoc2kbApiService
+        {
+            OnGetDoctorReport = (net, ct) => Task.FromResult(new DoctorReportResult
+            {
+                OverallStatus = "ok",
+                Score = 95,
+                Summary = "系统运行状态良好",
+                Checks = new List<DiagnosticCheckItem>
+                {
+                    new() { Name = "Python 运行环境", Category = "python", Status = "ok", Message = "Python 3.11.0" },
+                    new() { Name = "本地存储读写", Category = "storage", Status = "ok", Message = "正常" },
+                }
+            })
+        };
+
+        var vm = CreateVm(new AppSettings(), fake);
+        Assert.False(vm.HasDoctorReport);
+
+        await vm.RunDoctorCommand.ExecuteAsync(null);
+
+        Assert.True(vm.HasDoctorReport);
+        Assert.Equal(95, vm.DoctorReport!.Score);
+        Assert.Equal("95 / 100", vm.DoctorScoreText);
+        Assert.Equal(2, vm.DoctorReport.Checks.Count);
+        Assert.Contains("95", vm.StatusMessage);
     }
 }

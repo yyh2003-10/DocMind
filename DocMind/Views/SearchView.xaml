@@ -60,26 +60,35 @@
                     <Grid Grid.Row="0" Margin="0,0,0,6">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- 评分徽章 -->
-                        <Border Grid.Column="0" Style="{StaticResource ScoreBadge}">
-                            <TextBlock Text="{Binding Score, Mode=OneWay, StringFormat={}{0:F4}}"
-                                       FontSize="12" FontWeight="SemiBold"
+                        <!-- 相关度百分比徽章 -->
+                        <Border Grid.Column="0" Style="{StaticResource ScoreBadge}" Margin="0,0,6,0">
+                            <TextBlock Text="{Binding ScorePercentText, Mode=OneWay}"
+                                       FontSize="11" FontWeight="Bold"
                                        Foreground="{StaticResource PrimaryBrush}"/>
                         </Border>
 
+                        <!-- 检索引擎徽章 -->
+                        <Border Grid.Column="1" Background="{StaticResource SurfaceBrush}"
+                                CornerRadius="4" Padding="6,2" Margin="0,0,8,0">
+                            <TextBlock Text="{Binding MatchBadgeText, Mode=OneWay}"
+                                       FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
+                        </Border>
+
                         <!-- 来源文件名 -->
-                        <TextBlock Grid.Column="1"
-                                   Text="{Binding Source, Mode=OneWay}"
+                        <TextBlock Grid.Column="2"
+                                   Text="{Binding DisplaySource, Mode=OneWay}"
                                    Style="{StaticResource CaptionText}"
+                                   FontWeight="SemiBold"
                                    VerticalAlignment="Center"
                                    TextTrimming="CharacterEllipsis"/>
 
                         <!-- 格式标记 -->
-                        <Border Grid.Column="2" CornerRadius="3"
+                        <Border Grid.Column="3" CornerRadius="3"
                                 Background="{StaticResource SurfaceBrush}"
                                 Padding="4,1" Margin="4,0,0,0">
                             <TextBlock Text="{Binding Format, Mode=OneWay}"
@@ -100,10 +109,11 @@
                     <StackPanel Grid.Row="2" Orientation="Horizontal"
                                 Margin="0,6,0,0">
                         <TextBlock Style="{StaticResource SmallText}">
-                            <Run Text="page "/><Run Text="{Binding Page, Mode=OneWay, TargetNullValue=—}"/>
+                            <Run Text="出处章节: "/><Run Text="{Binding Heading, Mode=OneWay, TargetNullValue=正文章节}"/>
                         </TextBlock>
-                        <TextBlock Style="{StaticResource SmallText}" Margin="12,0,0,0">
-                            <Run Text="type "/><Run Text="{Binding MatchType, Mode=OneWay}"/>
+                        <TextBlock Style="{StaticResource SmallText}" Margin="12,0,0,0"
+                                   Visibility="{Binding Page, Converter={StaticResource NullToVis}}">
+                            <Run Text="页码: 第 P"/><Run Text="{Binding Page, Mode=OneWay}"/><Run Text=" 页"/>
                         </TextBlock>
                     </StackPanel>
                 </Grid>
