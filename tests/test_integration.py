@@ -688,9 +688,13 @@ class TestEventsBroadcast:
         app = create_app(s)
         client = TestClient(app)
 
+        import time as _time
+        deadline = _time.monotonic() + 5
         with client.stream("GET", "/v1/events") as response:
             assert response.status_code == 200
             for line in response.iter_lines():
+                if _time.monotonic() > deadline:
+                    pytest.fail("等待 ready 事件超时")
                 if line.startswith("data: "):
                     payload = json.loads(line[len("data: "):])
                     assert payload["type"] == "ready"

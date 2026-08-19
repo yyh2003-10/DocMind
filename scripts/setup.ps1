@@ -108,7 +108,7 @@ Write-Step "冒烟验证"
 & $VenvPython -c "import doc2mind; print('doc2mind import OK')"
 if ($LASTEXITCODE -ne 0) { throw "doc2mind 导入失败" }
 
-if (-not $SkipTests) {
+if ($SkipTests -eq $false) {
     Write-Host "运行 pytest（约 1 分钟）..."
     & $VenvPython -m pytest tests -q
     if ($LASTEXITCODE -ne 0) {
