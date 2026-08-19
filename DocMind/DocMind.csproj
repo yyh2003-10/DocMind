@@ -11,6 +11,7 @@
     <Version>1.0.1</Version>
     <AssemblyVersion>1.0.1.0</AssemblyVersion>
     <FileVersion>1.0.1.0</FileVersion>
+    <ApplicationIcon>Assets\DocMind.ico</ApplicationIcon>
 
     <!-- 单文件发布（仅 Release） -->
     <PublishSingleFile Condition="'$(Configuration)' == 'Release'">true</PublishSingleFile>
