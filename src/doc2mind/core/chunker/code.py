@@ -202,7 +202,7 @@ class CodeChunker(Chunker):
                         keep_from = j
                         break
                 current = current[keep_from:]
-                current_len = sum(len(l) + 1 for l in current)
+                current_len = sum(len(item) + 1 for item in current)
             current.append(line)
             current_len += line_len
 
