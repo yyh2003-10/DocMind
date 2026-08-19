@@ -197,7 +197,7 @@ class ChatStore:
                         role=r["role"],
                         content=r["content"],
                         created_at=r["created_at"],
-                        sources_json=r.get("sources_json", None),
+                        sources_json=r["sources_json"],
                     )
                     for r in rows
                 ]
