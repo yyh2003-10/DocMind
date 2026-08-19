@@ -16,155 +16,54 @@ DocMind 把任意文档（PDF / Word / Excel / PPT / Markdown / HTML / 图片 / 
 转成语义分块、向量索引和可检索的知识库。全部计算在本地完成，
 默认嵌入模型 ~35MB，向量库 ~5MB，无需 PyTorch / ChromaDB / Java。
 
-## 🚀 快速开始（推荐：下载安装包）
+## 🚀 极速上手（双击即用）
 
-普通用户最简单的方式是**直接下载安装包**（见 [GitHub Releases](https://github.com/yyh2003-10/DocMind/releases)）：
-
-1. **下载** `DocMind-Setup-<版本>.exe`（约 115MB，含 CPU 核心运行时）
-2. **双击安装**，按提示选择是否勾选「GPU 加速」「OCR」扩展（可选，需联网）
-3. **启动 DocMind**
-4. **导入文档**：到【导入】页选择文件或文件夹，点击导入
-5. **搜索**：到【搜索】页输入问题，回车即可检索
-
-> 基础包已内置 Python 环境，**无需**单独安装 Python。
-> 首次使用会自动下载嵌入模型（~35MB / 90MB，走国内镜像）。
-
-### 可选扩展（安装时勾选，或以后在设置页操作）
-
-| 扩展 | 作用 | 体积 | 硬件要求 |
-|------|------|------|---------|
-| **GPU 加速** | 嵌入推理提速（快 5-10 倍） | ~2GB | NVIDIA 显卡 |
-| **OCR** | 扫描件 / 图片文字识别 | ~1.5GB | 无特殊要求 |
-
-> 未安装 GPU / OCR 不影响核心功能，软件会自动使用 CPU 模式并在设置页提示。
+1. **一键极速启动**：下载解压源码后，直接双击项目根目录下的 **`start.bat`**：
+   - ⚡ 自动检查 Python 环境与依赖（清华镜像极速加速）；
+   - ⚡ 自动启动本地智能后端与 WPF 桌面客户端；
+   - ⚡ 自动完成向量数据库与模型缓存初始化。
+2. **新手 0 门槛体验**：
+   - 打开客户端进入「对话」页，点击 **「🚀 一键导入官方示例知识库体验」**；
+   - 点击推荐快捷问题芯片（如 *“DocMind 支持哪些格式？”*），立刻开始智能问答！
+3. **主流大模型一键连接**：
+   - 进入「设置」页，选择 **快捷服务商预设**（如 **DeepSeek 官方 API**、**硅基流动 SiliconFlow**、**通义千问 DashScope**、**月之暗面 Kimi**、**智谱清言 GLM-4** 或 **本地离线 Ollama**）；
+   - 自动填入官方 API 端点与推荐模型，只需输入 API Key 即可使用！
+4. **一键系统全面体检与自愈诊断**：
+   - 进入「设置」页点击 **「立即执行全面体检」**，或终端运行 `doc2mind doctor`，全维检查 Python、向量数据库、模型缓存、GPU 硬件加速与镜像网络，一键获取修复指南！
 
 ---
 
-## 🛠️ 安装器无效？手动安装教程
-
-如果安装包无法正常安装或运行，可按下面的步骤手动搭建环境。全程约 10 分钟，只需跟着命令逐条执行。
-
-### 第 1 步：安装 Python 3.11
-
-1. 打开 [Python 官网下载页](https://www.python.org/downloads/release/python-3119/)
-2. 下载 **Windows installer (64-bit)**
-3. 运行安装时，**务必勾选「Add python.exe to PATH」**，再点「Install Now」
-4. 验证：打开命令提示符（`Win+R` 输入 `cmd` 回车），输入 `python --version`，应显示 `Python 3.11.x`
-
-### 第 2 步：下载源码
-
-**无需 git**，直接下载 ZIP：
-
-1. 打开 [DocMind 仓库](https://github.com/yyh2003-10/DocMind)
-2. 点绿色按钮 **Code → Download ZIP**，解压到任意目录（如 `D:\DocMind`）
-
-### 第 3 步：创建虚拟环境并安装依赖
-
-在解压目录打开命令提示符，逐条执行：
-
-```bat
-cd /d D:\DocMind            :: 换成你的解压路径
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements-core.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-.venv\Scripts\python.exe -m pip install -e . --no-deps
-```
-
-> 国内网络建议加 `-i https://pypi.tuna.tsinghua.edu.cn/simple`（上例已加）。
-> 如需 GPU 加速，追加 `-r requirements-gpu.txt`；如需 OCR，追加 `-r requirements-ocr.txt`。
-
-### 第 4 步：验证安装
-
-```bat
-.venv\Scripts\doc2mind.exe --help
-```
-
-看到命令帮助即安装成功。首次使用会自动下载嵌入模型（~90MB，走国内镜像）。
-
-### 第 5 步：使用（二选一）
-
-**A. 只用命令行搜索：**
-```bat
-.venv\Scripts\doc2mind.exe ingest D:\你的文档目录
-.venv\Scripts\doc2mind.exe search "你想问的问题"
-```
-
-**B. 使用 WPF 桌面客户端：**
-```bat
-.venv\Scripts\doc2mind.exe serve        :: 先启动后端
-```
-再构建并启动客户端（需先安装 [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)）：
-```bat
-dotnet build DocMind\DocMind.csproj -c Release
-DocMind\bin\Release\net8.0-windows\win-x64\DocMind.exe
-```
-
-### 遇到问题？
-
-| 症状 | 解决 |
-|------|------|
-| `python` 不是内部命令 | 第 1 步没勾选 Add to PATH，重装 Python |
-| pip 下载慢 / 超时 | 加 `-i https://pypi.tuna.tsinghua.edu.cn/simple` |
-| 模型下载失败 | 设置环境变量 `HF_ENDPOINT=https://hf-mirror.com` 后重试 |
-| 后端启动失败 | 看 [部署指南](docs/部署指南.md) 的排查表 |
-
-> 更详细的部署说明（GPU 选择、离线部署、数据迁移）见 [部署指南](docs/部署指南.md)。
-
----
-
-## 开发者 / 源码方式安装
-
-如果你需要从源码构建或二次开发：
-
-- **8 种文档格式** 解析，保留标题 / 表格 / 代码块结构
-- **智能语义分块**，表格整块保护、代码按函数切分
-- **ONNX 本地嵌入**（BAAI/bge-small-zh-v1.5，~35MB，首下自动）
-- **sqlite-vec 向量存储**，零依赖嵌入式
-- **BM25 + 向量混合检索**，RRF 融合，中英文皆宜
-- **格式互转** PDF / DOCX / XLSX / PPTX → MD / JSON / TXT / HTML
-- **MCP Server** 一行接入 Cursor / Claude Desktop / Windsurf
-- **RAG 对话**（OpenAI 兼容 API / Ollama 本地 LLM），支持多轮追问 + 来源引用
-- **FastAPI 服务**（extras）HTTP API
-- **增量更新** 文件 MD5 去重，未变更跳过
-
-## 安装
+## 💻 CLI 常用命令速查
 
 ```bash
-pip install doc2mind                 # core: ~70MB, 全功能
-pip install doc2mind[native-pdf]     # + opendataloader-pdf (最高精度 PDF)
-pip install doc2mind[ocr]            # + PaddleOCR (图片文字识别)
-pip install doc2mind[gpu]            # + GPU 加速嵌入
-pip install doc2mind[server]         # + FastAPI RAG 服务
-pip install doc2mind[all]            # 全部安装
-```
+# 1. 环境诊断与自愈
+doc2mind doctor                        # 系统全维体检（Python/存储/模型缓存/GPU/网络）
 
-## 快速开始
+# 2. 新手示例文档体验
+doc2mind sample                        # 一键注入内置官方示例文档库
 
-```bash
-# 摄入文档
+# 3. 摄入文档与目录
 doc2mind ingest ./docs/
 doc2mind ingest ./report.pdf --collection papers
 
-# 搜索
-doc2mind search "transformer 注意力机制"
-doc2mind search "..." --collection papers --top-k 5
+# 4. 混合检索（向量 + BM25 双引擎）
+doc2mind search "双引擎混合检索原理" --top-k 5
 
-# RAG 对话（需配置 LLM，见下方配置说明）
-doc2mind chat "项目架构是什么？"                # 单次问答
-doc2mind chat                                  # 交互式多轮对话
+# 5. RAG 智能对话（支持终端真流式打字机打印）
+doc2mind chat "请总结 DocMind 的核心特性"
 
-# 列出 / 统计 / 删除
+# 6. 索引重建与跨模型维度迁移
+doc2mind reindex                       # 重新计算向量索引
+
+# 8. 列出 / 统计 / 删除文档
 doc2mind list
 doc2mind list --collection papers
 doc2mind stats
 doc2mind remove ./old.pdf
 
-# 格式转换
+# 9. 格式转换（PDF/Word/Excel/PPT -> MD/JSON/TXT/HTML）
 doc2mind convert input.docx output.md
 doc2mind convert ./batch/ --format md --out ./out/
-
-# 启动服务
-doc2mind serve                       # 启动 HTTP 服务 (extras)
-doc2mind mcp                         # 启动 MCP Server
 ```
 
 ## MCP 接入
