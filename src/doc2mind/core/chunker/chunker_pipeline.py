@@ -77,11 +77,9 @@ def chunk_document(
             orig_idx = table_els[ti][0] if ti < len(table_els) else 0
             annotated.append((orig_idx, chunk))
 
-        si = 0
-        for chunk in semantic_chunks:
+        for si, chunk in enumerate(semantic_chunks):
             orig_idx = semantic_els[si][0] if si < len(semantic_els) else 0
             annotated.append((orig_idx, chunk))
-            si += 1
 
         # 按原文档序号稳定排序
         annotated.sort(key=lambda x: x[0])
