@@ -91,9 +91,9 @@ jobs:
         run: |
           $url = "https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0.exe"
           $tmp = "$env:TEMP\innosetup.exe"
-          Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
-          Start-Process -Wait -FilePath $tmp -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$env:ProgramFiles\InnoSetup7"
-          echo "$env:ProgramFiles\InnoSetup7" >> $env:GITHUB_PATH
+          curl.exe -L -o $tmp --connect-timeout 30 --retry 3 $url
+          Start-Process -Wait -FilePath $tmp -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$env:ProgramFiles\InnoSetup7")
+          echo "$env:ProgramFiles\InnoSetup7" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: 编译安装包
         shell: powershell
