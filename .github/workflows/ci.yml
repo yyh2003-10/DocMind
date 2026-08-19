@@ -30,7 +30,7 @@ jobs:
           pip install -e . --no-deps
 
       - name: 运行测试
-        run: python -m pytest tests -q --durations=10
+        run: python -m pytest tests -q --durations=10 --timeout=120
 
       - name: 静态检查（ruff）
         run: ruff check src tests
