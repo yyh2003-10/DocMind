@@ -716,7 +716,7 @@ def serve(
     # 首次使用引导：模型未下载时提示（新手友好）
     import atexit
     import os
-    import sys
+
     from doc2mind.core.config import _user_data_dir, server_port_file_path
     from doc2mind.core.embedder.fastembed_impl import first_run_hint
     from doc2mind.server.http import create_app
@@ -795,6 +795,7 @@ def _release_port(port: int) -> bool:
     import subprocess
     import sys
     import time
+
     from doc2mind.core.config import _user_data_dir
 
     current_pid = os.getpid()
