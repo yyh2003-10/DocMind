@@ -7,7 +7,9 @@ OpenAI 格式不兼容，需要单独实现消息转换与 SSE 解析。
 from __future__ import annotations
 
 import json
-from typing import Iterator
+from collections.abc import Iterator
+
+import httpx
 
 from doc2mind.core.llm.base import LLMClient, LLMError, sanitize_max_tokens
 

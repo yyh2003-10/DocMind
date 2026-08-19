@@ -11,8 +11,8 @@ import httpx
 import pytest
 
 from doc2mind.core.config import Settings
-from doc2mind.core.llm.base import LLMClient, LLMError
 from doc2mind.core.llm.anthropic_impl import AnthropicClient, _split_system
+from doc2mind.core.llm.base import LLMClient, LLMError
 from doc2mind.core.llm.gemini_impl import GeminiClient, _to_contents
 from doc2mind.core.llm.ollama_impl import OllamaClient
 
@@ -225,8 +225,11 @@ class TestLlmTestEndpoint:
 
         tc = TestClient(create_app())
         # 隔离全局配置：不受本机 config.toml / 环境变量影响，避免测试真的调外部 LLM
+        # base_url 也必须重置：本机若配了 localhost 地址（如 LM Studio）且服务在跑，
+        # 工厂会兜底假 key 并真的调通本地服务，破坏"缺 key 报错"类用例
         tc.app.state.doc2mind.settings.llm_provider = "none"  # type: ignore[attr-defined]
         tc.app.state.doc2mind.settings.llm_api_key = None  # type: ignore[attr-defined]
+        tc.app.state.doc2mind.settings.llm_base_url = None  # type: ignore[attr-defined]
         return tc
 
     def test_none_provider(self, client) -> None:
@@ -269,7 +272,6 @@ class TestLlmTestEndpoint:
 
     def test_config_update_empty_string_clears_key(self, client, monkeypatch: pytest.MonkeyPatch) -> None:
         """空字符串 llm_api_key/llm_base_url = 显式清除（null = 不修改）。"""
-        from doc2mind.server import http as http_mod
         from doc2mind.core import config as config_mod
 
         # 跳过持久化副作用（本测试只关心运行时 settings 被正确清除）
@@ -395,8 +397,10 @@ class TestLlmModelsEndpoint:
         from doc2mind.server.http import create_app
 
         tc = TestClient(create_app())
+        # 同 TestLlmTestEndpoint：base_url 一并重置，防止本机 localhost 服务干扰
         tc.app.state.doc2mind.settings.llm_provider = "none"  # type: ignore[attr-defined]
         tc.app.state.doc2mind.settings.llm_api_key = None  # type: ignore[attr-defined]
+        tc.app.state.doc2mind.settings.llm_base_url = None  # type: ignore[attr-defined]
         return tc
 
     def test_none_provider(self, client) -> None:

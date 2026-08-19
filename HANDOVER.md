@@ -112,18 +112,19 @@ ruff check src tests
 
 ---
 
-## 六、快速启动
+---
 
-```bash
-# 启动后端服务
-doc2mind serve
+## 七、本地 AI 智能感知与纯净环境打包建议 (2026-08-19 新增)
 
-# 或 MCP 模式（供 AI 编辑器调用）
-doc2mind mcp
+### 1. 架构与新功能
+- **算力协同**：向量嵌入固定采用内置轻量 CPU 引擎（`bge-small-zh-v1.5`，30MB 内存，0 显存需求），6GB 显存 100% 独占给本地大语言模型（LM Studio / Ollama），彻底杜绝显存争抢与 CUDA OOM。
+- **智能环境感知**：
+  - 后端新增 `src/doc2mind/core/local_ai_detect.py` 与 `GET /v1/system/local-ai-environment`；
+  - 前端在设置页新增「🌟 本地 AI 环境智能感知」卡片，毫秒级感知 LM Studio / Ollama 运行状态及本地 36+ GGUF 模型，提供一键免配置绑定。
+- **详细文档**：见 [`docs/architecture/smart_local_ai_and_deployment_guide.md`](file:///e:/DocMindY/docs/architecture/smart_local_ai_and_deployment_guide.md)。
 
-# 命令行对话
-doc2mind chat "问题"
+### 2. 面向小白用户（全新纯净环境）的打包交付建议
+1. **内嵌 Python 运行时**：将 Python 后端通过 PyInstaller 打包成 `doc2mind_server.exe` 或内置精简版 `.venv`，随 WPF 安装包分发，实现零 Python 环境依赖；
+2. **预置离线嵌入模型**：安装包内直接附带 `bge-small-zh-v1.5` ONNX 权重文件，首次启动脱网即可建库；
+3. **国内镜像兜底**：默认注入 `HF_ENDPOINT=https://hf-mirror.com`，保障国内在线下载不超时。
 
-# 查看完整计划
-cat docs/feature-completion-plan.md
-```

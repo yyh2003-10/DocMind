@@ -17,10 +17,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from doc2mind.core.loader.image_loader import ImageLoader
 
 from doc2mind.core.loader.base import Loader, LoaderError, make_source
 from doc2mind.core.models import (
@@ -313,7 +318,5 @@ def _ocr_png_bytes(
             )
         return out
     finally:
-        try:
+        with contextlib.suppress(OSError):
             tmp_path.unlink()
-        except OSError:
-            pass

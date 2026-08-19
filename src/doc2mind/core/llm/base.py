@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from typing import Any
 
 # 默认 LLM 调用超时（秒），防 API 挂起阻塞请求线程
 DEFAULT_TIMEOUT = 120
@@ -209,4 +210,5 @@ class LLMClient(ABC):
                     if isinstance(item, LLMError):
                         raise item
                     raise LLMError(f"LLM 流式调用失败: {item}") from item
+                assert isinstance(item, str)
                 yield item

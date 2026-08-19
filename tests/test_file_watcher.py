@@ -58,7 +58,6 @@ def test_supported_file_filters(tmp_path: Path) -> None:
 def test_debounce_merges(tmp_path: Path) -> None:
     """测试短时间内多次修改同一个文件防抖合并。"""
     s = Settings(db_path=tmp_path / "test.db")
-    called_paths: list[str] = []
 
     target_file = tmp_path / "doc.md"
     target_file.write_text("hello world", encoding="utf-8")

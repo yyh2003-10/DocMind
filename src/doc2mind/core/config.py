@@ -299,9 +299,9 @@ def _toml_repr(value: object) -> str:
     """把 Python 值渲染为 TOML 字面量。"""
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return str(value)
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return json.dumps(list(value), ensure_ascii=False)
     return json.dumps(str(value), ensure_ascii=False)
 
