@@ -183,7 +183,6 @@ class CodeChunker(Chunker):
         """超长代码块滑窗（按换行切）。"""
         max_chars = self.settings.chunk_max_chars
         overlap = self.settings.chunk_overlap_chars
-        step = max(1, max_chars - overlap)
 
         pieces: list[str] = []
         lines = text.splitlines()
