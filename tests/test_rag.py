@@ -189,10 +189,10 @@ class TestRagAnswer:
             mock_embedder = MagicMock()
             mock_open.return_value = (mock_store, mock_embedder)
 
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+            with patch("doc2mind.core.rag.Retriever") as mock_retriever_class:
                 mock_retriever = MagicMock()
                 mock_retriever.search.return_value = ([], SearchStats(query="test", total_hits=0, elapsed_ms=5, vector_candidates=0, bm25_candidates=0))
-                MockRetriever.return_value = mock_retriever
+                mock_retriever_class.return_value = mock_retriever
 
                 result = rag_answer(
                     query="test question",
@@ -217,10 +217,10 @@ class TestRagAnswer:
             mock_embedder = MagicMock()
             mock_open.return_value = (mock_store, mock_embedder)
 
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+            with patch("doc2mind.core.rag.Retriever") as mock_retriever_class:
                 mock_retriever = MagicMock()
                 mock_retriever.search.return_value = ([hit], stats)
-                MockRetriever.return_value = mock_retriever
+                mock_retriever_class.return_value = mock_retriever
 
                 result = rag_answer(
                     query="架构是什么？",
@@ -249,10 +249,10 @@ class TestRagAnswer:
             mock_embedder = MagicMock()
             mock_open.return_value = (mock_store, mock_embedder)
 
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+            with patch("doc2mind.core.rag.Retriever") as mock_retriever_class:
                 mock_retriever = MagicMock()
                 mock_retriever.search.return_value = ([hit], stats)
-                MockRetriever.return_value = mock_retriever
+                mock_retriever_class.return_value = mock_retriever
 
                 rag_answer(query="问题", settings=s, llm_client=mock_client)
 
@@ -274,17 +274,17 @@ class TestRagAnswer:
             mock_embedder = MagicMock()
             mock_open.return_value = (mock_store, mock_embedder)
 
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+            with patch("doc2mind.core.rag.Retriever") as mock_retriever_class:
                 mock_retriever = MagicMock()
                 mock_retriever.search.return_value = ([hit], stats)
-                MockRetriever.return_value = mock_retriever
+                mock_retriever_class.return_value = mock_retriever
 
                 # 第一轮
                 r1 = rag_answer(query="什么是架构？", settings=s, llm_client=mock_client)
                 cid = r1.chat_id
 
                 # 第二轮（传入 chat_id）
-                r2 = rag_answer(query="那组件呢？", chat_id=cid, settings=s, llm_client=mock_client)
+                rag_answer(query="那组件呢？", chat_id=cid, settings=s, llm_client=mock_client)
 
             # 第二轮的消息应包含历史
             messages = mock_client.last_messages
@@ -305,10 +305,10 @@ class TestRagAnswer:
             mock_embedder = MagicMock()
             mock_open.return_value = (mock_store, mock_embedder)
 
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+            with patch("doc2mind.core.rag.Retriever") as mock_retriever_class:
                 mock_retriever = MagicMock()
                 mock_retriever.search.return_value = ([hit], stats)
-                MockRetriever.return_value = mock_retriever
+                mock_retriever_class.return_value = mock_retriever
 
                 rag_answer(
                     query="问题",
@@ -333,10 +333,10 @@ class TestRagAnswer:
             mock_embedder = MagicMock()
             mock_open.return_value = (mock_store, mock_embedder)
 
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+            with patch("doc2mind.core.rag.Retriever") as mock_retriever_class:
                 mock_retriever = MagicMock()
                 mock_retriever.search.return_value = ([hit], stats)
-                MockRetriever.return_value = mock_retriever
+                mock_retriever_class.return_value = mock_retriever
 
                 rag_answer(
                     query="问题",
@@ -363,10 +363,10 @@ class TestRagAnswer:
             mock_embedder = MagicMock()
             mock_open.return_value = (mock_store, mock_embedder)
 
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+            with patch("doc2mind.core.rag.Retriever") as mock_retriever_class:
                 mock_retriever = MagicMock()
                 mock_retriever.search.return_value = ([good, bad], stats)
-                MockRetriever.return_value = mock_retriever
+                mock_retriever_class.return_value = mock_retriever
 
                 result = rag_answer(query="问题", settings=s, llm_client=mock_client)
 
@@ -389,10 +389,10 @@ class TestRagAnswer:
             mock_embedder = MagicMock()
             mock_open.return_value = (mock_store, mock_embedder)
 
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+            with patch("doc2mind.core.rag.Retriever") as mock_retriever_class:
                 mock_retriever = MagicMock()
                 mock_retriever.search.return_value = ([low], stats)
-                MockRetriever.return_value = mock_retriever
+                mock_retriever_class.return_value = mock_retriever
 
                 result = rag_answer(query="问题", settings=s, llm_client=mock_client)
 
@@ -431,13 +431,14 @@ class TestRagAnswerStream:
             mock_embedder = MagicMock()
             mock_open.return_value = (mock_store, mock_embedder)
 
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+            with patch("doc2mind.core.rag.Retriever") as mock_retriever_class:
                 mock_retriever = MagicMock()
                 mock_retriever.search.return_value = ([hit], stats)
-                MockRetriever.return_value = mock_retriever
+                mock_retriever_class.return_value = mock_retriever
+
+                import json
 
                 from doc2mind.core.rag import rag_answer_stream
-                import json
                 results = list(rag_answer_stream(
                     query="问题", settings=s, llm_client=mock_client,
                 ))
@@ -464,13 +465,13 @@ class TestRagAnswerStream:
 
         with patch("doc2mind.core.rag._open_store") as mock_open:
             mock_open.return_value = (MagicMock(), MagicMock())
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+            with patch("doc2mind.core.rag.Retriever") as mock_retriever_class:
                 mock_retriever = MagicMock()
                 mock_retriever.search.return_value = (
                     [], SearchStats(query="q", total_hits=0, elapsed_ms=5,
                                     vector_candidates=0, bm25_candidates=0),
                 )
-                MockRetriever.return_value = mock_retriever
+                mock_retriever_class.return_value = mock_retriever
 
                 from doc2mind.core.rag import rag_answer_stream
                 results = list(rag_answer_stream(
@@ -494,10 +495,10 @@ class TestRagAnswerStream:
 
         with patch("doc2mind.core.rag._open_store") as mock_open:
             mock_open.return_value = (MagicMock(), MagicMock())
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+            with patch("doc2mind.core.rag.Retriever") as mock_retriever_class:
                 mock_retriever = MagicMock()
                 mock_retriever.search.return_value = ([hit], stats)
-                MockRetriever.return_value = mock_retriever
+                mock_retriever_class.return_value = mock_retriever
 
                 from doc2mind.core.rag import rag_answer_stream
                 list(rag_answer_stream(
@@ -522,8 +523,7 @@ class TestRagAnswerStream:
 
         class ChunkedMockClient(MockLLMClient):
             def _do_stream_chat(self, messages, temperature=None, max_tokens=None):
-                for piece in ["根据", "资料", "回答。"]:
-                    yield piece
+                yield from ["根据", "资料", "回答。"]
 
         mock_client = ChunkedMockClient()
         s = Settings(llm_provider="openai", llm_api_key="test")
@@ -532,10 +532,10 @@ class TestRagAnswerStream:
 
         with patch("doc2mind.core.rag._open_store") as mock_open:
             mock_open.return_value = (MagicMock(), MagicMock())
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+            with patch("doc2mind.core.rag.Retriever") as mock_retriever_class:
                 mock_retriever = MagicMock()
                 mock_retriever.search.return_value = ([hit], stats)
-                MockRetriever.return_value = mock_retriever
+                mock_retriever_class.return_value = mock_retriever
 
                 from doc2mind.core.rag import rag_answer_stream
                 results = list(rag_answer_stream(
@@ -546,8 +546,8 @@ class TestRagAnswerStream:
         assert "".join(f["token"] for f in token_frames) == "根据资料回答。"
         # 历史已保存完整拼接的回答
         cid = json.loads(results[-1])["chat_id"]
-        from doc2mind.core.rag import _CHAT_SESSIONS as sessions
-        assert sessions[cid][-1] == {"role": "assistant", "content": "根据资料回答。"}
+        from doc2mind.core.rag import _CHAT_SESSIONS as _sessions
+        assert _sessions[cid][-1] == {"role": "assistant", "content": "根据资料回答。"}
 
 
 class TestHistoryTokenBudget:

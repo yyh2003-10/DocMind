@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import hashlib
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 

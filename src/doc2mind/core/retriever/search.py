@@ -271,8 +271,8 @@ def _rrf_fuse(
     vec_rank = {cid: rank + 1 for rank, (cid, _) in enumerate(vec_sorted)}
     bm25_rank = {cid: rank + 1 for rank, (cid, _) in enumerate(bm25_sorted)}
 
-    vec_score_map = {cid: sc for cid, sc in vec_sorted}
-    bm25_score_map = {cid: sc for cid, sc in bm25_sorted}
+    vec_score_map = dict(vec_sorted)
+    bm25_score_map = dict(bm25_sorted)
 
     all_ids = set(vec_rank) | set(bm25_rank)
     result: list[tuple[int, float, float, float]] = []

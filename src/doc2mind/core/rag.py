@@ -19,9 +19,11 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass, field, replace as dc_replace
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from dataclasses import replace as dc_replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from doc2mind.core.config import Settings, get_settings
 from doc2mind.core.embedder import get_embedder
@@ -602,7 +604,7 @@ def _build_context_and_messages(
                             score=1.0,
                         )
                     )
-                context_blocks.append(f"【实时联网检索资料 (Live Web Search)】\n" + "\n\n".join(web_ctx_lines))
+                context_blocks.append("【实时联网检索资料 (Live Web Search)】\n" + "\n\n".join(web_ctx_lines))
         except Exception as ex:
             logger.warning("联网搜索执行失败: %s", ex)
 

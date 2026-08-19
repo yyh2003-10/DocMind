@@ -13,6 +13,7 @@ paddleocr 创建会话时报告 ``LoadLibrary failed for cudnn64_9.dll`` / WinEr
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -61,10 +62,8 @@ def register_nvidia_dll_dirs() -> None:
                 if not bin_dir.is_dir():
                     continue
                 bin_str = str(bin_dir)
-                try:
+                with contextlib.suppress(OSError, ValueError):
                     os.add_dll_directory(bin_str)
-                except (OSError, ValueError):
-                    pass
                 # 同时前置注入 PATH，确保 LoadLibrary 正常寻址
                 if bin_str not in os.environ.get("PATH", ""):
                     os.environ["PATH"] = bin_str + os.pathsep + os.environ.get("PATH", "")

@@ -11,8 +11,8 @@ import httpx
 import pytest
 
 from doc2mind.core.config import Settings
-from doc2mind.core.llm.base import LLMClient, LLMError
 from doc2mind.core.llm.anthropic_impl import AnthropicClient, _split_system
+from doc2mind.core.llm.base import LLMClient, LLMError
 from doc2mind.core.llm.gemini_impl import GeminiClient, _to_contents
 from doc2mind.core.llm.ollama_impl import OllamaClient
 
@@ -269,7 +269,6 @@ class TestLlmTestEndpoint:
 
     def test_config_update_empty_string_clears_key(self, client, monkeypatch: pytest.MonkeyPatch) -> None:
         """空字符串 llm_api_key/llm_base_url = 显式清除（null = 不修改）。"""
-        from doc2mind.server import http as http_mod
         from doc2mind.core import config as config_mod
 
         # 跳过持久化副作用（本测试只关心运行时 settings 被正确清除）
