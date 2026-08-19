@@ -387,6 +387,8 @@ pylibs/
 _ocr_test_p1.png
 _ocr_test_p2.png
 pip_*.log
+# 测试文件（不上传，不上 CI）
+tests/
 # 端口状态文件（运行时由 doc2mind serve 写入）
 server.port
 # 构建验证临时产物 / 杂项脚本
