@@ -680,6 +680,7 @@ class TestGraphEndpoints:
 class TestEventsBroadcast:
     """/v1/events SSE 广播测试。"""
 
+    @pytest.mark.timeout(5)
     def test_events_endpoint_ready_frame(self, tmp_path) -> None:
         from starlette.testclient import TestClient
         from doc2mind.server.http import create_app, _broadcast_event
@@ -688,13 +689,9 @@ class TestEventsBroadcast:
         app = create_app(s)
         client = TestClient(app)
 
-        import time as _time
-        deadline = _time.monotonic() + 5
         with client.stream("GET", "/v1/events") as response:
             assert response.status_code == 200
             for line in response.iter_lines():
-                if _time.monotonic() > deadline:
-                    pytest.fail("等待 ready 事件超时")
                 if line.startswith("data: "):
                     payload = json.loads(line[len("data: "):])
                     assert payload["type"] == "ready"
