@@ -48,6 +48,9 @@ public interface IDoc2kbApiService
     /// <summary>GPU 加速环境诊断（GET /v1/system/gpu-diagnosis）。</summary>
     Task<GpuDiagnosis> GetGpuDiagnosisAsync(CancellationToken ct = default);
 
+    /// <summary>本地 AI 环境与模型资产智能探测（GET /v1/system/local-ai-environment）。</summary>
+    Task<LocalAiEnvironment> GetLocalAiEnvironmentAsync(CancellationToken ct = default);
+
     /// <summary>GPU 加速包一键安装（POST /v1/system/install-gpu，SSE 流式）。
     /// onLog 每收到一行 pip 日志触发，onDone 在安装完成/失败时触发（bool 为成功标志）。</summary>
     Task InstallGpuAsync(string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default);
@@ -66,6 +69,18 @@ public interface IDoc2kbApiService
 
     /// <summary>实体知识卡片智能蒸馏（POST /v1/graph/entities/distill）。</summary>
     Task<EntityDistillResponse> DistillEntityKnowledgeAsync(EntityDistillRequest req, CancellationToken ct = default);
+
+    /// <summary>系统全面环境诊断（GET /v1/doctor）。</summary>
+    Task<DoctorReportResult> GetDoctorReportAsync(bool network = true, CancellationToken ct = default);
+
+    /// <summary>一键导入内置新手示例文档库（POST /v1/sample/ingest）。</summary>
+    Task<SampleIngestResult> IngestSampleAsync(string collection = "default", CancellationToken ct = default);
+
+    /// <summary>多格式创作交付物导出为物理文件（POST /v1/creative/export）。</summary>
+    Task<CreativeExportResponse> ExportCreativeArtifactAsync(CreativeExportRequest req, CancellationToken ct = default);
+
+    /// <summary>PPT 效果自检与质量体检评分（POST /v1/creative/inspect）。</summary>
+    Task<PptInspectionReportDto> InspectCreativeArtifactAsync(string content, CancellationToken ct = default);
 
     /// <summary>订阅后端事件流（SSE GET /v1/events）。返回 IDisposable 用于取消订阅。</summary>
     IDisposable SubscribeEvents(Action<EventMessage> onEvent, CancellationToken ct = default);

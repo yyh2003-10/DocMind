@@ -22,6 +22,10 @@ import hashlib
 import io
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from doc2mind.core.loader.image_loader import ImageLoader
 
 from doc2mind.core.loader.base import Loader, LoaderError, make_source
 from doc2mind.core.models import (

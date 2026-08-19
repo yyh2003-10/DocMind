@@ -8,6 +8,7 @@ xmlns:helpers="clr-namespace:DocMind.Helpers">
             <helpers:LogLevelToBrushConverter x:Key="LogLevelToBrush"/>
             <helpers:BoolInvertConverter x:Key="BoolInvertConverter"/>
             <helpers:NullToVisibilityConverter x:Key="NullToVis"/>
+            <helpers:NullToVisibilityConverter x:Key="StringToVis"/>
             <helpers:BoolToVisibilityInvertConverter x:Key="InvertBoolVis"/>
             <helpers:ZeroToVisibilityConverter x:Key="ZeroToVis"/>
             <ResourceDictionary.MergedDictionaries>

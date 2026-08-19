@@ -396,7 +396,7 @@ def _judge_duplicate(
     dry_run: bool,
 ) -> dict[str, Any]:
     """对一对候选文档做 LLM 判重；执行模式下删除冗余篇。"""
-    item = {
+    item: dict[str, Any] = {
         "score": round(score, 4),
         "keep": _doc_brief(doc_a),
         "remove": _doc_brief(doc_b),
@@ -474,7 +474,7 @@ def find_duplicates(
             logger.warning("dedup 向量检索失败（跳过 %s）: %s", doc.source, e)
             continue
         for chunk_id, dist in hits:
-            score = 1.0 / (1.0 + float(dist))
+            score = 1.0 / (1.0 + dist)
             if score < threshold:
                 continue
             chunks = store.get_chunks([chunk_id])
@@ -513,7 +513,7 @@ def _cosine_sim(a: Any, b: Any) -> float:
     nb = sum(x * x for x in vb) ** 0.5
     if na == 0 or nb == 0:
         return 0.0
-    return dot / (na * nb)
+    return float(dot / (na * nb))
 
 
 def consolidate_notes(
@@ -587,7 +587,7 @@ def consolidate_notes(
 
         title = str(parsed.get("title") or "").strip()[:80] or "蒸馏笔记"
         content = str(parsed.get("content") or "").strip()
-        item = {
+        item: dict[str, Any] = {
             "cluster_size": len(members),
             "members": [d.source for d in members],
             "title": title,

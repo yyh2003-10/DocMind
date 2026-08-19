@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from doc2mind.core.config import Settings, get_settings
+from doc2mind.core.creator.prompts import CREATIVE_PERSONA_PROMPTS
 from doc2mind.core.embedder import get_embedder
 from doc2mind.core.llm import LLMClient, LLMError, get_llm_client
 from doc2mind.core.retriever.search import Retriever, SearchHit
@@ -50,12 +51,13 @@ _SYSTEM_PROMPT = (
     "7. 【专家把关人 / 历史避坑预警】：若参考资料中包含【历史避坑与排错参考】，请务必在回答中通过醒目的 `> ⚠️ **【专家避坑与排错预警】**` 引用块置顶提醒用户注意潜在风险与避坑对策；\n"
     "8. 【知识图谱与影响面分析】：若参考资料中包含【知识图谱拓扑关联与潜在影响面网络】，在分析改动或技术原理时，应主动向用户阐明相关改动对上下游技术模块、实体节点的关联影响与协同修改建议。"
 )
-# 办公角色人设 Prompt 增强映射
+
 _PERSONA_PROMPTS: dict[str, str] = {
     "office": "【当前角色：💼 知识办公助手】你擅长将复杂技术与业务资料提炼为清晰易懂的核心结论、梳理 Action Items 待办清单与标准汇报公文。行文严谨、结构条理、用语得体。",
     "architect": "【当前角色：🧠 资深系统架构师】你擅长系统设计模式选型、底层运行机制剖析、性能瓶颈评估与架构演进设计。分析深入透彻，注重权衡取舍与全局考量。",
     "engineer": "【当前角色：🛠️ 资深研发工匠】你擅长工业级标准代码实现、架构重构、异常边界防御与单元测试。凡涉及代码均提供完整带中文注释的实现示例，注重代码健壮性。",
     "brainstorm": "【当前角色：💡 创新方案顾问】你擅长头脑风暴、SWOT 矩阵分析、多方案多维度对比表格与排期落地规划。善用表格、矩阵与结构化推导，激发灵感。",
+    **CREATIVE_PERSONA_PROMPTS,
 }
 
 # 会话历史上限（条），防止内存无限增长
@@ -268,6 +270,76 @@ def _build_context(hits: list[SearchHit]) -> tuple[str, list[SourceRef]]:
     return _format_context(hits)
 
 
+def _parse_attachments(attachments: list[str] | None, start_idx: int = 1) -> tuple[str, list[SourceRef]]:
+    """调用内置 Loader / OCR 工具读取对话附带的文件或图片内容。"""
+    if not attachments:
+        return "", []
+
+    from doc2mind.core.loader.detect import get_loader
+
+    parsed_blocks: list[str] = []
+    sources: list[SourceRef] = []
+    current_idx = start_idx
+
+    for item in attachments:
+        if not item or not str(item).strip():
+            continue
+        p = Path(item).resolve()
+        if not p.exists() or not p.is_file():
+            logger.warning("附件路径不存在或不是文件: %s", item)
+            continue
+        try:
+            doc_text = ""
+            try:
+                loader = get_loader(p)
+                loaded_doc = loader.extract(p)
+                text_parts = []
+                for el in loaded_doc.elements:
+                    if el.text and el.text.strip():
+                        page_str = f" [P{el.page}]" if el.page is not None else ""
+                        head_str = f" [{el.heading}]" if el.heading else ""
+                        text_parts.append(f"{page_str}{head_str} {el.text.strip()}")
+                doc_text = "\n".join(text_parts).strip()
+            except Exception:
+                # 若无专用 loader 或解析异常，对文本类型尝试直接读取
+                try:
+                    raw_text = p.read_text(encoding="utf-8", errors="ignore").strip()
+                    if raw_text:
+                        doc_text = raw_text
+                except Exception as read_ex:  # noqa: BLE001
+                    logger.debug("直接文本回退读取失败: %s", read_ex)
+
+            if not doc_text:
+                doc_text = "（已通过工具读取该文件，未提取到有效文本或 OCR 未识别到文字）"
+
+            # 长度保护：单文件最多保留 12000 字符
+            if len(doc_text) > 12000:
+                doc_text = doc_text[:12000] + "\n...（附件内容过长，已截取前 12000 字符）"
+
+            parsed_blocks.append(f"【📎 附件文件: {p.name}】\n{doc_text}")
+            sources.append(
+                SourceRef(
+                    index=current_idx,
+                    source=p.name,
+                    format=p.suffix.lstrip(".").lower() or "file",
+                    score=1.0,
+                    source_type="attachment",
+                    title=p.name,
+                    snippet=doc_text[:300],
+                )
+            )
+            current_idx += 1
+        except Exception as ex:
+            logger.error("解析附件失败 %s: %s", item, ex)
+            parsed_blocks.append(f"【📎 附件文件: {p.name}（读取失败: {ex}）】")
+
+    if not parsed_blocks:
+        return "", []
+
+    header = "【📎 本次会话附加文件/图片（已通过工具读取提取）】"
+    return header + "\n" + "\n\n".join(parsed_blocks), sources
+
+
 def rag_answer(
     query: str,
     collection: str | None = "default",
@@ -282,6 +354,7 @@ def rag_answer(
     persona: str | None = None,
     store: VectorStore | None = None,
     embedder: Any | None = None,
+    attachments: list[str] | None = None,
 ) -> RagAnswer:
     """RAG 问答主入口（非流式，一次性返回完整回答）。"""
     s = settings or get_settings()
@@ -305,16 +378,17 @@ def rag_answer(
             "或设置环境变量 DOC2MIND_LLM_PROVIDER（openai/ollama/anthropic/gemini）。"
         )
 
-    # 3-5. 检索 + 构建上下文 + 组装消息 (融合本地切片 + 实体拓扑 + 实时联网资料 + 角色人设)
+    # 3-5. 检索 + 构建上下文 + 组装消息 (融合本地切片 + 实体拓扑 + 实时联网资料 + 附件资料 + 角色人设)
     hits, context, sources, messages = _build_context_and_messages(
         query=query, collection=collection, top_k=top_k, s=s,
         collections=collections, history=history, t0=t0,
         enable_web_search=enable_web_search, entity_context=entity_context,
         persona=persona, store=store, embedder=embedder,
+        attachments=attachments,
     )
 
-    # 4.5 无命中且无外部/实体上下文时提前返回
-    if not context and not entity_context and not enable_web_search:
+    # 4.5 无命中且无外部/实体/附件上下文时提前返回
+    if not context and not entity_context and not enable_web_search and not attachments:
         answer = "知识库中未找到与问题相关的内容，我无法回答。请先摄入相关文档再提问。"
         _append_turn(cid, query, None, s.db_path)
         return RagAnswer(
@@ -363,6 +437,7 @@ def rag_answer_stream(
     store: VectorStore | None = None,
     embedder: Any | None = None,
     stop_event: Any | None = None,
+    attachments: list[str] | None = None,
 ) -> Iterator[str]:
     """RAG 流式问答，逐 token 产出 SSE 格式 JSON 行。"""
     s = settings or get_settings()
@@ -392,9 +467,11 @@ def rag_answer_stream(
         collections=collections, history=history, t0=t0,
         enable_web_search=enable_web_search, entity_context=entity_context,
         persona=persona, store=store, embedder=embedder,
+        attachments=attachments,
     )
 
-    if not context and not entity_context and not enable_web_search:
+    # 4.5 无命中且无外部/实体/附件上下文时提前返回
+    if not context and not entity_context and not enable_web_search and not attachments:
         _append_turn(cid, query, None, s.db_path)
         yield json.dumps({
             "token": "知识库中未找到与问题相关的内容，我无法回答。请先摄入相关文档再提问。",
@@ -494,11 +571,19 @@ def _build_context_and_messages(
     persona: str | None = None,
     store: VectorStore | None = None,
     embedder: Any | None = None,
+    attachments: list[str] | None = None,
 ) -> tuple[list[SearchHit], str, list[SourceRef], list[dict[str, str]]]:
-    """检索 + 构建多源上下文 + 组装消息（融合本地切片 + 实体拓扑 + 实时联网检索 + 角色人设）。"""
+    """检索 + 构建多源上下文 + 组装消息（融合附件内容 + 本地切片 + 实体拓扑 + 实时联网检索 + 角色人设）。"""
     hits: list[SearchHit] = []
     sources: list[SourceRef] = []
     context_blocks: list[str] = []
+
+    # 0. 附件解析与上下文注入（用户显式导入的文档/图片材料）
+    if attachments:
+        attach_ctx, attach_sources = _parse_attachments(attachments, start_idx=len(sources) + 1)
+        if attach_ctx:
+            context_blocks.append(attach_ctx)
+            sources.extend(attach_sources)
 
     # 1. 实体 High-level 拓扑上下文注入（LightRAG 拓扑思想）
     if entity_context and entity_context.strip():

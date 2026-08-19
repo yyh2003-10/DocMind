@@ -88,7 +88,6 @@ def _retry_on_locked(func):
 
 
 # --- FTS5 MATCH 表达式构造（中文友好）---
-
 # CJK 统一表意文字范围（中日韩常用汉字）
 _CJK_RE = _re.compile(r"[\u4e00-\u9fff]+")
 
@@ -264,6 +263,11 @@ class VectorStore:
         # FTS5 查询独立 connection（避开 vec0 扩展与 trigram BM25 评估冲突）
         self._fts_conn: sqlite3.Connection | None = None
         self._fts_available = False
+
+    @property
+    def dimension(self) -> int:
+        """向量维度别名（等价 embedding_dim）。"""
+        return self.embedding_dim
 
     # --- 生命周期 ---
     def open(self) -> None:

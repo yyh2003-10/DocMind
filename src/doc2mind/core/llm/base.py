@@ -210,4 +210,5 @@ class LLMClient(ABC):
                     if isinstance(item, LLMError):
                         raise item
                     raise LLMError(f"LLM 流式调用失败: {item}") from item
+                assert isinstance(item, str)
                 yield item

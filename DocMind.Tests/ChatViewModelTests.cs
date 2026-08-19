@@ -901,14 +901,125 @@ public class ChatViewModelTests
             Role = "assistant",
             Content = "## 📌 动平衡现场标定排错工序\n1. 检查零漂\n2. 校准增益\n\n[ACTIONS: [\"👉 建议\"]]"
         };
-        vm.Messages.Add(msg);
-
-        await vm.IngestMessageCommand.ExecuteAsync(msg);
+        vm.IngestMessageCommand.Execute(msg);
+        Assert.True(vm.IsIngestDialogOpen);
+        await vm.ConfirmIngestDialogCommand.ExecuteAsync(null);
 
         Assert.True(msg.IsIngested);
         Assert.NotNull(capturedReq);
         Assert.Contains("动平衡现场标定排错工序", capturedReq.Title);
         Assert.DoesNotContain("[ACTIONS:", capturedReq.Text);
         Assert.Contains("检查零漂", capturedReq.Text);
+    }
+
+    // ======================================================================
+    // 示例文档库一键极速体验与快捷提问
+    // ======================================================================
+
+    [Fact]
+    public async Task IngestSampleKnowledgeCommand_IngestsSampleAndPreparesQuestion()
+    {
+        var fake = CreateFake();
+        bool sampleIngested = false;
+        fake.OnIngestSample = (col, _) =>
+        {
+            sampleIngested = true;
+            return Task.FromResult(new SampleIngestResult
+            {
+                Ok = true,
+                Status = "ingested",
+                Title = "DocMind 快速上手与全景操作指南",
+                Collection = col,
+                ChunkCount = 1,
+                ElapsedMs = 20
+            });
+        };
+
+        var vm = CreateVm(fake);
+        await vm.IngestSampleKnowledgeCommand.ExecuteAsync(null);
+
+        Assert.True(sampleIngested);
+        Assert.Contains("DocMind", vm.InputText);
+        Assert.Contains("导入成功", vm.StatusMessage);
+    }
+
+    [Fact]
+    public async Task QuickAskCommand_SetsInputAndSends()
+    {
+        var fake = CreateFake();
+        ChatRequest? sentReq = null;
+        fake.OnChatStream = (req, onToken, onDone, _) =>
+        {
+            sentReq = req;
+            var res = new ChatStreamResult { Model = "m", Provider = "p" };
+            onDone(res);
+            return Task.FromResult(res);
+        };
+
+        var vm = CreateVm(fake);
+        await vm.QuickAskCommand.ExecuteAsync("DocMind 核心能力是什么？");
+
+        Assert.NotNull(sentReq);
+        Assert.Equal("DocMind 核心能力是什么？", sentReq.Query);
+    }
+
+    [Fact]
+    public void AddAttachmentPaths_AddsItemsAndUpdatesHasPendingAttachments()
+    {
+        var fake = CreateFake();
+        var vm = CreateVm(fake);
+
+        // 创建临时测试文件
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            vm.AddAttachmentPaths([tempFile]);
+            Assert.True(vm.HasPendingAttachments);
+            Assert.Single(vm.PendingAttachments);
+            Assert.True(vm.HasInput);
+
+            // 移除附件
+            vm.RemoveAttachmentCommand.Execute(vm.PendingAttachments[0]);
+            Assert.False(vm.HasPendingAttachments);
+            Assert.Empty(vm.PendingAttachments);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task SendAsync_WithAttachments_PassesAttachmentsToRequest()
+    {
+        var fake = CreateFake();
+        ChatRequest? sentReq = null;
+        fake.OnChatStream = (req, onToken, onDone, _) =>
+        {
+            sentReq = req;
+            var res = new ChatStreamResult { Model = "m", Provider = "p" };
+            onDone(res);
+            return Task.FromResult(res);
+        };
+
+        var vm = CreateVm(fake);
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            vm.AddAttachmentPaths([tempFile]);
+            vm.InputText = "请分析附件";
+            await vm.SendCommand.ExecuteAsync(null);
+
+            Assert.NotNull(sentReq);
+            Assert.NotNull(sentReq.Attachments);
+            Assert.Single(sentReq.Attachments);
+            Assert.Equal(tempFile, sentReq.Attachments[0]);
+            // 发送后已自动清空待发列表
+            Assert.False(vm.HasPendingAttachments);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
     }
 }

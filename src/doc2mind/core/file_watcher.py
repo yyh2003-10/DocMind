@@ -32,7 +32,7 @@ class FileWatcher:
         debounce_seconds: float = 5.0,
         on_ingested: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
-        self._paths = [str(Path(p).expanduser().resolve()) for p in paths if p and str(p).strip()]
+        self._paths = [str(Path(p).expanduser().resolve()) for p in paths if p and p.strip()]
         self._settings = settings
         self._collection = collection
         self._debounce_seconds = debounce_seconds
@@ -53,8 +53,13 @@ class FileWatcher:
             return
 
         try:
-            from watchdog.events import FileSystemEvent, FileSystemEventHandler
-            from watchdog.observers import Observer
+            from watchdog.events import (  # type: ignore[import-untyped, import-not-found]
+                FileSystemEvent,
+                FileSystemEventHandler,
+            )
+            from watchdog.observers import (
+                Observer,  # type: ignore[import-untyped, import-not-found]
+            )
         except ImportError:
             logger.warning(
                 "未安装 watchdog 依赖，文件监控自动摄入未启用；"
@@ -167,8 +172,8 @@ class FileWatcher:
             doc_id = None
             error = None
 
-            if resp.ingested:
-                item = resp.ingested[0]
+            if resp.results:
+                item = resp.results[0]
                 status = item.status
                 doc_id = item.document_id
                 error = item.error

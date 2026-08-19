@@ -65,12 +65,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 创建后端虚拟环境（core 依赖）
+      - name: 创建后端虚拟环境（core + server 依赖）
         shell: powershell
         run: |
           python -m venv .venv
-          .venv\Scripts\python.exe -m pip install -r requirements-core.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-          .venv\Scripts\python.exe -m pip install -e . --no-deps
+          .venv\Scripts\python.exe -m pip install -r requirements-core.txt -r requirements-server.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+          .venv\Scripts\python.exe -m pip install . --no-deps
 
       # 精简 venv：仅保留运行时必需内容，剔除缓存/测试产物，产出 .venv-slim-new
       - name: 精简 venv → .venv-slim-new

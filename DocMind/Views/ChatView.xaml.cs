@@ -99,6 +99,29 @@ public partial class ChatView : UserControl
         }
     }
 
+    /// <summary>拖拽文件到输入框释放时，自动添加到待发送附件。</summary>
+    private void ChatInputBox_Drop(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(DataFormats.FileDrop))
+        {
+            if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
+            {
+                _vm?.AddAttachmentPaths(files);
+                e.Handled = true;
+            }
+        }
+    }
+
+    /// <summary>拖拽文件悬停时允许复制。</summary>
+    private void ChatInputBox_PreviewDragOver(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(DataFormats.FileDrop))
+        {
+            e.Effects = DragDropEffects.Copy;
+            e.Handled = true;
+        }
+    }
+
     /// <summary>激活时自动聚焦输入框。</summary>
     private void FocusInput()
     {

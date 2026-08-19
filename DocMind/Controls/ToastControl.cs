@@ -2,103 +2,50 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Shapes;
 using DocMind.Models;
 
-namespace DocMind.Controls;
-
-/// <summary>
-/// Toast 通知弹出层控件。在屏幕右下角叠加显示通知条目，
-/// 每条自动 3-5 秒淡出，支持手动关闭。
-/// </summary>
-public class ToastControl : Control
+namespace DocMind.Controls
 {
-    private readonly System.Collections.Generic.List<ToastItem> _activeItems = new();
-
-    static ToastControl()
+    /// <summary>
+    /// Toast 通知弹出层控件。在屏幕右下角悬浮堆叠显示通知条目，
+    /// 每条自动 3-5 秒淡出，支持手动点击关闭。
+    /// </summary>
+    public class ToastControl : ContentControl
     {
-        DefaultStyleKeyProperty.OverrideMetadata(
-            typeof(ToastControl),
-            new FrameworkPropertyMetadata(typeof(ToastControl)));
-    }
+        private readonly StackPanel _panel;
 
-    /// <summary>添加一条通知并显示。</summary>
-    public void Show(ToastNotification notification)
-    {
-        var item = new ToastItem(notification);
-        _activeItems.Add(item);
-        AddVisualChild(item);
-        AddLogicalChild(item);
-
-        item.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        item.Arrange(new Rect(new Point(ActualWidth - item.DesiredSize.Width - 12,
-                                        ActualHeight - 12 - GetTotalHeight()),
-                              item.DesiredSize));
-
-        // 启动自动关闭
-        item.StartAutoDismiss(() => RemoveItem(item));
-    }
-
-    private void RemoveItem(ToastItem item)
-    {
-        _activeItems.Remove(item);
-        RemoveVisualChild(item);
-        RemoveLogicalChild(item);
-        // 重新布局剩余项
-        Rearrange();
-    }
-
-    private double GetTotalHeight()
-    {
-        double h = 0;
-        foreach (var item in _activeItems)
-            h += item.DesiredSize.Height + 8;
-        return h;
-    }
-
-    private void Rearrange()
-    {
-        double y = ActualHeight - 12;
-        for (int i = _activeItems.Count - 1; i >= 0; i--)
+        public ToastControl()
         {
-            var item = _activeItems[i];
-            y -= item.DesiredSize.Height;
-            item.Arrange(new Rect(new Point(ActualWidth - item.DesiredSize.Width - 12, y), item.DesiredSize));
-            y -= 8;
-        }
-    }
-
-    protected override int VisualChildrenCount => _activeItems.Count;
-
-    protected override Visual GetVisualChild(int index) => _activeItems[index];
-
-    protected override HitTestResult? HitTestCore(PointHitTestParameters hitTestParameters)
-    {
-        // 只有命中具体 ToastItem 时才拦截，点击其余空白区域 100% 穿透给下层页面与 WebView2
-        for (int i = _activeItems.Count - 1; i >= 0; i--)
-        {
-            var item = _activeItems[i];
-            var hit = VisualTreeHelper.HitTest(item, hitTestParameters.HitPoint);
-            if (hit != null)
+            _panel = new StackPanel
             {
-                return hit;
+                Orientation = Orientation.Vertical,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Margin = new Thickness(0, 0, 16, 16),
+            };
+            Content = _panel;
+            Focusable = false;
+            IsTabStop = false;
+            HorizontalAlignment = HorizontalAlignment.Right;
+            VerticalAlignment = VerticalAlignment.Bottom;
+            MaxWidth = 380;
+        }
+
+        /// <summary>添加一条通知并显示。</summary>
+        public void Show(ToastNotification notification)
+        {
+            var item = CreateToastItem(notification);
+            _panel.Children.Add(item);
+
+            // 限制最多同时展示 4 条，超出时移出最早的一条
+            if (_panel.Children.Count > 4)
+            {
+                _panel.Children.RemoveAt(0);
             }
         }
-        return null;
-    }
 
-    /// <summary>单条 Toast 条目（内部控件）。</summary>
-    private class ToastItem : FrameworkElement
-    {
-        private readonly ToastNotification _notification;
-        private readonly Border _border;
-        private readonly Storyboard _fadeOut;
-        private Action? _onDismiss;
-
-        public ToastItem(ToastNotification notification)
+        private FrameworkElement CreateToastItem(ToastNotification notification)
         {
-            _notification = notification;
-
             var (bg, icon) = notification.Type switch
             {
                 ToastType.Success => (new SolidColorBrush(Color.FromRgb(240, 255, 244)), "✓"),
@@ -121,102 +68,102 @@ public class ToastControl : Control
             stack.Children.Add(new TextBlock
             {
                 Text = icon,
-                FontSize = 16,
+                FontSize = 15,
+                FontWeight = FontWeights.Bold,
                 Foreground = accent,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 8, 0),
             });
-            stack.Children.Add(new TextBlock
+
+            var textStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            if (!string.IsNullOrWhiteSpace(notification.Title))
+            {
+                textStack.Children.Add(new TextBlock
+                {
+                    Text = notification.Title,
+                    FontSize = 12,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = textColor,
+                    Margin = new Thickness(0, 0, 0, 2),
+                });
+            }
+            textStack.Children.Add(new TextBlock
             {
                 Text = notification.Message,
-                FontSize = 13,
+                FontSize = 12,
                 Foreground = textColor,
                 TextWrapping = TextWrapping.Wrap,
                 MaxWidth = 280,
-                VerticalAlignment = VerticalAlignment.Center,
             });
+            stack.Children.Add(textStack);
 
             var closeBtn = new TextBlock
             {
-                Text = "×",
-                FontSize = 14,
+                Text = "✕",
+                FontSize = 11,
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 174, 192)),
                 VerticalAlignment = VerticalAlignment.Top,
                 Cursor = System.Windows.Input.Cursors.Hand,
                 Margin = new Thickness(8, 2, 0, 0),
             };
-            closeBtn.MouseDown += (_, _) => _onDismiss?.Invoke();
 
             var inner = new Grid();
-            inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             Grid.SetColumn(stack, 0);
             Grid.SetColumn(closeBtn, 1);
             inner.Children.Add(stack);
             inner.Children.Add(closeBtn);
 
-            _border = new Border
+            var border = new Border
             {
                 Child = inner,
                 Background = bg,
                 BorderBrush = accent,
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(8, 6, 8, 6),
+                Padding = new Thickness(10, 8, 10, 8),
+                Margin = new Thickness(0, 6, 0, 0),
+                MaxWidth = 350,
+                HorizontalAlignment = HorizontalAlignment.Right,
                 Effect = new System.Windows.Media.Effects.DropShadowEffect
                 {
-                    BlurRadius = 8,
-                    ShadowDepth = 4,
-                    Color = Color.FromArgb(0x1A, 0, 0, 0),
-                    Opacity = 0.1,
+                    BlurRadius = 10,
+                    ShadowDepth = 3,
+                    Color = Color.FromArgb(0x22, 0, 0, 0),
+                    Opacity = 0.15,
                     RenderingBias = System.Windows.Media.Effects.RenderingBias.Performance,
                 },
             };
 
-            AddVisualChild(_border);
-            AddLogicalChild(_border);
-
-            // 淡入动画
-            Opacity = 0;
-            var fadeIn = new DoubleAnimation(0, 1, new Duration(System.TimeSpan.FromMilliseconds(300)))
+            void Dismiss()
             {
-                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
-            };
-            BeginAnimation(OpacityProperty, fadeIn);
+                var fadeOut = new DoubleAnimation(1, 0, new Duration(System.TimeSpan.FromMilliseconds(250)));
+                fadeOut.Completed += (_, _) => _panel.Children.Remove(border);
+                border.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+            }
 
-            // 淡出动画（自动关闭前触发）
-            _fadeOut = new Storyboard();
-            var fadeOutAnim = new DoubleAnimation(1, 0, new Duration(System.TimeSpan.FromMilliseconds(400)));
-            Storyboard.SetTargetProperty(fadeOutAnim, new PropertyPath(OpacityProperty));
-            _fadeOut.Children.Add(fadeOutAnim);
-            _fadeOut.Completed += (_, _) => _onDismiss?.Invoke();
-        }
+            closeBtn.MouseDown += (_, _) => Dismiss();
 
-        public void StartAutoDismiss(Action onDismiss)
-        {
-            _onDismiss = onDismiss;
-            var timer = new System.Timers.Timer(_notification.DurationMs) { AutoReset = false };
+            // 自动淡出定时器
+            var duration = notification.DurationMs > 0 ? notification.DurationMs : 3500;
+            var timer = new System.Timers.Timer(duration) { AutoReset = false };
             timer.Elapsed += (_, _) =>
             {
-                Dispatcher.Invoke(() => _fadeOut.Begin(this));
+                Dispatcher.Invoke(Dismiss);
                 timer.Dispose();
             };
             timer.Start();
-        }
 
-        protected override Size MeasureOverride(Size availableSize)
-        {
-            _border.Measure(new Size(320, double.PositiveInfinity));
-            return _border.DesiredSize;
-        }
+            // 淡入动画
+            border.Opacity = 0;
+            var fadeIn = new DoubleAnimation(0, 1, new Duration(System.TimeSpan.FromMilliseconds(250)))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            };
+            border.BeginAnimation(UIElement.OpacityProperty, fadeIn);
 
-        protected override Size ArrangeOverride(Size finalSize)
-        {
-            _border.Arrange(new Rect(default, finalSize));
-            return finalSize;
+            return border;
         }
-
-        protected override Visual GetVisualChild(int index) => _border;
-        protected override int VisualChildrenCount => 1;
     }
 }

@@ -33,4 +33,8 @@ public sealed record ChatRequest
     /// <summary>办公角色人设标识（office/architect/engineer/brainstorm）。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("persona")]
     public string? Persona { get; init; }
+
+    /// <summary>本次对话临时附带的本地文档或图片路径列表（由后端工具实时提取与OCR）。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("attachments")]
+    public IReadOnlyList<string>? Attachments { get; init; }
 }

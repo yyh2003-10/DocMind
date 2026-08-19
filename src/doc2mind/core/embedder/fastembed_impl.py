@@ -284,6 +284,7 @@ class FastEmbedEmbedder(Embedder):
     def embed(self, chunks: Sequence[Chunk]) -> Iterator:
         """批量嵌入，逐批 yield 向量。"""
         self._ensure_loaded()
+        assert self._impl is not None
         texts = [c.content for c in chunks]
         try:
             yield from self._impl.embed(texts, batch_size=self.settings.embed_batch_size)
@@ -293,6 +294,7 @@ class FastEmbedEmbedder(Embedder):
     def embed_query(self, text: str) -> object:
         """嵌入单条查询。"""
         self._ensure_loaded()
+        assert self._impl is not None
         try:
             return next(self._impl.query_embed([text]))
         except Exception as e:  # noqa: BLE001
@@ -301,6 +303,7 @@ class FastEmbedEmbedder(Embedder):
     def embed_texts(self, texts: Sequence[str]) -> Iterator:
         """嵌入纯文本列表（重建索引用）。"""
         self._ensure_loaded()
+        assert self._impl is not None
         try:
             yield from self._impl.embed(list(texts), batch_size=self.settings.embed_batch_size)
         except Exception as e:  # noqa: BLE001
@@ -310,3 +313,148 @@ class FastEmbedEmbedder(Embedder):
 def get_model_dim(model_name: str) -> int | None:
     """查询已知模型的维度。"""
     return _MODEL_DIM.get(model_name)
+
+
+# --- 带进度的模型下载（供 HTTP SSE 端点 / 设置页下载按钮）---
+def _resolve_hf_source(model_name: str) -> str | None:
+    """从 fastembed 支持列表里查出模型对应的 HF 源 repo（如 Qdrant/bge-small-zh-v1.5）。"""
+    try:
+        from fastembed import TextEmbedding
+
+        for spec in TextEmbedding.list_supported_models():
+            if spec.get("model", "").lower() == model_name.lower():
+                sources = spec.get("sources", {})
+                hf = sources.get("hf")
+                if hf:
+                    return hf
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _model_required_files(model_name: str) -> list[str]:
+    """返回该模型需要下载的文件名（allow_patterns 子集）。"""
+    base = [
+        "config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "vocab.txt",
+    ]
+    try:
+        from fastembed import TextEmbedding
+
+        for spec in TextEmbedding.list_supported_models():
+            if spec.get("model", "").lower() == model_name.lower():
+                mf = spec.get("model_file", "model_optimized.onnx")
+                base.append(mf)
+                base.append("ort_config.json")
+                break
+    except Exception:  # noqa: BLE001
+        base.append("model_optimized.onnx")
+    return base
+
+
+def download_model_with_progress(
+    model_name: str,
+    settings=None,
+    progress_cb=None,
+) -> str:
+    """把嵌入模型下载到本地缓存，通过 progress_cb 回调上报进度。
+
+    与 fastembed 内部下载路径兼容：下载到 ``cache_dir/models--<hf_repo>/snapshots/<rev>/``，
+    下载完成后返回该 snapshot 目录路径，可直接作为 ``specific_model_path`` 传给
+    ``TextEmbedding`` 跳过其内部下载。
+
+    Args:
+        model_name: 模型名（如 ``BAAI/bge-small-zh-v1.5``）。
+        settings: 配置；None 用全局配置。
+        progress_cb: 可选回调 ``cb(downloaded_files, total_files, downloaded_bytes, total_bytes)``。
+
+    Returns:
+        下载完成的 snapshot 目录路径（字符串）。
+
+    Raises:
+        EmbedderError: 下载失败（含网络引导信息）。
+    """
+    from pathlib import Path
+
+    from doc2mind.core.config import get_settings
+    from doc2mind.core.embedder.base import EmbedderError
+
+    if settings is None:
+        settings = get_settings()
+
+    hf_repo = _resolve_hf_source(model_name)
+    if hf_repo is None:
+        raise EmbedderError(
+            f"无法解析模型 {model_name} 的 HuggingFace 源仓库，"
+            "请确认模型名在 fastembed 支持列表中。"
+        )
+
+    if not os.environ.get("HF_ENDPOINT"):
+        os.environ["HF_ENDPOINT"] = settings.hf_endpoint or HF_MIRROR
+
+    cache_dir = str(settings.embed_cache_dir)
+    required = _model_required_files(model_name)
+
+    try:
+        from huggingface_hub import HfApi, hf_hub_download
+    except ImportError as e:
+        raise EmbedderError(
+            "huggingface_hub 未安装，无法下载模型。请运行：pip install huggingface_hub"
+        ) from e
+
+    api = HfApi()
+    try:
+        repo_info = api.repo_info(hf_repo, files_metadata=True)
+    except Exception as e:
+        raise EmbedderError(_download_error_message(model_name, e)) from e
+
+    file_infos = []
+    for sib in repo_info.siblings:
+        if sib.rfilename in required:
+            file_infos.append((sib.rfilename, getattr(sib, "size", None) or 0))
+    total_bytes = sum(sz for _, sz in file_infos)
+    total_files = len(file_infos)
+    downloaded_bytes = 0
+    downloaded_files = 0
+
+    snapshot_rev = repo_info.sha
+    snapshot_dir = (
+        Path(cache_dir)
+        / f"models--{hf_repo.replace('/', '--')}"
+        / "snapshots"
+        / snapshot_rev
+    )
+
+    local_path = ""
+    for fname, fsize in file_infos:
+        try:
+            local_path = hf_hub_download(
+                repo_id=hf_repo,
+                filename=fname,
+                cache_dir=cache_dir,
+            )
+        except Exception as e:
+            raise EmbedderError(_download_error_message(model_name, e)) from e
+
+        downloaded_files += 1
+        try:
+            downloaded_bytes += Path(local_path).stat().st_size
+        except OSError:
+            downloaded_bytes += fsize
+        if progress_cb is not None:
+            try:
+                progress_cb(downloaded_files, total_files, downloaded_bytes, total_bytes)
+            except Exception:  # noqa: BLE001
+                pass
+
+    if not snapshot_dir.is_dir():
+        snapshot_dir = Path(local_path).parent
+
+    logger.info(
+        "模型 %s 下载完成: %s（%d 文件，%.2f MB）",
+        model_name, snapshot_dir, downloaded_files, downloaded_bytes / (1024 * 1024),
+    )
+    return str(snapshot_dir)

@@ -352,14 +352,8 @@
             const target = nodeMap.get(nodeId);
             selectedNodeId = nodeId;
             
-            // 视口以目标节点为中心
-            const w = window.innerWidth;
-            const h = window.innerHeight;
-            transform.x = (w / 2) - target.x * transform.scale;
-            transform.y = (h / 2) - target.y * transform.scale;
-            
-            reheat();
-            render();
+            // 平滑聚焦到目标节点，不打乱已有排布
+            animateFocusTo(target);
         };
 
         // 监听来自 WPF 的原生 PostWebMessage 事件
@@ -892,6 +886,98 @@
             return null;
         }
 
+        // 平滑相机对焦动画引擎（聚焦点击节点及其所有关联邻居节点群）
+        let focusAnimationId = null;
+
+        function animateFocusTo(targetNode) {
+            if (!targetNode) return;
+            if (focusAnimationId) {
+                cancelAnimationFrame(focusAnimationId);
+                focusAnimationId = null;
+            }
+
+            // 1. 获取目标节点及其所有直接相连的邻居节点（形成一阶子图群）
+            const neighborIds = adjMap.get(targetNode.id) || new Set();
+            const clusterNodes = [targetNode];
+            neighborIds.forEach(id => {
+                const n = nodeMap.get(id);
+                if (n) clusterNodes.push(n);
+            });
+
+            // 2. 计算整个相关节点群的外接包围盒 (Bounding Box)
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            clusterNodes.forEach(n => {
+                const padW = (n.pillW ? n.pillW / 2 : n.size) + 24;
+                const padH = n.size + (n.pillH || 20) + 24;
+                minX = Math.min(minX, n.x - padW);
+                maxX = Math.max(maxX, n.x + padW);
+                minY = Math.min(minY, n.y - padH);
+                maxY = Math.max(maxY, n.y + padH);
+            });
+
+            const clusterW = Math.max(maxX - minX, 100);
+            const clusterH = Math.max(maxY - minY, 100);
+            const clusterCenterX = (minX + maxX) / 2;
+            const clusterCenterY = (minY + maxY) / 2;
+
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+
+            // 3. 计算可用视野（在宽屏下扣除右侧 420px 抽屉占位，预留上下左右安全内边距）
+            const availW = w > 850 ? Math.max(300, w - 450) : Math.max(200, w - 40);
+            const availH = Math.max(200, h - 90);
+
+            // 4. 计算最佳缩放比例：将整个相关节点群完整纳入视野中
+            const scaleX = availW / (clusterW + 40);
+            const scaleY = availH / (clusterH + 40);
+            let finalScale = Math.min(scaleX, scaleY);
+            
+            // 舒适清晰度限制（单节点时放大到 1.15，多关联邻居时自适应但保持在清晰范围 [0.45, 1.25]）
+            if (clusterNodes.length <= 1) {
+                finalScale = 1.15;
+            } else {
+                finalScale = Math.max(0.45, Math.min(1.25, finalScale));
+            }
+
+            // 5. 目标视口中心对齐
+            const visualCenterX = w > 850 ? (w - 420) / 2 : (w / 2);
+            const visualCenterY = h / 2;
+
+            const targetTransformX = visualCenterX - clusterCenterX * finalScale;
+            const targetTransformY = visualCenterY - clusterCenterY * finalScale;
+
+            const startX = transform.x;
+            const startY = transform.y;
+            const startScale = transform.scale;
+
+            const startTime = performance.now();
+            const duration = 400; // 400ms 丝滑平移动画
+
+            function cubicEaseInOut(t) {
+                return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+            }
+
+            function frame(now) {
+                const elapsed = now - startTime;
+                const progress = Math.min(1, elapsed / duration);
+                const ease = cubicEaseInOut(progress);
+
+                transform.x = startX + (targetTransformX - startX) * ease;
+                transform.y = startY + (targetTransformY - startY) * ease;
+                transform.scale = startScale + (finalScale - startScale) * ease;
+
+                render();
+
+                if (progress < 1) {
+                    focusAnimationId = requestAnimationFrame(frame);
+                } else {
+                    focusAnimationId = null;
+                }
+            }
+
+            focusAnimationId = requestAnimationFrame(frame);
+        }
+
         // 交互事件监听
         canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
@@ -899,16 +985,17 @@
             zoomAt(e.clientX, e.clientY, factor);
         }, { passive: false });
 
+        let dragNodePending = null;
+        let isNodeActuallyDragged = false;
+
         canvas.addEventListener('mousedown', (e) => {
             if (e.button !== 0) return;
             const pos = screenToWorld(e.clientX, e.clientY);
             const clicked = findNodeAt(pos.x, pos.y);
 
             if (clicked) {
-                draggedNode = clicked;
-                clicked.fx = clicked.x;
-                clicked.fy = clicked.y;
-                reheat();
+                dragNodePending = { node: clicked, startX: e.clientX, startY: e.clientY };
+                isNodeActuallyDragged = false;
             } else {
                 isDraggingCanvas = true;
                 dragStart.x = e.clientX - transform.x;
@@ -917,13 +1004,21 @@
         });
 
         window.addEventListener('mousemove', (e) => {
-            if (draggedNode) {
-                const pos = screenToWorld(e.clientX, e.clientY);
-                draggedNode.fx = pos.x;
-                draggedNode.fy = pos.y;
-                reheat();
-                hideTooltip();
-                return;
+            // 只有当鼠标实际位移超过 4px 时，才视作拖拽节点，并启动物理扰动
+            if (dragNodePending) {
+                const dist = Math.hypot(e.clientX - dragNodePending.startX, e.clientY - dragNodePending.startY);
+                if (dist > 4 || draggedNode) {
+                    draggedNode = dragNodePending.node;
+                    isNodeActuallyDragged = true;
+                    const pos = screenToWorld(e.clientX, e.clientY);
+                    draggedNode.fx = pos.x;
+                    draggedNode.fy = pos.y;
+                    draggedNode.x = pos.x;
+                    draggedNode.y = pos.y;
+                    reheat();
+                    hideTooltip();
+                    return;
+                }
             }
 
             if (isDraggingCanvas) {
@@ -956,18 +1051,25 @@
                 draggedNode.fx = null;
                 draggedNode.fy = null;
                 draggedNode = null;
-                reheat();
             }
+            dragNodePending = null;
             isDraggingCanvas = false;
         });
 
         canvas.addEventListener('click', (e) => {
+            // 若刚经历大幅拖拽位移，则忽略点击聚焦
+            if (isNodeActuallyDragged) {
+                isNodeActuallyDragged = false;
+                return;
+            }
+
             const pos = screenToWorld(e.clientX, e.clientY);
             const clicked = findNodeAt(pos.x, pos.y);
 
             if (clicked) {
                 selectedNodeId = clicked.id;
-                render();
+                // 平滑把视口镜头推近并聚焦在点击的节点中心
+                animateFocusTo(clicked);
                 if (window.chrome && window.chrome.webview) {
                     window.chrome.webview.postMessage(JSON.stringify({
                         type: 'node_click',
