@@ -38,14 +38,16 @@
 
     <!-- Text — Apple label hierarchy (dark) -->
     <Color x:Key="TextPrimaryColor">#F5F5F7</Color>
-    <Color x:Key="TextSecondaryColor">#8E8E93</Color>
-    <Color x:Key="TextTertiaryColor">#AEAEB2</Color>
-    <Color x:Key="TextMutedColor">#48484A</Color>
+    <Color x:Key="TextSecondaryColor">#A1A1A6</Color>
+    <Color x:Key="TextTertiaryColor">#8E8E93</Color>
+    <Color x:Key="TextMutedColor">#636366</Color>
     <Color x:Key="TextInverseColor">#000000</Color>
     <Color x:Key="LinkColor">#0A84FF</Color>
+    <Color x:Key="AccentColor">#0A84FF</Color>
 
     <!-- ==================== Brushes ==================== -->
     <SolidColorBrush x:Key="PrimaryBrush" Color="{StaticResource PrimaryColor}"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource PrimaryColor}"/>
     <SolidColorBrush x:Key="PrimaryLightBrush" Color="{StaticResource PrimaryLight}"/>
     <SolidColorBrush x:Key="PrimaryHoverBrush" Color="{StaticResource PrimaryHover}"/>
     <SolidColorBrush x:Key="PrimaryActiveBrush" Color="{StaticResource PrimaryActive}"/>
@@ -106,6 +108,10 @@
     <Style TargetType="TextElement">
         <Setter Property="FontFamily" Value="SF Pro Display, Segoe UI Variable Display, Segoe UI, Microsoft YaHei, sans-serif"/>
         <Setter Property="FontSize" Value="14"/>
+        <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+    </Style>
+    <Style TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="SF Pro Display, Segoe UI Variable Display, Segoe UI, Microsoft YaHei, sans-serif"/>
         <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
     </Style>
     <Style TargetType="Control">
@@ -194,19 +200,21 @@
         <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
         <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
         <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
-        <Setter Property="BorderThickness" Value="0"/>
-        <Setter Property="Padding" Value="24,10"/>
-        <Setter Property="MinHeight" Value="40"/>
-        <Setter Property="MinWidth" Value="80"/>
-        <Setter Property="FontWeight" Value="Semibold"/>
-        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="16,8"/>
+        <Setter Property="MinHeight" Value="34"/>
+        <Setter Property="MinWidth" Value="60"/>
+        <Setter Property="FontWeight" Value="Medium"/>
+        <Setter Property="FontSize" Value="13"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="UseLayoutRounding" Value="True"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
                     <Border x:Name="Root" Background="{TemplateBinding Background}"
-                            CornerRadius="10" Padding="{TemplateBinding Padding}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="8" Padding="{TemplateBinding Padding}"
                             SnapsToDevicePixels="True">
                         <ContentPresenter HorizontalAlignment="Center"
                                           VerticalAlignment="Center"
@@ -227,6 +235,9 @@
             </Setter.Value>
         </Setter>
     </Style>
+
+    <!-- 默认 Button 样式：未显式指定 Style 时自动继承 SecondaryButtonStyle 质感 -->
+    <Style TargetType="Button" BasedOn="{StaticResource SecondaryButtonStyle}"/>
 
     <Style x:Key="DangerButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="{StaticResource DangerBrush}"/>

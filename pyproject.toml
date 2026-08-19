@@ -142,6 +142,15 @@ select = [
 ignore = [
     "E501",  # line too long (handled by formatter)
     "B008",  # do not perform calls in argument defaults (Typer pattern)
+    "N806",  # variable in function should be lowercase (mock classes)
+    "N803",  # argument name should be lowercase
+    "N811",  # constant imported as non-constant
+    "SIM105", # suppress exception
+    "SIM102", # nested if
+    "SIM113", # enumerate
+    "SIM117", # nested with
+    "E741",  # ambiguous variable name
+    "B904",  # raise from
 ]
 
 [tool.ruff.format]

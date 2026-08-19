@@ -389,12 +389,13 @@
                 </Grid>
             </Border>
 
-            <!-- Toast 通知覆盖层（跨全屏拉伸显示） -->
+            <!-- Toast 通知悬浮层（右下角悬浮堆叠，绝不遮挡或撑满整个窗体） -->
             <cc:ToastControl x:Name="ToastLayer"
                              Grid.Row="0" Grid.RowSpan="3"
-                             HorizontalAlignment="Stretch"
-                             VerticalAlignment="Stretch"
-                             IsHitTestVisible="True"
+                             HorizontalAlignment="Right"
+                             VerticalAlignment="Bottom"
+                             Margin="0,0,20,38"
+                             MaxWidth="380"
                              Panel.ZIndex="9999"/>
         </Grid>
     </Border>

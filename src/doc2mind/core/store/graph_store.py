@@ -16,7 +16,7 @@ import logging
 import sqlite3
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,7 +60,7 @@ class GraphStore:
         return conn
 
     @contextmanager
-    def _conn(self) -> Iterator[sqlite3.Connection]:
+    def _conn(self) -> Generator[sqlite3.Connection, None, None]:
         """按操作开关连接并自动管理事务。"""
         conn = self._connect()
         self._ensure_schema(conn)

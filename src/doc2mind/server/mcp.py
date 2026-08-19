@@ -582,6 +582,64 @@ def _tool_graph_get(collection: str = "default", limit: int = 100) -> str:
         store.close()
 
 
+def _tool_create_artifact(
+    content: str,
+    format: str = "docx",
+    output_path: str | None = None,
+    title: str | None = None,
+    theme: str | None = None,
+) -> str:
+    """创作交付物导出：编译生成物理 PPTX / DOCX / XLSX / HTML 文件。"""
+    from doc2mind.core.creator import export_artifact
+
+    res = export_artifact(
+        content=content,
+        target_format=format,
+        output_path=output_path,
+        title_override=title,
+        theme=theme,
+    )
+    if not res.ok:
+        return _error("EXPORT_FAILED", f"导出失败: {res.error}")
+    return _ok({
+        "ok": True,
+        "format": res.artifact_type,
+        "file_path": res.file_path,
+        "file_name": res.file_name,
+        "file_size_bytes": res.file_size_bytes,
+    })
+
+
+def _tool_inspect_artifact(content: str) -> str:
+    """创作交付物质量诊断：对 PPT 演示文稿进行全方位效果自检与健康度评分。"""
+    from doc2mind.core.creator import inspect_presentation
+
+    report = inspect_presentation(content)
+    return _ok({
+        "score": report.score,
+        "grade": report.grade,
+        "summary": report.summary,
+        "slide_count": report.slide_count,
+        "notes_coverage_pct": report.notes_coverage_pct,
+        "archetype_diversity": report.archetype_diversity,
+        "total_words": report.total_words,
+        "avg_words_per_slide": report.avg_words_per_slide,
+        "issues": [
+            {
+                "level": i.level.value,
+                "category": i.category,
+                "message": i.message,
+                "slide_index": i.slide_index,
+                "fix_suggestion": i.fix_suggestion,
+            }
+            for i in report.issues
+        ],
+        "recommendations": report.recommendations,
+        "highlights": report.highlights,
+    })
+
+
+
 
 # --- 工具元数据 ---
 TOOLS_SCHEMA: list[dict[str, Any]] = [
@@ -750,6 +808,32 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "create_artifact",
+        "description": "多格式知识创作导出：将知识内容、研报、教案、表格编译生成物理 PPTX / DOCX / XLSX / HTML 文件。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "Markdown 或 Artifact 语法内容。"},
+                "format": {"type": "string", "enum": ["pptx", "docx", "xlsx", "html", "md"], "default": "docx", "description": "目标导出格式。"},
+                "title": {"type": "string", "description": "交付物标题（可选）。"},
+                "theme": {"type": "string", "enum": ["tech_blue", "emerald_green", "modern_purple", "warm_orange", "dark_elegant"], "default": "tech_blue", "description": "演示文稿企业主题配色。"},
+                "output_path": {"type": "string", "description": "目标输出物理文件绝对路径（可选）。"},
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "inspect_artifact",
+        "description": "对 PPT 演示文稿大纲进行效果自检、健康度体检评分 (0-100分) 与排版/文字密度/演讲准备度诊断。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "Markdown 或 Marp 语法幻灯片内容。"},
+            },
+            "required": ["content"],
+        },
+    },
 ]
 
 
@@ -773,13 +857,14 @@ async def _handle(request: dict[str, Any]) -> dict[str, Any]:
     params = request.get("params", {})
 
     if method == "initialize":
+        from doc2mind import __version__
         return {
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "doc2mind", "version": "0.1.0"},
+                "serverInfo": {"name": "doc2mind", "version": __version__},
             },
         }
 
@@ -843,6 +928,8 @@ def _dispatch_tool(name: str, args: dict[str, Any]) -> str:
         "chat": _tool_chat,
         "curate": _tool_curate,
         "graph_get": _tool_graph_get,
+        "create_artifact": _tool_create_artifact,
+        "inspect_artifact": _tool_inspect_artifact,
     }
     handler = handlers.get(name)
     if handler is None:

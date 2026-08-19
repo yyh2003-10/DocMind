@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from doc2mind.core.chunker import chunk_document
 from doc2mind.core.config import Settings, get_settings
@@ -505,7 +506,88 @@ def _fail(path: Path, collection: str, err: str, t0: float) -> IngestResult:
     )
 
 
+def reindex_store(
+    collection: str | None = None,
+    model: str | None = None,
+    settings: Settings | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> dict[str, Any]:
+    """对知识库分块进行重新嵌入与向量索引重建。
+
+    支持原地更新向量与跨维度表结构重建（rebuild_chunk_embeddings）。
+    """
+    settings = settings or get_settings()
+    t0 = time.perf_counter()
+
+    if model:
+        from doc2mind.core.embedder.catalog import get_model_info
+
+        info = get_model_info(model)
+        dim = info.dim if info else settings.embed_dim
+        embedder = get_embedder(settings, model_name=model, dimension=dim)
+    else:
+        embedder = get_embedder(settings)
+
+    store = VectorStore(settings.db_path, embedder.dimension)
+    store.open()
+    try:
+        current_dim = store.dimension
+        need_rebuild = current_dim != embedder.dimension
+
+        pairs = store.list_chunk_contents(collection)
+        total = len(pairs)
+        if total == 0:
+            return {
+                "ok": True,
+                "total": 0,
+                "processed": 0,
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                "model": embedder.model_name,
+                "dimension": embedder.dimension,
+            }
+
+        batch_size = settings.embed_batch_size or 32
+        processed = 0
+        rebuild_pairs: list[tuple[int, object]] = []
+
+        for i in range(0, total, batch_size):
+            batch = pairs[i : i + batch_size]
+            texts = [content for _, content in batch]
+            embeddings = list(embedder.embed_texts(texts))
+            if len(embeddings) != len(batch):
+                raise RuntimeError(f"嵌入数量 ({len(embeddings)}) 与批次 ({len(batch)}) 不一致")
+
+            new_pairs = [
+                (cid, emb) for (cid, _), emb in zip(batch, embeddings, strict=False)
+            ]
+            if need_rebuild:
+                rebuild_pairs.extend(new_pairs)
+            else:
+                store.update_embeddings(new_pairs)
+
+            processed += len(batch)
+            if progress_callback:
+                progress_callback(processed, total)
+
+        if need_rebuild:
+            store.rebuild_chunk_embeddings(rebuild_pairs, embedder.dimension)
+
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        return {
+            "ok": True,
+            "total": total,
+            "processed": processed,
+            "elapsed_ms": elapsed_ms,
+            "model": embedder.model_name,
+            "dimension": embedder.dimension,
+            "rebuilt_table": need_rebuild,
+        }
+    finally:
+        store.close()
+
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -71,7 +71,7 @@ class ChatStore:
         return conn
 
     @contextmanager
-    def _conn(self) -> Iterator[sqlite3.Connection]:
+    def _conn(self) -> Generator[sqlite3.Connection, None, None]:
         """按操作开关连接：内层 with 管事务（成功提交/异常回滚），finally 关连接。"""
         conn = self._connect()
         try:
