@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 
+import httpx
+
 from doc2mind.core.llm.base import LLMClient, LLMError, sanitize_max_tokens
 
 _DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"

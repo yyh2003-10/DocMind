@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import threading
@@ -217,7 +218,7 @@ def _append_turn(
         if assistant_content is not None:
             sources_json = None
             if sources:
-                try:
+                with contextlib.suppress(Exception):
                     sources_json = json.dumps([
                         {
                             "index": s.index,
@@ -233,8 +234,6 @@ def _append_turn(
                         }
                         for s in sources
                     ], ensure_ascii=False)
-                except Exception:  # noqa: BLE001
-                    pass
             store.append_message(
                 chat_id, "assistant", assistant_content, sources_json=sources_json
             )

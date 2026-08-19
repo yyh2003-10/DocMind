@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 
+import httpx
+
 from doc2mind.core.llm.base import LLMClient, LLMError, sanitize_max_tokens
 
 _ANTHROPIC_VERSION = "2023-06-01"
@@ -161,8 +163,7 @@ class AnthropicClient(LLMClient):
 
         url = f"{self._base_url}/v1/messages"
         try:
-            with httpx.Client(timeout=self._timeout) as client:
-                with client.stream(
+            with httpx.Client(timeout=self._timeout) as client, client.stream(
                     "POST",
                     url,
                     json=self._payload(messages, temperature, max_tokens, stream=True),

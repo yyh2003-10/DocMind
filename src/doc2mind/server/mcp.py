@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 import uuid
@@ -173,10 +174,8 @@ def _tool_ingest_job(
         except Exception as e:  # noqa: BLE001
             _update_job(job_id, status="failed", error=str(e), finished_at=_now_iso())
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 store.close()
-            except Exception:  # noqa: BLE001
-                pass
 
     threading.Thread(target=_run, daemon=True).start()
     return _ok({
@@ -419,10 +418,8 @@ def _tool_reindex(
             # 向量写进旧维度表导致损坏。用一次 probe 嵌入强制触发加载。
             _ = list(candidate.embed_texts(["probe"]))
         except Exception as e:  # noqa: BLE001
-            try:
+            with contextlib.suppress(Exception):
                 store.close()
-            except Exception:  # noqa: BLE001
-                pass
             return _error("BAD_REQUEST", f"加载嵌入模型失败: {model_name}: {e}")
         if candidate.dimension != store.embedding_dim:
             need_rebuild = True
@@ -468,10 +465,8 @@ def _tool_reindex(
         except Exception as e:  # noqa: BLE001
             _update_job(job_id, status="failed", error=str(e), finished_at=_now_iso())
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 store.close()
-            except Exception:  # noqa: BLE001
-                pass
 
     threading.Thread(target=_run, daemon=True).start()
     return _ok({
@@ -886,10 +881,8 @@ def run_mcp_server() -> None:
     _dump_sec = os.environ.get("DOC2MIND_MCP_DUMP_SEC")
     if _dump_sec:
         import faulthandler
-        try:
+        with contextlib.suppress(Exception):
             faulthandler.dump_traceback_later(float(_dump_sec), exit=True, file=sys.stderr)
-        except Exception:  # noqa: BLE001 — 诊断钩子失败不影响主流程
-            pass
 
     req_queue: queue.Queue[str | None] = queue.Queue()
 
@@ -946,7 +939,5 @@ def run_mcp_server() -> None:
             except Exception as e:  # noqa: BLE001
                 sys.stderr.write(f"处理请求失败: {e}\n")
 
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(_main())
-    except KeyboardInterrupt:
-        pass
