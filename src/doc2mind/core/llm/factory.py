@@ -37,13 +37,18 @@ def get_llm_client(settings: Settings | None = None) -> LLMClient | None:
         )
 
     if provider == "openai":
-        if not s.llm_api_key:
-            raise LLMError("llm_provider=openai 但 llm_api_key 未配置")
+        api_key = s.llm_api_key
+        base_url = s.llm_base_url or None
+        if not api_key:
+            if base_url and ("localhost" in base_url or "127.0.0.1" in base_url or ":1234" in base_url or ":8000" in base_url):
+                api_key = "lm-studio"
+            else:
+                raise LLMError("llm_provider=openai 但 llm_api_key 未配置")
         from doc2mind.core.llm.openai_impl import OpenAIClient
 
         return OpenAIClient(
-            api_key=s.llm_api_key,
-            base_url=s.llm_base_url or None,
+            api_key=api_key,
+            base_url=base_url,
             model=s.llm_model or "deepseek-chat",
             temperature=s.llm_temperature,
             max_tokens=s.llm_max_tokens,

@@ -31,6 +31,7 @@ from doc2mind.core.converter import (
     ConversionError,
     convert_document,
 )
+from doc2mind.core.embedder.base import Embedder
 from doc2mind.core.loader.detect import get_loader, is_supported
 from doc2mind.core.logging_setup import setup_logging
 from doc2mind.core.pipeline import ingest_path
@@ -81,7 +82,7 @@ def main_callback(
     return
 
 
-def _open_store() -> tuple[VectorStore, object]:
+def _open_store() -> tuple[VectorStore, Embedder]:
     """打开 store + embedder，返回 (store, embedder)。"""
     from doc2mind.core.embedder import get_embedder
 
@@ -397,23 +398,22 @@ def chat(
     top_k: int = typer.Option(5, "--top-k", "-k", help="引用 chunk 数。"),
     chat_id: str | None = typer.Option(None, "--chat-id", help="会话 ID（多轮对话时传同一值）。"),
     collections: list[str] | None = typer.Option(None, "--collections", help="多选知识库集合（逗号分隔或多次传）。"),
+    stream: bool = typer.Option(True, "--stream/--no-stream", help="是否启用实时流式输出。"),
 ) -> None:
     """基于知识库的 RAG 对话：检索相关文档 → 调用 LLM 生成回答。
 
     用法：
-        doc2mind chat "项目架构是什么？"           # 单次问答
+        doc2mind chat "项目架构是什么？"           # 单次问答（默认流式打字机输出）
         doc2mind chat                              # 进入交互式多轮对话
         doc2mind chat --collections prj-a prj-b     # 多集合对话
     """
-    from doc2mind.core.rag import RagError, rag_answer
-
     # 单次问答
     if query:
-        _run_chat_once(query, collection, top_k, chat_id, collections)
+        _run_chat_once(query, collection, top_k, chat_id, collections, stream=stream)
         return
 
     # 交互式多轮对话
-    rprint("[bold green]DocMind RAG 对话[/bold green]（输入 exit / quit 退出）")
+    rprint("[bold green]DocMind RAG 智能对话[/bold green]（输入 exit / quit 退出）")
     rprint("[dim]────────────────────────────────────────[/dim]")
     current_chat_id: str | None = chat_id
     while True:
@@ -429,26 +429,82 @@ def chat(
             rprint("[dim]已退出[/dim]")
             break
 
+        res_chat_id = _run_chat_once(user_input, collection, top_k, current_chat_id, collections, stream=stream)
+        if current_chat_id is None and res_chat_id:
+            current_chat_id = res_chat_id
+
+
+def _run_chat_once(
+    query: str,
+    collection: str,
+    top_k: int,
+    chat_id: str | None = None,
+    collections: list[str] | None = None,
+    stream: bool = True,
+) -> str | None:
+    """执行一次 RAG 对话并输出结果，返回会话 ID。"""
+    from doc2mind.core.rag import RagError, rag_answer, rag_answer_stream
+
+    if stream:
         try:
-            result = rag_answer(
-                query=user_input, collection=collection, top_k=top_k,
-                chat_id=current_chat_id, collections=collections,
-            )
+            final_frame: dict[str, Any] | None = None
+            first_token = True
+            for line in rag_answer_stream(
+                query=query,
+                collection=collection,
+                top_k=top_k,
+                chat_id=chat_id,
+                collections=collections,
+            ):
+                if not line.strip():
+                    continue
+                data = json.loads(line)
+                if "waiting_hint" in data and first_token:
+                    # 检索/思考中
+                    pass
+                elif "token" in data:
+                    if first_token:
+                        rprint("[bold green]DocMind:[/bold green] ", end="")
+                        first_token = False
+                    print(data["token"], end="", flush=True)
+                elif data.get("done"):
+                    final_frame = data
+
+            if first_token and final_frame:
+                rprint(f"[bold green]DocMind:[/bold green] {final_frame.get('answer', '')}")
+            else:
+                print()  # 换行
+
+            if final_frame:
+                sources = final_frame.get("sources", [])
+                if sources:
+                    rprint("\n[bold magenta]引用来源:[/bold magenta]")
+                    for s in sources:
+                        loc = s.get("source", "")
+                        page = s.get("page")
+                        heading = s.get("heading")
+                        idx = s.get("index", 1)
+                        score = s.get("score", 0.0)
+                        loc_str = loc
+                        if page is not None:
+                            loc_str += f" p.{page}"
+                        if heading:
+                            loc_str += f"（{heading}）"
+                        rprint(f"  [{idx}] {loc_str}  [dim]score={score:.2f}[/dim]")
+
+                rprint(
+                    f"[dim]模型: {final_frame.get('model')} ({final_frame.get('provider')}) | "
+                    f"引用 {final_frame.get('total_chunks')} 块 | {final_frame.get('elapsed_ms')}ms[/dim]"
+                )
+                return final_frame.get("chat_id")
+            return None
         except RagError as e:
             rprint(f"[red]对话失败:[/red] {e}")
-            continue
+            if chat_id is None:
+                raise typer.Exit(code=1) from None
+            return None
 
-        # 首次问答后锁定 chat_id
-        if current_chat_id is None:
-            current_chat_id = result.chat_id
-
-        _print_chat_result(result)
-
-
-def _run_chat_once(query: str, collection: str, top_k: int, chat_id: str | None = None, collections: list[str] | None = None) -> None:
-    """执行一次 RAG 对话并输出结果。"""
-    from doc2mind.core.rag import RagError, rag_answer
-
+    # 非流式回退
     try:
         result = rag_answer(
             query=query, collection=collection, top_k=top_k, chat_id=chat_id,
@@ -456,9 +512,12 @@ def _run_chat_once(query: str, collection: str, top_k: int, chat_id: str | None 
         )
     except RagError as e:
         rprint(f"[red]对话失败:[/red] {e}")
-        raise typer.Exit(code=1) from None
+        if chat_id is None:
+            raise typer.Exit(code=1) from None
+        return None
 
     _print_chat_result(result)
+    return result.chat_id
 
 
 def _print_chat_result(result: Any) -> None:
@@ -482,6 +541,104 @@ def _print_chat_result(result: Any) -> None:
     rprint(
         f"[dim]模型: {result.model} ({result.provider}) | "
         f"引用 {result.total_chunks} 块 | {result.elapsed_ms}ms[/dim]"
+    )
+
+
+@app.command()
+def doctor(
+    network: bool = typer.Option(True, "--network/--no-network", help="是否包含网络镜像连通性测试。"),
+) -> None:
+    """执行系统环境全面体检，诊断 Python/存储/模型/GPU/网络状态并提供修复建议。"""
+    from doc2mind.core.doctor import run_diagnostics
+
+    with console.status("[bold green]正在执行系统体检...[/bold green]"):
+        report = run_diagnostics(check_network=network)
+
+    status_color = {
+        "ok": "green",
+        "warning": "yellow",
+        "error": "red",
+    }.get(report.overall_status, "white")
+
+    rprint(f"\n[bold]DocMind 系统体检诊断报告[/bold] (健康评分: [{status_color}]{report.score}/100[/{status_color}])")
+    rprint(f"[{status_color}]{report.summary}[/{status_color}]\n")
+
+    table = Table(title="各项检查详情")
+    table.add_column("检查项目", style="cyan")
+    table.add_column("状态", justify="center")
+    table.add_column("检测详情")
+    table.add_column("修复/优化建议", style="yellow")
+
+    for c in report.checks:
+        badge = {
+            "ok": "[green][正常][/green]",
+            "warning": "[yellow][待优化][/yellow]",
+            "error": "[red][异常][/red]",
+            "info": "[blue][提示][/blue]",
+        }.get(c.status, c.status)
+        table.add_row(
+            c.name,
+            badge,
+            c.message + (f"\n[dim]{c.detail}[/dim]" if c.detail else ""),
+            c.fix_suggestion or "-",
+        )
+
+    console.print(table)
+
+
+@app.command()
+def sample(
+    collection: str = typer.Option("default", "--collection", "-c", help="注入的目标知识库集合。"),
+) -> None:
+    """一键注入内置示例文档库，供新用户立即体验语义检索与 AI 对话。"""
+    from doc2mind.core.sample_data import ingest_sample_knowledgebase
+
+    with console.status(f"[bold green]正在导入新手示例文档到集合 [{collection}]...[/bold green]"):
+        res = ingest_sample_knowledgebase(collection=collection)
+
+    if res.get("ok"):
+        rprint(f"[green][成功] 示例知识库导入成功！[/green] (分块: {res.get('chunk_count')}, 耗时: {res.get('elapsed_ms')}ms)")
+        rprint("\n建议立即尝试以下命令体验：")
+        rprint(f"  doc2mind search \"DocMind 支持哪些格式？\" --collection {collection}")
+        rprint(f"  doc2mind chat \"什么是双引擎混合检索？\" --collection {collection}")
+    else:
+        rprint(f"[red][失败] 示例知识库导入失败:[/red] {res.get('error')}")
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def reindex(
+    collection: str | None = typer.Option(None, "--collection", "-c", help="要重建索引的集合（默认全库）。"),
+    model: str | None = typer.Option(None, "--model", "-m", help="目标嵌入模型名称（不传使用当前配置模型）。"),
+) -> None:
+    """重建向量索引：用指定或当前嵌入模型重新计算向量（支持跨模型与跨维度迁移）。"""
+    from doc2mind.core.config import save_settings
+    from doc2mind.core.pipeline import reindex_store
+
+    settings = get_settings()
+    target_model = model or settings.embed_model
+
+    with console.status(f"[bold green]正在使用模型 [{target_model}] 重建向量索引...[/bold green]"):
+        try:
+            res = reindex_store(
+                collection=collection,
+                model=model,
+                settings=settings,
+            )
+        except Exception as e:  # noqa: BLE001
+            rprint(f"[red][失败] 重建索引失败:[/red] {e}")
+            raise typer.Exit(code=1) from e
+
+    if model and model != settings.embed_model:
+        settings.embed_model = model
+        settings.embed_dim = res["dimension"]
+        save_settings(settings)
+        rprint(f"[green]已同步默认嵌入模型为:[/green] {model} ({res['dimension']} 维)")
+
+    rprint(
+        f"[green][成功] 索引重建完成！[/green] "
+        f"共处理 {res['processed']}/{res['total']} 个分块，耗时 {res['elapsed_ms']}ms "
+        f"（模型: {res['model']}, 维度: {res['dimension']}）"
     )
 
 
@@ -848,10 +1005,8 @@ def _find_free_port(host: str, port: int, max_tries: int = 100) -> int:
     for candidate in range(port, port + max_tries):
         if _is_port_free(host, candidate):
             return candidate
-    raise typer.Exit(
-        code=1,
-        message=f"[red]error[/red] 端口 {port}~{port + max_tries - 1} 均被占用，无法启动服务。",
-    )
+    rprint(f"[red]error[/red] 端口 {port}~{port + max_tries - 1} 均被占用，无法启动服务。")
+    raise typer.Exit(code=1)
 
 
 def _write_server_port(port: int) -> None:

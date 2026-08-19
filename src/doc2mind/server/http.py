@@ -20,7 +20,8 @@
     POST   /v1/reindex
     POST   /v1/curate          (AI 整理：打标签/归类/去重/归纳，异步任务)
     GET    /v1/jobs/{id}
-    GET    /v1/events            (SSE，可选)
+    GET    /v1/jobs/{id}/events   (SSE，job 进度实时流)
+    GET    /v1/events             (SSE，可选)
 
 启动：
     doc2mind serve
@@ -30,6 +31,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
@@ -40,21 +42,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from doc2mind.core.config import get_config_load_error, get_settings
+from doc2mind.core.config import Settings, get_config_load_error, get_settings
 from doc2mind.core.converter import (
     SUPPORTED_FORMATS,
     ConversionError,
     convert_document,
 )
+from doc2mind.core.creator import export_artifact
 from doc2mind.core.embedder import get_embedder
+from doc2mind.core.embedder.base import Embedder
 from doc2mind.core.llm import (
+    SUPPORTED_PROVIDERS,
     LLMError,
     LLMTimeoutError,
-    SUPPORTED_PROVIDERS,
     get_llm_client,
 )
 from doc2mind.core.loader.detect import get_loader, is_supported
 from doc2mind.core.logging_setup import setup_logging
+from doc2mind.core.models import LoadedDocument
 from doc2mind.core.pipeline import ingest_path, ingest_text
 from doc2mind.core.rag import RagError, clear_session, rag_answer, rag_answer_stream
 from doc2mind.core.retriever.search import Retriever
@@ -64,7 +69,24 @@ from doc2mind.core.store.sqlite_vec import VectorStore
 
 logger = logging.getLogger(__name__)
 
-# --- Pydantic 模型（请求 / 响应）---
+# --- FastAPI / Pydantic 依赖 ---
+try:
+    from fastapi import (  # type: ignore[import-untyped, import-not-found]
+        Body,
+        FastAPI,
+        HTTPException,
+        Query,
+    )
+    from fastapi.responses import (
+        StreamingResponse,  # type: ignore[import-untyped, import-not-found]
+    )
+except ImportError:
+    FastAPI = Any  # type: ignore[misc, assignment]
+    HTTPException = Exception  # type: ignore[misc, assignment]
+    Query = Any  # type: ignore[misc, assignment]
+    Body = Any  # type: ignore[misc, assignment]
+    StreamingResponse = Any  # type: ignore[misc, assignment]
+
 try:
     from pydantic import BaseModel, ConfigDict, Field
 except ImportError as e:  # pragma: no cover
@@ -249,6 +271,7 @@ class ChatRequest(BaseModel):
     enable_web_search: bool = Field(False, validation_alias="enableWebSearch")
     entity_context: str | None = Field(None, validation_alias="entityContext")
     persona: str | None = None
+    attachments: list[str] = Field(default_factory=list, validation_alias="attachments")
 
     model_config = {"populate_by_name": True}
 
@@ -348,6 +371,55 @@ class ChatDetailResponse(BaseModel):
     messages: list[ChatMessageDTO]
 
 
+class CreativeExportRequest(BaseModel):
+    """创作交付物导出请求。"""
+    content: str
+    format: str | None = None
+    output_path: str | None = Field(None, validation_alias="outputPath")
+    title: str | None = None
+    theme: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class CreativeExportResponse(BaseModel):
+    """创作交付物导出结果响应。"""
+    ok: bool
+    format: str
+    file_path: str
+    file_name: str
+    file_size_bytes: int = 0
+    error: str | None = None
+
+
+class CreativeInspectRequest(BaseModel):
+    """创作物/PPT 效果自检请求。"""
+    content: str
+
+
+class InspectionIssueDto(BaseModel):
+    level: str
+    category: str
+    message: str
+    slide_index: int | None = None
+    fix_suggestion: str = ""
+
+
+class CreativeInspectResponse(BaseModel):
+    """PPT 效果自检报告响应。"""
+    score: int
+    grade: str
+    summary: str
+    slide_count: int
+    notes_coverage_pct: float
+    archetype_diversity: int
+    total_words: int
+    avg_words_per_slide: float
+    issues: list[InspectionIssueDto] = []
+    recommendations: list[str] = []
+    highlights: list[str] = []
+
+
 class ChatDeleteResponse(BaseModel):
     chat_id: str
     deleted: bool = True
@@ -432,6 +504,7 @@ class GpuDiagnosisResponse(BaseModel):
     cuda_runtime_tag: str | None = None  # "cu12" | "cu13" | None
     python_version: str | None = None
     installed_packages: dict[str, str | None] = {}
+    local_wheels_found: list[dict[str, Any]] = []
     recommended_path: str = "cpu"  # cuda12|cuda13|directml|paddle-ocr-gpu|cpu|coreml
     warnings: list[str] = []
     platform: str | None = None
@@ -439,6 +512,32 @@ class GpuDiagnosisResponse(BaseModel):
 
 class InstallGpuRequest(BaseModel):
     path: str  # cuda12|cuda13|directml|paddle-ocr-gpu
+
+    model_config = {"populate_by_name": True}
+
+
+class InstallOcrRequest(BaseModel):
+    """OCR 依赖一键安装请求（与 InstallGpuRequest 同构）。"""
+
+    path: str = "cpu"  # cpu | paddle-ocr-gpu
+
+    model_config = {"populate_by_name": True}
+
+
+class LocalAiEnvironmentResponse(BaseModel):
+    """本地 AI 环境与大模型服务探测响应。"""
+
+    ollama: dict[str, Any] = {}
+    lm_studio: dict[str, Any] = {}
+    local_gguf_models: list[dict[str, Any]] = []
+    local_gguf_count: int = 0
+    recommendations: list[dict[str, Any]] = []
+
+
+class DownloadModelRequest(BaseModel):
+    """嵌入模型下载请求（带进度回传）。"""
+
+    model_name: str | None = None  # None = 用当前配置的模型
 
     model_config = {"populate_by_name": True}
 
@@ -622,6 +721,39 @@ class JobStatus(BaseModel):
     results: list[IngestResultDTO] = []
     # curate 类任务的完整整理报告（dry_run 预览 / 执行结果），由 job 线程填充。
     report: dict[str, Any] | None = None
+    # 当前正在处理的文件名（ingest 类任务实时更新，供前端进度条显示）
+    current_file: str | None = None
+
+
+class SampleIngestRequest(BaseModel):
+    collection: str = "default"
+
+
+class SampleIngestResponse(BaseModel):
+    ok: bool
+    status: str
+    title: str
+    collection: str
+    chunk_count: int
+    elapsed_ms: int
+    error: str | None = None
+
+
+class DoctorCheckDTO(BaseModel):
+    name: str
+    category: str
+    status: str
+    message: str
+    detail: str | None = None
+    fix_suggestion: str | None = None
+
+
+class DoctorResponse(BaseModel):
+    overall_status: str
+    score: int
+    summary: str
+    timestamp: float
+    checks: list[DoctorCheckDTO]
 
 
 class ApiError(BaseModel):
@@ -646,12 +778,45 @@ def _broadcast_event(payload: dict[str, Any]) -> None:
                 pass
 
 
+# --- job 进度 SSE 广播（每 job 独立订阅队列）---
+# job_id → list[(event_loop, queue)]；后台线程更新进度时推帧，SSE 端点消费
+_JOB_QUEUES: dict[str, list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]]] = {}
+_job_queues_lock = threading.Lock()
+
+
+def _broadcast_job_event(job_id: str, payload: dict[str, Any]) -> None:
+    """向指定 job 的 SSE 订阅者广播进度事件（跨线程安全）。"""
+    blob = json.dumps(payload, ensure_ascii=False)
+    with _job_queues_lock:
+        subscribers = list(_JOB_QUEUES.get(job_id, []))
+    for loop, q in subscribers:
+        try:
+            loop.call_soon_threadsafe(q.put_nowait, blob)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _subscribe_job(job_id: str, loop: asyncio.AbstractEventLoop, q: asyncio.Queue) -> None:
+    with _job_queues_lock:
+        _JOB_QUEUES.setdefault(job_id, []).append((loop, q))
+
+
+def _unsubscribe_job(job_id: str, loop: asyncio.AbstractEventLoop, q: asyncio.Queue) -> None:
+    with _job_queues_lock:
+        subs = _JOB_QUEUES.get(job_id)
+        if subs:
+            with contextlib.suppress(ValueError):
+                subs.remove((loop, q))
+            if not subs:
+                _JOB_QUEUES.pop(job_id, None)
+
+
 class _AppState:
     """每个 FastAPI app 实例的共享状态。"""
 
     def __init__(self) -> None:
         self.settings = get_settings()
-        self.embedder = None
+        self.embedder: Embedder | None = None
         self.store: VectorStore | None = None
         self.file_watcher: Any | None = None
         self.jobs: dict[str, JobStatus] = {}
@@ -684,21 +849,20 @@ def create_app(settings: Settings | None = None) -> Any:
 
     用 factory 模式便于测试隔离与 uvicorn 启动。
     """
-    try:
-        from fastapi import FastAPI, HTTPException, Query, Body
-        from fastapi.responses import StreamingResponse
-    except ImportError as e:  # pragma: no cover
+    if FastAPI is Any:
         raise ImportError(
             "FastAPI 依赖未安装。请运行：pip install doc2mind[server]"
-        ) from e
+        )
 
     # 日志落盘（数据目录 logs/doc2mind.log，轮转）；失败退化 stderr 不阻断
     setup_logging()
 
+    from doc2mind import __version__
+
     app = FastAPI(
         title="DocMind",
         description="轻量向量知识库 HTTP API",
-        version="0.1.0",
+        version=__version__,
     )
     state = _AppState()
     if settings is not None:
@@ -733,7 +897,7 @@ def create_app(settings: Settings | None = None) -> Any:
 
         return HealthResponse(
             status="ok" if store_ok else "degraded",
-            version="0.1.0",
+            version=__version__,
             uptime_seconds=uptime,
             gpu_available=bool(gpu),
             gpu_provider=gpu[0] if gpu else None,
@@ -741,6 +905,29 @@ def create_app(settings: Settings | None = None) -> Any:
             store_ok=store_ok,
             store_error=store_error,
         )
+
+    # --- GET /v1/doctor（系统全维体检与自愈诊断）---
+    @app.get("/v1/doctor", response_model=DoctorResponse)
+    async def get_doctor_report(network: bool = Query(True)) -> DoctorResponse:
+        from doc2mind.core.doctor import run_diagnostics
+
+        report = await asyncio.to_thread(run_diagnostics, check_network=network)
+        return DoctorResponse(**report.to_dict())
+
+    # --- POST /v1/sample/ingest（一键导入内置示例文档库）---
+    @app.post("/v1/sample/ingest", response_model=SampleIngestResponse)
+    async def ingest_sample(req: SampleIngestRequest) -> SampleIngestResponse:
+        from doc2mind.core.sample_data import ingest_sample_knowledgebase
+
+        def _do_ingest_sample() -> dict[str, Any]:
+            with state._write_lock:
+                return ingest_sample_knowledgebase(
+                    collection=req.collection,
+                    settings=state.settings,
+                )
+
+        res = await asyncio.to_thread(_do_ingest_sample)
+        return SampleIngestResponse(**res)
 
     # --- GET /v1/system/gpu-diagnosis（设置页 GPU 加速卡片）---
     @app.get("/v1/system/gpu-diagnosis", response_model=GpuDiagnosisResponse)
@@ -771,6 +958,164 @@ def create_app(settings: Settings | None = None) -> Any:
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    # --- GET /v1/system/dependencies（设置页「环境自检」面板）---
+    @app.get("/v1/system/dependencies")
+    async def get_dependencies() -> dict[str, Any]:
+        from doc2mind.core.system_env import get_dependencies_status
+
+        return await asyncio.to_thread(get_dependencies_status)
+
+    # --- GET /v1/system/local-ai-environment（设置页「本地 AI 智能感知」）---
+    @app.get("/v1/system/local-ai-environment", response_model=LocalAiEnvironmentResponse)
+    async def get_local_ai_environment_endpoint() -> LocalAiEnvironmentResponse:
+        from doc2mind.core.local_ai_detect import get_local_ai_environment
+
+        res = await get_local_ai_environment()
+        return LocalAiEnvironmentResponse(**res)
+
+    # --- POST /v1/system/install-ocr（一键安装 OCR，SSE 流式日志）---
+    @app.post("/v1/system/install-ocr")
+    async def install_ocr(req: InstallOcrRequest) -> Any:
+        from doc2mind.core.system_env import install_ocr_packages
+
+        async def event_generator() -> Any:
+            try:
+                async for event in install_ocr_packages(req.path):
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            except Exception as e:  # noqa: BLE001
+                logger.error("OCR 安装失败：%s", e)
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {"type": "error", "message": f"OCR 安装异常：{e}"},
+                        ensure_ascii=False,
+                    )
+                    + "\n\n"
+                )
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    # --- POST /v1/system/download-model（嵌入模型下载，SSE 流式进度）---
+    @app.post("/v1/system/download-model")
+    async def download_model(req: DownloadModelRequest) -> Any:
+        from doc2mind.core.config import get_settings
+        from doc2mind.core.embedder.fastembed_impl import download_model_with_progress
+
+        settings = get_settings()
+        model_name = req.model_name or settings.embed_model
+
+        async def event_generator() -> Any:
+            loop = asyncio.get_running_loop()
+            q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+            def _on_progress(downloaded: int, total: int, dl_bytes: int, total_bytes: int) -> None:
+                payload = {
+                    "type": "progress",
+                    "downloaded_files": downloaded,
+                    "total_files": total,
+                    "downloaded_bytes": dl_bytes,
+                    "total_bytes": total_bytes,
+                    "model": model_name,
+                }
+                try:
+                    loop.call_soon_threadsafe(q.put_nowait, payload)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            # 下载在后台线程跑（同步阻塞调用），进度通过 queue 推到 SSE
+            def _do_download() -> None:
+                try:
+                    snapshot_path = download_model_with_progress(
+                        model_name=model_name,
+                        settings=settings,
+                        progress_cb=_on_progress,
+                    )
+                    loop.call_soon_threadsafe(
+                        q.put_nowait,
+                        {"type": "done", "model": model_name, "path": snapshot_path},
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.error("模型下载失败：%s", e)
+                    loop.call_soon_threadsafe(
+                        q.put_nowait,
+                        {"type": "error", "message": str(e), "model": model_name},
+                    )
+
+            threading.Thread(target=_do_download, daemon=True).start()
+
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(q.get(), timeout=300.0)
+                    except asyncio.TimeoutError:
+                        yield (
+                            "data: "
+                            + json.dumps({"type": "heartbeat"}, ensure_ascii=False)
+                            + "\n\n"
+                        )
+                        continue
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    if event.get("type") in ("done", "error"):
+                        break
+            finally:
+                pass
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    # --- GET /v1/jobs/{id}/events（job 进度 SSE 实时流）---
+    @app.get("/v1/jobs/{job_id}/events")
+    async def job_events(job_id: str) -> Any:
+        """SSE 流式推送指定 job 的进度事件，替代前端轮询。"""
+        with state._jobs_lock:
+            job = state.jobs.get(job_id)
+        if job is None:
+            raise _api_error("NOT_FOUND", f"任务不存在: {job_id}", 404)
+
+        loop = asyncio.get_running_loop()
+        q: asyncio.Queue[str] = asyncio.Queue()
+        _subscribe_job(job_id, loop, q)
+
+        async def event_stream() -> Any:
+            try:
+                # 先发当前快照（订阅时 job 可能已有进度）
+                with state._jobs_lock:
+                    snap = {
+                        "type": "progress",
+                        "ts": _now_iso(),
+                        "progress": job.progress,
+                        "processed": job.processed,
+                        "total": job.total,
+                        "current_file": job.current_file,
+                        "status": job.status,
+                    }
+                yield f"data: {json.dumps(snap, ensure_ascii=False)}\n\n"
+                # 已是终态则立即结束
+                if job.status in ("completed", "failed", "cancelled", "done", "succeeded"):
+                    yield f"data: {json.dumps({'type': job.status, 'ts': _now_iso()}, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+                while True:
+                    try:
+                        blob = await asyncio.wait_for(q.get(), timeout=15.0)
+                        yield f"data: {blob}\n\n"
+                        # 解析判断终态
+                        try:
+                            evt = json.loads(blob)
+                            if evt.get("type") in ("done", "failed", "cancelled"):
+                                yield "data: [DONE]\n\n"
+                                break
+                        except json.JSONDecodeError:  # noqa: BLE001
+                            pass
+                    except asyncio.TimeoutError:
+                        hb = json.dumps({"type": "heartbeat", "ts": _now_iso()}, ensure_ascii=False)
+                        yield f"data: {hb}\n\n"
+            finally:
+                _unsubscribe_job(job_id, loop, q)
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     # --- GET/POST /v1/config（设置页：嵌入模型 + 分块 + 检索 + LLM）---
     @app.get("/v1/config", response_model=ConfigResponse)
@@ -956,7 +1301,7 @@ def create_app(settings: Settings | None = None) -> Any:
                 ok=False, provider=provider, elapsed_ms=int((time.perf_counter() - t0) * 1000),
                 error=f"运行库缺失: {e}",
             )
-        except LLMTimeoutError as e:
+        except LLMTimeoutError:
             return LlmTestResponse(
                 ok=False, provider=provider, elapsed_ms=int((time.perf_counter() - t0) * 1000),
                 error=f"连接超时（{req.timeout:.0f}s）: 网络不通、地址错误或服务无响应",
@@ -1160,21 +1505,26 @@ def create_app(settings: Settings | None = None) -> Any:
                     job.progress = 1.0
                     job.processed = summary.total_documents + summary.skipped + summary.failed
                     job.finished_at = _now_iso()
+                    job.current_file = None
                     # 结果明细：每个文件的最终状态（ingested / skipped / failed），
                     # 供前端轮询完成后直接展示，无需二次同步请求。
                     job.results = [
                         IngestResultDTO(**r.__dict__) for r in summary.results
                     ]
+                _broadcast_job_event(job_id, {"type": "done", "ts": _now_iso(), "status": "completed", "processed": job.processed})
             except Exception as e:  # noqa: BLE001
                 with state._jobs_lock:
                     if job.status == "cancelled":
                         logger.info("任务已取消并终止后台线程: %s", job_id)
+                        _broadcast_job_event(job_id, {"type": "cancelled", "ts": _now_iso()})
                         return
                     if "已被取消" in str(e):
                         job.status = "cancelled"
+                        _broadcast_job_event(job_id, {"type": "cancelled", "ts": _now_iso()})
                     else:
                         job.status = "failed"
                         job.error = str(e)
+                        _broadcast_job_event(job_id, {"type": "failed", "ts": _now_iso(), "error": str(e)})
                     job.finished_at = _now_iso()
 
         threading.Thread(target=_run_ingest_job, daemon=True).start()
@@ -1184,6 +1534,7 @@ def create_app(settings: Settings | None = None) -> Any:
     @app.post("/v1/search", response_model=SearchResponse)
     async def search(req: SearchRequest) -> SearchResponse:
         store = state.ensure_open()
+        assert state.embedder is not None
         try:
             retriever = Retriever(store=store, embedder=state.embedder)
             hits, stats = await asyncio.to_thread(
@@ -1258,6 +1609,7 @@ def create_app(settings: Settings | None = None) -> Any:
                 persona=req.persona,
                 store=store,
                 embedder=state.embedder,
+                attachments=req.attachments,
             )
         except RagError as e:
             raise _api_error("RAG_ERROR", str(e), 400) from e
@@ -1300,7 +1652,7 @@ def create_app(settings: Settings | None = None) -> Any:
         """
         async def event_generator() -> Any:
             loop = asyncio.get_event_loop()
-            queue: "asyncio.Queue[Optional[str]]" = asyncio.Queue()
+            queue: asyncio.Queue[str | None] = asyncio.Queue()
             store = state.ensure_open()
             stop_event = threading.Event()
             gen = rag_answer_stream(
@@ -1313,6 +1665,7 @@ def create_app(settings: Settings | None = None) -> Any:
                 store=store,
                 embedder=state.embedder,
                 stop_event=stop_event,
+                attachments=req.attachments,
             )
 
             def _pump() -> None:
@@ -1539,7 +1892,7 @@ def create_app(settings: Settings | None = None) -> Any:
         def _do_delete() -> int:
             # 写互斥：与 ingest / reindex 串行
             with state._write_lock:
-                return store.delete_document(doc_id)
+                return int(store.delete_document(doc_id))
 
         n = await asyncio.to_thread(_do_delete)
         if n < 0:
@@ -1851,6 +2204,71 @@ def create_app(settings: Settings | None = None) -> Any:
             elements_count=len(doc.elements),
         )
 
+    # --- POST /v1/creative/export ---
+    @app.post("/v1/creative/export", response_model=CreativeExportResponse)
+    async def creative_export(req: CreativeExportRequest) -> CreativeExportResponse:
+        """将创作内容/Artifact 编译导出为指定的物理文件（PPTX/DOCX/XLSX/HTML）。"""
+        if not req.content or not req.content.strip():
+            raise _api_error("BAD_REQUEST", "导出内容不能为空", 400)
+
+        def _do_export() -> CreativeExportResponse:
+            res = export_artifact(
+                content=req.content,
+                target_format=req.format,
+                output_path=req.output_path,
+                title_override=req.title,
+                theme=req.theme,
+            )
+            return CreativeExportResponse(
+                ok=res.ok,
+                format=res.artifact_type,
+                file_path=res.file_path,
+                file_name=res.file_name,
+                file_size_bytes=res.file_size_bytes,
+                error=res.error,
+            )
+
+        result = await asyncio.to_thread(_do_export)
+        if not result.ok:
+            raise _api_error("EXPORT_FAILED", f"导出失败: {result.error}", 500)
+        return result
+
+    # --- POST /v1/creative/inspect ---
+    @app.post("/v1/creative/inspect", response_model=CreativeInspectResponse)
+    async def inspect_creative(req: CreativeInspectRequest) -> CreativeInspectResponse:
+        """对 PPT 演示文稿进行全方位效果自检与健康度评分诊断。"""
+        if not req.content or not req.content.strip():
+            raise _api_error("BAD_REQUEST", "待自检内容不能为空", 400)
+
+        from doc2mind.core.creator import inspect_presentation
+
+        def _do_inspect() -> CreativeInspectResponse:
+            report = inspect_presentation(req.content)
+            return CreativeInspectResponse(
+                score=report.score,
+                grade=report.grade,
+                summary=report.summary,
+                slide_count=report.slide_count,
+                notes_coverage_pct=report.notes_coverage_pct,
+                archetype_diversity=report.archetype_diversity,
+                total_words=report.total_words,
+                avg_words_per_slide=report.avg_words_per_slide,
+                issues=[
+                    InspectionIssueDto(
+                        level=i.level.value,
+                        category=i.category,
+                        message=i.message,
+                        slide_index=i.slide_index,
+                        fix_suggestion=i.fix_suggestion,
+                    )
+                    for i in report.issues
+                ],
+                recommendations=report.recommendations,
+                highlights=report.highlights,
+            )
+
+        return await asyncio.to_thread(_do_inspect)
+
     # --- POST /v1/reindex ---
     @app.post("/v1/reindex", response_model=JobStatus)
     async def reindex(req: ReindexRequest) -> JobStatus:
@@ -1975,7 +2393,7 @@ def create_app(settings: Settings | None = None) -> Any:
                         state.settings.embed_model = (
                             req.model.strip() if req.model else state.settings.embed_model
                         )
-                        state.settings.embed_dim = target_embedder.dimension
+                        state.settings.embed_dim = embedder.dimension
                         try:
                             from doc2mind.core.config import save_settings
 
@@ -2149,10 +2567,8 @@ def create_app(settings: Settings | None = None) -> Any:
 
 
 # --- 辅助 ---
-def _api_error(code: str, message: str, status: int) -> HTTPException:
+def _api_error(code: str, message: str, status: int) -> Any:
     """构造统一错误响应；5xx 同时落日志（排障线索）。"""
-    from fastapi import HTTPException
-
     if status >= 500:
         logger.error("API %s (%s): %s", status, code, message)
     return HTTPException(
@@ -2161,9 +2577,25 @@ def _api_error(code: str, message: str, status: int) -> HTTPException:
     )
 
 
-def _update_ingest_job(state: _AppState, job: JobStatus, done: int, total: int) -> None:
-    """异步 ingest 的进度回调：更新 job.processed / progress（线程安全）。"""
+def _update_ingest_job(
+    state: _AppState,
+    job: JobStatus,
+    done: int,
+    total: int,
+    current_file: str | None = None,
+) -> None:
+    """异步 ingest 的进度回调：更新 job.processed / progress 并广播 SSE 事件（线程安全）。"""
     with state._jobs_lock:
         job.processed = done
         job.total = total
         job.progress = round(done / total, 4) if total > 0 else 0.0
+        if current_file is not None:
+            job.current_file = current_file
+        snapshot = {
+            "progress": job.progress,
+            "processed": job.processed,
+            "total": job.total,
+            "current_file": job.current_file,
+            "status": job.status,
+        }
+    _broadcast_job_event(job.job_id, {"type": "progress", "ts": _now_iso(), **snapshot})

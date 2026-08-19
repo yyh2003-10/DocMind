@@ -254,10 +254,9 @@ def _region_to_paragraph(
     for text, bbox in regions:
         if not bbox or len(bbox) < 4:
             ys = [0.0]
-            xs = [0.0]
         else:
             ys = [p[1] for p in bbox]
-            xs = [p[0] for p in bbox]
+            [p[0] for p in bbox]
         center_y = sum(ys) / len(ys)
         height = max(ys) - min(ys) if len(ys) > 1 else 0
         rows.append((center_y, height, text, bbox))

@@ -17,8 +17,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
+import re as _re
 import sqlite3
 import threading
 import time
@@ -86,8 +88,6 @@ def _retry_on_locked(func):
 
 
 # --- FTS5 MATCH 表达式构造（中文友好）---
-import re as _re
-
 # CJK 统一表意文字范围（中日韩常用汉字）
 _CJK_RE = _re.compile(r"[\u4e00-\u9fff]+")
 
@@ -263,6 +263,11 @@ class VectorStore:
         # FTS5 查询独立 connection（避开 vec0 扩展与 trigram BM25 评估冲突）
         self._fts_conn: sqlite3.Connection | None = None
         self._fts_available = False
+
+    @property
+    def dimension(self) -> int:
+        """向量维度别名（等价 embedding_dim）。"""
+        return self.embedding_dim
 
     # --- 生命周期 ---
     def open(self) -> None:
@@ -535,16 +540,12 @@ class VectorStore:
                 conn.execute("COMMIT")
                 return inserted
             except StoreError:
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             except Exception as e:  # noqa: BLE001
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise StoreError(f"插入分块失败: {e}") from e
 
     @_retry_on_locked
@@ -621,16 +622,12 @@ class VectorStore:
                 conn.execute("COMMIT")
                 return inserted
             except StoreError:
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             except Exception as e:  # noqa: BLE001
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise StoreError(f"替换文档失败: {e}") from e
 
     def _insert_chunks_in_txn(
@@ -780,10 +777,8 @@ class VectorStore:
                 conn.execute("COMMIT")
                 return len(chunk_ids)
             except Exception as e:  # noqa: BLE001
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise StoreError(f"删除文档失败: {e}") from e
 
     def delete_by_source(self, source: str, collection: str = "default") -> int:
@@ -951,16 +946,12 @@ class VectorStore:
                 conn.execute("COMMIT")
                 return True
             except StoreError:
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             except Exception as e:  # noqa: BLE001
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise StoreError(
                     f"移动文档失败: {e}（若为唯一约束冲突，目标集合已存在同名文档）"
                 ) from e
@@ -1183,10 +1174,8 @@ class VectorStore:
                 conn.execute("COMMIT")
                 return updated
             except Exception as e:  # noqa: BLE001
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise StoreError(f"更新向量失败: {e}") from e
 
     @_retry_on_locked
@@ -1225,10 +1214,8 @@ class VectorStore:
                 self.embedding_dim = int(new_dim)
                 return inserted
             except Exception as e:  # noqa: BLE001
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise StoreError(f"重建向量表失败: {e}") from e
 
     # sort 白名单 → SQL 片段（避免任意列名注入）

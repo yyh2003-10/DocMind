@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
 from doc2mind.core.store.chat_store import ChatStore, ChatStoreError

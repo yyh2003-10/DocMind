@@ -284,7 +284,7 @@ class TestRagAnswer:
                 cid = r1.chat_id
 
                 # 第二轮（传入 chat_id）
-                r2 = rag_answer(query="那组件呢？", chat_id=cid, settings=s, llm_client=mock_client)
+                rag_answer(query="那组件呢？", chat_id=cid, settings=s, llm_client=mock_client)
 
             # 第二轮的消息应包含历史
             messages = mock_client.last_messages
@@ -436,8 +436,9 @@ class TestRagAnswerStream:
                 mock_retriever.search.return_value = ([hit], stats)
                 MockRetriever.return_value = mock_retriever
 
-                from doc2mind.core.rag import rag_answer_stream
                 import json
+
+                from doc2mind.core.rag import rag_answer_stream
                 results = list(rag_answer_stream(
                     query="问题", settings=s, llm_client=mock_client,
                 ))
@@ -522,8 +523,7 @@ class TestRagAnswerStream:
 
         class ChunkedMockClient(MockLLMClient):
             def _do_stream_chat(self, messages, temperature=None, max_tokens=None):
-                for piece in ["根据", "资料", "回答。"]:
-                    yield piece
+                yield from ["根据", "资料", "回答。"]
 
         mock_client = ChunkedMockClient()
         s = Settings(llm_provider="openai", llm_api_key="test")

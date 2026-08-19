@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,7 @@ class WebSearchService:
         # 1. 尝试使用 duckduckgo_search (MIT 协议，免 Key 体验)
         try:
             from duckduckgo_search import DDGS  # type: ignore
-            
+
             results: list[WebSearchResult] = []
             with DDGS(timeout=self.timeout) as ddgs:
                 ddg_results = ddgs.text(cleaned_query, max_results=limit)
@@ -67,9 +66,9 @@ class WebSearchService:
 
         # 2. 轻量 HTTP 备用搜索通道 (通过公共元搜索引擎或 html 解析)
         try:
+            import json
             import urllib.parse
             import urllib.request
-            import json
 
             encoded_query = urllib.parse.quote(cleaned_query)
             url = f"https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1&skip_disambig=1"

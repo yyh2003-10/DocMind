@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from doc2mind.core.extractor import extract_and_store, extract_entities
 from doc2mind.core.store.graph_store import GraphStore
 
