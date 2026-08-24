@@ -258,6 +258,56 @@ class ReindexRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ProviderConfigIn(BaseModel):
+    """按请求携带的服务商配置（对话页点选模型时随请求传入）。
+
+    任选一种语义：
+    - 全部字段为 None/空 → 忽略，使用后端全局配置（等同未传 providerConfig）
+    - provider 与 api_key/base_url/model 之一非空 → 用该配置构造临时 LLM 客户端，
+      按请求生效，不修改后端全局配置、多服务商并存互不干扰。
+    """
+
+    provider: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+def _build_llm_client_from_provider(
+    req: ChatRequest, s: Settings
+) -> Any:
+    """按请求携带的 providerConfig 构造临时 LLM 客户端；未携带时返回 None（用后端全局配置）。
+
+    复用 /v1/llm/test 模式：dataclasses.replace 生成 Settings 副本 → get_llm_client。
+    仅按请求生效，不修改后端全局配置、不落盘，多服务商并存互不干扰。
+    provider 为空或为 "none" 时视为未指定，返回 None（用全局配置）。
+    """
+    pc = req.provider_config
+    if pc is None:
+        return None
+    provider = (pc.provider or s.llm_provider or "none").strip()
+    if provider == "none":
+        return None
+    tmp = dataclasses.replace(
+        s,
+        llm_provider=provider,
+        llm_api_key=(pc.api_key or "").strip() or s.llm_api_key,
+        llm_base_url=(pc.base_url or "").strip() or s.llm_base_url,
+        llm_model=(pc.model or "").strip() or s.llm_model,
+        llm_temperature=(
+            pc.temperature if pc.temperature is not None else s.llm_temperature
+        ),
+        llm_max_tokens=(
+            pc.max_tokens if pc.max_tokens is not None else s.llm_max_tokens
+        ),
+    )
+    return get_llm_client(tmp)
+
+
 class ChatRequest(BaseModel):
     """RAG 对话请求。"""
     query: str
@@ -268,10 +318,21 @@ class ChatRequest(BaseModel):
     collections: list[str] | None = Field(None, validation_alias="collections")
     # 按请求覆盖模型名（对话页快速切换模型用）；None = 用后端配置的 llm_model
     model: str | None = None
+    # 按请求携带的服务商配置（provider/key/url/模型/温度/token）；None = 用后端全局配置。
+    # 对话页「点选模型即切服务商」走此字段，多服务商并存互不污染全局配置。
+    provider_config: ProviderConfigIn | None = Field(None, validation_alias="providerConfig")
     enable_web_search: bool = Field(False, validation_alias="enableWebSearch")
     entity_context: str | None = Field(None, validation_alias="entityContext")
     persona: str | None = None
-    attachments: list[str] = Field(default_factory=list, validation_alias="attachments")
+    # 可空：前端无附件时发送 null（此前声明为 list[str] 不可空，
+    # 收到 null 触发 pydantic 422 "Input should be a valid list"，导致对话直接报错）
+    attachments: list[str] | None = Field(None, validation_alias="attachments")
+    # 按请求携带的 GitHub 个人令牌（仅联网搜索的 GitHub 通道用）：
+    # 每个用户填自己的 Token 随请求发送，后端绝不把某用户的 Token 作为
+    # 全局配置共享给其他用户；未携带时用匿名公开额度（10 次/分钟）。
+    github_token: str | None = Field(None, validation_alias="githubToken")
+    # RAG 问答模式："hybrid"（混合增强模式）或 "strict"（严格知识库模式）
+    rag_mode: str | None = Field(None, validation_alias="ragMode")
 
     model_config = {"populate_by_name": True}
 
@@ -289,6 +350,12 @@ class SourceRefDTO(BaseModel):
     url: str | None = None
     title: str | None = None
     snippet: str | None = None
+    source_name: str | None = None  # 搜索引擎来源 (DuckDuckGo / WebSearch)
+    domain: str | None = None
+    published_at: str | None = None
+    content_fetched: bool = False
+    corroborated_by: int = 0
+    evidence_level: str = "单一来源"
 
     model_config = {"populate_by_name": True}
 
@@ -333,6 +400,9 @@ class StreamChunk(BaseModel):
     """SSE 流式输出单元（token 或元数据）。"""
     token: str | None = None
     done: bool = False
+    type: str | None = None       # "status" / None
+    step: str | None = None       # pipeline 阶段名
+    message: str | None = None    # 面向用户的文案
     chat_id: str | None = None
     model: str | None = None
     provider: str | None = None
@@ -446,6 +516,7 @@ class ConfigUpdate(BaseModel):
     llm_max_tokens: int | None = None
     rag_top_k: int | None = None
     rag_min_score: float | None = None
+    rag_mode: str | None = None
     # 自定义 RAG 系统提示词；空字符串 = 显式清除（回到内置默认提示词）
     rag_system_prompt: str | None = None
     llm_timeout: float | None = None
@@ -511,7 +582,7 @@ class GpuDiagnosisResponse(BaseModel):
 
 
 class InstallGpuRequest(BaseModel):
-    path: str  # cuda12|cuda13|directml|paddle-ocr-gpu
+    path: str  # cuda12|cuda13|directml|paddle-ocr-gpu|ocr-cpu（命令构造层统一处理）
 
     model_config = {"populate_by_name": True}
 
@@ -519,7 +590,7 @@ class InstallGpuRequest(BaseModel):
 class InstallOcrRequest(BaseModel):
     """OCR 依赖一键安装请求（与 InstallGpuRequest 同构）。"""
 
-    path: str = "cpu"  # cpu | paddle-ocr-gpu
+    path: str = "cpu"  # cpu | ocr-cpu | paddle-ocr-gpu
 
     model_config = {"populate_by_name": True}
 
@@ -558,9 +629,10 @@ class ConfigResponse(BaseModel):
     # None = 未配置（含清除后）；前端显示为空输入
     llm_model: str | None = None
     llm_temperature: float = 0.7
-    llm_max_tokens: int = 2048
+    llm_max_tokens: int = 8192
     rag_top_k: int = 5
     rag_min_score: float = 0.0
+    rag_mode: str = "strict"
     # 自定义 RAG 系统提示词；None = 未配置（用内置默认提示词）
     rag_system_prompt: str | None = None
     llm_timeout: float = 0.0
@@ -601,14 +673,32 @@ class LlmModelsRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class LlmModelMetaDTO(BaseModel):
+    """单模型元数据（上下文窗口、最大输出上限、是否深度推理模型等）。由后端智能注册表感知。"""
+
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+    is_reasoning_model: bool = False
+    display_name: str | None = None
+    summary_text: str | None = None
+
+
 class LlmModelsResponse(BaseModel):
     """模型列表拉取结果。"""
 
     ok: bool
     provider: str = ""
     models: list[str] = []
+    # 模型名 → 元数据（context_window、max_output_tokens、summary_text 等）
+    model_meta: dict[str, LlmModelMetaDTO] = {}
     # 失败原因（已分类的中文提示；404 时附带「手动输入」引导）
     error: str | None = None
+
+
+def _model_context_window(model: str) -> int | None:
+    """查智能注册表获取模型上下文窗口（token）。"""
+    from doc2mind.core.llm.model_registry import get_model_spec
+    return get_model_spec(model).context_window
 
 
 class DocumentDTO(BaseModel):
@@ -809,6 +899,10 @@ def _unsubscribe_job(job_id: str, loop: asyncio.AbstractEventLoop, q: asyncio.Qu
                 _JOB_QUEUES.pop(job_id, None)
 
 
+class _JobCancelled(Exception):
+    """后台任务收到取消请求后用于中止工作线程的内部异常。"""
+
+
 class _AppState:
     """每个 FastAPI app 实例的共享状态。"""
 
@@ -818,6 +912,7 @@ class _AppState:
         self.store: VectorStore | None = None
         self.file_watcher: Any | None = None
         self.jobs: dict[str, JobStatus] = {}
+        self.job_cancel_events: dict[str, threading.Event] = {}
         self.started_at = datetime.now(timezone.utc)
         # 同步锁：ensure_open 是同步方法，并发首次请求需互斥创建 store/embedder
         self._lock = threading.Lock()
@@ -1136,6 +1231,7 @@ def create_app(settings: Settings | None = None) -> Any:
             llm_max_tokens=s.llm_max_tokens,
             rag_top_k=s.rag_top_k,
             rag_min_score=s.rag_min_score,
+            rag_mode=getattr(s, "rag_mode", "hybrid"),
             rag_system_prompt=s.rag_system_prompt,
             llm_timeout=s.llm_timeout,
             watch_paths=list(s.watch_paths),
@@ -1219,6 +1315,7 @@ def create_app(settings: Settings | None = None) -> Any:
             llm_max_tokens=s.llm_max_tokens,
             rag_top_k=s.rag_top_k,
             rag_min_score=s.rag_min_score,
+            rag_mode=getattr(s, "rag_mode", "hybrid"),
             rag_system_prompt=s.rag_system_prompt,
             llm_timeout=s.llm_timeout,
             watch_paths=list(s.watch_paths),
@@ -1347,7 +1444,19 @@ def create_app(settings: Settings | None = None) -> Any:
 
         try:
             provider_used, models = await asyncio.to_thread(_run)
-            return LlmModelsResponse(ok=True, provider=provider_used, models=models)
+            from doc2mind.core.llm.model_registry import get_model_spec
+
+            meta: dict[str, LlmModelMetaDTO] = {}
+            for m in models:
+                spec = get_model_spec(m, provider_used)
+                meta[m] = LlmModelMetaDTO(
+                    context_window=spec.context_window,
+                    max_output_tokens=spec.max_output_tokens,
+                    is_reasoning_model=spec.is_reasoning_model,
+                    display_name=spec.display_name,
+                    summary_text=spec.summary_text,
+                )
+            return LlmModelsResponse(ok=True, provider=provider_used, models=models, model_meta=meta)
         except ImportError as e:
             return LlmModelsResponse(ok=False, provider=provider, error=f"运行库缺失: {e}")
         except LLMTimeoutError as e:
@@ -1477,11 +1586,16 @@ def create_app(settings: Settings | None = None) -> Any:
         )
         with state._jobs_lock:
             state.jobs[job_id] = job
+            state.job_cancel_events[job_id] = threading.Event()
+
+        cancel_event = state.job_cancel_events[job_id]
 
         def _check_and_update_progress(done: int, total: int) -> None:
+            if cancel_event.is_set():
+                raise _JobCancelled("任务已被取消")
             with state._jobs_lock:
                 if job.status == "cancelled":
-                    raise RuntimeError("任务已被取消")
+                    raise _JobCancelled("任务已被取消")
             _update_ingest_job(state, job, done, total)
 
         def _run_ingest_job() -> None:
@@ -1516,7 +1630,7 @@ def create_app(settings: Settings | None = None) -> Any:
                         logger.info("任务已取消并终止后台线程: %s", job_id)
                         _broadcast_job_event(job_id, {"type": "cancelled", "ts": _now_iso()})
                         return
-                    if "已被取消" in str(e):
+                    if isinstance(e, _JobCancelled) or "已被取消" in str(e):
                         job.status = "cancelled"
                         _broadcast_job_event(job_id, {"type": "cancelled", "ts": _now_iso()})
                     else:
@@ -1591,9 +1705,15 @@ def create_app(settings: Settings | None = None) -> Any:
     # --- POST /v1/chat ---
     @app.post("/v1/chat", response_model=ChatResponse)
     async def chat(req: ChatRequest) -> ChatResponse:
-        """RAG 对话问答：检索知识库 + 调用 LLM 生成回答。"""
+        """RAG 对话问答：检索知识库 + 调用 LLM 生成回答。
+
+        若请求携带 providerConfig（对话页点选模型即切服务商），则用其构造
+        临时 LLM 客户端按请求生效，不修改后端全局配置；未携带则用全局配置。
+        """
         store = state.ensure_open()
         try:
+            # 按请求携带的服务商配置构造临时 LLM 客户端（复用 /v1/llm/test 模式）
+            llm_client = _build_llm_client_from_provider(req, state.settings)
             answer = await asyncio.to_thread(
                 rag_answer,
                 req.query,
@@ -1602,15 +1722,20 @@ def create_app(settings: Settings | None = None) -> Any:
                 req.chat_id,
                 collections=req.collections,
                 model_override=req.model,
+                llm_client=llm_client,
                 enable_web_search=req.enable_web_search,
                 entity_context=req.entity_context,
                 persona=req.persona,
                 store=store,
                 embedder=state.embedder,
                 attachments=req.attachments,
+                github_token=req.github_token,
+                rag_mode=req.rag_mode,
             )
         except RagError as e:
             raise _api_error("RAG_ERROR", str(e), 400) from e
+        except LLMError as e:
+            raise _api_error("RAG_ERROR", f"LLM 配置错误: {e}", 400) from e
         except Exception as e:  # noqa: BLE001
             raise _api_error("INTERNAL", f"对话失败: {e}", 500) from e
 
@@ -1633,6 +1758,13 @@ def create_app(settings: Settings | None = None) -> Any:
                     source_type=getattr(s, "source_type", "local"),
                     url=getattr(s, "url", None),
                     title=getattr(s, "title", None),
+                    snippet=getattr(s, "snippet", None),
+                    source_name=getattr(s, "source_name", None),
+                    domain=getattr(s, "domain", None),
+                    published_at=getattr(s, "published_at", None),
+                    content_fetched=getattr(s, "content_fetched", False),
+                    corroborated_by=getattr(s, "corroborated_by", 0),
+                    evidence_level=getattr(s, "evidence_level", "单一来源"),
                 )
                 for s in answer.sources
             ],
@@ -1653,10 +1785,19 @@ def create_app(settings: Settings | None = None) -> Any:
             queue: asyncio.Queue[str | None] = asyncio.Queue()
             store = state.ensure_open()
             stop_event = threading.Event()
+            # 按请求携带的服务商配置构造临时 LLM 客户端（点选模型即切服务商）；
+            # 未携带时返回 None，用后端全局配置
+            try:
+                llm_client = _build_llm_client_from_provider(req, state.settings)
+            except LLMError as e:
+                if not stop_event.is_set():
+                    yield f"data: {json.dumps({'error': f'LLM 配置错误: {e}'}, ensure_ascii=False)}\n\n"
+                return
             gen = rag_answer_stream(
                 req.query, req.collection, req.top_k, req.chat_id,
                 collections=req.collections,
                 model_override=req.model,
+                llm_client=llm_client,
                 enable_web_search=req.enable_web_search,
                 entity_context=req.entity_context,
                 persona=req.persona,
@@ -1664,6 +1805,8 @@ def create_app(settings: Settings | None = None) -> Any:
                 embedder=state.embedder,
                 stop_event=stop_event,
                 attachments=req.attachments,
+                github_token=req.github_token,
+                rag_mode=req.rag_mode,
             )
 
             def _pump() -> None:
@@ -1772,6 +1915,13 @@ def create_app(settings: Settings | None = None) -> Any:
                                 source_type=s.get("source_type", "local"),
                                 url=s.get("url"),
                                 title=s.get("title"),
+                                snippet=s.get("snippet"),
+                                source_name=s.get("source_name"),
+                                domain=s.get("domain"),
+                                published_at=s.get("published_at"),
+                                content_fetched=s.get("content_fetched", False),
+                                corroborated_by=s.get("corroborated_by", 0),
+                                evidence_level=s.get("evidence_level", "单一来源"),
                             )
                             for idx, s in enumerate(raw_srcs)
                         ]
@@ -1953,10 +2103,9 @@ def create_app(settings: Settings | None = None) -> Any:
                     f"文档「{d.source}」体积较大 "
                     f"({d.size_bytes / (1024 * 1024):.1f} MB)，建议拆分后导入"
                 )
-        # 空分块文档过多时避免刷屏，保留前 20 条
+        # 空分块文档过多时避免刷屏，保留前 20 条。
+        # 空列表代表健康状态，不能把「未发现问题」伪装成一条红色告警。
         warnings = warnings[:20]
-        if not warnings and docs:
-            warnings.append("未发现质量问题")
 
         return QualityResponse(
             collection=collection,
@@ -2275,10 +2424,10 @@ def create_app(settings: Settings | None = None) -> Any:
         # 注意：store 可能是跨线程共享单例，embedder 在 ensure_open 中创建，
         # 因此这里只持有引用，不关闭。
         store = state.ensure_open()
-        collection = (req.collection or "default").strip() or "default"
+        collection = req.collection.strip() if req.collection and req.collection.strip() else None
         job_id = _new_id()
 
-        # 目标嵌入器：默认复用当前；指定 model 时用临时 settings 创建并探测维度
+        # 目标嵌入器：按请求模型或当前最新 settings 创建并探测维度
         target_embedder = state.embedder
         need_rebuild = False
         if req.model and req.model.strip():
@@ -2301,19 +2450,18 @@ def create_app(settings: Settings | None = None) -> Any:
                 # 维度变化：不拒绝，改为重建向量表（在 _run_reindex 中执行）
                 need_rebuild = True
             target_embedder = candidate
-        elif state.embedder is not None:
-            # 未指定 model：复用当前 embedder。运行时通过 /v1/config 换过嵌入模型时，
-            # 当前 embedder 维度可能与库表维度不一致（如 512 → 768），
-            # 此时 update_embeddings 原地更新必然维度不匹配失败，必须同样走重建路径。
-            # 先 probe 一次强制加载模型拿到真实维度（加载前 dimension 是预设值）。
+        else:
+            # 不传 model 表示使用当前配置。不能直接复用 state.embedder：
+            # /v1/config 可能刚更新了 embed_model/embed_model_path，而单例 embedder
+            # 仍是旧实例。重建任务必须按最新 settings 创建并探测目标模型。
             try:
-                _ = list(state.embedder.embed_texts(["probe"]))
+                target_embedder = get_embedder(state.settings)
+                _ = list(target_embedder.embed_texts(["probe"]))
             except Exception as e:  # noqa: BLE001
                 raise _api_error(
                     "BAD_REQUEST", f"加载嵌入模型失败: {e}", 400
                 ) from e
-            if state.embedder.dimension != store.embedding_dim:
-                need_rebuild = True
+            need_rebuild = target_embedder.dimension != store.embedding_dim
 
         job = JobStatus(
             job_id=job_id,
@@ -2326,6 +2474,9 @@ def create_app(settings: Settings | None = None) -> Any:
         )
         with state._jobs_lock:
             state.jobs[job_id] = job
+            state.job_cancel_events[job_id] = threading.Event()
+
+        cancel_event = state.job_cancel_events[job_id]
 
         def _run_reindex() -> None:
             # 写互斥：重建向量表（DROP + 回填）期间禁止 ingest/delete 并发写
@@ -2336,11 +2487,10 @@ def create_app(settings: Settings | None = None) -> Any:
                     with state._jobs_lock:
                         job.total = total
                     if total == 0:
-                        with state._jobs_lock:
-                            job.status = "completed"
-                            job.progress = 1.0
-                            job.finished_at = _now_iso()
-                        return
+                        # 空集合也要完成模型切换：即使没有分块，后续新导入/搜索
+                        # 仍必须使用用户刚配置的 embedder，而不能继续持有旧单例。
+                        if cancel_event.is_set():
+                            raise _JobCancelled("任务已被取消")
 
                     embedder = target_embedder
                     if embedder is None:
@@ -2352,6 +2502,8 @@ def create_app(settings: Settings | None = None) -> Any:
                     processed = 0
                     rebuild_pairs: list[tuple[int, object]] = []
                     for i in range(0, total, batch_size):
+                        if cancel_event.is_set():
+                            raise _JobCancelled("任务已被取消")
                         batch = pairs[i : i + batch_size]
                         texts = [content for _, content in batch]
                         embeddings = list(embedder.embed_texts(texts))
@@ -2371,11 +2523,17 @@ def create_app(settings: Settings | None = None) -> Any:
                             job.processed = processed
                             job.progress = round(processed / total, 4)
 
+                    if cancel_event.is_set():
+                        raise _JobCancelled("任务已被取消")
+
                     if need_rebuild:
-                        # 维度变化：重建向量表（drop + 按新维度建表）并回填全部向量
+                        # 维度变化：重建向量表（drop + 按新维度建表）并回填全部向量。
+                        # 取消检查放在最终写入前，避免把尚未完整计算的向量表提交出去。
                         store.rebuild_chunk_embeddings(rebuild_pairs, embedder.dimension)
 
                     with state._jobs_lock:
+                        if job.status == "cancelled" or cancel_event.is_set():
+                            raise _JobCancelled("任务已被取消")
                         job.status = "completed"
                         job.progress = 1.0
                         job.finished_at = _now_iso()
@@ -2399,11 +2557,17 @@ def create_app(settings: Settings | None = None) -> Any:
                                 )
                         except Exception as e:  # noqa: BLE001
                             logger.warning("reindex 后同步配置失败：%s", e)
+                except _JobCancelled:
+                    with state._jobs_lock:
+                        job.status = "cancelled"
+                        job.finished_at = _now_iso()
+                    _broadcast_job_event(job_id, {"type": "cancelled", "ts": _now_iso()})
                 except Exception as e:  # noqa: BLE001
                     with state._jobs_lock:
                         job.status = "failed"
                         job.error = str(e)
                         job.finished_at = _now_iso()
+                    _broadcast_job_event(job_id, {"type": "failed", "ts": _now_iso(), "error": str(e)})
 
         threading.Thread(target=_run_reindex, daemon=True).start()
         return job
@@ -2443,15 +2607,20 @@ def create_app(settings: Settings | None = None) -> Any:
         )
         with state._jobs_lock:
             state.jobs[job_id] = job
+            state.job_cancel_events[job_id] = threading.Event()
+
+        cancel_event = state.job_cancel_events[job_id]
 
         def _update_curate_job(done: int, total: int) -> None:
+            if cancel_event.is_set():
+                raise _JobCancelled("任务已被取消")
             with state._jobs_lock:
                 job.processed = done
                 job.total = total
                 job.progress = round(done / total, 4) if total > 0 else 0.0
 
         def _run_curate() -> None:
-            from doc2mind.core.curator import curate as run_curate
+            from doc2mind.core.curator import CurateCancelled, curate as run_curate
 
             try:
                 # 写互斥：与 ingest / delete / reindex 串行（dry_run 虽只读，
@@ -2467,17 +2636,28 @@ def create_app(settings: Settings | None = None) -> Any:
                         dry_run=req.dry_run,
                         top_k=req.top_k,
                         progress=_update_curate_job,
+                        cancel_check=cancel_event.is_set,
                     )
+                if cancel_event.is_set():
+                    raise _JobCancelled("任务已被取消")
                 with state._jobs_lock:
+                    if job.status == "cancelled":
+                        raise _JobCancelled("任务已被取消")
                     job.status = "completed"
                     job.progress = 1.0
                     job.finished_at = _now_iso()
                     job.report = report.to_dict()
+            except (_JobCancelled, CurateCancelled):
+                with state._jobs_lock:
+                    job.status = "cancelled"
+                    job.finished_at = _now_iso()
+                _broadcast_job_event(job_id, {"type": "cancelled", "ts": _now_iso()})
             except Exception as e:  # noqa: BLE001
                 with state._jobs_lock:
                     job.status = "failed"
                     job.error = str(e)
                     job.finished_at = _now_iso()
+                _broadcast_job_event(job_id, {"type": "failed", "ts": _now_iso(), "error": str(e)})
 
         threading.Thread(target=_run_curate, daemon=True).start()
         return job
@@ -2500,6 +2680,7 @@ def create_app(settings: Settings | None = None) -> Any:
             if job is None:
                 raise _api_error("NOT_FOUND", f"任务不存在: {job_id}", 404)
             if job.status in ("pending", "running"):
+                state.job_cancel_events.setdefault(job_id, threading.Event()).set()
                 job.status = "cancelled"
                 job.finished_at = _now_iso()
         return job

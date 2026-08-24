@@ -79,6 +79,14 @@
     <SolidColorBrush x:Key="LinkBrush" Color="{StaticResource LinkColor}"/>
     <SolidColorBrush x:Key="BodyBrush" Color="{StaticResource TextPrimaryColor}"/>
 
+    <!-- ==================== 1.5 对话气泡配色 ==================== -->
+    <!-- 用户消息气泡：自上而下的品牌蓝渐变（深色主题采用更亮的蓝色以保证白字对比度） -->
+    <LinearGradientBrush x:Key="UserBubbleBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#1E96FF" Offset="0"/>
+        <GradientStop Color="#0A84FF" Offset="1"/>
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="UserBubbleTextBrush" Color="#FFFFFF"/>
+
     <!-- ==================== 2. 间距体系 ==================== -->
     <sys:Double x:Key="SpaceXs">4</sys:Double>
     <sys:Double x:Key="SpaceSm">8</sys:Double>

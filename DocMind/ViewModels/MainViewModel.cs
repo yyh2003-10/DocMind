@@ -63,11 +63,14 @@ public partial class MainViewModel : ViewModelBase
         OnPropertyChanged(nameof(CanStartBackend));
         StartBackendCommand.NotifyCanExecuteChanged();
 
-        // 后端恢复在线时，自动刷新搜索集合与质量看板
+        // 后端恢复在线时，自动刷新搜索集合、质量看板与对话页的集合/历史会话
         if (state == BackendState.Online)
         {
             _ = _searchViewModel.LoadCollectionsAsync();
             _ = _chatViewModel.LoadCollectionsCommand.ExecuteAsync(null);
+            // 构造时会话列表可能因后端未就绪加载失败（fire-and-forget 无重试），
+            // 必须在后端恢复在线后补一次刷新，否则历史会话一直空白。
+            _ = _chatViewModel.RefreshSessionsAsync();
         }
     }
 
@@ -328,9 +331,14 @@ public partial class MainViewModel : ViewModelBase
         NavigateToImport();
     }
 
-    /// <summary>引用来源点击：用文件名搜索知识库，跳转搜索页。</summary>
+    /// <summary>引用来源点击：本地来源用文件名搜索知识库跳转搜索页；web 来源在浏览器中打开。</summary>
     private void OnSourceSearchRequested(Models.SourceRef src)
     {
+        if (src.IsWebSource && !string.IsNullOrWhiteSpace(src.Url))
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(src.Url) { UseShellExecute = true });
+            return;
+        }
         var query = Path.GetFileNameWithoutExtension(src.Source);
         _searchViewModel.SearchWithQuery(query);
         NavigateToSearch();

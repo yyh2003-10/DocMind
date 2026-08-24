@@ -16,6 +16,13 @@ public enum SettingsCategory
 
 public partial class SettingsViewModel : ViewModelBase
 {
+    /// <summary>服务商配置变更事件（新增/更新/删除/启停/设默认后触发）。
+    /// ChatViewModel 订阅后立即重建模型候选，实现设置页改完对话页立即可点选（修复 LobeChat 同类坑）。</summary>
+    public static event Action? ProviderConfigChanged;
+
+    /// <summary>触发服务商配置变更通知（各写操作成功后调用）。</summary>
+    private static void RaiseProviderConfigChanged() => ProviderConfigChanged?.Invoke();
+
     private readonly AppSettings _appSettings;
     private readonly NotificationService _notifications;
     private readonly ThemeService _themeService;
@@ -77,10 +84,13 @@ public partial class SettingsViewModel : ViewModelBase
     private string? _llmBaseUrl;
     private string _llmModel = "";
     private double _llmTemperature = 0.7;
-    private int _llmMaxTokens = 2048;
+    private int _llmMaxTokens = 8192;
     private int _ragTopK = 5;
     private string? _ragSystemPrompt;
     private int _ragMaxHistoryTokens = 4096;
+    private string _ragMode = "hybrid";
+    private bool _showRestartBanner;
+    private string _restartBannerText = "";
     private string _statusMessage = "就绪";
     private bool _isDirty;
     private bool _isTestingConnection;
@@ -97,6 +107,20 @@ public partial class SettingsViewModel : ViewModelBase
     // 用户点了「清除 Key」按钮：保存时本地置空 + 后端显式清除。
     // key 输入框留空 ≠ 清除（留空 = 保留原值，与 UI ToolTip 承诺一致）
     private bool _clearApiKeyRequested;
+
+    // GitHub Token（可选）：联网搜索 GitHub 通道按请求携带（每用户自己的 Token）。
+    // 与 LLM API Key 同语义：留空保存 = 保留原值，点「清除」才删除。
+    private string? _githubToken;
+    private string? _savedGithubTokenAtLoad;
+    private bool _clearGithubTokenRequested;
+
+    // --- AI 提供商档案 ---
+    private LlmProfile? _selectedProfile;
+    private string _profileNameInput = "";
+    private bool _isApplyingProfile;
+    private bool _isCheckingProfiles;
+    // 重建服务商下拉期间抑制「选中即应用」副作用（构造初始化/增删档案时只高亮，不触发 ApplyPreset）
+    private bool _isRebuildingProviderOptions;
 
     public SettingsViewModel(
         AppSettings appSettings,
@@ -148,6 +172,7 @@ public partial class SettingsViewModel : ViewModelBase
         // 单例在 App.LoadSettings 已统一解密为明文；此处不再回写单例，
         // 避免运行态明文/落盘密文状态互相污染（曾导致明文落盘与密文被覆盖）
         _llmApiKey = _appSettings.LlmApiKey;
+        _githubToken = _appSettings.GithubToken;
         _llmBaseUrl = _appSettings.LlmBaseUrl;
         _llmModel = _appSettings.LlmModel;
         _llmTemperature = _appSettings.LlmTemperature;
@@ -155,6 +180,7 @@ public partial class SettingsViewModel : ViewModelBase
         _ragTopK = _appSettings.RagTopK;
         _ragSystemPrompt = _appSettings.RagSystemPrompt;
         _ragMaxHistoryTokens = _appSettings.RagMaxHistoryTokens;
+        _ragMode = _appSettings.RagMode;
         _watchDebounceSeconds = _appSettings.WatchDebounceSeconds;
 
         WatchPaths.Clear();
@@ -168,15 +194,39 @@ public partial class SettingsViewModel : ViewModelBase
         }
 
         _savedApiKeyAtLoad = _llmApiKey;
+        _savedGithubTokenAtLoad = _githubToken;
         _savedBaseUrlAtLoad = _llmBaseUrl;
         _savedModelAtLoad = _llmModel;
         _savedRagSystemPromptAtLoad = _ragSystemPrompt;
+
+        // 载入 AI 提供商档案（ApiKey 已在 App.LoadSettings 解密为明文；解密失败项带 KeyDecryptFailed 标记）
+        SavedProfiles.Clear();
+        if (_appSettings.LlmProfiles is { Count: > 0 })
+        {
+            foreach (var profile in _appSettings.LlmProfiles.Where(p => p is not null))
+            {
+                SavedProfiles.Add(profile);
+            }
+        }
+        // 默认选中最后应用的档案（仅高亮，不自动应用/改配置）
+        if (!string.IsNullOrWhiteSpace(_appSettings.ActiveProfileId))
+        {
+            SelectedProfile = SavedProfiles.FirstOrDefault(p => p.Id == _appSettings.ActiveProfileId);
+        }
+        else
+        {
+            SelectedProfile = SavedProfiles.FirstOrDefault();
+        }
+        OnPropertyChanged(nameof(HasSavedProfiles));
 
         // 智能匹配预设服务商
         _selectedPreset = AvailablePresets.FirstOrDefault(p =>
             p.Id != "custom" &&
             (p.Provider == _llmProvider && !string.IsNullOrWhiteSpace(p.BaseUrl) && _llmBaseUrl != null && _llmBaseUrl.StartsWith(p.BaseUrl, StringComparison.OrdinalIgnoreCase))
         ) ?? (AvailablePresets.FirstOrDefault(p => p.Provider == _llmProvider) ?? AvailablePresets[0]);
+
+        // 重建合并服务商下拉（内置预设 + 自定义服务商）；重建期间只高亮不应用
+        RebuildProviderOptions();
 
         // 密文解密失败（换 Windows 用户/文件损坏）：显式提醒重输，而不是静默当作未配置
         // （静默变空曾让用户改其他参数一保存就把已配置的 Key 永久抹掉）
@@ -480,6 +530,24 @@ public partial class SettingsViewModel : ViewModelBase
     /// 保证「后端有 key 但本地快照没有」时用户仍能清除。</summary>
     public bool HasSavedApiKey => !string.IsNullOrWhiteSpace(_savedApiKeyAtLoad) || _backendApiKeyConfigured;
 
+    /// <summary>GitHub Token（联网搜索 GitHub 通道用；可选，内存持明文，落盘 DPAPI 加密）。
+    /// 每个用户填自己的 Token，随对话请求携带，后端不写全局配置。</summary>
+    public string? GithubToken
+    {
+        get => _githubToken;
+        set
+        {
+            if (SetDirty(ref _githubToken, value) && !string.IsNullOrWhiteSpace(value))
+            {
+                // 重新输入即取消「清除」请求
+                _clearGithubTokenRequested = false;
+            }
+        }
+    }
+
+    /// <summary>是否已配置 GitHub Token（控制「清除」按钮可用性）。</summary>
+    public bool HasSavedGithubToken => !string.IsNullOrWhiteSpace(_savedGithubTokenAtLoad);
+
     /// <summary>API 基础地址（如 https://api.deepseek.com/v1）。</summary>
     public string? LlmBaseUrl
     {
@@ -529,8 +597,91 @@ public partial class SettingsViewModel : ViewModelBase
         set => SetDirty(ref _ragMaxHistoryTokens, value);
     }
 
-    /// <summary>「获取模型列表」拉取到的可用模型（设置页模型下拉候选；仍可手输任意名称）。</summary>
-    public System.Collections.ObjectModel.ObservableCollection<string> LlmModels { get; } = new();
+    /// <summary>RAG 问答模式（"strict" = 严格知识库模式；"hybrid" = 混合常识增强模式）。</summary>
+    public string RagMode
+    {
+        get => _ragMode;
+        set => SetDirty(ref _ragMode, value);
+    }
+
+    /// <summary>是否显示提示用户平滑重启后端的 Banner。</summary>
+    public bool ShowRestartBanner
+    {
+        get => _showRestartBanner;
+        set => SetProperty(ref _showRestartBanner, value);
+    }
+
+    /// <summary>平滑重启 Banner 的提示说明。</summary>
+    public string RestartBannerText
+    {
+        get => _restartBannerText;
+        set => SetProperty(ref _restartBannerText, value);
+    }
+
+    /// <summary>「获取模型列表」拉取到的可用模型（设置页模型下拉候选；含上下文窗口等元数据）。
+    /// 点击「获取模型列表」后自动全量导入到该服务商，无需逐个添加。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<LlmModelItem> LlmModels { get; } = new();
+
+    private LlmModelItem? _selectedModelCandidate;
+
+    /// <summary>模型下拉当前选中的候选（用于「移除模型」）。</summary>
+    public LlmModelItem? SelectedModelCandidate
+    {
+        get => _selectedModelCandidate;
+        set => SetProperty(ref _selectedModelCandidate, value);
+    }
+
+    /// <summary>把当前模型输入（LlmModel）加入该服务商的模型候选列表（去重；不落盘，保存服务商时生效）。</summary>
+    [RelayCommand]
+    private void AddModelToProvider()
+    {
+        var model = LlmModel?.Trim();
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            StatusMessage = "请先在模型名称中输入要添加的模型";
+            _notifications.Warning("请先在模型名称中输入要添加的模型", "添加模型");
+            return;
+        }
+        if (LlmModels.Any(m => string.Equals(m.Name, model, StringComparison.OrdinalIgnoreCase)))
+        {
+            StatusMessage = $"模型「{model}」已在候选列表中";
+            return;
+        }
+        LlmModels.Add(new LlmModelItem(model));
+        SelectedModelCandidate = LlmModels.Last();
+        StatusMessage = $"已添加模型「{model}」到候选列表（保存服务商时生效）";
+        DebugLog.Info($"添加模型到服务商候选: {model}", "Settings");
+    }
+
+    /// <summary>从模型候选列表中移除指定模型（不落盘，保存服务商时生效）。
+    /// 参数为列表项「✕」按钮传入的 LlmModelItem；为空时回退到下拉选中项。</summary>
+    [RelayCommand]
+    private void RemoveModelFromProvider(LlmModelItem? item)
+    {
+        var targetName = (item?.Name ?? SelectedModelCandidate?.Name)?.Trim();
+        if (string.IsNullOrWhiteSpace(targetName))
+        {
+            StatusMessage = "请先在模型下拉中选中要移除的模型";
+            _notifications.Warning("请先在模型下拉中选中要移除的模型", "移除模型");
+            return;
+        }
+        var toRemove = LlmModels.FirstOrDefault(m => string.Equals(m.Name, targetName, StringComparison.OrdinalIgnoreCase));
+        if (toRemove is null)
+        {
+            return;
+        }
+        LlmModels.Remove(toRemove);
+        if (string.Equals(LlmModel?.Trim(), targetName, StringComparison.OrdinalIgnoreCase))
+        {
+            LlmModel = LlmModels.FirstOrDefault()?.Name ?? "";
+        }
+        SelectedModelCandidate = null;
+        StatusMessage = $"已移除模型「{targetName}」（保存服务商时生效）";
+        DebugLog.Info($"移除服务商候选模型: {targetName}", "Settings");
+    }
+
+    /// <summary>该服务商当前模型列表是否为空（用于下方列表空态提示）。</summary>
+    public bool HasModels => LlmModels.Count > 0;
 
     /// <summary>是否正在拉取模型列表。</summary>
     public bool IsFetchingModels
@@ -626,9 +777,12 @@ public partial class SettingsViewModel : ViewModelBase
         {
             if (!string.IsNullOrWhiteSpace(m))
             {
-                LlmModels.Add(m);
+                LlmModels.Add(new LlmModelItem(m));
             }
         }
+
+        // 名称自动默认：直接取预设显示名（用户可改；custom 预设不自动填）
+        ProfileNameInput = preset.DisplayName;
 
         StatusMessage = $"已应用【{preset.DisplayName}】预设：{preset.Description}";
     }
@@ -765,6 +919,21 @@ public partial class SettingsViewModel : ViewModelBase
                 ? LlmApiKey!.Trim()
                 : (_clearApiKeyRequested ? null : _appSettings.LlmApiKey);
 
+            // GitHub Token 同语义：非空 → 使用输入值；留空 → 保留原值；点「清除」→ 置空
+            var hasGithubTokenInput = !string.IsNullOrWhiteSpace(GithubToken);
+            var effectiveGithubToken = hasGithubTokenInput
+                ? GithubToken!.Trim()
+                : (_clearGithubTokenRequested ? null : _appSettings.GithubToken);
+
+            var oldEmbedModel = _appSettings.EmbedModel;
+            var oldEmbedModelPath = _appSettings.EmbedModelPath;
+            var oldChunkTokens = _appSettings.ChunkMaxTokens;
+            var oldChunkMin = _appSettings.ChunkMinChars;
+            var oldChunkOverlap = _appSettings.ChunkOverlapChars;
+            var oldChunkMax = _appSettings.ChunkMaxChars;
+            var oldBackendUrl = _appSettings.BackendUrl;
+            var oldBackendCmd = _appSettings.BackendCommand;
+
             // 写回内存对象
             _appSettings.BackendUrl = BackendUrl;
             _appSettings.PollIntervalMs = PollIntervalMs;
@@ -784,6 +953,7 @@ public partial class SettingsViewModel : ViewModelBase
             _appSettings.ChunkMaxChars = ChunkMaxChars;
             _appSettings.LlmProvider = LlmProvider;
             _appSettings.LlmApiKey = effectiveApiKey;
+            _appSettings.GithubToken = effectiveGithubToken;
             _appSettings.LlmBaseUrl = LlmBaseUrl;
             _appSettings.LlmModel = LlmModel;
             _appSettings.LlmTemperature = LlmTemperature;
@@ -791,6 +961,7 @@ public partial class SettingsViewModel : ViewModelBase
             _appSettings.RagTopK = RagTopK;
             _appSettings.RagSystemPrompt = string.IsNullOrWhiteSpace(RagSystemPrompt) ? null : RagSystemPrompt;
             _appSettings.RagMaxHistoryTokens = RagMaxHistoryTokens;
+            _appSettings.RagMode = RagMode;
             _appSettings.WatchPaths = WatchPaths.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToList();
             _appSettings.WatchDebounceSeconds = WatchDebounceSeconds;
             _appSettings.DismissGpuWarning = _gpuWarning.Dismissed;
@@ -800,6 +971,22 @@ public partial class SettingsViewModel : ViewModelBase
             // 内存/AppSettings 单例仍持明文，供 BackendProcessService 注入环境变量与测试连接使用。
             _appSettings.Save();
             var settingsPath = AppSettings.ConfigPath;
+
+            // 检测关键底层参数是否发生变更
+            var criticalParamChanged = oldEmbedModel != EmbedModel
+                || oldEmbedModelPath != EmbedModelPath
+                || oldChunkTokens != ChunkMaxTokens
+                || oldChunkMin != ChunkMinChars
+                || oldChunkOverlap != ChunkOverlapChars
+                || oldChunkMax != ChunkMaxChars
+                || oldBackendUrl != BackendUrl
+                || oldBackendCmd != BackendCommand;
+
+            if (criticalParamChanged)
+            {
+                ShowRestartBanner = true;
+                RestartBannerText = "💡 检测到嵌入模型或底层分块参数已变更，建议点击右侧【立即平滑重启后端】使新环境全面生效。";
+            }
 
             // 推送到后端运行时配置（/v1/config），免重启生效；
             // 推送失败会显式警告（重启后端后环境变量仍会生效，见 BackendProcessService）。
@@ -840,6 +1027,7 @@ public partial class SettingsViewModel : ViewModelBase
                     LlmTemperature = LlmTemperature,
                     LlmMaxTokens = LlmMaxTokens,
                     RagTopK = RagTopK,
+                    RagMode = RagMode,
                     RagSystemPrompt = string.IsNullOrWhiteSpace(RagSystemPrompt)
                         ? (string.IsNullOrWhiteSpace(_savedRagSystemPromptAtLoad) ? null : "")
                         : RagSystemPrompt.Trim(),
@@ -858,6 +1046,8 @@ public partial class SettingsViewModel : ViewModelBase
             catch (Exception ex)
             {
                 pushFailed = true;
+                ShowRestartBanner = true;
+                RestartBannerText = "⚠️ 后端参数即时推送异常，请点击右侧【立即平滑重启后端】通过环境变量重新加载最新配置。";
                 DebugLog.Warn($"后端参数推送失败（重启后端后仍会生效）: {ex.Message}", "Settings");
                 _notifications.Warning(
                     $"后端推送失败：{ex.Message}\n配置已保存到本地，重启后端后将通过环境变量生效。",
@@ -866,7 +1056,9 @@ public partial class SettingsViewModel : ViewModelBase
 
             IsDirty = false;
             _clearApiKeyRequested = false;
+            _clearGithubTokenRequested = false;
             _savedApiKeyAtLoad = effectiveApiKey;
+            _savedGithubTokenAtLoad = effectiveGithubToken;
             _savedBaseUrlAtLoad = LlmBaseUrl;
             _savedModelAtLoad = LlmModel;
             _savedRagSystemPromptAtLoad = RagSystemPrompt;
@@ -881,6 +1073,7 @@ public partial class SettingsViewModel : ViewModelBase
                 _backendApiKeyConfigured = false;
             }
             OnPropertyChanged(nameof(HasSavedApiKey));
+            OnPropertyChanged(nameof(HasSavedGithubToken));
             var keyNote = !hasApiKeyInput && !_clearApiKeyRequested && !string.IsNullOrWhiteSpace(_savedApiKeyAtLoad)
                 ? "；API Key 保留原值"
                 : "";
@@ -945,6 +1138,8 @@ public partial class SettingsViewModel : ViewModelBase
         }
 
         _clearApiKeyRequested = false; // 恢复未保存的改动，包括未保存的「清除」请求
+        _githubToken = _appSettings.GithubToken;
+        _clearGithubTokenRequested = false;
         IsDirty = false;
         StatusMessage = "已恢复";
     }
@@ -961,6 +1156,484 @@ public partial class SettingsViewModel : ViewModelBase
         // "" 显式清除。若没有这行，dirty=false 时保存按钮禁用，清除永远无法生效。
         IsDirty = true;
         SaveCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>显式清除已配置的 GitHub Token（保存时本地置空）。
+    /// 输入框留空保存只会保留原值，不会清除——清除必须走此按钮。</summary>
+    [RelayCommand]
+    private void ClearGithubToken()
+    {
+        _clearGithubTokenRequested = true;
+        GithubToken = null;
+        // 同 ClearApiKey：值未变化时 setter 不标记 dirty，清除请求本身要进入保存流程
+        IsDirty = true;
+        SaveCommand.NotifyCanExecuteChanged();
+    }
+
+    // ===================== AI 提供商档案 =====================
+
+    /// <summary>服务商下拉统一选项：内置预设（LlmPresetCatalog.All）+ 自定义服务商（SavedProfiles）合并。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<ProviderOption> ProviderOptions { get; } = new();
+
+    private ProviderOption? _selectedProviderOption;
+
+    /// <summary>当前选中的服务商选项（内置预设或自定义服务商）。</summary>
+    public ProviderOption? SelectedProviderOption
+    {
+        get => _selectedProviderOption;
+        set
+        {
+            if (SetProperty(ref _selectedProviderOption, value) && value is not null && !_isRebuildingProviderOptions)
+            {
+                if (value.IsBuiltIn && value.Preset is { } preset)
+                {
+                    // 内置预设：一键填入地址与推荐模型，名称自动默认
+                    SelectedPreset = preset;
+                }
+                else if (value.IsCustom && value.Profile is { } profile)
+                {
+                    // 自定义服务商：回填表单供查看/编辑（不自动推送，「应用该服务商」按钮才保存+推送）
+                    SelectedProfile = profile;
+                    LoadProfileIntoForm(profile);
+                }
+            }
+        }
+    }
+
+    /// <summary>把服务商配置回填到表单（Provider/地址/模型列表/默认模型/温度/token/Key/名称）。
+    /// 仅回填不推送；「应用该服务商」按钮才执行保存+推送。</summary>
+    private void LoadProfileIntoForm(LlmProfile profile)
+    {
+        LlmProvider = profile.Provider;
+        LlmBaseUrl = profile.BaseUrl;
+        // 模型下拉候选 = 该服务商全部模型（含上下文窗口元数据）；默认模型 = profile.Model（若不在候选则追加）
+        LlmModels.Clear();
+        var hasDefault = false;
+        foreach (var m in profile.Models ?? new List<string>())
+        {
+            if (!string.IsNullOrWhiteSpace(m))
+            {
+                int? ctx = profile.ModelContextWindows?.TryGetValue(m, out var cw) == true ? cw : null;
+                LlmModels.Add(new LlmModelItem(m.Trim(), ctx));
+                if (string.Equals(m.Trim(), profile.Model?.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    hasDefault = true;
+                }
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(profile.Model) && !hasDefault)
+        {
+            int? ctx = profile.ModelContextWindows?.TryGetValue(profile.Model, out var cw) == true ? cw : null;
+            LlmModels.Add(new LlmModelItem(profile.Model.Trim(), ctx));
+        }
+        LlmModel = profile.Model ?? "";
+        if (profile.Temperature is not null)
+        {
+            LlmTemperature = profile.Temperature.Value;
+        }
+        if (profile.MaxTokens is not null)
+        {
+            LlmMaxTokens = profile.MaxTokens.Value;
+        }
+        if (!string.IsNullOrWhiteSpace(profile.ApiKey))
+        {
+            // setter 会同步清除 _clearApiKeyRequested
+            LlmApiKey = profile.ApiKey;
+        }
+        // 名称自动默认（用户可改）
+        ProfileNameInput = profile.Name;
+    }
+
+    /// <summary>重建服务商下拉选项（内置预设 + 自定义服务商），并尽量保持当前选中项。
+    /// 构造初始化与档案增删后调用；重建期间抑制「选中即应用」副作用。</summary>
+    private void RebuildProviderOptions()
+    {
+        var currentId = SelectedProviderOption?.Id;
+        _isRebuildingProviderOptions = true;
+        try
+        {
+            ProviderOptions.Clear();
+            foreach (var preset in LlmPresetCatalog.All)
+            {
+                ProviderOptions.Add(new ProviderOption($"preset:{preset.Id}", preset.DisplayName, preset.Description, preset, null));
+            }
+            foreach (var profile in SavedProfiles)
+            {
+                ProviderOptions.Add(new ProviderOption($"profile:{profile.Id}", profile.Name,
+                    string.IsNullOrWhiteSpace(profile.Description) ? profile.Provider : profile.Description!,
+                    null, profile));
+            }
+            // 恢复选中：优先保持原选中项，否则选中最后应用的档案，否则默认内置预设
+            SelectedProviderOption = currentId is not null
+                ? ProviderOptions.FirstOrDefault(o => o.Id == currentId)
+                : (!string.IsNullOrWhiteSpace(_appSettings.ActiveProfileId)
+                    ? ProviderOptions.FirstOrDefault(o => o.Id == $"profile:{_appSettings.ActiveProfileId}")
+                    : null) ?? ProviderOptions.FirstOrDefault();
+        }
+        finally
+        {
+            _isRebuildingProviderOptions = false;
+        }
+    }
+
+    /// <summary>已保存的 AI 提供商档案列表（可复用命名配置，ApiKey 内存明文/落盘加密）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<LlmProfile> SavedProfiles { get; } = new();
+
+    /// <summary>当前选中的档案。</summary>
+    public LlmProfile? SelectedProfile
+    {
+        get => _selectedProfile;
+        set
+        {
+            if (SetProperty(ref _selectedProfile, value))
+            {
+                OnPropertyChanged(nameof(HasSelectedProfile));
+                OnPropertyChanged(nameof(SelectedProfileSummary));
+                OnPropertyChanged(nameof(IsSelectedProviderDefault));
+                OnPropertyChanged(nameof(IsSelectedProviderEnabled));
+            }
+        }
+    }
+
+    public bool HasSelectedProfile => SelectedProfile is not null;
+
+    public bool HasSavedProfiles => SavedProfiles.Count > 0;
+
+    /// <summary>当前选中服务商是否为默认服务商（对话页「默认」项使用）。</summary>
+    public bool IsSelectedProviderDefault =>
+        SelectedProfile is { } p && p.Id == _appSettings.ActiveProfileId;
+
+    /// <summary>当前选中服务商是否已启用（停用后不出现在对话页点选列表）。</summary>
+    public bool IsSelectedProviderEnabled => SelectedProfile?.IsEnabled != false;
+
+    /// <summary>把当前选中服务商设为默认（写 ActiveProfileId 并落盘；对话页「默认（设置页配置）」项使用它）。</summary>
+    [RelayCommand]
+    private void SetDefaultProvider()
+    {
+        if (SelectedProfile is not { } profile)
+        {
+            StatusMessage = "请先在左侧选中一个自定义服务商，再设为默认";
+            _notifications.Warning("请先在左侧选中一个自定义服务商", "设为默认");
+            return;
+        }
+        _appSettings.ActiveProfileId = profile.Id;
+        _appSettings.Save();
+        OnPropertyChanged(nameof(IsSelectedProviderDefault));
+        StatusMessage = $"已将「{profile.Name}」设为默认服务商（对话页默认使用）";
+        _notifications.Success($"已将「{profile.Name}」设为默认服务商", "设为默认");
+        DebugLog.Info($"设为默认服务商: {profile.Name} ({profile.Id})", "Settings");
+        RaiseProviderConfigChanged();
+    }
+
+    /// <summary>切换当前选中服务商的启用/停用状态（停用后不出现在对话页点选列表，配置保留）。</summary>
+    [RelayCommand]
+    private void ToggleProviderEnabled()
+    {
+        if (SelectedProfile is not { } profile)
+        {
+            StatusMessage = "请先在左侧选中一个自定义服务商";
+            return;
+        }
+        profile.IsEnabled = !profile.IsEnabled;
+        _appSettings.LlmProfiles = SavedProfiles.ToList();
+        _appSettings.Save();
+        OnPropertyChanged(nameof(IsSelectedProviderEnabled));
+        StatusMessage = profile.IsEnabled
+            ? $"已启用「{profile.Name}」（将出现在对话页模型点选列表）"
+            : $"已停用「{profile.Name}」（不出现在对话页，配置保留）";
+        _notifications.Info(StatusMessage, "服务商状态");
+        DebugLog.Info($"切换服务商启用状态: {profile.Name} -> {profile.IsEnabled}", "Settings");
+        RaiseProviderConfigChanged();
+    }
+
+    /// <summary>档案摘要（下拉 ToolTip/副标题）。</summary>
+    public string SelectedProfileSummary => SelectedProfile is null ? ""
+        : $"{SelectedProfile.Provider} · {SelectedProfile.Model ?? "默认模型"}"
+          + (string.IsNullOrWhiteSpace(SelectedProfile.BaseUrl) ? "" : $" · {SelectedProfile.BaseUrl}");
+
+    /// <summary>档案名称输入（新建档案用；留空 = 更新当前选中档案）。</summary>
+    public string ProfileNameInput
+    {
+        get => _profileNameInput;
+        set => SetProperty(ref _profileNameInput, value);
+    }
+
+    /// <summary>是否正在应用档案（应用+保存+推送进行中）。</summary>
+    public bool IsApplyingProfile
+    {
+        get => _isApplyingProfile;
+        set => SetProperty(ref _isApplyingProfile, value);
+    }
+
+    /// <summary>档案一键体检结果列表（每个档案一条：可用性/耗时/错误）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<ProfileCheckResult> ProfileCheckResults { get; } = new();
+
+    /// <summary>是否正在体检全部档案。</summary>
+    public bool IsCheckingProfiles
+    {
+        get => _isCheckingProfiles;
+        set => SetProperty(ref _isCheckingProfiles, value);
+    }
+
+    /// <summary>是否有体检结果可展示。</summary>
+    public bool HasProfileCheckResults => ProfileCheckResults.Count > 0;
+
+    /// <summary>删除档案的确认回调（默认弹 MessageBox；测试注入直接返回 true 以绕过对话框）。</summary>
+    internal Func<LlmProfile, bool>? DeleteConfirm { get; set; }
+
+    /// <summary>把当前表单（提供商/地址/模型/温度/token/Key）保存为 AI 档案。
+    /// 名称取 ProfileNameInput，留空则更新当前选中档案；同名档案直接覆盖。</summary>
+    [RelayCommand]
+    private void SaveProfile()
+    {
+        var name = ProfileNameInput?.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = SelectedProfile?.Name?.Trim() ?? "";
+        }
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            StatusMessage = "请先为档案输入名称，或在下拉中选择已有档案";
+            _notifications.Warning("请先为档案输入一个名称，或先在下拉中选择已有档案", "保存档案");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(LlmProvider) || LlmProvider == "none")
+        {
+            StatusMessage = "请先选择接口类型（提供商）再保存档案";
+            _notifications.Warning("请先选择接口类型（提供商不能为 none）", "保存档案");
+            return;
+        }
+
+        var existing = SavedProfiles.FirstOrDefault(p =>
+            string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+        var target = existing ?? new LlmProfile { Name = name };
+        target.Provider = LlmProvider;
+        target.BaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl) ? null : LlmBaseUrl.Trim();
+        // 默认模型：当前表单选中的模型
+        target.Model = string.IsNullOrWhiteSpace(LlmModel) ? null : LlmModel.Trim();
+        // 该服务商全部可用模型：当前表单模型下拉候选（含推荐/拉取/手输）
+        target.Models = LlmModels
+            .Where(m => !string.IsNullOrWhiteSpace(m.Name))
+            .Select(m => m.Name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        // 持久化上下文窗口（仅保存有值的模型）
+        target.ModelContextWindows = LlmModels
+            .Where(m => !string.IsNullOrWhiteSpace(m.Name) && m.ContextWindow is not null)
+            .GroupBy(m => m.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().ContextWindow!.Value, StringComparer.OrdinalIgnoreCase);
+        target.Temperature = LlmTemperature;
+        target.MaxTokens = LlmMaxTokens;
+        target.KeyDecryptFailed = false;
+        // key：输入非空才覆盖；留空保留档案原 key（与表单「留空保留」语义一致）
+        if (!string.IsNullOrWhiteSpace(LlmApiKey))
+        {
+            target.ApiKey = LlmApiKey.Trim();
+        }
+        else if (existing is null)
+        {
+            target.ApiKey = null;
+        }
+
+        if (existing is null)
+        {
+            SavedProfiles.Add(target);
+            StatusMessage = $"已添加服务商「{name}」（{target.Models.Count} 个模型）";
+            _notifications.Success($"已添加自定义服务商「{name}」，可在服务商下拉中选用", "添加服务商");
+        }
+        else
+        {
+            StatusMessage = $"已更新服务商「{name}」（同名覆盖）";
+            _notifications.Success($"已更新服务商「{name}」", "更新服务商");
+        }
+        SelectedProfile = target;
+        ProfileNameInput = "";
+        OnPropertyChanged(nameof(HasSavedProfiles));
+        // 新服务商入列：同步重建合并服务商下拉（内置预设 + 自定义服务商）
+        RebuildProviderOptions();
+
+        // 落盘（AppSettings.Save 会对各档案 ApiKey 加密）
+        _appSettings.LlmProfiles = SavedProfiles.ToList();
+        _appSettings.Save();
+        DebugLog.Info($"保存 AI 服务商: name={name} provider={target.Provider} model={target.Model ?? "-"} models={target.Models.Count}", "Settings");
+        // 服务商已新增/更新：通知对话页立即重建模型候选
+        RaiseProviderConfigChanged();
+    }
+
+    /// <summary>应用选中档案：回填表单 → 走完整保存流程（落盘 + 推送后端免重启生效）。</summary>
+    [RelayCommand]
+    private async Task ApplyProfileAsync()
+    {
+        if (SelectedProfile is not { } profile || IsApplyingProfile)
+        {
+            return;
+        }
+        IsApplyingProfile = true;
+        try
+        {
+            if (profile.KeyDecryptFailed)
+            {
+                StatusMessage = $"⚠ 档案「{profile.Name}」的 API Key 无法解密，请重新输入后保存";
+                _notifications.Warning(
+                    $"档案「{profile.Name}」的 API Key 无法解密（可能更换过 Windows 用户或文件损坏），请重新输入。",
+                    "应用档案");
+            }
+
+            // 回填表单（值变化自动置 IsDirty）
+            LoadProfileIntoForm(profile);
+            // 记录激活档案（随 Save 落盘；仅高亮用，不强制改配置）
+            _appSettings.ActiveProfileId = profile.Id;
+            // 走完整保存流程：本地落盘 + 推送后端（免重启生效）
+            await SaveAsync();
+            // key 解密失败的档案：应用成功但需重输 key——最终状态消息必须保留此提醒
+            // （SaveAsync 内部会把 StatusMessage 覆盖为「已保存」，这里按优先级重写）
+            StatusMessage = profile.KeyDecryptFailed
+                ? $"⚠ 已应用档案「{profile.Name}」，但该档案的 API Key 无法解密，请重新输入后保存"
+                : $"✅ 已应用档案「{profile.Name}」（{profile.Provider} / {profile.Model ?? "默认模型"}）";
+            DebugLog.Info($"应用 AI 档案: name={profile.Name} provider={profile.Provider}", "Settings");
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"❌ 应用档案失败: {ex.Message}";
+            _notifications.Error($"应用档案失败：{ex.Message}");
+            DebugLog.Error($"应用档案异常: {ex.Message}", "Settings", ex);
+        }
+        finally
+        {
+            IsApplyingProfile = false;
+        }
+    }
+
+    /// <summary>删除选中档案（确认后不可恢复；可重新保存重建）。</summary>
+    [RelayCommand]
+    private void DeleteProfile()
+    {
+        if (SelectedProfile is not { } profile)
+        {
+            return;
+        }
+        var confirm = DeleteConfirm ?? DefaultDeleteConfirm;
+        if (!confirm(profile))
+        {
+            return;
+        }
+
+        SavedProfiles.Remove(profile);
+        if (_appSettings.ActiveProfileId == profile.Id)
+        {
+            _appSettings.ActiveProfileId = null;
+        }
+        _appSettings.LlmProfiles = SavedProfiles.ToList();
+        _appSettings.Save();
+        OnPropertyChanged(nameof(HasSavedProfiles));
+        SelectedProfile = SavedProfiles.FirstOrDefault();
+        // 服务商已删：同步重建合并服务商下拉
+        RebuildProviderOptions();
+        StatusMessage = $"已删除档案「{profile.Name}」（可重新保存恢复）";
+        _notifications.Success($"已删除档案「{profile.Name}」", "删除档案");
+        DebugLog.Info($"删除 AI 档案: {profile.Name}", "Settings");
+        // 服务商已删除：通知对话页立即重建模型候选
+        RaiseProviderConfigChanged();
+    }
+
+    private bool DefaultDeleteConfirm(LlmProfile profile)
+    {
+        var result = System.Windows.MessageBox.Show(
+            $"确定删除 AI 提供商档案「{profile.Name}」吗？\n删除后不可恢复（可重新保存重建）。",
+            "删除档案",
+            System.Windows.MessageBoxButton.YesNo,
+            System.Windows.MessageBoxImage.Warning);
+        return result == System.Windows.MessageBoxResult.Yes;
+    }
+
+    /// <summary>档案一键体检：对全部已存档案逐个调 /v1/llm/test，
+    /// 收集可用性/耗时/错误到 ProfileCheckResults（对齐 Codex++ Provider Doctor）。
+    /// key 无法解密的档案直接标记失败并提示，不请求后端。</summary>
+    [RelayCommand]
+    private async Task CheckAllProfilesAsync()
+    {
+        if (IsCheckingProfiles)
+        {
+            return;
+        }
+        if (SavedProfiles.Count == 0)
+        {
+            StatusMessage = "暂无档案可体检：先保存一个 AI 提供商档案";
+            _notifications.Warning("暂无档案可体检，请先保存一个 AI 提供商档案", "档案体检");
+            return;
+        }
+
+        IsCheckingProfiles = true;
+        ProfileCheckResults.Clear();
+        OnPropertyChanged(nameof(HasProfileCheckResults));
+        StatusMessage = "正在体检全部 AI 档案…";
+        DebugLog.Info($"开始档案一键体检: 共 {SavedProfiles.Count} 个", "Settings");
+
+        var okCount = 0;
+        try
+        {
+            foreach (var profile in SavedProfiles.ToList())
+            {
+                var result = new ProfileCheckResult(profile.Name, profile.Provider, false, 0, null);
+                if (profile.KeyDecryptFailed)
+                {
+                    result = result with
+                    {
+                        Ok = false,
+                        Error = "API Key 无法解密，请重新输入后保存",
+                    };
+                }
+                else
+                {
+                    try
+                    {
+                        var test = await _apiService.LlmTestAsync(new LlmTestRequest
+                        {
+                            Provider = profile.Provider,
+                            ApiKey = profile.ApiKey,
+                            BaseUrl = profile.BaseUrl,
+                            Model = profile.Model,
+                            Timeout = 20,
+                        });
+                        result = result with
+                        {
+                            Ok = test.Ok,
+                            ElapsedMs = test.ElapsedMs,
+                            Error = test.Ok ? null : (test.Error ?? "未知错误"),
+                        };
+                        if (test.Ok)
+                        {
+                            okCount++;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugLog.Warn($"档案「{profile.Name}」体检异常: {ex.Message}", "Settings");
+                        result = result with { Ok = false, Error = ex.Message };
+                    }
+                }
+                ProfileCheckResults.Add(result);
+            }
+
+            OnPropertyChanged(nameof(HasProfileCheckResults));
+            StatusMessage = okCount == SavedProfiles.Count
+                ? $"✅ 全部 {SavedProfiles.Count} 个档案体检通过"
+                : $"档案体检完成：{okCount}/{SavedProfiles.Count} 可用";
+            DebugLog.Info($"档案体检完成: {okCount}/{SavedProfiles.Count} 可用", "Settings");
+            if (okCount < SavedProfiles.Count)
+            {
+                _notifications.Warning(
+                    $"{SavedProfiles.Count - okCount} 个档案不可用，详情见下方列表", "档案体检");
+            }
+            else if (SavedProfiles.Count > 0)
+            {
+                _notifications.Success($"全部 {SavedProfiles.Count} 个 AI 档案可用", "档案体检");
+            }
+        }
+        finally
+        {
+            IsCheckingProfiles = false;
+        }
     }
 
     [RelayCommand]
@@ -1068,9 +1741,23 @@ public partial class SettingsViewModel : ViewModelBase
                 LlmModels.Clear();
                 foreach (var m in result.Models)
                 {
-                    LlmModels.Add(m);
+                    int? ctx = null;
+                    int? maxOut = null;
+                    bool isReasoning = false;
+                    string? summary = null;
+                    if (result.ModelMeta.TryGetValue(m, out var meta))
+                    {
+                        ctx = meta.ContextWindow;
+                        maxOut = meta.MaxOutputTokens;
+                        isReasoning = meta.IsReasoningModel;
+                        summary = meta.SummaryText;
+                    }
+                    LlmModels.Add(new LlmModelItem(m, ctx, maxOut, isReasoning, summary));
                 }
-                StatusMessage = $"✅ 获取到 {result.Models.Count} 个模型（{result.Provider}）";
+                // 自动选中第一个模型作为默认模型（全量导入后无需手动点选）
+                LlmModel = LlmModels.FirstOrDefault()?.Name ?? LlmModel;
+                SelectedModelCandidate = LlmModels.FirstOrDefault();
+                StatusMessage = $"✅ 获取到 {result.Models.Count} 个模型（{result.Provider}），已自动导入全部模型到该服务商";
                 DebugLog.Info($"模型列表获取成功: provider={result.Provider} count={result.Models.Count}", "Settings");
             }
             else
@@ -1162,15 +1849,16 @@ public partial class SettingsViewModel : ViewModelBase
             return;
         }
 
-        StatusMessage = "正在强力重启后端服务...";
-        _notifications.Info("正在强力重启后端服务...", "重启中");
+        StatusMessage = "正在平滑重启后端服务...";
+        _notifications.Info("正在平滑重启后端服务...", "重启中");
         try
         {
             var ok = await _backendProcess.RestartAsync();
             if (ok)
             {
-                StatusMessage = "✅ 后端服务已成功重启并对齐最新端口";
-                _notifications.Success("后端服务已重启，端口与实例已对齐！", "重启成功");
+                ShowRestartBanner = false;
+                StatusMessage = "✅ 后端服务已成功重启并对齐最新端口与配置";
+                _notifications.Success("后端服务已平滑重启，最新配置已全面生效！", "重启成功");
             }
             else
             {
@@ -1190,4 +1878,34 @@ public partial class SettingsViewModel : ViewModelBase
 public sealed record EmbedModelOption(string Label, string ModelId)
 {
     public override string ToString() => Label;
+}
+
+/// <summary>AI 提供商档案一键体检结果项（对齐 Codex++ Provider Doctor）。
+/// Ok=true 表示该档案经 /v1/llm/test 连通可用；Error 为失败原因（已分类中文提示）。</summary>
+public sealed record ProfileCheckResult(
+    string Name,
+    string Provider,
+    bool Ok,
+    int ElapsedMs,
+    string? Error)
+{
+    public string StatusText => Ok ? $"✅ 可用（{ElapsedMs}ms）" : $"❌ 不可用";
+    public string? ErrorDetail => Ok ? null : (Error ?? "未知错误");
+}
+
+/// <summary>服务商下拉统一选项：内置预设（Preset 非空）或自定义服务商（Profile 非空）。
+/// 设置页与对话页共用同一套选项模型，选中后按来源分派（内置 → ApplyPreset；自定义 → 应用服务商）。</summary>
+public sealed record ProviderOption(
+    string Id,
+    string DisplayName,
+    string Description,
+    LlmPreset? Preset,
+    LlmProfile? Profile)
+{
+    public bool IsBuiltIn => Preset is not null;
+
+    /// <summary>是否自定义服务商（用户添加）。</summary>
+    public bool IsCustom => Profile is not null;
+
+    public override string ToString() => DisplayName;
 }

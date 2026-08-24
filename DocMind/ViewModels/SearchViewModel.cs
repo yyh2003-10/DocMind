@@ -236,9 +236,11 @@ public partial class SearchViewModel : ViewModelBase
                 SelectedHit = Hits[0];
             }
 
-            StatusMessage = resp.Total > 0
-                ? $"返回 {resp.Hits.Count}/{resp.Total} 条 · 耗时 {resp.ElapsedMs:F0}ms" + (resp.Degraded ? "（嵌入不可用，仅关键词检索）" : "")
-                : "无匹配结果";
+            StatusMessage = !string.IsNullOrWhiteSpace(resp.Message)
+                ? resp.Message + (resp.Degraded ? "（嵌入不可用，仅关键词检索）" : "")
+                : resp.Total > 0
+                    ? $"返回 {resp.Hits.Count}/{resp.Total} 条 · 耗时 {resp.ElapsedMs:F0}ms" + (resp.Degraded ? "（嵌入不可用，仅关键词检索）" : "")
+                    : "无匹配结果：请尝试更换关键词或调低最低相似度阈值";
 
             DebugLog.Info($"搜索完成: hits={resp.Hits.Count} total={resp.Total} elapsed={resp.ElapsedMs:F0}ms 本地耗时{sw.ElapsedMilliseconds}ms", "Search");
         }

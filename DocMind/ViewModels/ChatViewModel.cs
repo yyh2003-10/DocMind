@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -46,6 +47,8 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
     private bool _showRegenerate;
     private bool _showWithdraw;
     private string _waitingHint = "🧠 正在检索知识库并思考回答...";
+    private string _statusText = string.Empty;
+    private bool _showStatus;
 
     /// <summary>角色：user / assistant / system。</summary>
     public string Role
@@ -98,6 +101,13 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
 
     private static readonly System.Text.RegularExpressions.Regex ArtifactRegex =
         new(@":::\s*artifact(?:\s+type=[""']?([a-zA-Z0-9_-]+)[""']?)?(?:\s+title=[""']?([^""'\n\r]+)[""']?)?(?:\s+theme=[""']?([a-zA-Z0-9_-]+)[""']?)?\s*\n([\s\S]*?)(?::::|\Z)", System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>正文引用角标匹配：[1] / [1,2] / [1、2]。
+    /// 边界仅用 ASCII 字符类（.NET 的 \w 会把中文算作单词字符，导致“见[1]”不匹配）；
+    /// 前后粘着英文/数字/方括号时不转换，避免误伤代码里的下标如 arr[1]。</summary>
+    private static readonly System.Text.RegularExpressions.Regex SourceMarkerRegex =
+        new(@"(?<![A-Za-z0-9_\]])\[(\d{1,3}(?:[,\s、，]\d{1,3})*)\](?![A-Za-z0-9_\[])",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
 
     /// <summary>AI 根据上下文预测的下一步行动建议列表。</summary>
     public ObservableCollection<string> FollowUpActions { get; } = new();
@@ -397,12 +407,19 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             doc.FontWeight = FontWeights.Medium;
             doc.Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextPrimaryBrush")
                                      ?? Brushes.Black);
+            // 降级标题层级：Markdig 把 ###/#### 渲染成 18px+ 大标题，气泡读起来像文档报告；
+            // 统一压回正文大小（保留加粗层级），让回答更接近自然聊天的语气。
+            DownscaleHeadings(doc);
+            // 让回答正文里的 Markdown 链接可直接点击（仅 http/https，其余不可点击防风险）
+            AttachLinkNavigation(doc);
+            // 把 [n] 引用标记转换为可点击角标（点击打开对应来源抽屉）
+            WireSourceMarkers(doc);
             RenderedDocument = doc;
         }
         catch (Exception ex)
         {
             // 解析失败:清空 RenderedDocument,UI 会 fallback 到纯 TextBlock(由 Visibility 控制)
-            DebugLog.Warn($"Markdown 解析失败,降级纯文本: {ex.Message}", "Chat");
+            DebugLog.Warn($"Markdown 解析失败,降级纯文本: {ex}", "Chat");
             if (_renderedDocument is not null)
             {
                 RenderedDocument = null;
@@ -410,11 +427,470 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         }
     }
 
-    /// <summary>引用来源（仅 assistant 有）。</summary>
+    /// <summary>把 Markdig 渲染的大标题（### 18px Bold 等）降级为正文大小加粗，
+    /// 消除气泡的"文档报告感"，让 AI 回答更像聊天。</summary>
+    private static void DownscaleHeadings(FlowDocument doc)
+    {
+        foreach (var block in doc.Blocks)
+        {
+            DownscaleHeadings(block);
+        }
+    }
+
+    private static void DownscaleHeadings(Block block)
+    {
+        switch (block)
+        {
+            case Paragraph p:
+                // 只有标题会被 Markdig 显式放大到 18px+；正文/代码块继承 15px 不受影响
+                if (p.FontSize > 15)
+                {
+                    p.FontSize = 15;
+                    p.FontWeight = FontWeights.SemiBold;
+                }
+                break;
+            case List list:
+                foreach (var item in list.ListItems)
+                {
+                    foreach (var itemBlock in item.Blocks)
+                    {
+                        DownscaleHeadings(itemBlock);
+                    }
+                }
+                break;
+            case Table table:
+                foreach (var group in table.RowGroups)
+                {
+                    foreach (var row in group.Rows)
+                    {
+                        foreach (var cell in row.Cells)
+                        {
+                            foreach (var cellBlock in cell.Blocks)
+                            {
+                                DownscaleHeadings(cellBlock);
+                            }
+                        }
+                    }
+                }
+                break;
+            case Section section:
+                foreach (var child in section.Blocks)
+                {
+                    DownscaleHeadings(child);
+                }
+                break;
+        }
+    }
+
+    /// <summary>让回答正文中的 Markdown 链接可直接点击并在默认浏览器打开。
+    /// Markdig.Wpf 会把 <c>[text](url)</c> 渲染成带 NavigateUri 的 Hyperlink，但默认
+    /// 没有任何导航处理器，点击无反应。这里只对 http/https 绝对链接挂
+    /// RequestNavigate 处理器；javascript:/file:/相对路径等一律移除导航（不可点击），
+    /// 防止 AI 输出或文档中的危险协议被直接打开。</summary>
+    private static void AttachLinkNavigation(FlowDocument doc)
+    {
+        foreach (var block in doc.Blocks)
+        {
+            AttachLinkNavigation(block);
+        }
+    }
+
+    private static void AttachLinkNavigation(Block block)
+    {
+        switch (block)
+        {
+            case Paragraph paragraph:
+                foreach (var inline in paragraph.Inlines)
+                {
+                    AttachLinkNavigation(inline);
+                }
+                break;
+            case List list:
+                foreach (var item in list.ListItems)
+                {
+                    foreach (var itemBlock in item.Blocks)
+                    {
+                        AttachLinkNavigation(itemBlock);
+                    }
+                }
+                break;
+            case Table table:
+                foreach (var group in table.RowGroups)
+                {
+                    foreach (var row in group.Rows)
+                    {
+                        foreach (var cell in row.Cells)
+                        {
+                            foreach (var cellBlock in cell.Blocks)
+                            {
+                                AttachLinkNavigation(cellBlock);
+                            }
+                        }
+                    }
+                }
+                break;
+            case Section section:
+                foreach (var child in section.Blocks)
+                {
+                    AttachLinkNavigation(child);
+                }
+                break;
+        }
+    }
+
+    private static void AttachLinkNavigation(Inline inline)
+    {
+        switch (inline)
+        {
+            case Hyperlink link:
+                WireHyperlink(link);
+                // 链接文本内可能再嵌套行内元素（如代码 span）
+                foreach (var child in link.Inlines)
+                {
+                    AttachLinkNavigation(child);
+                }
+                break;
+            case Span span:
+                foreach (var child in span.Inlines)
+                {
+                    AttachLinkNavigation(child);
+                }
+                break;
+        }
+    }
+
+    private static void WireHyperlink(Hyperlink link)
+    {
+        var raw = link.NavigateUri?.ToString() ?? "";
+        if (Uri.TryCreate(raw, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        {
+            link.NavigateUri = uri;
+            // 主题色高亮 + 下划线：FlowDocument 设置了 TextPrimary 前景，
+            // 默认会让链接继承成正文颜色而看不出可点击，这里显式恢复链接样式
+            link.Foreground = (Brush)(System.Windows.Application.Current?.FindResource("PrimaryBrush")
+                                      ?? Brushes.DodgerBlue);
+            link.TextDecorations = TextDecorations.Underline;
+            link.RequestNavigate += (_, e) =>
+            {
+                e.Handled = true;
+                try
+                {
+                    System.Diagnostics.Process.Start(
+                        new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri)
+                        {
+                            UseShellExecute = true,
+                        });
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Warn($"打开链接失败: {ex.Message}", "Chat");
+                }
+            };
+        }
+        else
+        {
+            // 非 http(s) 链接：移除导航，点击无反应（防止 javascript:/file: 等风险）
+            link.NavigateUri = null;
+        }
+    }
+
+    /// <summary>把正文中的 [n] 引用标记转换为可点击角标（DeepSeek 风格），
+    /// 点击打开对应来源抽屉。仅在消息带来源时生效；代码块段落（带样式）跳过，
+    /// 避免把代码里的下标当作引用。</summary>
+    private void WireSourceMarkers(FlowDocument doc)
+    {
+        if (Sources is not { Count: > 0 })
+        {
+            return;
+        }
+        // 注意：遍历必须用快照——对 Paragraph.Inlines 的 Clear/Add 会递增整个
+        // TextContainer 的版本号，使正在进行的 doc.Blocks 枚举器直接失效（WPF 经典坑）。
+        foreach (var block in doc.Blocks.ToList())
+        {
+            WireSourceMarkers(block);
+        }
+    }
+
+    private void WireSourceMarkers(Block block)
+    {
+        switch (block)
+        {
+            case Paragraph paragraph:
+                WireSourceMarkers(paragraph);
+                break;
+            case List list:
+                foreach (var item in list.ListItems.ToList())
+                {
+                    foreach (var itemBlock in item.Blocks.ToList())
+                    {
+                        WireSourceMarkers(itemBlock);
+                    }
+                }
+                break;
+            case Table table:
+                foreach (var group in table.RowGroups.ToList())
+                {
+                    foreach (var row in group.Rows.ToList())
+                    {
+                        foreach (var cell in row.Cells.ToList())
+                        {
+                            foreach (var cellBlock in cell.Blocks.ToList())
+                            {
+                                WireSourceMarkers(cellBlock);
+                            }
+                        }
+                    }
+                }
+                break;
+            case Section section:
+                foreach (var child in section.Blocks.ToList())
+                {
+                    WireSourceMarkers(child);
+                }
+                break;
+        }
+    }
+
+    private void WireSourceMarkers(Paragraph paragraph)
+    {
+        // Markdig.Wpf 渲染代码块时会给段落套样式；带样式的段落跳过，避免误转换
+        if (paragraph.Style is not null)
+        {
+            return;
+        }
+        var inlines = paragraph.Inlines.ToList();
+        // Markdig 会把 [ 拆成独立 Run（如 Run[官方资料见] Run[[] Run[1]…]），
+        // 引用标记跨多个 Run 导致单 Run 匹配不到。先把格式相同的相邻 Run 合并成一段。
+        var merged = new List<Inline>();
+        foreach (var inline in inlines)
+        {
+            if (inline is Run run && merged.LastOrDefault() is Run last && SameFormat(last, run))
+            {
+                last.Text += run.Text;
+            }
+            else
+            {
+                merged.Add(inline);
+            }
+        }
+        paragraph.Inlines.Clear();
+        foreach (var inline in merged)
+        {
+            if (inline is Run run)
+            {
+                AppendRunWithMarkers(paragraph, run);
+            }
+            else
+            {
+                paragraph.Inlines.Add(inline);
+            }
+        }
+    }
+
+    private void AppendRunWithMarkers(Paragraph paragraph, Run run)
+    {
+        var text = run.Text ?? "";
+        var matches = SourceMarkerRegex.Matches(text);
+        if (matches.Count == 0)
+        {
+            paragraph.Inlines.Add(run);
+            return;
+        }
+
+        var validIndexes = new HashSet<int>();
+        if (Sources is not null)
+        {
+            foreach (var src in Sources)
+            {
+                validIndexes.Add(src.Index);
+            }
+        }
+
+        int pos = 0;
+        foreach (System.Text.RegularExpressions.Match match in matches)
+        {
+            if (match.Index > pos)
+            {
+                paragraph.Inlines.Add(CloneRun(run, text[pos..match.Index]));
+            }
+            var firstIndex = int.Parse(match.Groups[1].Value.Split(',', '，', '、', ' ')[0]);
+            if (validIndexes.Contains(firstIndex))
+            {
+                paragraph.Inlines.Add(CreateSourceMarker(run, match.Groups[1].Value.Trim(), firstIndex));
+            }
+            else
+            {
+                // 索引不在来源范围内：原样保留文本，避免误转换
+                paragraph.Inlines.Add(CloneRun(run, match.Value));
+            }
+            pos = match.Index + match.Length;
+        }
+        if (pos < text.Length)
+        {
+            paragraph.Inlines.Add(CloneRun(run, text[pos..]));
+        }
+    }
+
+    /// <summary>两个 Run 的格式是否一致（可安全合并文本）。</summary>
+    private static bool SameFormat(Run a, Run b)
+        => Equals(a.FontFamily, b.FontFamily)
+           && Equals(a.FontSize, b.FontSize)
+           && Equals(a.FontWeight, b.FontWeight)
+           && Equals(a.FontStyle, b.FontStyle)
+           && Equals(a.Foreground, b.Foreground)
+           && Equals(a.Background, b.Background)
+           && (a.TextDecorations?.Count ?? 0) == (b.TextDecorations?.Count ?? 0);
+
+    /// <summary>复制 Run 的格式（加粗/斜体/前景/字号等）以保留分段后的视觉效果。</summary>
+    private static Run CloneRun(Run template, string text)
+    {
+        var run = new Run(text)
+        {
+            FontFamily = template.FontFamily,
+            FontSize = template.FontSize,
+            FontWeight = template.FontWeight,
+            FontStyle = template.FontStyle,
+            Foreground = template.Foreground,
+            Background = template.Background,
+            TextDecorations = template.TextDecorations,
+        };
+        return run;
+    }
+
+    /// <summary>创建引用角标（高质感交互徽章，带悬浮详细来源卡片与直达小图标，点击打开来源或网页）。</summary>
+    private Hyperlink CreateSourceMarker(Run template, string indexText, int index)
+    {
+        var targetSource = Sources?.FirstOrDefault(s => s.Index == index);
+        var isWeb = targetSource?.IsWebSource == true && !string.IsNullOrWhiteSpace(targetSource.Url);
+        var iconSymbol = isWeb ? "🌐↗" : "📄";
+
+        var link = new Hyperlink
+        {
+            Foreground = (Brush)(System.Windows.Application.Current?.FindResource("PrimaryBrush")
+                                 ?? Brushes.DodgerBlue),
+            FontSize = Math.Max(10, (template.FontSize > 0 ? template.FontSize : 15) - 3),
+            FontWeight = FontWeights.Bold,
+            BaselineAlignment = BaselineAlignment.Superscript,
+            TextDecorations = null,
+            Cursor = Cursors.Hand,
+        };
+
+        if (targetSource != null)
+        {
+            var tip = new ToolTip
+            {
+                Background = (Brush)(System.Windows.Application.Current?.FindResource("CardBrush") ?? Brushes.White),
+                BorderBrush = (Brush)(System.Windows.Application.Current?.FindResource("BorderBrush") ?? Brushes.LightGray),
+                BorderThickness = new Thickness(1),
+                Padding = new Thickness(8, 6, 8, 6),
+            };
+            var tipPanel = new StackPanel { MaxWidth = 340 };
+            var tipHeader = new TextBlock
+            {
+                Text = targetSource.IsWebSource ? $"🌐 [{index}] {targetSource.DisplayTitle}" : $"📄 [{index}] {targetSource.DisplayTitle}",
+                FontWeight = FontWeights.SemiBold,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextPrimaryBrush") ?? Brushes.Black),
+            };
+            tipPanel.Children.Add(tipHeader);
+
+            if (targetSource.IsWebSource && !string.IsNullOrWhiteSpace(targetSource.Url))
+            {
+                var tipUrl = new TextBlock
+                {
+                    Text = targetSource.Url,
+                    FontSize = 10,
+                    Foreground = (Brush)(System.Windows.Application.Current?.FindResource("PrimaryBrush") ?? Brushes.DodgerBlue),
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    Margin = new Thickness(0, 2, 0, 0),
+                };
+                tipPanel.Children.Add(tipUrl);
+            }
+            else if (!targetSource.IsWebSource)
+            {
+                var tipMeta = new TextBlock
+                {
+                    Text = targetSource.Page.HasValue ? $"页码: P{targetSource.Page.Value} · 章节: {targetSource.Heading ?? "正文"}" : $"章节: {targetSource.Heading ?? "正文"}",
+                    FontSize = 10,
+                    Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextSecondaryBrush") ?? Brushes.Gray),
+                    Margin = new Thickness(0, 2, 0, 0),
+                };
+                tipPanel.Children.Add(tipMeta);
+            }
+
+            if (!string.IsNullOrWhiteSpace(targetSource.Snippet))
+            {
+                var tipSnippet = new TextBlock
+                {
+                    Text = targetSource.Snippet.Trim(),
+                    FontSize = 11,
+                    Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextSecondaryBrush") ?? Brushes.DarkGray),
+                    TextWrapping = TextWrapping.Wrap,
+                    MaxHeight = 80,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    Margin = new Thickness(0, 4, 0, 0),
+                };
+                tipPanel.Children.Add(tipSnippet);
+            }
+
+            var tipHint = new TextBlock
+            {
+                Text = isWeb ? "💡 点击直接在默认浏览器中打开该网页（同时展示来源抽屉）" : "💡 点击直接打开对应来源详情与切片原文",
+                FontSize = 10,
+                Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextTertiaryBrush") ?? Brushes.Gray),
+                Margin = new Thickness(0, 6, 0, 0),
+            };
+            tipPanel.Children.Add(tipHint);
+            tip.Content = tipPanel;
+            link.ToolTip = tip;
+
+            // 点击角标：如果为网页且带有合法 URL，直接在默认浏览器中打开；并通知展开抽屉
+            link.Click += (_, _) =>
+            {
+                if (isWeb && ChatViewModel.TryOpenHttpUrl(targetSource.Url!))
+                {
+                    // 默认浏览器已触发
+                }
+                NotifySourceMarker(index);
+            };
+        }
+        else
+        {
+            link.ToolTip = $"查看来源 [{indexText}]";
+            link.Click += (_, _) => NotifySourceMarker(index);
+        }
+
+        link.Inlines.Add(new Run($"[{indexText} {iconSymbol}]"));
+        return link;
+    }
+
+    /// <summary>引用来源（仅 assistant 有）。设置后刷新搜索摘要/状态统计等计算属性。</summary>
     public IReadOnlyList<SourceRef>? Sources
     {
         get => _sources;
-        set => SetField(ref _sources, value);
+        set
+        {
+            if (SetField(ref _sources, value))
+            {
+                foreach (var name in new[]
+                {
+                    nameof(HasSources), nameof(WebSourceCount), nameof(WebFetchedCount),
+                    nameof(HasWebSources), nameof(SearchSummaryText),
+                    nameof(WebSources), nameof(LocalSources),
+                    nameof(TokenStatText), nameof(HasTokenStat),
+                })
+                {
+                    PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
+                }
+                // 当 Sources 到达后，重新解析正文以挂载来源引用角标与悬浮卡片
+                if (!string.IsNullOrEmpty(Content))
+                {
+                    UpdateRenderedDocument(force: true);
+                }
+            }
+        }
     }
 
     /// <summary>模型名（仅 assistant 有）。</summary>
@@ -431,11 +907,19 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         set => SetField(ref _provider, value);
     }
 
-    /// <summary>耗时 ms（仅 assistant 有）。</summary>
+    /// <summary>耗时 ms（仅 assistant 有）。设置后刷新底部状态统计。</summary>
     public int? ElapsedMs
     {
         get => _elapsedMs;
-        set => SetField(ref _elapsedMs, value);
+        set
+        {
+            if (SetField(ref _elapsedMs, value))
+            {
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(TokenStatText)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasTokenStat)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
+            }
+        }
     }
 
     /// <summary>是否正在加载。整体生成期间为 true。</summary>
@@ -447,6 +931,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             if (SetField(ref _isLoading, value))
             {
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CanCopy)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
             }
         }
     }
@@ -479,12 +964,356 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         set => SetField(ref _waitingHint, value);
     }
 
+    /// <summary>流式阶段状态文案（正在检索/正在联网搜索...）。</summary>
+    public string StatusText
+    {
+        get => _statusText;
+        set => SetField(ref _statusText, value);
+    }
+
+    /// <summary>是否显示阶段状态指示器。</summary>
+    public bool ShowStatus
+    {
+        get => _showStatus;
+        set => SetField(ref _showStatus, value);
+    }
+
+    // ===== DeepSeek 风格信息卡片：思考过程 / 搜索摘要 / 状态统计 =====
+
+    /// <summary>流式阶段收集的思考/搜索过程步骤（解析附件、检索知识库、联网搜索、生成…）。</summary>
+    public ObservableCollection<string> ThinkingSteps { get; } = new();
+
+    /// <summary>是否有思考过程可展示（控制折叠区可见性）。</summary>
+    public bool HasThinkingSteps => ThinkingSteps.Count > 0;
+
+    /// <summary>是否有任何真实思考内容（链路步骤 或 模型推理链 reasoning_content）。</summary>
+    public bool HasThinking => HasThinkingSteps || HasThinkingText;
+
+    private bool _isThinkingExpanded = true;
+
+    /// <summary>思考过程区是否展开（点击标题切换）。</summary>
+    public bool IsThinkingExpanded
+    {
+        get => _isThinkingExpanded;
+        set => SetField(ref _isThinkingExpanded, value);
+    }
+
+    private bool _isThinkingInProgress;
+
+    /// <summary>是否处于思考进行中阶段（生成中且尚未输出正文）。</summary>
+    public bool IsThinkingInProgress
+    {
+        get => _isThinkingInProgress;
+        set
+        {
+            if (SetField(ref _isThinkingInProgress, value))
+            {
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
+            }
+        }
+    }
+
+    private string _thinkingDurationText = "";
+
+    /// <summary>思考耗时文案（如「用时 5.2 秒」）。</summary>
+    public string ThinkingDurationText
+    {
+        get => _thinkingDurationText;
+        set
+        {
+            if (SetField(ref _thinkingDurationText, value))
+            {
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
+            }
+        }
+    }
+
+    /// <summary>思考过程标题：生成中显示「思考中...」，完成后显示「已思考（用时 X 秒）」。</summary>
+    public string ThinkingHeaderText
+    {
+        get
+        {
+            if (IsLoading && (IsThinkingInProgress || IsWaitingForFirstToken))
+            {
+                return !string.IsNullOrEmpty(ThinkingDurationText)
+                    ? $"思考中 ({ThinkingDurationText})"
+                    : "思考中...";
+            }
+            return !string.IsNullOrEmpty(ThinkingDurationText)
+                ? $"已思考（{ThinkingDurationText}）"
+                : "已思考";
+        }
+    }
+
+    private FlowDocument? _renderedThinkingDocument;
+    private long _lastThinkingRenderTicks;
+
+    /// <summary>模型推理链 Markdown 解析后的 FlowDocument。</summary>
+    public FlowDocument? RenderedThinkingDocument
+    {
+        get => _renderedThinkingDocument;
+        private set => SetField(ref _renderedThinkingDocument, value);
+    }
+
+    private void UpdateRenderedThinkingDocument(bool force = false)
+    {
+        if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
+        {
+            dispatcher.InvokeAsync(() => UpdateRenderedThinkingDocument(force));
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(ThinkingText))
+        {
+            if (_renderedThinkingDocument is not null)
+            {
+                RenderedThinkingDocument = null;
+            }
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        if (!force && (now - _lastThinkingRenderTicks) < RenderThrottleMs)
+        {
+            return;
+        }
+        _lastThinkingRenderTicks = now;
+
+        try
+        {
+            var pipeline = new MarkdownPipelineBuilder().UseSupportedExtensions().Build();
+            var doc = Markdig.Wpf.Markdown.ToFlowDocument(ThinkingText, pipeline);
+            doc.PagePadding = new Thickness(0);
+            doc.FontFamily = SystemFonts.MessageFontFamily;
+            doc.FontSize = 12.5;
+            doc.FontWeight = FontWeights.Normal;
+            doc.Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextSecondaryBrush")
+                                     ?? Brushes.Gray);
+            DownscaleHeadings(doc);
+            AttachLinkNavigation(doc);
+            RenderedThinkingDocument = doc;
+        }
+        catch
+        {
+            RenderedThinkingDocument = null;
+        }
+    }
+
+    private string _thinkingText = "";
+
+    /// <summary>模型真实推理链文本（DeepSeek-R1/Qwen3 的 reasoning_content 增量累积）。</summary>
+    public string ThinkingText
+    {
+        get => _thinkingText;
+        private set
+        {
+            if (SetField(ref _thinkingText, value))
+            {
+                UpdateRenderedThinkingDocument();
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinkingText)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
+            }
+        }
+    }
+
+    /// <summary>是否有模型推理链可展示。</summary>
+    public bool HasThinkingText => !string.IsNullOrWhiteSpace(ThinkingText);
+
+    /// <summary>追加一段推理链文本（流式增量）。</summary>
+    public void AppendThinking(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+        ThinkingText += text;
+    }
+
+    /// <summary>更新流式进行中的实时思考秒数（由 ViewModel 定时器驱动）。</summary>
+    public void UpdateLiveThinkingDuration(long elapsedMs)
+    {
+        if (IsThinkingInProgress || IsWaitingForFirstToken)
+        {
+            _thinkingDurationText = $"{Math.Max(0.1, elapsedMs / 1000.0):F1} 秒";
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingDurationText)));
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
+        }
+    }
+
+    /// <summary>结束思考阶段，锁定最终耗时并切换为「已思考」。</summary>
+    public void CompleteThinking(long elapsedMs)
+    {
+        IsThinkingInProgress = false;
+        IsWaitingForFirstToken = false;
+        ShowStatus = false;
+        _thinkingDurationText = $"{Math.Max(0.1, elapsedMs / 1000.0):F1} 秒";
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsThinkingInProgress)));
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingDurationText)));
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
+        UpdateRenderedThinkingDocument(force: true);
+    }
+
+    /// <summary>联网来源数（搜索到的网页数）。</summary>
+    public int WebSourceCount => Sources?.Count(s => s.IsWebSource) ?? 0;
+
+    /// <summary>实际抓到正文的网页数（浏览过的页面）。</summary>
+    public int WebFetchedCount => Sources?.Count(s => s.IsWebSource && s.ContentFetched) ?? 0;
+
+    /// <summary>真实互联网检索网页卡片列表。</summary>
+    public IEnumerable<SourceRef> WebSources => Sources?.Where(s => s.IsWebSource) ?? Enumerable.Empty<SourceRef>();
+
+    /// <summary>真实本地知识库原著切片卡片列表。</summary>
+    public IEnumerable<SourceRef> LocalSources => Sources?.Where(s => !s.IsWebSource) ?? Enumerable.Empty<SourceRef>();
+
+    /// <summary>是否有联网来源（控制搜索摘要行可见性）。</summary>
+    public bool HasWebSources => WebSourceCount > 0;
+
+    /// <summary>搜索摘要文案（如「搜索到 19 个网页 · 浏览 4 个页面」）。</summary>
+    public string SearchSummaryText => HasWebSources
+        ? $"搜索到 {WebSourceCount} 个网页 · 浏览 {WebFetchedCount} 个页面"
+        : "";
+
+    private int _tokenCount;
+
+    /// <summary>本次回答的 token 数（客户端流式帧计数）。</summary>
+    public int TokenCount
+    {
+        get => _tokenCount;
+        set
+        {
+            if (SetField(ref _tokenCount, value))
+            {
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(TokenStatText)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasTokenStat)));
+            }
+        }
+    }
+
+    /// <summary>底部状态统计文案（token · 速度 · 来源数 · 耗时）。</summary>
+    public string TokenStatText
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (TokenCount > 0)
+            {
+                parts.Add($"{TokenCount} tok");
+                if (ElapsedMs is > 0)
+                {
+                    var secs = ElapsedMs.Value / 1000.0;
+                    if (secs > 0)
+                    {
+                        parts.Add($"{TokenCount / secs:F1} tok/s");
+                    }
+                }
+            }
+            if (Sources is { Count: > 0 })
+            {
+                parts.Add($"{Sources.Count} 个来源");
+            }
+            if (ElapsedMs is > 0)
+            {
+                parts.Add($"{ElapsedMs.Value}ms");
+            }
+            return string.Join(" · ", parts);
+        }
+    }
+
+    /// <summary>是否有状态统计可展示（控制底部状态栏可见性）。</summary>
+    public bool HasTokenStat => TokenCount > 0 || Sources is { Count: > 0 } || ElapsedMs is > 0;
+
+    /// <summary>用户点击正文引用角标 [n] 时触发（n 为来源索引）。</summary>
+    public event Action<int>? SourceMarkerRequested;
+
+    /// <summary>
+    /// 追加一条思考/搜索步骤（去重连续重复）。
+    /// 后端会先发「正在…」进行中状态，完成后发「✔ 详情」状态；
+    /// 收到「✔」时替换上一条「正在…」步骤，保持每一步紧凑且带详细内容。
+    /// </summary>
+    public void AddThinkingStep(string step)
+    {
+        var text = step?.Trim() ?? "";
+        if (text.Length == 0)
+        {
+            return;
+        }
+        if (ThinkingSteps.Count > 0 && ThinkingSteps[^1] == text)
+        {
+            return;
+        }
+        // 「✔ 详情」替换上一条「正在…」进行中步骤
+        if (text.StartsWith("✔") && ThinkingSteps.Count > 0 && ThinkingSteps[^1].StartsWith("正在"))
+        {
+            ThinkingSteps[^1] = text;
+            return;
+        }
+        ThinkingSteps.Add(text);
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinkingSteps)));
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
+    }
+
+    /// <summary>触发引用角标点击（由正文中的角标 Hyperlink 调用）。</summary>
+    public void NotifySourceMarker(int index) => SourceMarkerRequested?.Invoke(index);
+
     /// <summary>是否有可复制内容（控制「复制」按钮可见性）。</summary>
     public bool CanCopy => !IsLoading && !string.IsNullOrEmpty(Content);
 
-    /// <summary>复制消息内容到剪贴板。</summary>
+    private bool _isCopied;
+
+    /// <summary>是否已复制（用于呈现「已复制 ✓」对勾微动效）。</summary>
+    public bool IsCopied
+    {
+        get => _isCopied;
+        set => SetField(ref _isCopied, value);
+    }
+
+    private bool _isLiked;
+
+    /// <summary>点赞状态。</summary>
+    public bool IsLiked
+    {
+        get => _isLiked;
+        set
+        {
+            if (SetField(ref _isLiked, value))
+            {
+                if (value && _isDisliked) IsDisliked = false;
+            }
+        }
+    }
+
+    private bool _isDisliked;
+
+    /// <summary>点踩状态。</summary>
+    public bool IsDisliked
+    {
+        get => _isDisliked;
+        set
+        {
+            if (SetField(ref _isDisliked, value))
+            {
+                if (value && _isLiked) IsLiked = false;
+            }
+        }
+    }
+
+    /// <summary>切换点赞。</summary>
     [RelayCommand]
-    private void Copy()
+    private void ToggleLike()
+    {
+        IsLiked = !IsLiked;
+    }
+
+    /// <summary>切换点踩。</summary>
+    [RelayCommand]
+    private void ToggleDislike()
+    {
+        IsDisliked = !IsDisliked;
+    }
+
+    /// <summary>复制消息内容到剪贴板，并触发「已复制 ✓」反馈。</summary>
+    [RelayCommand]
+    private async Task CopyAsync()
     {
         if (string.IsNullOrEmpty(Content))
         {
@@ -493,10 +1322,12 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         try
         {
             Clipboard.SetText(Content);
+            IsCopied = true;
+            await Task.Delay(1500);
+            IsCopied = false;
         }
         catch (Exception ex)
         {
-            // 剪贴板被其他进程占用（OCR/远程桌面场景偶发）：重试一次，仍失败仅记录
             DebugLog.Warn($"复制到剪贴板失败: {ex.Message}", "Chat");
             try { Clipboard.SetText(Content); } catch { /* 放弃，不打断 UI */ }
         }
@@ -651,10 +1482,97 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
-    public ChatViewModel(IDoc2kbApiService apiService, NotificationService? notifications = null)
+    /// <summary>是否开启实时联网搜索（持久化：勾选状态重启后保持）。</summary>
+    public bool IsWebSearchEnabled
+    {
+        get => _isWebSearchEnabled;
+        set
+        {
+            if (SetProperty(ref _isWebSearchEnabled, value))
+            {
+                // 勾选/取消即落盘，下次启动保持同样状态，避免每次重新勾选
+                _appSettings.EnableWebSearch = value;
+                try
+                {
+                    _appSettings.Save();
+                }
+                catch
+                {
+                    // 落盘失败不阻断对话
+                }
+            }
+        }
+    }
+
+    public const string DefaultProfileLabel = "默认（设置页配置）";
+
+    /// <summary>模型选择器候选（首项为「设置页默认」伪值，其后为各启用服务商的模型，显示「模型名（服务商名）」）。</summary>
+    public ObservableCollection<ModelChoice> ModelChoices { get; } = new();
+
+    private readonly AppSettings _appSettings;
+    private ModelChoice? _selectedModelChoice;
+    private ProfileOption _selectedProfileOption;
+    private bool _isInitializingProfiles;
+    private bool _isSwitchingProfile;
+    private bool _isWebSearchEnabled;
+
+    /// <summary>当前选中模型项；选中自定义服务商的模型 → 记录该服务商（发送时随请求携带 ProviderConfig）；默认项 → 用后端全局配置。</summary>
+    public ModelChoice? SelectedModelChoice
+    {
+        get => _selectedModelChoice;
+        set
+        {
+            if (SetProperty(ref _selectedModelChoice, value) && value is not null)
+            {
+                // 同步 SelectedModel 显示（默认项 → 默认标签）
+                if (value.IsDefault)
+                {
+                    SelectedModel = DefaultModelLabel;
+                }
+                else if (!string.IsNullOrWhiteSpace(value.Model))
+                {
+                    SelectedModel = value.Model;
+                }
+            }
+        }
+    }
+
+    /// <summary>当前选中服务商项；自定义服务商 → 应用（推送后端）；内置预设 → 填入地址与推荐模型；默认项 → 切回设置页配置。</summary>
+    public ProfileOption SelectedProfileOption
+    {
+        get => _selectedProfileOption;
+        set
+        {
+            if (SetProperty(ref _selectedProfileOption, value) && value is not null && !_isInitializingProfiles)
+            {
+                if (value.IsCustom && value.Profile is { } profile)
+                {
+                    _ = ApplyProfileSwitchAsync(profile);
+                }
+                else if (value.IsBuiltIn && value.Preset is { } preset)
+                {
+                    _ = ApplyPresetSwitchAsync(preset);
+                }
+                else
+                {
+                    _ = ApplyProfileSwitchAsync(null);
+                }
+            }
+        }
+    }
+
+    /// <summary>是否正在切换档案（推送后端 + 刷新模型列表中）。</summary>
+    public bool IsSwitchingProfile
+    {
+        get => _isSwitchingProfile;
+        private set => SetProperty(ref _isSwitchingProfile, value);
+    }
+
+    public ChatViewModel(IDoc2kbApiService apiService, NotificationService? notifications = null, AppSettings? appSettings = null)
     {
         _apiService = apiService;
         _notifications = notifications;
+        _appSettings = appSettings ?? new AppSettings();
         Title = "对话";
         _selectedPersona = AvailablePersonas[0];
 
@@ -684,6 +1602,20 @@ public partial class ChatViewModel : ViewModelBase
         Sessions = new ObservableCollection<ChatSessionItem>();
         AvailableModels = new ObservableCollection<string> { DefaultModelLabel };
 
+        // 模型选择器：首项「设置页默认」伪值 + 各启用服务商的全部模型（显示「模型名（服务商名）」）
+        // Key 已在 App.LoadSettings 解密为明文；停用的服务商不出现在点选列表
+        RebuildModelChoices();
+        // 默认选中最后应用的档案的默认模型（仅高亮，不触发切换/不改配置）
+        _isInitializingProfiles = true;
+        SelectedModelChoice = ModelChoices.FirstOrDefault(c =>
+            c.Provider?.Id == _appSettings.ActiveProfileId && c.Model == c.Provider?.Model)
+            ?? ModelChoices.FirstOrDefault(c => c.Provider?.Id == _appSettings.ActiveProfileId)
+            ?? ModelChoices.FirstOrDefault();
+        _isInitializingProfiles = false;
+
+        // 恢复上次勾选的「联网搜索」状态（持久化字段，避免每次启动重新勾选）
+        _isWebSearchEnabled = _appSettings.EnableWebSearch;
+
         Messages.CollectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(ShowEmptyGuide));
@@ -695,6 +1627,58 @@ public partial class ChatViewModel : ViewModelBase
         _ = LoadCollectionsAsync();
         _ = LoadSessionsAsync();
         _ = SeedModelFromConfigAsync();
+
+        // 订阅服务商配置变更：设置页新增/更新/删除/启停服务商后，对话页立即重建模型候选
+        SettingsViewModel.ProviderConfigChanged += OnProviderConfigChanged;
+    }
+
+    /// <summary>设置页服务商配置变更回调：重建对话页模型候选（首项默认 + 各启用服务商模型）。</summary>
+    private void OnProviderConfigChanged()
+    {
+        RebuildModelChoices();
+    }
+
+    /// <summary>重建模型选择器候选：首项「设置页默认」伪值 + 各启用服务商的全部模型（「模型名（服务商名）」）。
+    /// 设置页变更服务商/模型后调用（任务 #6 事件驱动），保证对话页立即看到最新模型。</summary>
+    public void RebuildModelChoices()
+    {
+        var currentId = SelectedModelChoice?.Provider?.Id;
+        var currentModel = SelectedModelChoice?.Model;
+        ModelChoices.Clear();
+        ModelChoices.Add(new ModelChoice(DefaultProfileLabel, null, null));
+        if (_appSettings.LlmProfiles is { Count: > 0 })
+        {
+            foreach (var p in _appSettings.LlmProfiles.Where(p => p is not null && p.IsEnabled))
+            {
+                var models = (p.Models ?? new List<string>())
+                    .Where(m => !string.IsNullOrWhiteSpace(m))
+                    .Select(m => m.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                // 默认模型不在列表时补一个，保证能点选到默认模型
+                if (!string.IsNullOrWhiteSpace(p.Model)
+                    && !models.Any(m => string.Equals(m, p.Model, StringComparison.OrdinalIgnoreCase)))
+                {
+                    models.Add(p.Model.Trim());
+                }
+                foreach (var m in models)
+                {
+                    ModelChoices.Add(new ModelChoice($"{m}（{p.Name}）", p, m));
+                }
+            }
+        }
+        // 恢复选中：优先同服务商同模型，其次同服务商，否则默认项
+        if (currentId is not null)
+        {
+            SelectedModelChoice = ModelChoices.FirstOrDefault(c =>
+                    c.Provider?.Id == currentId && c.Model == currentModel)
+                ?? ModelChoices.FirstOrDefault(c => c.Provider?.Id == currentId)
+                ?? ModelChoices.FirstOrDefault();
+        }
+        else
+        {
+            SelectedModelChoice = ModelChoices.FirstOrDefault();
+        }
     }
 
     /// <summary>可勾选的知识库集合列表（复选框）。</summary>
@@ -1327,6 +2311,25 @@ public partial class ChatViewModel : ViewModelBase
         StatusMessage = "对话中…";
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
+        var timerCts = new CancellationTokenSource();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!timerCts.Token.IsCancellationRequested && assistantMsg.IsLoading && (assistantMsg.IsThinkingInProgress || assistantMsg.IsWaitingForFirstToken))
+                {
+                    await Task.Delay(100, timerCts.Token).ConfigureAwait(false);
+                    if (timerCts.Token.IsCancellationRequested) break;
+                    var curMs = sw.ElapsedMilliseconds;
+                    Application.Current?.Dispatcher?.InvokeAsync(() =>
+                    {
+                        assistantMsg.UpdateLiveThinkingDuration(curMs);
+                    });
+                }
+            }
+            catch { /* 取消时静默退出 */ }
+        }, timerCts.Token);
+
         _cts = new CancellationTokenSource();
         // 流式排查统计：token 帧数 + 首 token 延迟（TTFT）
         var tokenCount = 0;
@@ -1339,6 +2342,22 @@ public partial class ChatViewModel : ViewModelBase
                 $"collections=[{string.Join(",", selected)}] chatId='{_chatId ?? "-"}' model='{(SelectedModel == DefaultModelLabel ? "-" : SelectedModel)}' persona='{SelectedPersona?.Id ?? "-"}' msgCount={Messages.Count} attachCount={attachments.Count}",
                 "Chat");
             ChatStreamResult? final = null;
+            // 正文引用角标 [n] 点击 → 打开对应来源抽屉
+            assistantMsg.SourceMarkerRequested += index =>
+            {
+                var src = assistantMsg.Sources?.FirstOrDefault(s => s.Index == index);
+                if (src is not null)
+                {
+                    OpenSource(src);
+                }
+            };
+            // 发送时按选中模型项构造请求：
+            //  - 默认项 → 不带 ProviderConfig / Model（用后端全局配置）
+            //  - 选中某服务商的模型 → 携带该服务商配置（provider/key/url/模型），按请求生效、不污染全局
+            var choice = SelectedModelChoice;
+            var isDefaultChoice = choice is null || choice.IsDefault;
+            var choiceProvider = choice?.Provider;
+            var choiceModel = isDefaultChoice ? null : (choice?.Model ?? SelectedModel);
             await _apiService.ChatStreamAsync(
                 new ChatRequest
                 {
@@ -1349,23 +2368,41 @@ public partial class ChatViewModel : ViewModelBase
                     TopK = null,
                     ChatId = _chatId,
                     // 对话页快速切换模型：默认项不带（用设置页配置），选了具体模型则按请求覆盖
-                    Model = SelectedModel == DefaultModelLabel ? null : SelectedModel,
+                    Model = choiceModel,
+                    // 点选某服务商的模型时，携带该服务商配置（provider/key/url/模型），按请求生效
+                    ProviderConfig = choiceProvider is null || isDefaultChoice
+                        ? null
+                        : new ProviderConfig
+                        {
+                            Provider = choiceProvider.Provider,
+                            ApiKey = choiceProvider.ApiKey,
+                            BaseUrl = choiceProvider.BaseUrl,
+                            Model = choiceModel,
+                        },
                     Persona = SelectedPersona?.Id,
+                    EnableWebSearch = IsWebSearchEnabled,
                     Attachments = attachments.Count > 0 ? attachments : null,
+                    // 本机用户自己的 GitHub Token（联网搜索 GitHub 通道按请求携带，
+                    // 后端不共享、不落盘为全局配置），留空 = 用匿名公开额度
+                    GithubToken = string.IsNullOrWhiteSpace(_appSettings.GithubToken)
+                        ? null
+                        : _appSettings.GithubToken.Trim(),
+                    RagMode = _appSettings.RagMode,
                 },
                 onToken: token =>
                 {
                     if (tokenCount == 0)
                     {
                         firstTokenMs = sw.ElapsedMilliseconds;
+                        try { timerCts.Cancel(); } catch { }
                     }
                     tokenCount++;
 
                     void ApplyToken()
                     {
-                        if (assistantMsg.IsWaitingForFirstToken)
+                        if (assistantMsg.IsWaitingForFirstToken || assistantMsg.IsThinkingInProgress)
                         {
-                            assistantMsg.IsWaitingForFirstToken = false;
+                            assistantMsg.CompleteThinking(sw.ElapsedMilliseconds);
                             assistantMsg.Content = token;
                         }
                         else
@@ -1383,11 +2420,58 @@ public partial class ChatViewModel : ViewModelBase
                         ApplyToken();
                     }
                 },
+                onStatus: status =>
+                {
+                    void ApplyStatus()
+                    {
+                        // 收集为「思考过程」步骤（检索/联网搜索/生成…），供折叠区展示；
+                        assistantMsg.IsThinkingInProgress = true;
+                        assistantMsg.UpdateLiveThinkingDuration(sw.ElapsedMilliseconds);
+                        assistantMsg.AddThinkingStep(status ?? "");
+                        assistantMsg.ShowStatus = true;
+                        assistantMsg.StatusText = status;
+                    }
+
+                    if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
+                    {
+                        dispatcher.InvokeAsync(ApplyStatus);
+                    }
+                    else
+                    {
+                        ApplyStatus();
+                    }
+                },
+                onThinking: thinking =>
+                {
+                    void ApplyThinking()
+                    {
+                        // 推理链增量累积到「思考过程」区（DeepSeek-R1/Qwen3 等）
+                        assistantMsg.IsThinkingInProgress = true;
+                        assistantMsg.UpdateLiveThinkingDuration(sw.ElapsedMilliseconds);
+                        assistantMsg.AppendThinking(thinking ?? "");
+                    }
+
+                    if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
+                    {
+                        dispatcher.InvokeAsync(ApplyThinking);
+                    }
+                    else
+                    {
+                        ApplyThinking();
+                    }
+                },
                 onDone: result =>
                 {
                     final = result;
+                    try { timerCts.Cancel(); } catch { }
                     void ApplyDone()
                     {
+                        assistantMsg.IsLoading = false;
+                        assistantMsg.CompleteThinking(sw.ElapsedMilliseconds);
+                        assistantMsg.Model = result.Model;
+                        assistantMsg.Provider = result.Provider;
+                        assistantMsg.ElapsedMs = result.ElapsedMs;
+                        assistantMsg.Sources = result.Sources;
                         // 终帧后强制重新解析 Markdown,确保最终渲染完整(不受流式节流影响)
                         assistantMsg.ForceRefreshRender();
                     }
@@ -1418,6 +2502,12 @@ public partial class ChatViewModel : ViewModelBase
                 assistantMsg.Model = final.Model;
                 assistantMsg.Provider = final.Provider;
                 assistantMsg.ElapsedMs = final.ElapsedMs;
+                // 状态统计：token 数（流式帧计数）+ 思考耗时文案
+                assistantMsg.TokenCount = tokenCount;
+                if (final.ElapsedMs > 0)
+                {
+                    assistantMsg.ThinkingDurationText = $"用时 {final.ElapsedMs / 1000.0:F1} 秒";
+                }
 
                 StatusMessage = $"模型: {final.Model} ({final.Provider}) · 引用 {final.TotalChunks} 块 · 耗时 {final.ElapsedMs}ms";
                 DebugLog.Info($"对话完成(流式): elapsed={final.ElapsedMs}ms model={final.Model} chunks={final.TotalChunks} sources={final.Sources.Count} chatId='{final.ChatId}'", "Chat");
@@ -1461,9 +2551,19 @@ public partial class ChatViewModel : ViewModelBase
             DebugLog.Error($"对话 API 错误: code={ex.Code} message={ex.Message}", "Chat", ex);
             assistantMsg.IsLoading = false;
             assistantMsg.IsWaitingForFirstToken = false;
-            assistantMsg.Content = hint is null
-                ? $"❌ API 错误：{ex.Message}"
-                : $"❌ {hint}";
+            if (string.IsNullOrWhiteSpace(assistantMsg.Content))
+            {
+                // 首字都没收到：整条替换为错误提示
+                assistantMsg.Content = hint is null
+                    ? $"❌ API 错误：{ex.Message}"
+                    : $"❌ {hint}";
+            }
+            else
+            {
+                // 流式中途断开（网络抖动/后端重试耗尽）：保留已生成的部分回答，
+                // 追加简洁的中断说明，让用户能复制已得内容或点「重新生成」续写。
+                assistantMsg.Content += $"\n\n> ⚠️ 回答中断：{ex.Message}\n> 已生成内容已保留，可点击「重新生成」继续。";
+            }
             // 发送失败时，将原文回填到输入框，避免草稿丢失
             InputText = query;
         }
@@ -1698,12 +2798,22 @@ public partial class ChatViewModel : ViewModelBase
             Messages.Clear();
             foreach (var m in detail.Messages)
             {
-                Messages.Add(new ChatMessage
+                var msg = new ChatMessage
                 {
                     Role = m.Role,
                     Content = m.Content,
                     Sources = m.Sources,
-                });
+                };
+                // 历史消息正文里的 [n] 角标同样可点击打开来源
+                msg.SourceMarkerRequested += index =>
+                {
+                    var src = msg.Sources?.FirstOrDefault(s => s.Index == index);
+                    if (src is not null)
+                    {
+                        OpenSource(src);
+                    }
+                };
+                Messages.Add(msg);
             }
             _chatId = session.ChatId;
             StatusMessage = $"已载入会话：{session.Title}（{detail.Messages.Count} 条消息，可继续追问）";
@@ -1805,9 +2915,26 @@ public partial class ChatViewModel : ViewModelBase
 
     public bool HasSelectedSource => SelectedSource != null;
     public string SelectedSourceTitle => SelectedSource?.DisplayTitle ?? "(未命名来源)";
-    public string SelectedSourceSnippet => !string.IsNullOrWhiteSpace(SelectedSource?.Snippet)
-        ? SelectedSource.Snippet
-        : "（该切片暂无全文预览或来自早期版本会话，可通过下方动作查看原文）";
+    public string SelectedSourceSnippet
+    {
+        get
+        {
+            var src = SelectedSource;
+            if (src is null)
+            {
+                return "";
+            }
+            // 网页来源：正文没抓到且搜索摘要为空（占位/纯链接摘要已在后端过滤）时，
+            // 给出诚实提示并引导打开原文，而不是展示一段像链接一样的垃圾文本。
+            if (src.IsWebSource && !src.ContentFetched && string.IsNullOrWhiteSpace(src.Snippet))
+            {
+                return "⚠️ 未抓到该网页正文（页面可能需要 JS 渲染、需登录或禁止爬取）。搜索摘要不可用，请点击「🌐 在浏览器中打开」查看原文。";
+            }
+            return !string.IsNullOrWhiteSpace(src.Snippet)
+                ? src.Snippet
+                : "（该切片暂无全文预览或来自早期版本会话，可通过下方动作查看原文）";
+        }
+    }
 
     /// <summary>协同来源预览抽屉是否展开。</summary>
     public bool IsSourceDrawerOpen
@@ -2107,6 +3234,55 @@ public partial class ChatViewModel : ViewModelBase
         DebugLog.Info($"展开引用来源抽屉: index={src.Index} source={src.Source} page={src.Page}", "Chat");
     }
 
+    /// <summary>在浏览器中打开当前选中的网页来源 URL（仅 http/https，防危险协议）。</summary>
+    [RelayCommand]
+    private void OpenWebSource()
+    {
+        if (SelectedSource?.Url is not { Length: > 0 } url)
+        {
+            return;
+        }
+        if (!TryOpenHttpUrl(url))
+        {
+            _notifications?.Warning("该来源不是有效的网页地址（仅支持 http/https）", "无法打开");
+        }
+    }
+
+    /// <summary>一键直达外部网页来源（在默认浏览器中打开）。</summary>
+    [RelayCommand]
+    private void OpenDirectWeb(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        if (!TryOpenHttpUrl(url))
+        {
+            _notifications?.Warning("该来源不是有效的网页地址（仅支持 http/https）", "无法打开");
+        }
+    }
+
+    /// <summary>在默认浏览器中打开 http/https 链接；其他协议一律拒绝，返回 false。</summary>
+    public static bool TryOpenHttpUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return false;
+        }
+        try
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri)
+                {
+                    UseShellExecute = true,
+                });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"打开网页失败: {ex.Message}", "Chat");
+            return false;
+        }
+    }
+
     /// <summary>关闭协同来源抽屉。</summary>
     [RelayCommand]
     private void CloseSourceDrawer()
@@ -2393,12 +3569,234 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
+    /// <summary>切换档案：把档案（提供商/Key/地址/模型/温度/token）推送后端生效（免重启），
+    /// 并同步本地 AppSettings（重启后端后经环境变量仍生效），随后刷新模型列表并重置模型选中。
+    /// profile 为 null = 切回「设置页默认」（仅重置模型选中，不改后端配置）。</summary>
+    private async Task ApplyProfileSwitchAsync(LlmProfile? profile)
+    {
+        if (IsSwitchingProfile)
+        {
+            return;
+        }
+        if (profile is null)
+        {
+            // 切回设置页默认：重置模型选中为「默认」，并重新种子当前后端配置的模型
+            SelectedModel = DefaultModelLabel;
+            AvailableModels.Clear();
+            AvailableModels.Add(DefaultModelLabel);
+            _ = SeedModelFromConfigAsync();
+            StatusMessage = "已切回设置页默认模型配置";
+            return;
+        }
+
+        IsSwitchingProfile = true;
+        try
+        {
+            StatusMessage = $"正在切换档案「{profile.Name}」…";
+            DebugLog.Info($"对话页切换档案: name={profile.Name} provider={profile.Provider}", "Chat");
+
+            // 推送后端（免重启生效）；失败不阻断本地保存（重启后端后经环境变量生效）
+            var pushFailed = false;
+            try
+            {
+                await _apiService.UpdateConfigAsync(new BackendConfigUpdate
+                {
+                    LlmProvider = profile.Provider,
+                    LlmApiKey = profile.ApiKey,
+                    LlmBaseUrl = profile.BaseUrl,
+                    LlmModel = profile.Model,
+                    LlmTemperature = profile.Temperature,
+                    LlmMaxTokens = profile.MaxTokens,
+                });
+            }
+            catch (Exception ex)
+            {
+                pushFailed = true;
+                DebugLog.Warn($"对话页切换档案后端推送失败（重启后生效）: {ex.Message}", "Chat");
+            }
+
+            // 同步本地 AppSettings 当前 LLM 字段 + 记录激活档案并落盘
+            _appSettings.LlmProvider = profile.Provider;
+            _appSettings.LlmApiKey = profile.ApiKey;
+            _appSettings.LlmBaseUrl = profile.BaseUrl;
+            _appSettings.LlmModel = profile.Model ?? "";
+            if (profile.Temperature is not null)
+            {
+                _appSettings.LlmTemperature = profile.Temperature.Value;
+            }
+            if (profile.MaxTokens is not null)
+            {
+                _appSettings.LlmMaxTokens = profile.MaxTokens.Value;
+            }
+            _appSettings.ActiveProfileId = profile.Id;
+            _appSettings.Save();
+
+            // 重置模型选中为「默认」，并把该服务商全部模型载入候选（默认模型若不在候选则追加）
+            SelectedModel = DefaultModelLabel;
+            AvailableModels.Clear();
+            AvailableModels.Add(DefaultModelLabel);
+            var hasDefault = false;
+            foreach (var m in profile.Models ?? new List<string>())
+            {
+                if (!string.IsNullOrWhiteSpace(m))
+                {
+                    AvailableModels.Add(m.Trim());
+                    if (string.Equals(m.Trim(), profile.Model?.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasDefault = true;
+                    }
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(profile.Model) && !hasDefault)
+            {
+                AvailableModels.Add(profile.Model.Trim());
+            }
+            StatusMessage = pushFailed
+                ? $"⚠ 已切换服务商「{profile.Name}」（后端推送失败，重启后端后生效）"
+                : $"✅ 已切换服务商「{profile.Name}」（{profile.Provider} / {profile.Model ?? "默认模型"}）";
+            _notifications?.Success($"已切换到服务商「{profile.Name}」", "切换服务商");
+            await RefreshModelsAsync();
+            // RefreshModelsAsync 会用拉取结果重建候选；把该服务商自带模型补回（并集），
+            // 保证「服务商的全部模型」不因拉取结果缺失而丢失
+            foreach (var m in profile.Models ?? new List<string>())
+            {
+                var t = m.Trim();
+                if (!string.IsNullOrWhiteSpace(t) && !AvailableModels.Contains(t))
+                {
+                    AvailableModels.Add(t);
+                }
+            }
+            // RefreshModelsAsync 会覆盖 StatusMessage，恢复切换结果提示
+            StatusMessage = pushFailed
+                ? $"⚠ 已切换服务商「{profile.Name}」（后端推送失败，重启后端后生效）"
+                : $"✅ 已切换服务商「{profile.Name}」（{profile.Provider} / {profile.Model ?? "默认模型"}）";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"❌ 切换服务商失败: {ex.Message}";
+            DebugLog.Error($"对话页切换服务商异常: {ex.Message}", "Chat", ex);
+        }
+        finally
+        {
+            IsSwitchingProfile = false;
+        }
+    }
+
+    /// <summary>切换到内置预设：填入提供商/地址与推荐模型候选（不改 Key——内置预设无 Key，
+    /// 沿用后端当前已配置的 Key 或提示到设置页填写），模型下拉默认选中预设默认模型。</summary>
+    private async Task ApplyPresetSwitchAsync(LlmPreset preset)
+    {
+        if (IsSwitchingProfile)
+        {
+            return;
+        }
+
+        IsSwitchingProfile = true;
+        try
+        {
+            StatusMessage = $"正在应用预设「{preset.DisplayName}」…";
+            DebugLog.Info($"对话页应用内置预设: {preset.Id} provider={preset.Provider}", "Chat");
+
+            // 推送后端（provider/地址/默认模型；Key 沿用后端当前配置）
+            var pushFailed = false;
+            try
+            {
+                await _apiService.UpdateConfigAsync(new BackendConfigUpdate
+                {
+                    LlmProvider = preset.Provider,
+                    LlmBaseUrl = preset.BaseUrl,
+                    LlmModel = preset.DefaultModel,
+                });
+            }
+            catch (Exception ex)
+            {
+                pushFailed = true;
+                DebugLog.Warn($"对话页应用预设后端推送失败（重启后生效）: {ex.Message}", "Chat");
+            }
+
+            // 同步本地 AppSettings（Key 保留原值，不清除）
+            _appSettings.LlmProvider = preset.Provider;
+            _appSettings.LlmBaseUrl = preset.BaseUrl;
+            _appSettings.LlmModel = preset.DefaultModel;
+            _appSettings.ActiveProfileId = null;
+            _appSettings.Save();
+
+            // 模型候选 = 预设推荐模型；默认选中预设默认模型，仍可自由切换
+            SelectedModel = DefaultModelLabel;
+            AvailableModels.Clear();
+            AvailableModels.Add(DefaultModelLabel);
+            foreach (var m in preset.RecommendedModels)
+            {
+                if (!string.IsNullOrWhiteSpace(m))
+                {
+                    AvailableModels.Add(m);
+                }
+            }
+            if (!AvailableModels.Contains(preset.DefaultModel))
+            {
+                AvailableModels.Add(preset.DefaultModel);
+            }
+            StatusMessage = pushFailed
+                ? $"⚠ 已应用预设「{preset.DisplayName}」（后端推送失败，重启后端后生效）"
+                : $"✅ 已应用预设「{preset.DisplayName}」：请在设置页填入该服务商 API Key 后使用";
+            _notifications?.Info($"已应用预设「{preset.DisplayName}」，请确认 API Key 已配置", "切换服务商");
+            await RefreshModelsAsync();
+            // RefreshModelsAsync 会用拉取结果重建候选；把预设推荐模型补回（并集）
+            foreach (var m in preset.RecommendedModels)
+            {
+                if (!string.IsNullOrWhiteSpace(m) && !AvailableModels.Contains(m))
+                {
+                    AvailableModels.Add(m);
+                }
+            }
+            // RefreshModelsAsync 会覆盖 StatusMessage，恢复应用预设结果提示
+            StatusMessage = pushFailed
+                ? $"⚠ 已应用预设「{preset.DisplayName}」（后端推送失败，重启后端后生效）"
+                : $"✅ 已应用预设「{preset.DisplayName}」：请在设置页填入该服务商 API Key 后使用";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"❌ 应用预设失败: {ex.Message}";
+            DebugLog.Error($"对话页应用预设异常: {ex.Message}", "Chat", ex);
+        }
+        finally
+        {
+            IsSwitchingProfile = false;
+        }
+    }
+
     /// <summary>测试用：等待会话列表加载（构造时 fire-and-forget 不可 await）。</summary>
     internal Task SessionsLoadedForTestAsync() => LoadSessionsAsync();
+
+    /// <summary>刷新历史会话列表（后端从离线恢复在线时由 MainViewModel 调用）。
+    /// 构造时的加载是 fire-and-forget，后端未就绪时会失败且无重试，必须在此补一次。</summary>
+    public Task RefreshSessionsAsync() => LoadSessionsAsync();
 
     /// <summary>测试用：等待选中会话的消息加载完成。</summary>
     internal Task SessionLoadedForTestAsync()
         => SelectedSession is null ? Task.CompletedTask : LoadSessionMessagesAsync(SelectedSession);
+}
+
+/// <summary>对话页模型选择器选项：DisplayName 显示文本；Provider 非空 = 属于某自定义服务商的模型；两者皆空 = 「设置页默认」伪项。</summary>
+public sealed record ModelChoice(string DisplayName, LlmProfile? Provider, string? Model)
+{
+    /// <summary>是否「设置页默认」伪项（用后端全局配置，请求不携带 providerConfig）。</summary>
+    public bool IsDefault => Provider is null && Model is null;
+
+    public override string ToString() => DisplayName;
+}
+
+/// <summary>服务商下拉项：DisplayName 显示文本；Profile 非空 = 自定义服务商；Preset 非空 = 内置预设；两者皆空 = 「设置页默认」伪项。</summary>
+public sealed record ProfileOption(string DisplayName, LlmProfile? Profile, LlmPreset? Preset = null)
+{
+    public bool IsCustom => Profile is not null;
+
+    public bool IsBuiltIn => Preset is not null;
+
+    /// <summary>是否「设置页默认」伪项。</summary>
+    public bool IsDefault => Profile is null && Preset is null;
+
+    public override string ToString() => DisplayName;
 }
 
 /// <summary>待发送附件项。</summary>

@@ -16,6 +16,7 @@
         <helpers:BoolInvertConverter x:Key="BoolInvertConverter"/>
         <helpers:NullToVisibilityConverter x:Key="NullToVis"/>
         <helpers:NullToVisibilityConverter x:Key="StringToVis"/>
+        <helpers:ThinkingStepIconConverter x:Key="ThinkingStepIconConverter"/>
 
         <!-- 消息时间/元信息 -->
         <Style x:Key="ChatMetaText" TargetType="TextBlock">
@@ -30,37 +31,208 @@
             <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
         </Style>
 
-        <!-- 消息气泡模板 -->
+        <!-- 气泡内操作按钮：助手消息默认品牌蓝；用户消息为蓝色渐变气泡内改用白字保证对比度 -->
+        <Style x:Key="BubbleActionButtonStyle" TargetType="Button" BasedOn="{StaticResource TextButtonStyle}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsUser}" Value="True">
+                    <Setter Property="Foreground" Value="{StaticResource UserBubbleTextBrush}"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- 角色头像 -->
+        <Style x:Key="ChatAvatarStyle" TargetType="Border">
+            <Setter Property="Width" Value="34"/>
+            <Setter Property="Height" Value="34"/>
+            <Setter Property="CornerRadius" Value="17"/>
+            <Setter Property="VerticalAlignment" Value="Top"/>
+        </Style>
+
+        <!-- 消息气泡模板（风格参考 chatboxai/chatbox 与 CherryHQ/cherry-studio：
+             扁平化气泡——助手消息无边框无阴影、仅浅色底，减少“卡片感”） -->
+        <!-- 消息气泡模板（DeepSeek 风格高质感设计：
+             极简扁平化气泡 + 可折叠动态思考过程 + 模型推理链 + 搜索卡片 + 富文本引用 + 操作工具栏与Token统计） -->
         <DataTemplate x:Key="MessageBubbleTemplate" DataType="{x:Type vm:ChatMessage}">
-            <Grid Margin="0,0,0,12">
+            <Grid x:Name="BubbleRoot" Margin="0,0,0,16">
                 <Grid.Resources>
                     <BooleanToVisibilityConverter x:Key="B2V"/>
                 </Grid.Resources>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
 
-                <!-- 用户消息右对齐，助手消息左对齐 -->
-                <Border HorizontalAlignment="Left"
-                        CornerRadius="12"
-                        Padding="12,10"
-                        MaxWidth="760"
-                        Background="{StaticResource CardBrush}"
+                <!-- 助手头像（左侧） -->
+                <Border Grid.Column="0"
+                        Style="{StaticResource ChatAvatarStyle}"
+                        Margin="0,2,10,0"
+                        Background="{StaticResource SurfaceBrush}"
                         BorderBrush="{StaticResource BorderBrush}"
-                        BorderThickness="1">
+                        BorderThickness="1"
+                        Visibility="{Binding IsAssistant, Converter={StaticResource B2V}}">
+                    <TextBlock Text="🤖" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+
+                <!-- 用户头像（右侧，品牌渐变圆） -->
+                <Border Grid.Column="2"
+                        Style="{StaticResource ChatAvatarStyle}"
+                        Margin="10,2,0,0"
+                        Background="{StaticResource UserBubbleBrush}"
+                        Visibility="{Binding IsUser, Converter={StaticResource B2V}}">
+                    <TextBlock Text="我" FontSize="13" FontWeight="Bold"
+                               Foreground="{StaticResource UserBubbleTextBrush}"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+
+                <!-- 对话气泡：助手=浅底扁平（无边框/无阴影）；用户=品牌蓝渐变，指向头像处小圆角 -->
+                <Border Grid.Column="1"
+                        Padding="14,11"
+                        MaxWidth="780">
                     <Border.Style>
                         <Style TargetType="Border">
+                            <!-- 默认（助手消息）：极浅底，扁平无边框 -->
                             <Setter Property="HorizontalAlignment" Value="Left"/>
+                            <Setter Property="Margin" Value="0,0,28,0"/>
+                            <Setter Property="CornerRadius" Value="4,16,16,16"/>
+                            <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
+                            <Setter Property="BorderThickness" Value="0"/>
                             <Style.Triggers>
-                                <!-- 用户消息：右对齐 + 品牌色高亮 -->
+                                <!-- 用户消息：右对齐 + 品牌渐变 + 指向右下 -->
                                 <DataTrigger Binding="{Binding IsUser}" Value="True">
                                     <Setter Property="HorizontalAlignment" Value="Right"/>
-                                    <Setter Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
-                                    <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                                    <Setter Property="Margin" Value="28,0,0,0"/>
+                                    <Setter Property="Background" Value="{StaticResource UserBubbleBrush}"/>
+                                    <Setter Property="BorderThickness" Value="0"/>
+                                    <Setter Property="CornerRadius" Value="16,16,4,16"/>
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>
                     </Border.Style>
 
                     <StackPanel>
-                        <!-- 消息内容：用户消息纯文本（支持划词高亮与复制），助手消息 Markdown 渲染 -->
+                        <!-- 1. 思考过程区（DeepSeek 风格：可折叠展示 AI 真实思考全链路：
+                             头部动态状态「思考中 (用时 3.2 秒)...」/「已思考（用时 5 秒）▾」+ 步骤轨道 + 模型原生推理链） -->
+                        <Border Visibility="{Binding HasThinking, Converter={StaticResource B2V}}"
+                                Background="{StaticResource CardBrush}"
+                                BorderBrush="{StaticResource BorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="10,8"
+                                Margin="0,0,0,8">
+                            <StackPanel>
+                                <!-- 折叠切换头部按钮 -->
+                                <Button Click="ToggleThinking_Click"
+                                        HorizontalAlignment="Stretch"
+                                        Background="Transparent"
+                                        BorderThickness="0"
+                                        Padding="0"
+                                        Cursor="Hand"
+                                        ToolTip="展开/收起思考过程与模型推理链">
+                                    <DockPanel>
+                                        <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                                            <TextBlock Text="{Binding ThinkingIconText, Mode=OneWay}"
+                                                       FontSize="13" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                            <TextBlock Text="{Binding ThinkingHeaderText, Mode=OneWay}"
+                                                       FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                                       VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                        <TextBlock Text="▾" FontSize="11" DockPanel.Dock="Right"
+                                                   Foreground="{StaticResource TextTertiaryBrush}"
+                                                   HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                   Visibility="{Binding IsThinkingExpanded, Converter={StaticResource BoolToVis}}"/>
+                                        <TextBlock Text="▸" FontSize="11" DockPanel.Dock="Right"
+                                                   Foreground="{StaticResource TextTertiaryBrush}"
+                                                   HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                   Visibility="{Binding IsThinkingExpanded, Converter={StaticResource BoolInvertConverter}}"/>
+                                    </DockPanel>
+                                </Button>
+
+                                <!-- 展开内容区 -->
+                                <StackPanel Visibility="{Binding IsThinkingExpanded, Converter={StaticResource BoolToVis}}"
+                                            Margin="0,8,0,0">
+                                    <!-- A) 全链路步骤节点：连续细轨道竖线 + 阶段圆点 -->
+                                    <Grid Visibility="{Binding HasThinkingSteps, Converter={StaticResource B2V}}" Margin="2,0,0,4">
+                                        <Border Width="1.5"
+                                                HorizontalAlignment="Left"
+                                                Margin="4,4,0,4"
+                                                Background="{StaticResource BorderLightBrush}"/>
+                                        <ItemsControl ItemsSource="{Binding ThinkingSteps}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid Margin="0,3">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="18"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <Ellipse Grid.Column="0"
+                                                                 Width="7" Height="7"
+                                                                 Fill="{StaticResource PrimaryBrush}"
+                                                                 HorizontalAlignment="Center"
+                                                                 VerticalAlignment="Top"
+                                                                 Margin="0,4,0,0"/>
+                                                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Converter={StaticResource ThinkingStepIconConverter}}"
+                                                                       FontSize="11"
+                                                                       Margin="2,0,5,0"
+                                                                       VerticalAlignment="Center"/>
+                                                            <TextBlock Text="{Binding}"
+                                                                       FontSize="12"
+                                                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                                                       TextWrapping="Wrap"/>
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </Grid>
+
+                                    <!-- B) 模型原生推理链（DeepSeek-R1 / Qwen3 reasoning_content 灰底流式卡片） -->
+                                    <Border Visibility="{Binding HasThinkingText, Converter={StaticResource B2V}}"
+                                            Background="{StaticResource SurfaceBrush}"
+                                            BorderBrush="{StaticResource BorderBrush}"
+                                            BorderThickness="0"
+                                            CornerRadius="6"
+                                            Padding="10,8"
+                                            Margin="0,4,0,0">
+                                        <StackPanel>
+                                            <TextBlock Text="🧠 模型推理链"
+                                                       FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextTertiaryBrush}"
+                                                       Margin="0,0,0,4"/>
+                                            <TextBlock Text="{Binding ThinkingText, Mode=OneWay}"
+                                                       FontSize="12"
+                                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                                       TextWrapping="Wrap"
+                                                       LineHeight="18"
+                                                       FontFamily="Consolas, 'Cascadia Code', 'Segoe UI', sans-serif"/>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 2. 搜索与来源摘要卡片（DeepSeek 风格：搜索到 N 个网页 · 浏览 X 个页面） -->
+                        <Border Visibility="{Binding HasWebSources, Converter={StaticResource B2V}}"
+                                Background="{StaticResource PrimaryLightBrush}"
+                                BorderBrush="{StaticResource PrimaryBrush}"
+                                BorderThickness="0.5"
+                                CornerRadius="6"
+                                Padding="8,4"
+                                Margin="0,0,0,6"
+                                HorizontalAlignment="Left">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="🔎" FontSize="11" Margin="0,0,5,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding SearchSummaryText, Mode=OneWay}"
+                                           FontSize="11.5"
+                                           FontWeight="Medium"
+                                           Foreground="{StaticResource PrimaryBrush}"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 3. 消息内容：用户消息纯文本（支持划词高亮与复制），助手消息 Markdown 渲染 -->
                         <Grid>
                             <!-- 用户消息：只读 TextBox（支持鼠标自由划词高亮、双击选词与 Ctrl+C 复制，透明无框） -->
                             <TextBox Text="{Binding Content, Mode=OneWay}"
@@ -72,7 +244,9 @@
                                      Cursor="IBeam"
                                      FontSize="15"
                                      FontWeight="Medium"
-                                     Foreground="{StaticResource TextPrimaryBrush}">
+                                     Foreground="{StaticResource UserBubbleTextBrush}"
+                                     SelectionBrush="{StaticResource UserBubbleTextBrush}"
+                                     SelectionOpacity="0.35">
                                 <TextBox.Style>
                                     <Style TargetType="TextBox">
                                         <Setter Property="Visibility" Value="Collapsed"/>
@@ -84,12 +258,14 @@
                                     </Style>
                                 </TextBox.Style>
                             </TextBox>
-                            <!-- 助手消息：Markdig 渲染的 FlowDocument(代码块/列表/表格/可点击链接) -->
+                            <!-- 助手消息：Markdig 渲染的 FlowDocument(代码块/列表/表格/可点击链接/交互角标) -->
                             <FlowDocumentScrollViewer Document="{Binding RenderedDocument, Mode=OneWay}"
                                                       Padding="0"
                                                       IsToolBarVisible="False"
                                                       VerticalScrollBarVisibility="Disabled"
-                                                      Foreground="{StaticResource TextPrimaryBrush}">
+                                                      Foreground="{StaticResource TextPrimaryBrush}"
+                                                      Loaded="FlowDocViewer_Loaded"
+                                                      Unloaded="FlowDocViewer_Unloaded">
                                 <FlowDocumentScrollViewer.Style>
                                     <Style TargetType="FlowDocumentScrollViewer">
                                         <Setter Property="Visibility" Value="Collapsed"/>
@@ -103,9 +279,9 @@
                             </FlowDocumentScrollViewer>
                         </Grid>
 
-                        <!-- 加载动画与思考状态胶囊（等待首字 / 非流式大包期间） -->
+                        <!-- 4. 加载动画与思考状态胶囊（等待首字 / 非流式大包期间） -->
                         <Border Visibility="{Binding IsWaitingForFirstToken, Converter={StaticResource B2V}}"
-                                Background="{StaticResource SurfaceBrush}"
+                                Background="{StaticResource CardBrush}"
                                 BorderBrush="{StaticResource BorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="6"
@@ -122,58 +298,136 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- 引用来源（可点击：搜索该来源在知识库中的相关内容） -->
+                        <!-- 5. 流式阶段状态指示器（检索/联网搜索/生成...） -->
+                        <Border Visibility="{Binding ShowStatus, Converter={StaticResource B2V}}"
+                                Background="Transparent"
+                                Margin="0,2,0,4">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Ellipse Width="6" Height="6"
+                                         Fill="{StaticResource PrimaryBrush}"
+                                         Margin="0,0,6,0"
+                                         VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding StatusText, Mode=OneWay}"
+                                           FontSize="12"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 6. 引用来源卡片列表（可点击打开对应来源抽屉/网页） -->
                         <ItemsControl ItemsSource="{Binding Sources, Mode=OneWay}"
                                       Margin="0,8,0,0"
                                       Visibility="{Binding HasSources, Converter={StaticResource BoolToVis}}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate DataType="{x:Type m:SourceRef}">
-                                    <Button Command="{Binding DataContext.OpenSourceCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
-                                            CommandParameter="{Binding}"
-                                            Style="{StaticResource TextButtonStyle}"
-                                            Padding="4,2"
+                                    <Border Background="{DynamicResource SurfaceBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            Padding="6,3"
                                             Margin="0,2,0,2">
-                                        <Button.ToolTip>
-                                            <ToolTip>
-                                                <StackPanel MaxWidth="360">
-                                                    <TextBlock Text="📖 本地原著知识切片 (Ground Truth)" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}" Margin="0,0,0,4"/>
-                                                    <TextBlock Text="{Binding Source, StringFormat=出处文档: {0}}" TextWrapping="Wrap"/>
-                                                    <TextBlock Text="{Binding Page, TargetNullValue=未知, StringFormat=原著页码: P{0}}" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
-                                                    <TextBlock Text="{Binding Heading, TargetNullValue=正文, StringFormat=章节: {0}}" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
-                                                    <TextBlock Text="💡 点击可在【搜索】页全文查证与高亮定位" Foreground="{StaticResource TextMutedBrush}" FontSize="11" Margin="0,6,0,0"/>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Button Grid.Column="0"
+                                                    Command="{Binding DataContext.OpenSourceCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TextButtonStyle}"
+                                                    HorizontalAlignment="Left"
+                                                    Padding="0">
+                                                <Button.ToolTip>
+                                                    <ToolTip>
+                                                        <StackPanel MaxWidth="400">
+                                                            <!-- web 来源 -->
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolToVis}}"
+                                                                       Text="🌐 网页检索结果" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}" Margin="0,0,0,4"/>
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolToVis}}"
+                                                                       Text="{Binding DisplayTitle}" TextWrapping="Wrap" FontWeight="Medium"/>
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolToVis}}"
+                                                                       Text="{Binding Url}" Foreground="Blue" TextDecorations="Underline" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolToVis}}"
+                                                                       Text="{Binding SourceName, TargetNullValue=Web, StringFormat=来源引擎: {0}}" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,4,0,0"/>
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolToVis}}"
+                                                                       Text="{Binding AuthorityBadgeText, StringFormat=来源级别: {0}}" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolToVis}}"
+                                                                       Text="{Binding EvidenceBadgeText}" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
+                                                            <!-- 本地来源 -->
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                                       Text="📖 本地原著知识切片 (Ground Truth)" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}" Margin="0,0,0,4"/>
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                                       Text="{Binding Source, StringFormat=出处文档: {0}}" TextWrapping="Wrap"/>
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                                       Text="{Binding Page, TargetNullValue=未知, StringFormat=原著页码: P{0}}" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                                       Text="{Binding Heading, TargetNullValue=正文, StringFormat=章节: {0}}" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                                       Text="💡 点击可在右侧抽屉展开原著切片或在【搜索】页全文查证" Foreground="{StaticResource TextMutedBrush}" FontSize="11" Margin="0,6,0,0"/>
+                                                        </StackPanel>
+                                                    </ToolTip>
+                                                </Button.ToolTip>
+                                                <StackPanel Orientation="Horizontal" Margin="0,1,0,1">
+                                                    <TextBlock Text="{Binding Index, StringFormat=[{0}]}"
+                                                               Style="{StaticResource SourceLineText}"
+                                                               Foreground="{StaticResource PrimaryBrush}"
+                                                               FontWeight="Bold"/>
+                                                    <TextBlock Text="🌐"
+                                                               Visibility="{Binding IsWebSource, Converter={StaticResource BoolToVis}}"
+                                                               FontSize="11" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="📄"
+                                                               Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                               FontSize="11" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="{Binding DisplayTitle, Mode=OneWay}"
+                                                               Style="{StaticResource SourceLineText}"
+                                                               Margin="4,0,0,0"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               MaxWidth="260"/>
+                                                    <TextBlock Text="{Binding EvidenceBadgeText}"
+                                                               Visibility="{Binding IsWebSource, Converter={StaticResource BoolToVis}}"
+                                                               Style="{StaticResource SourceLineText}"
+                                                               Foreground="{StaticResource PrimaryBrush}"
+                                                               Margin="6,0,0,0"
+                                                               FontSize="10"/>
+                                                    <TextBlock Text="{Binding Page, Mode=OneWay, TargetNullValue='', StringFormat=(P{0})}"
+                                                               Style="{StaticResource SourceLineText}"
+                                                               Margin="4,0,0,0"
+                                                               Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"/>
                                                 </StackPanel>
-                                            </ToolTip>
-                                        </Button.ToolTip>
-                                        <StackPanel Orientation="Horizontal" Margin="0,1,0,1">
-                                            <TextBlock Text="{Binding Index, StringFormat=[{0}]}"
-                                                       Style="{StaticResource SourceLineText}"
-                                                       Foreground="{StaticResource PrimaryBrush}"
-                                                       FontWeight="SemiBold"/>
-                                            <TextBlock Text="{Binding Source, Mode=OneWay}"
-                                                       Style="{StaticResource SourceLineText}"
-                                                       Margin="6,0,0,0"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       MaxWidth="340"/>
-                                            <TextBlock Text="{Binding Page, Mode=OneWay, TargetNullValue=—, StringFormat=(P{0})}"
-                                                       Style="{StaticResource SourceLineText}"
-                                                       Margin="6,0,0,0"/>
-                                        </StackPanel>
-                                    </Button>
+                                            </Button>
+
+                                            <!-- 右侧直达按钮 -->
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="6,0,0,0">
+                                                <Button Visibility="{Binding IsWebSource, Converter={StaticResource BoolToVis}}"
+                                                        Command="{Binding DataContext.OpenDirectWebCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                                        CommandParameter="{Binding Url}"
+                                                        Style="{StaticResource SecondaryButtonStyle}"
+                                                        Padding="6,2"
+                                                        FontSize="10"
+                                                        ToolTip="在默认浏览器中一键直达该网页原文">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="🌐 打开网页 ↗" Foreground="{StaticResource PrimaryBrush}" FontWeight="SemiBold"/>
+                                                    </StackPanel>
+                                                </Button>
+                                                <Button Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                        Command="{Binding DataContext.OpenSourceCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                                        CommandParameter="{Binding}"
+                                                        Style="{StaticResource SecondaryButtonStyle}"
+                                                        Padding="6,2"
+                                                        FontSize="10"
+                                                        ToolTip="在右侧协同抽屉展开该原著切片">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="📄 查看切片" Foreground="{StaticResource PrimaryBrush}" FontWeight="SemiBold"/>
+                                                    </StackPanel>
+                                                </Button>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
 
-                        <!-- 元信息：模型 + 耗时 -->
-                        <TextBlock Style="{StaticResource ChatMetaText}"
-                                   Visibility="{Binding HasModel, Converter={StaticResource BoolToVis}}">
-                            <TextBlock.Inlines>
-                                <Run Text="{Binding Model, Mode=OneWay}"/>
-                                <Run Text="("/><Run Text="{Binding Provider, Mode=OneWay}"/><Run Text=")"/>
-                                <Run Text=" · "/><Run Text="{Binding ElapsedMs, Mode=OneWay, StringFormat={}{0}ms}"/>
-                            </TextBlock.Inlines>
-                        </TextBlock>
-
-                        <!-- 智能下一步行动建议胶囊 (Follow-up Action Chips) -->
+                        <!-- 7. 智能下一步行动建议胶囊 (Follow-up Action Chips) -->
                         <ItemsControl ItemsSource="{Binding FollowUpActions, Mode=OneWay}"
                                       Margin="0,8,0,2"
                                       Visibility="{Binding HasFollowUpActions, Converter={StaticResource BoolToVis}}">
@@ -218,73 +472,166 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
 
-                        <!-- 操作行：复制（有内容即可见）+ 撤回（最后一条用户消息）+ 重新生成（仅最后一条 assistant） -->
-                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                            <Button Content="复制"
-                                    Command="{Binding CopyCommand}"
-                                    Style="{StaticResource TextButtonStyle}"
-                                    FontSize="11"
-                                    Padding="8,2"
-                                    Visibility="{Binding CanCopy, Converter={StaticResource B2V}}"
-                                    ToolTip="复制消息内容到剪贴板"/>
-                            <Button Content="撤回"
-                                    Command="{Binding DataContext.WithdrawCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
-                                    CommandParameter="{Binding}"
-                                    Style="{StaticResource TextButtonStyle}"
-                                    FontSize="11"
-                                    Padding="8,2"
-                                    Margin="6,0,0,0"
-                                    Visibility="{Binding ShowWithdraw, Converter={StaticResource B2V}}"
-                                    ToolTip="撤回此条问题并将内容回填到输入框"/>
-                            <Button Content="重新生成"
-                                    Command="{Binding DataContext.RegenerateCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
-                                    Style="{StaticResource TextButtonStyle}"
-                                    FontSize="11"
+                        <!-- 8. 底部操作工具栏（DeepSeek 风格：复制+微反馈、重试、点赞点踩、沉淀入库与Token统计条） -->
+                        <DockPanel Margin="0,6,0,0">
+                            <DockPanel.Style>
+                                <Style TargetType="DockPanel">
+                                    <Setter Property="Opacity" Value="0"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsMouseOver, ElementName=BubbleRoot}" Value="True">
+                                            <Setter Property="Opacity" Value="1"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsIngesting}" Value="True">
+                                            <Setter Property="Opacity" Value="1"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsCopied}" Value="True">
+                                            <Setter Property="Opacity" Value="1"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DockPanel.Style>
+
+                            <!-- 左侧操作按钮组 -->
+                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                                <!-- 复制按钮（带已复制对勾反馈） -->
+                                <Button Command="{Binding CopyCommand}"
+                                        Style="{StaticResource BubbleActionButtonStyle}"
+                                        FontSize="11"
+                                        Padding="7,2"
+                                        Visibility="{Binding CanCopy, Converter={StaticResource B2V}}"
+                                        ToolTip="复制消息内容到剪贴板">
+                                    <Button.Content>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="📋 复制" Visibility="{Binding IsCopied, Converter={StaticResource BoolInvertConverter}}"/>
+                                            <TextBlock Text="✅ 已复制" Foreground="{StaticResource SuccessBrush}" FontWeight="SemiBold" Visibility="{Binding IsCopied, Converter={StaticResource BoolToVis}}"/>
+                                        </StackPanel>
+                                    </Button.Content>
+                                </Button>
+
+                                <!-- 点赞按钮 -->
+                                <Button Command="{Binding ToggleLikeCommand}"
+                                        Style="{StaticResource BubbleActionButtonStyle}"
+                                        FontSize="11"
+                                        Padding="6,2"
+                                        Margin="4,0,0,0"
+                                        Visibility="{Binding IsAssistant, Converter={StaticResource B2V}}"
+                                        ToolTip="满意该回答">
+                                    <TextBlock Text="👍">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Opacity" Value="0.45"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsLiked}" Value="True">
+                                                        <Setter Property="Opacity" Value="1.0"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Button>
+
+                                <!-- 点踩按钮 -->
+                                <Button Command="{Binding ToggleDislikeCommand}"
+                                        Style="{StaticResource BubbleActionButtonStyle}"
+                                        FontSize="11"
+                                        Padding="6,2"
+                                        Margin="4,0,0,0"
+                                        Visibility="{Binding IsAssistant, Converter={StaticResource B2V}}"
+                                        ToolTip="不满意该回答">
+                                    <TextBlock Text="👎">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Opacity" Value="0.45"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsDisliked}" Value="True">
+                                                        <Setter Property="Opacity" Value="1.0"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Button>
+
+                                <!-- 撤回按钮（仅最后一条用户消息） -->
+                                <Button Content="↩️ 撤回"
+                                        Command="{Binding DataContext.WithdrawCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                        CommandParameter="{Binding}"
+                                        Style="{StaticResource BubbleActionButtonStyle}"
+                                        FontSize="11"
+                                        Padding="7,2"
+                                        Margin="6,0,0,0"
+                                        Visibility="{Binding ShowWithdraw, Converter={StaticResource B2V}}"
+                                        ToolTip="撤回此条问题并将内容回填到输入框"/>
+
+                                <!-- 重新生成按钮（仅最后一条 assistant） -->
+                                <Button Content="🔄 重新生成"
+                                        Command="{Binding DataContext.RegenerateCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                        Style="{StaticResource BubbleActionButtonStyle}"
+                                        FontSize="11"
+                                        Padding="7,2"
+                                        Margin="6,0,0,0"
+                                        Visibility="{Binding ShowRegenerate, Converter={StaticResource B2V}}"
+                                        ToolTip="用当前模型重新回答最后一条问题（保留多轮上下文）"/>
+
+                                <!-- 创作物画布预览入口（包含 Artifact 时可见） -->
+                                <Button Command="{Binding DataContext.OpenArtifactCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                        CommandParameter="{Binding}"
+                                        Style="{StaticResource BubbleActionButtonStyle}"
+                                        FontSize="11"
+                                        FontWeight="SemiBold"
+                                        Foreground="{StaticResource PrimaryBrush}"
+                                        Padding="7,2"
+                                        Margin="6,0,0,0"
+                                        Visibility="{Binding HasArtifact, Converter={StaticResource B2V}}"
+                                        ToolTip="在右侧创作工作台中查看幻灯片/研报预览与导出物理文件">
+                                    <Button.Content>
+                                        <TextBlock Text="{Binding ArtifactBadgeText}"/>
+                                    </Button.Content>
+                                </Button>
+
+                                <!-- 沉淀入库（仅助手消息且有内容时可见） -->
+                                <Button Command="{Binding DataContext.IngestMessageCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                        CommandParameter="{Binding}"
+                                        FontSize="11"
+                                        Padding="7,2"
+                                        Margin="6,0,0,0"
+                                        Visibility="{Binding IsAssistant, Converter={StaticResource B2V}}"
+                                        ToolTip="将本条回答一键萃取并沉淀为知识库笔记（反哺知识库）">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource BubbleActionButtonStyle}">
+                                            <Setter Property="Content" Value="📥 沉淀入库"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsIngesting}" Value="True">
+                                                    <Setter Property="Content" Value="⏳ 正在沉淀..."/>
+                                                    <Setter Property="IsEnabled" Value="False"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsIngested}" Value="True">
+                                                    <Setter Property="Content" Value="✅ 已沉淀入库"/>
+                                                    <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
+                                                    <Setter Property="IsEnabled" Value="False"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                            </StackPanel>
+
+                            <!-- 右侧极简 Token 统计胶囊（DeepSeek 风格） -->
+                            <Border DockPanel.Dock="Right"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"
+                                    Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="10"
                                     Padding="8,2"
                                     Margin="8,0,0,0"
-                                    Visibility="{Binding ShowRegenerate, Converter={StaticResource B2V}}"
-                                    ToolTip="用当前模型重新回答最后一条问题（保留多轮上下文）"/>
-                            <!-- 创作物画布预览入口（包含 Artifact 时可见） -->
-                            <Button Command="{Binding DataContext.OpenArtifactCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
-                                    CommandParameter="{Binding}"
-                                    Style="{StaticResource TextButtonStyle}"
-                                    FontSize="11"
-                                    FontWeight="SemiBold"
-                                    Foreground="{StaticResource PrimaryBrush}"
-                                    Padding="8,2"
-                                    Margin="8,0,0,0"
-                                    Visibility="{Binding HasArtifact, Converter={StaticResource B2V}}"
-                                    ToolTip="在右侧创作工作台中查看幻灯片/研报预览与导出物理文件">
-                                <Button.Content>
-                                    <TextBlock Text="{Binding ArtifactBadgeText}"/>
-                                </Button.Content>
-                            </Button>
-                            <!-- 沉淀入库（仅助手消息且有内容时可见） -->
-                            <Button Command="{Binding DataContext.IngestMessageCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
-                                    CommandParameter="{Binding}"
-                                    FontSize="11"
-                                    Padding="8,2"
-                                    Margin="8,0,0,0"
-                                    Visibility="{Binding IsAssistant, Converter={StaticResource B2V}}"
-                                    ToolTip="将本条回答一键萃取并沉淀为知识库笔记（反哺知识库）">
-                                <Button.Style>
-                                    <Style TargetType="Button" BasedOn="{StaticResource TextButtonStyle}">
-                                        <Setter Property="Content" Value="📥 沉淀入库"/>
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding IsIngesting}" Value="True">
-                                                <Setter Property="Content" Value="⏳ 正在沉淀..."/>
-                                                <Setter Property="IsEnabled" Value="False"/>
-                                            </DataTrigger>
-                                            <DataTrigger Binding="{Binding IsIngested}" Value="True">
-                                                <Setter Property="Content" Value="✅ 已沉淀入库"/>
-                                                <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
-                                                <Setter Property="IsEnabled" Value="False"/>
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </Button.Style>
-                            </Button>
-                        </StackPanel>
+                                    Visibility="{Binding HasTokenStat, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="{Binding TokenStatText, Mode=OneWay}"
+                                           FontSize="10"
+                                           Foreground="{StaticResource TextTertiaryBrush}"/>
+                            </Border>
+                        </DockPanel>
                     </StackPanel>
                 </Border>
             </Grid>
@@ -442,7 +789,7 @@
                                 ToolTip="删除当前选中的历史会话（本地记录一并删除）"/>
                     </Grid>
 
-                    <!-- 第2列：模型切换 -->
+                    <!-- 第2列：模型选择器（点选模型即切换服务商，按请求生效） -->
                     <Grid Grid.Column="2">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
@@ -455,9 +802,10 @@
                                    VerticalAlignment="Center"
                                    Margin="0,0,6,0"/>
                         <ComboBox Grid.Column="1"
-                                  ItemsSource="{Binding AvailableModels}"
-                                  SelectedItem="{Binding SelectedModel, Mode=TwoWay}"
-                                  ToolTip="按消息切换模型：默认用设置页配置；点击 ↻ 拉取当前提供商可用模型"
+                                  ItemsSource="{Binding ModelChoices}"
+                                  SelectedItem="{Binding SelectedModelChoice, Mode=TwoWay}"
+                                  DisplayMemberPath="DisplayName"
+                                  ToolTip="点选模型即切换到对应服务商（下条消息生效）；「默认（设置页配置）」= 用设置页填写的服务商配置"
                                   VerticalAlignment="Center"
                                   Margin="0,0,6,0"/>
                         <Button Grid.Column="2"
@@ -466,7 +814,7 @@
                                 Style="{StaticResource SecondaryButtonStyle}"
                                 Padding="8,4"
                                 MinHeight="32"
-                                ToolTip="获取当前提供商的可用模型列表"/>
+                                ToolTip="获取当前服务商的可用模型列表"/>
                     </Grid>
 
                     <!-- 第3列：办公角色人设切换 -->
@@ -732,6 +1080,7 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
                     <!-- 📎 导入附件/图片按钮 -->
@@ -774,14 +1123,25 @@
                                 Visibility="{Binding HasInput, Converter={StaticResource BoolToVis}}"/>
                     </Grid>
 
-                    <Button Grid.Column="2"
+                    <!-- 联网搜索开关 -->
+                    <CheckBox Grid.Column="2"
+                              IsChecked="{Binding IsWebSearchEnabled}"
+                              Content="🌐 联网搜索"
+                              FontSize="11"
+                              Foreground="{DynamicResource TextSecondaryBrush}"
+                              VerticalAlignment="Center"
+                              Cursor="Hand"
+                              Margin="0,0,8,0"
+                              ToolTip="开启后自动从互联网检索最新前沿资料补充回答"/>
+
+                    <Button Grid.Column="3"
                             Content="发送"
                             Command="{Binding SendCommand}"
                             Style="{StaticResource PrimaryButtonStyle}"
                             MinWidth="80"
                             MinHeight="38"/>
 
-                    <Button Grid.Column="3"
+                    <Button Grid.Column="4"
                             Content="停止"
                             Command="{Binding StopCommand}"
                             Style="{StaticResource SecondaryButtonStyle}"
@@ -1271,7 +1631,17 @@
                         </Grid.ColumnDefinitions>
 
                         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="📖 原著知识切片"
+                            <!-- web 来源标题 -->
+                            <TextBlock Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolToVis}}"
+                                       Text="🌐 网页检索结果"
+                                       Style="{StaticResource SubtitleText}"
+                                       FontSize="14"
+                                       FontWeight="Bold"
+                                       Foreground="{StaticResource PrimaryBrush}"
+                                       VerticalAlignment="Center"/>
+                            <!-- 本地来源标题 -->
+                            <TextBlock Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                       Text="📖 原著知识切片"
                                        Style="{StaticResource SubtitleText}"
                                        FontSize="14"
                                        FontWeight="Bold"
@@ -1279,14 +1649,29 @@
                                        VerticalAlignment="Center"/>
                         </StackPanel>
 
-                        <!-- 相似度评分 -->
+                        <!-- 相似度评分（仅本地来源显示） -->
                         <Border Grid.Column="1"
+                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}"
                                 Background="{StaticResource PrimaryLightBrush}"
                                 CornerRadius="4"
                                 Padding="6,2"
                                 Margin="0,0,8,0"
                                 VerticalAlignment="Center">
                             <TextBlock Text="{Binding SelectedSource.Score, StringFormat=匹配度 {0:F2}}"
+                                       FontSize="11"
+                                       FontWeight="SemiBold"
+                                       Foreground="{StaticResource PrimaryBrush}"/>
+                        </Border>
+
+                        <!-- 搜索引擎来源标签（仅 web 来源显示） -->
+                        <Border Grid.Column="1"
+                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolToVis}}"
+                                Background="{StaticResource PrimaryLightBrush}"
+                                CornerRadius="4"
+                                Padding="6,2"
+                                Margin="0,0,8,0"
+                                VerticalAlignment="Center">
+                            <TextBlock Text="{Binding SelectedSource.SourceName, TargetNullValue=Web, StringFormat=来源: {0}}"
                                        FontSize="11"
                                        FontWeight="SemiBold"
                                        Foreground="{StaticResource PrimaryBrush}"/>
@@ -1310,36 +1695,52 @@
                             Padding="10,8"
                             Margin="0,0,0,12">
                         <StackPanel>
-                            <!-- 文档名 -->
-                            <Grid Margin="0,0,0,4">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="文档：" Style="{StaticResource SmallText}" Foreground="{StaticResource TextSecondaryBrush}"/>
-                                <TextBlock Grid.Column="1" Text="{Binding SelectedSource.DisplayTitle}"
+                            <!-- 本地来源：文档名 + 章节/页码 -->
+                            <StackPanel Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}">
+                                <Grid Margin="0,0,0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="文档：" Style="{StaticResource SmallText}" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding SelectedSource.DisplayTitle}"
+                                               Style="{StaticResource SmallText}"
+                                               FontWeight="Medium"
+                                               Foreground="{StaticResource TextPrimaryBrush}"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </Grid>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding SelectedSource.Heading, TargetNullValue=正文章节, StringFormat=章节：{0}}"
+                                               Style="{StaticResource SmallText}"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding SelectedSource.Page, TargetNullValue=—, StringFormat=第 P{0} 页}"
+                                               Style="{StaticResource SmallText}"
+                                               Foreground="{StaticResource PrimaryBrush}"
+                                               FontWeight="SemiBold"
+                                               Margin="6,0,0,0"/>
+                                </Grid>
+                            </StackPanel>
+                            <!-- web 来源：标题 + URL -->
+                            <StackPanel Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="{Binding SelectedSource.DisplayTitle}"
                                            Style="{StaticResource SmallText}"
                                            FontWeight="Medium"
                                            Foreground="{StaticResource TextPrimaryBrush}"
-                                           TextTrimming="CharacterEllipsis"/>
-                            </Grid>
-
-                            <!-- 章节 & 页码 -->
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="{Binding SelectedSource.Heading, TargetNullValue=正文章节, StringFormat=章节：{0}}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,0,0,4"/>
+                                <TextBlock Text="{Binding SelectedSource.Url}"
                                            Style="{StaticResource SmallText}"
-                                           Foreground="{StaticResource TextSecondaryBrush}"
-                                           TextTrimming="CharacterEllipsis"/>
-                                <TextBlock Grid.Column="1" Text="{Binding SelectedSource.Page, TargetNullValue=—, StringFormat=第 P{0} 页}"
-                                           Style="{StaticResource SmallText}"
-                                           Foreground="{StaticResource PrimaryBrush}"
-                                           FontWeight="SemiBold"
-                                           Margin="6,0,0,0"/>
-                            </Grid>
+                                           Foreground="Blue"
+                                           TextDecorations="Underline"
+                                           TextWrapping="Wrap"
+                                           Cursor="Hand"
+                                           MouseLeftButtonDown="OpenWebSource_Click"/>
+                            </StackPanel>
                         </StackPanel>
                     </Border>
 
@@ -1382,14 +1783,16 @@
                         </Grid.ColumnDefinitions>
 
                         <Button Grid.Row="0" Grid.Column="0"
-                                Content="📋 复制原文"
+                                Content="📋 复制摘要"
                                 Command="{Binding CopySourceSnippetCommand}"
                                 Style="{StaticResource SecondaryButtonStyle}"
                                 Padding="8,6"
                                 Margin="0,0,4,6"
                                 ToolTip="复制当前切片正文到剪贴板"/>
 
+                        <!-- 本地来源：全文检索 -->
                         <Button Grid.Row="0" Grid.Column="1"
+                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}"
                                 Content="🔍 全文检索"
                                 Command="{Binding SearchSourceInSearchPageCommand}"
                                 Style="{StaticResource SecondaryButtonStyle}"
@@ -1397,7 +1800,19 @@
                                 Margin="4,0,0,6"
                                 ToolTip="跳转至搜索页检索此文档的更多分块"/>
 
+                        <!-- web 来源：在浏览器中打开 -->
+                        <Button Grid.Row="0" Grid.Column="1"
+                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolToVis}}"
+                                Content="🌐 在浏览器中打开"
+                                Command="{Binding OpenWebSourceCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="8,6"
+                                Margin="4,0,0,6"
+                                ToolTip="在默认浏览器中打开此网页"/>
+
+                        <!-- 本地来源：文件定位 + 打开文件 -->
                         <Button Grid.Row="1" Grid.Column="0"
+                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}"
                                 Content="📂 文件定位"
                                 Command="{Binding RevealSourceInExplorerCommand}"
                                 Style="{StaticResource TextButtonStyle}"
@@ -1407,6 +1822,7 @@
                                 ToolTip="在 Windows 文件资源管理器中选中并定位原文件"/>
 
                         <Button Grid.Row="1" Grid.Column="1"
+                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}"
                                 Content="📄 打开文件"
                                 Command="{Binding OpenSourceFileCommand}"
                                 Style="{StaticResource TextButtonStyle}"
@@ -1572,7 +1988,7 @@
                     <!-- 中间页码指示器 -->
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                         <Border Background="#22FFFFFF" BorderBrush="#44FFFFFF" BorderThickness="1" CornerRadius="20" Padding="16,4">
-                            <TextBlock Text="{Binding CurrentSlideNumberDisplay}" FontSize="14" FontWeight="Bold" Foreground="#38BDF8"/>
+                            <TextBlock Text="{Binding SlideCountText}" FontSize="14" FontWeight="Bold" Foreground="#38BDF8"/>
                         </Border>
                     </StackPanel>
 
@@ -1636,12 +2052,12 @@
                                             Padding="8,2"
                                             DockPanel.Dock="Right"
                                             VerticalAlignment="Top">
-                                        <TextBlock Text="{Binding CurrentSlide.Layout, StringFormat={}{0}}"
+                                        <TextBlock Text="{Binding SelectedSlide.Layout, StringFormat={}{0}}"
                                                    FontSize="11"
                                                    FontWeight="Bold"
                                                    Foreground="{DynamicResource PrimaryBrush}"/>
                                     </Border>
-                                    <TextBlock Text="{Binding CurrentSlide.Title}"
+                                    <TextBlock Text="{Binding SelectedSlide.Title}"
                                                FontSize="24"
                                                FontWeight="Bold"
                                                Foreground="{DynamicResource TextPrimaryBrush}"
@@ -1649,16 +2065,16 @@
                                 </DockPanel>
 
                                 <!-- 副标题 (如果有) -->
-                                <TextBlock Text="{Binding CurrentSlide.Subtitle}"
+                                <TextBlock Text="{Binding SelectedSlide.Subtitle}"
                                            FontSize="15"
                                            Foreground="{DynamicResource TextSecondaryBrush}"
                                            Margin="0,0,0,20"
                                            TextWrapping="Wrap"
-                                           Visibility="{Binding CurrentSlide.Subtitle, Converter={StaticResource StringToVis}}"/>
+                                           Visibility="{Binding SelectedSlide.Subtitle, Converter={StaticResource StringToVis}}"/>
 
                                 <!-- 板式 1：卡片网格 (Cards Grid) -->
-                                <ItemsControl ItemsSource="{Binding CurrentSlide.Cards}"
-                                              Visibility="{Binding CurrentSlide.IsCards, Converter={StaticResource B2V}}"
+                                <ItemsControl ItemsSource="{Binding SelectedSlide.Cards}"
+                                              Visibility="{Binding SelectedSlide.IsCards, Converter={StaticResource B2V}}"
                                               Margin="0,6,0,12">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
@@ -1703,8 +2119,8 @@
                                 </ItemsControl>
 
                                 <!-- 板式 2：大数字 KPI 看板 (Metrics) -->
-                                <ItemsControl ItemsSource="{Binding CurrentSlide.Metrics}"
-                                              Visibility="{Binding CurrentSlide.IsMetrics, Converter={StaticResource B2V}}"
+                                <ItemsControl ItemsSource="{Binding SelectedSlide.Metrics}"
+                                              Visibility="{Binding SelectedSlide.IsMetrics, Converter={StaticResource B2V}}"
                                               Margin="0,12,0,16">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
@@ -1738,8 +2154,8 @@
                                 </ItemsControl>
 
                                 <!-- 板式 3：时间线路线图 (Timeline) -->
-                                <ItemsControl ItemsSource="{Binding CurrentSlide.TimelineNodes}"
-                                              Visibility="{Binding CurrentSlide.IsTimeline, Converter={StaticResource B2V}}"
+                                <ItemsControl ItemsSource="{Binding SelectedSlide.TimelineNodes}"
+                                              Visibility="{Binding SelectedSlide.IsTimeline, Converter={StaticResource B2V}}"
                                               Margin="0,10,0,16">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
@@ -1778,8 +2194,8 @@
                                         CornerRadius="0,8,8,0"
                                         Padding="20"
                                         Margin="0,16,0,16"
-                                        Visibility="{Binding CurrentSlide.IsQuote, Converter={StaticResource B2V}}">
-                                    <TextBlock Text="{Binding CurrentSlide.QuoteText, StringFormat=“ {0} ”}"
+                                        Visibility="{Binding SelectedSlide.IsQuote, Converter={StaticResource B2V}}">
+                                    <TextBlock Text="{Binding SelectedSlide.QuoteText, StringFormat=“ {0} ”}"
                                                FontSize="18"
                                                FontWeight="SemiBold"
                                                FontStyle="Italic"
@@ -1788,8 +2204,8 @@
                                 </Border>
 
                                 <!-- 常规要点列表 (Bullet Points) -->
-                                <ItemsControl ItemsSource="{Binding CurrentSlide.BulletPoints}"
-                                              Visibility="{Binding CurrentSlide.IsGeneral, Converter={StaticResource B2V}}"
+                                <ItemsControl ItemsSource="{Binding SelectedSlide.BulletPoints}"
+                                              Visibility="{Binding SelectedSlide.IsGeneral, Converter={StaticResource B2V}}"
                                               Margin="0,6,0,10">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
@@ -1840,7 +2256,7 @@
                             <TextBlock Text="🎤 演讲者实时提词小抄" FontSize="12" FontWeight="Bold" Foreground="{DynamicResource PrimaryBrush}"/>
                             <TextBlock Text=" (仅您可见)" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}"/>
                         </StackPanel>
-                        <TextBlock Text="{Binding CurrentSlide.SpeakerNotes}"
+                        <TextBlock Text="{Binding SelectedSlide.SpeakerNotes}"
                                    FontSize="13"
                                    Foreground="{DynamicResource TextPrimaryBrush}"
                                    TextWrapping="Wrap"

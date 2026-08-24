@@ -1,4 +1,5 @@
 using DocMind.Models;
+using DocMind.Services;
 using DocMind.ViewModels;
 
 namespace DocMind.Tests;
@@ -236,5 +237,43 @@ public class GraphViewModelTests
         await vm.IngestDistilledCardCommand.ExecuteAsync(null);
         Assert.True(ingestCalled);
         Assert.False(vm.IsDistillDialogOpen);
+    }
+
+    [Fact]
+    public async Task EnsureLoadedAsync_ShowsErrorAndRetriesAfterGraphFailure()
+    {
+        var attempts = 0;
+        var fake = new FakeDoc2kbApiService
+        {
+            OnGetStats = (_, _) => Task.FromResult(new Stats
+            {
+                Collections = new Dictionary<string, int[]> { { "default", [0, 0, 0] } },
+            }),
+            OnGetGraph = (_, _, _) =>
+            {
+                attempts++;
+                if (attempts == 1)
+                {
+                    throw new BackendConnectionException("图谱服务暂时不可达");
+                }
+                return Task.FromResult(new GraphResponse(
+                    new List<GraphNode> { new("n1", "Node1", "concept", "concept", 1, "default") },
+                    new List<GraphEdge>(),
+                    1));
+            },
+        };
+
+        var vm = new GraphViewModel(fake);
+        await vm.EnsureLoadedAsync();
+
+        Assert.True(vm.HasLoadError);
+        Assert.True(vm.ShowGraphError);
+        Assert.False(vm.ShowEmptyGraph);
+
+        await vm.EnsureLoadedAsync();
+
+        Assert.Equal(2, attempts);
+        Assert.False(vm.HasLoadError);
+        Assert.True(vm.HasGraph);
     }
 }

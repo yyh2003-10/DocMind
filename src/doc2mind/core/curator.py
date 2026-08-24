@@ -44,6 +44,10 @@ class CuratorError(Exception):
     """知识库整理异常。"""
 
 
+class CurateCancelled(Exception):
+    """整理任务收到取消请求后用于中止后续阶段。"""
+
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
 
@@ -653,6 +657,7 @@ def curate(
     dry_run: bool = True,
     top_k: int | None = None,
     progress: Callable[[int, int], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> CurateReport:
     """知识库整理汇总入口。
 
@@ -666,6 +671,7 @@ def curate(
         dry_run: True = 只读预览（零写入）；False = 执行（删除/合并类生效）。
         top_k: enrich/categorize 处理的文档上限（默认 200，护栏防 LLM 失控）。
         progress: 进度回调 (done, total)。
+        cancel_check: 可选取消探针；返回 True 时立即停止后续整理阶段。
 
     Returns:
         `CurateReport`
@@ -700,11 +706,16 @@ def curate(
     need_doc_actions = any(a in report.actions for a in ("enrich", "categorize", "extract"))
     limit = top_k or DEFAULT_TOP_K
     if need_doc_actions:
-        docs = [
-            d for c in collections
-            for d in store.list_documents(collection=c, limit=limit)
-            if not _is_placeholder(d)
-        ][:limit]
+        # 多集合时按集合均匀分配抽取配额，避免排在前面的集合（如 default）耗尽配额导致其它集合无法抽取
+        per_col_limit = max(10, limit // max(1, len(collections))) if not collection else limit
+        docs = []
+        for c in collections:
+            c_docs = [
+                d for d in store.list_documents(collection=c, limit=per_col_limit)
+                if not _is_placeholder(d)
+            ]
+            docs.extend(c_docs)
+        docs = docs[: max(limit, len(docs))]
         total = len(docs)
 
         # 增量优化：获取已提取过图谱实体的文档列表，避免重复消耗 LLM
@@ -720,6 +731,8 @@ def curate(
                 pass
 
         for i, doc in enumerate(docs, start=1):
+            if cancel_check is not None and cancel_check():
+                raise CurateCancelled("整理任务已被取消")
             if "enrich" in report.actions:
                 report.enriched.append(
                     enrich_document(store, llm, doc,
@@ -773,6 +786,8 @@ def curate(
 
     # 阶段 2：dedup + consolidate（逐集合）
     for c in collections:
+        if cancel_check is not None and cancel_check():
+            raise CurateCancelled("整理任务已被取消")
         if "dedup" in report.actions:
             try:
                 report.duplicates.extend(

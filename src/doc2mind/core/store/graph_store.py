@@ -174,20 +174,32 @@ class GraphStore:
         collection: str,
         entities: list[dict[str, Any]],
         relations: list[dict[str, Any]],
+        topics: list[dict[str, Any]] | None = None,
         chunk_id: int | None = None,
     ) -> dict[str, int]:
-        """批量录入文档抽取出的实体和关系（单事务提交）。
+        """批量录入文档抽取出的主题、实体和关系（单事务提交）。
 
         若 relation 中的 from/to 未在 entities 中给出，自动以 type='other' upsert 兜底。
         """
         clean_coll = collection.strip() or "default"
         name_to_id: dict[str, str] = {}
+        added_topics = 0
         added_entities = 0
         added_relations = 0
         now = _now_iso()
 
         with self._conn() as conn:
-            # 1. 录入实体
+            # 1. 录入高维业务主题 (Topics)
+            if topics:
+                for top in topics:
+                    tname = str(top.get("name", "")).strip()
+                    if not tname:
+                        continue
+                    tid = self._upsert_entity_conn(conn, tname, "topic", clean_coll)
+                    name_to_id[tname] = tid
+                    added_topics += 1
+
+            # 2. 录入实体与主题挂载关系
             for ent in entities:
                 name = str(ent.get("name", "")).strip()
                 etype = str(ent.get("type", "other")).strip()
@@ -202,7 +214,22 @@ class GraphStore:
                         (chunk_id, eid),
                     )
 
-            # 2. 录入关系
+                # 若实体指定了所属主题，自动建立 belongs_to_topic 关系
+                topic_name = str(ent.get("topic", "")).strip()
+                if topic_name:
+                    if topic_name not in name_to_id:
+                        name_to_id[topic_name] = self._upsert_entity_conn(conn, topic_name, "topic", clean_coll)
+                    tid = name_to_id[topic_name]
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO entity_relations (from_id, to_id, relation, created_at)
+                        VALUES (?, ?, 'belongs_to_topic', ?)
+                        """,
+                        (eid, tid, now),
+                    )
+                    added_relations += 1
+
+            # 3. 录入实体间语义关系
             for rel in relations:
                 from_name = str(rel.get("from", "")).strip()
                 to_name = str(rel.get("to", "")).strip()
@@ -228,7 +255,7 @@ class GraphStore:
                 )
                 added_relations += 1
 
-        return {"entities": added_entities, "relations": added_relations}
+        return {"topics": added_topics, "entities": added_entities, "relations": added_relations}
 
     def get_extracted_doc_ids(self, collection: str | None = None) -> set[str]:
         """获取已有实体关联的文档 ID 集合（用于增量抽取与智能跳过已处理文档）。"""
@@ -239,7 +266,7 @@ class GraphStore:
                         """
                         SELECT DISTINCT c.document_id
                         FROM chunk_entities ce
-                        JOIN chunks c ON ce.chunk_id = c.id
+                        JOIN chunks_meta c ON ce.chunk_id = c.id
                         WHERE c.collection = ?
                         """,
                         (collection,),
@@ -249,7 +276,7 @@ class GraphStore:
                         """
                         SELECT DISTINCT c.document_id
                         FROM chunk_entities ce
-                        JOIN chunks c ON ce.chunk_id = c.id
+                        JOIN chunks_meta c ON ce.chunk_id = c.id
                         """
                     )
                 return {row["document_id"] for row in cur.fetchall()}
@@ -257,7 +284,7 @@ class GraphStore:
                 return set()
 
     def get_graph(self, collection: str | None = None, limit: int = 200) -> dict[str, Any]:
-        """获取用于力导向图可视化的节点与边数据。"""
+        """获取用于双层力导向图可视化的主题、节点与边数据。"""
         with self._conn() as conn:
             if collection:
                 node_cur = conn.execute(
@@ -292,6 +319,7 @@ class GraphStore:
                     "name": row["name"],
                     "type": row["type"],
                     "group": row["type"],
+                    "is_topic": row["type"] == "topic",
                     "size": max(1, int(row["doc_count"])),
                     "collection": row["collection"],
                 }
@@ -320,6 +348,7 @@ class GraphStore:
                 "nodes": nodes,
                 "edges": edges,
                 "total_nodes": len(nodes),
+                "total_edges": len(edges),
             }
 
     def get_entity_relations(self, entity_id: str, limit: int = 50) -> list[dict[str, Any]]:

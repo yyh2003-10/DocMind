@@ -67,33 +67,54 @@ public partial class GraphView : UserControl
 
             GraphWeb.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
-            // 加载 HTML 模板（三级保障：嵌入式资源流 -> 磁盘输出目录 -> 项目源码路径）
-            string? html = null;
-            var asm = typeof(GraphView).Assembly;
-            using (var resStream = asm.GetManifestResourceStream("DocMind.Resources.GraphTemplate.html"))
+            // 文档创建时同步预置亮色变量（HTML 默认为暗色），消除亮色用户进入图谱页时的暗色闪帧；
+            // 正式 setTheme 注入后模板会自行移除该预置类
+            try
             {
-                if (resStream != null)
+                var appSettings = (Application.Current as App)?.ServiceProvider.GetService<AppSettings>();
+                string initialTheme = appSettings?.Theme ?? "Light";
+                if (initialTheme == "Light" || initialTheme == "light")
                 {
-                    using var reader = new StreamReader(resStream, System.Text.Encoding.UTF8);
-                    html = await reader.ReadToEndAsync();
+                    await GraphWeb.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
+                        "document.documentElement.classList.add('light-preload');");
+                }
+            }
+            catch { }
+
+            // 加载 HTML 模板（三级保障：项目源码路径 -> 磁盘输出目录 -> 嵌入式资源流）
+            string? html = null;
+
+            // 1. 优先从磁盘源码/输出目录加载最新模板（支持热更新与实时调试）
+            string htmlPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "GraphTemplate.html");
+            if (!File.Exists(htmlPath))
+            {
+                var sourcePath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "Resources", "GraphTemplate.html"));
+                if (File.Exists(sourcePath))
+                {
+                    htmlPath = sourcePath;
                 }
             }
 
-            if (string.IsNullOrEmpty(html))
+            if (File.Exists(htmlPath))
             {
-                string htmlPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "GraphTemplate.html");
-                if (!File.Exists(htmlPath))
-                {
-                    var sourcePath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "Resources", "GraphTemplate.html"));
-                    if (File.Exists(sourcePath))
-                    {
-                        htmlPath = sourcePath;
-                    }
-                }
-
-                if (File.Exists(htmlPath))
+                try
                 {
                     html = await File.ReadAllTextAsync(htmlPath);
+                }
+                catch { }
+            }
+
+            // 2. 磁盘文件不存在时回退到程序集嵌入资源
+            if (string.IsNullOrEmpty(html))
+            {
+                var asm = typeof(GraphView).Assembly;
+                using (var resStream = asm.GetManifestResourceStream("DocMind.Resources.GraphTemplate.html"))
+                {
+                    if (resStream != null)
+                    {
+                        using var reader = new StreamReader(resStream, System.Text.Encoding.UTF8);
+                        html = await reader.ReadToEndAsync();
+                    }
                 }
             }
 
@@ -176,14 +197,22 @@ public partial class GraphView : UserControl
                 else if (type == "graph_ready")
                 {
                     ApplyCurrentTheme();
-                    if (DataContext is GraphViewModel vm && !string.IsNullOrWhiteSpace(vm.GraphJson) && vm.GraphJson != "{\"nodes\":[],\"edges\":[]}")
+                    if (DataContext is GraphViewModel vm)
                     {
-                        InjectGraphJson(vm.GraphJson);
+                        string jsonToInject = !string.IsNullOrWhiteSpace(vm.GraphJson)
+                            ? vm.GraphJson
+                            : (!string.IsNullOrEmpty(_pendingJson) ? _pendingJson : "{\"nodes\":[],\"edges\":[]}");
+                        InjectGraphJson(jsonToInject);
+                        _pendingJson = null;
                     }
                     else if (!string.IsNullOrEmpty(_pendingJson))
                     {
                         InjectGraphJson(_pendingJson);
                         _pendingJson = null;
+                    }
+                    else
+                    {
+                        InjectGraphJson("{\"nodes\":[],\"edges\":[]}");
                     }
                 }
                 else if (type == "extract_requested" && DataContext is GraphViewModel vm)
@@ -230,17 +259,44 @@ public partial class GraphView : UserControl
         {
             if (GraphWeb.CoreWebView2 != null && !string.IsNullOrWhiteSpace(json))
             {
-                // 通道 1: 原生 PostWebMessage（安全传递完整 JSON）
+                // 通道 1: 原生 PostWebMessage（安全高效传递任意大小与结构 JSON）
                 GraphWeb.CoreWebView2.PostWebMessageAsJson(json);
 
-                // 通道 2: 直接作为 JS 表达式注入 window.renderGraph(...)
-                string script = $"window.renderGraph && window.renderGraph({json});";
+                // 通道 2: 安全转义后注入 window.renderGraph（杜绝语法错误与字符截断）
+                string encodedJson = JsonSerializer.Serialize(json);
+                string script = $"window.renderGraph && window.renderGraph({encodedJson});";
                 GraphWeb.ExecuteScriptAsync(script);
             }
         }
         catch (Exception ex)
         {
             DebugLog.Warn($"执行 JS 注入失败: {ex.Message}", "GraphView");
+        }
+    }
+
+    /// <summary>折叠/展开消息的「思考过程」区（按钮 DataContext 即消息实例）。</summary>
+    private void ToggleThinking_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is ChatMessage msg)
+        {
+            msg.IsThinkingExpanded = !msg.IsThinkingExpanded;
+        }
+    }
+
+    private void FlowDocViewer_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is FlowDocumentScrollViewer viewer)
+        {
+            var expr = System.Windows.Data.BindingOperations.GetBindingExpression(viewer, FlowDocumentScrollViewer.DocumentProperty);
+            expr?.UpdateTarget();
+        }
+    }
+
+    private void FlowDocViewer_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is FlowDocumentScrollViewer viewer)
+        {
+            viewer.Document = null;
         }
     }
 }

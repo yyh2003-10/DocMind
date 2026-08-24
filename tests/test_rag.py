@@ -204,6 +204,31 @@ class TestRagAnswer:
             assert result.total_chunks == 0
             assert result.chat_id is not None
 
+    def test_hybrid_mode_empty_retrieval_calls_llm(self) -> None:
+        """混合增强模式：知识库为空时，回退调用 LLM 进行通用知识回答。"""
+        mock_client = MockLLMClient("这是基于通用知识的解答。")
+        s = Settings(llm_provider="openai", llm_api_key="test", rag_mode="hybrid")
+
+        with patch("doc2mind.core.rag._open_store") as mock_open:
+            mock_store = MagicMock()
+            mock_embedder = MagicMock()
+            mock_open.return_value = (mock_store, mock_embedder)
+
+            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+                mock_retriever = MagicMock()
+                mock_retriever.search.return_value = ([], SearchStats(query="test", total_hits=0, elapsed_ms=5, vector_candidates=0, bm25_candidates=0))
+                MockRetriever.return_value = mock_retriever
+
+                result = rag_answer(
+                    query="test question",
+                    settings=s,
+                    llm_client=mock_client,
+                )
+
+            assert result.answer == "这是基于通用知识的解答。"
+            assert result.total_chunks == 0
+            assert result.chat_id is not None
+
     def test_full_rag_flow(self) -> None:
         """完整 RAG 流程：检索 → 上下文 → LLM → 带来源回答。"""
         mock_client = MockLLMClient("根据资料，DocMind 采用分层架构。")
@@ -443,11 +468,11 @@ class TestRagAnswerStream:
                     query="问题", settings=s, llm_client=mock_client,
                 ))
 
-        # 检查 token 行
+        # 检查 token 行（跳过 status 帧）
         assert len(results) >= 2  # 至少 token + done
-        token_data = json.loads(results[0])
-        assert "token" in token_data
-        assert token_data["token"] == "流式回答"
+        token_frames = [json.loads(r) for r in results[:-1] if "token" in json.loads(r)]
+        assert len(token_frames) >= 1
+        assert token_frames[0]["token"] == "流式回答"
 
         # 检查终帧
         done_data = json.loads(results[-1])
@@ -455,6 +480,70 @@ class TestRagAnswerStream:
         assert done_data["chat_id"] is not None
         assert done_data["model"] == "mock-model"
         assert done_data["total_chunks"] == 1
+        # 终帧来源必须携带完整 snippet（正文切片预览依赖）与 chunk_id
+        assert done_data["sources"][0]["snippet"] == "文档内容"
+        assert done_data["sources"][0]["source"] == "doc.pdf"
+        assert done_data["sources"][0]["page"] == 1
+
+    def test_stream_yields_status_events(self) -> None:
+        """流式路径：检索阶段产出 status 帧，token 帧在 status 之后。"""
+        import json
+        mock_client = MockLLMClient("回答")
+        s = Settings(llm_provider="openai", llm_api_key="test")
+        hit = _make_hit(content="内容", source="doc.pdf", page=1)
+        stats = SearchStats(query="q", total_hits=1, elapsed_ms=5, vector_candidates=1, bm25_candidates=1)
+
+        with patch("doc2mind.core.rag._open_store") as mock_open:
+            mock_open.return_value = (MagicMock(), MagicMock())
+            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+                mock_retriever = MagicMock()
+                mock_retriever.search.return_value = ([hit], stats)
+                MockRetriever.return_value = mock_retriever
+
+                from doc2mind.core.rag import rag_answer_stream
+                results = list(rag_answer_stream(
+                    query="问题", settings=s, llm_client=mock_client,
+                ))
+
+        all_frames = [json.loads(r) for r in results]
+        status_frames = [f for f in all_frames if f.get("type") == "status"]
+        # 至少有检索+避坑 两条 status 帧
+        assert len(status_frames) >= 2
+        status_messages = [f["message"] for f in status_frames]
+        assert any("检索知识库" in m for m in status_messages)
+        # status 帧全部在第一个 token 帧之前
+        first_token_idx = next(i for i, f in enumerate(all_frames) if "token" in f)
+        for sf in status_frames:
+            assert all_frames.index(sf) < first_token_idx
+
+    def test_stream_status_steps_carry_details(self) -> None:
+        """每个检索阶段完成后发「✔ 详情」状态：命中数/经验数/关联数。"""
+        import json
+        mock_client = MockLLMClient("回答")
+        s = Settings(llm_provider="openai", llm_api_key="test")
+        hit = _make_hit(content="内容", source="doc.pdf", page=1)
+        stats = SearchStats(query="q", total_hits=1, elapsed_ms=5, vector_candidates=1, bm25_candidates=1)
+
+        with patch("doc2mind.core.rag._open_store") as mock_open:
+            mock_open.return_value = (MagicMock(), MagicMock())
+            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
+                mock_retriever = MagicMock()
+                mock_retriever.search.return_value = ([hit], stats)
+                MockRetriever.return_value = mock_retriever
+
+                from doc2mind.core.rag import rag_answer_stream
+                results = list(rag_answer_stream(
+                    query="问题", settings=s, llm_client=mock_client,
+                ))
+
+        status_messages = [json.loads(r)["message"] for r in results if "message" in json.loads(r)]
+        # 每个「正在…」步骤后紧跟带详情的「✔ …」状态
+        assert "正在检索知识库..." in status_messages
+        assert any(m.startswith("✔ 检索知识库") and "命中 1 个分块" in m for m in status_messages)
+        assert any(m.startswith("✔ 避坑指南") for m in status_messages)
+        # 详情帧紧随对应的「正在…」帧之后
+        kb_idx = status_messages.index("正在检索知识库...")
+        assert status_messages[kb_idx + 1].startswith("✔ 检索知识库")
 
     def test_stream_empty_retrieval_returns_hint(self) -> None:
         """空检索：产出提示 token + done 帧（total_chunks=0），不调 LLM。"""
@@ -478,10 +567,12 @@ class TestRagAnswerStream:
                     query="问题", settings=s, llm_client=mock_client,
                 ))
 
-        assert len(results) == 2  # 提示 token + done
-        token_data = json.loads(results[0])
-        assert "未找到" in token_data["token"]
-        done_data = json.loads(results[1])
+        assert len(results) >= 2  # 至少提示 token + done（可能有 status 帧）
+        # 找到 token 帧（跳过 status 帧）
+        token_frames = [json.loads(r) for r in results if "token" in json.loads(r)]
+        assert len(token_frames) == 1
+        assert "未找到" in token_frames[0]["token"]
+        done_data = json.loads(results[-1])
         assert done_data["done"] is True
         assert done_data["total_chunks"] == 0
         assert done_data["sources"] == []
@@ -542,7 +633,7 @@ class TestRagAnswerStream:
                     query="问题", settings=s, llm_client=mock_client,
                 ))
 
-        token_frames = [json.loads(r) for r in results[:-1]]
+        token_frames = [json.loads(r) for r in results[:-1] if "token" in json.loads(r)]
         assert "".join(f["token"] for f in token_frames) == "根据资料回答。"
         # 历史已保存完整拼接的回答
         cid = json.loads(results[-1])["chat_id"]

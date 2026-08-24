@@ -27,8 +27,9 @@ public interface IDoc2kbApiService
     Task<JobStatus> IngestJobAsync(IngestRequest req, CancellationToken ct = default);
     Task<SearchResponse> SearchAsync(SearchRequest req, CancellationToken ct = default);
     Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default);
-    /// <summary>流式对话：消费 SSE 逐 token 输出。onToken 每收到一个 token 触发，onDone 在终帧触发，返回终帧元数据。</summary>
-    Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, CancellationToken ct = default);
+    /// <summary>流式对话：消费 SSE 逐 token 输出。onToken 每收到一个 token 触发，onDone 在终帧触发，返回终帧元数据。
+    /// onStatus 阶段状态；onThinking 推理链增量（DeepSeek-R1/Qwen3 等模型的 reasoning_content）。</summary>
+    Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, CancellationToken ct = default);
     Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", string? q = null, CancellationToken ct = default);
     Task<DocumentDetail> GetDocumentAsync(string id, int chunks = 5, int chunkContentLength = 200, string? collection = null, CancellationToken ct = default);
     Task<DeleteResult> DeleteDocumentAsync(string id, string? collection = null, CancellationToken ct = default);
@@ -54,6 +55,11 @@ public interface IDoc2kbApiService
     /// <summary>GPU 加速包一键安装（POST /v1/system/install-gpu，SSE 流式）。
     /// onLog 每收到一行 pip 日志触发，onDone 在安装完成/失败时触发（bool 为成功标志）。</summary>
     Task InstallGpuAsync(string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default);
+
+    /// <summary>OCR 扩展一键安装（POST /v1/system/install-ocr，SSE 流式）。
+    /// path 取 "cpu"（CPU 版，所有设备）或 "paddle-ocr-gpu"（NVIDIA GPU 加速版）；
+    /// 回调语义与 InstallGpuAsync 相同。</summary>
+    Task InstallOcrAsync(string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default);
 
     /// <summary>知识图谱可视化数据（GET /v1/graph/visualize）。</summary>
     Task<GraphResponse> GetGraphAsync(string? collection = null, int limit = 200, CancellationToken ct = default);

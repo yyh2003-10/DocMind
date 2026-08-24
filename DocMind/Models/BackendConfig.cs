@@ -6,6 +6,7 @@ namespace DocMind.Models;
 public sealed record BackendConfig
 {
     public string EmbedModel { get; init; } = "BAAI/bge-small-zh-v1.5";
+    public string? EmbedModelPath { get; init; }
     public int EmbedBatchSize { get; init; } = 32;
     public int ChunkMaxTokens { get; init; } = 1500;
     public int ChunkMinChars { get; init; } = 50;
@@ -19,9 +20,10 @@ public sealed record BackendConfig
     public string? LlmBaseUrl { get; init; }
     public string LlmModel { get; init; } = "";
     public double LlmTemperature { get; init; } = 0.7;
-    public int LlmMaxTokens { get; init; } = 2048;
+    public int LlmMaxTokens { get; init; } = 8192;
     public int RagTopK { get; init; } = 5;
     public double RagMinScore { get; init; } = 0.0;
+    public string RagMode { get; init; } = "strict";
 
     /// <summary>自定义 RAG 系统提示词；null = 未配置（后端用内置默认提示词）。</summary>
     public string? RagSystemPrompt { get; init; }
@@ -69,6 +71,7 @@ public sealed record BackendConfigUpdate
     public int? LlmMaxTokens { get; init; }
     public int? RagTopK { get; init; }
     public double? RagMinScore { get; init; }
+    public string? RagMode { get; init; }
 
     /// <summary>自定义 RAG 系统提示词；空字符串=显式清除（回到内置默认），null=不修改。</summary>
     public string? RagSystemPrompt { get; init; }

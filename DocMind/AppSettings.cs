@@ -39,6 +39,12 @@ public class AppSettings
     public string LlmProvider { get; set; } = "none";
     /// <summary>OpenAI 兼容 API Key（对应 DOC2MIND_LLM_API_KEY）。</summary>
     public string? LlmApiKey { get; set; }
+
+    /// <summary>联网搜索 GitHub 通道的个人令牌（可选）。每个用户填自己的 Token：
+    /// 随对话请求按请求携带（ChatRequest.GithubToken），后端不注入环境变量、
+    /// 不写全局配置，避免多用户共享同一 GitHub 账户；留空 = 用匿名公开额度。
+    /// 落盘时经 DPAPI 加密（与 LlmApiKey 同机制，内存单例持明文）。</summary>
+    public string? GithubToken { get; set; }
     /// <summary>API 基础地址（对应 DOC2MIND_LLM_BASE_URL）。</summary>
     public string? LlmBaseUrl { get; set; }
     /// <summary>模型名（对应 DOC2MIND_LLM_MODEL）。</summary>
@@ -46,13 +52,25 @@ public class AppSettings
     /// <summary>温度参数（对应 DOC2MIND_LLM_TEMPERATURE）。</summary>
     public double LlmTemperature { get; set; } = 0.7;
     /// <summary>最大 token 数（对应 DOC2MIND_LLM_MAX_TOKENS）。</summary>
-    public int LlmMaxTokens { get; set; } = 2048;
+    public int LlmMaxTokens { get; set; } = 8192;
     /// <summary>检索引用 chunk 数（对应 DOC2MIND_RAG_TOP_K）。</summary>
     public int RagTopK { get; set; } = 5;
     /// <summary>自定义 RAG 系统提示词（对应 DOC2MIND_RAG_SYSTEM_PROMPT；空 = 用后端内置默认提示词）。</summary>
     public string? RagSystemPrompt { get; set; }
     /// <summary>多轮对话历史 token 预算（对应 DOC2MIND_RAG_MAX_HISTORY_TOKENS；0 = 不按 token 截断）。</summary>
     public int RagMaxHistoryTokens { get; set; } = 4096;
+    /// <summary>RAG 问答模式（"strict" = 严格知识库模式；"hybrid" = 混合常识增强模式，未命中本地文档时使用大模型常识解答）。</summary>
+    public string RagMode { get; set; } = "hybrid";
+
+    /// <summary>AI 提供商档案列表：可复用命名配置（提供商/BaseURL/Key/模型/温度等），
+    /// 设置页与对话页一键应用与切换。ApiKey 落盘时经 DPAPI 加密（与 LlmApiKey 同机制）。</summary>
+    public List<Models.LlmProfile> LlmProfiles { get; set; } = new();
+
+    /// <summary>最后应用的档案 Id（仅用于 UI 高亮/默认选中，不自动改配置）。</summary>
+    public string? ActiveProfileId { get; set; }
+
+    /// <summary>对话页「🌐 联网搜索」开关是否开启（持久化，重启后保持勾选状态）。</summary>
+    public bool EnableWebSearch { get; set; } = false;
 
     // ===== 文件系统监控 =====
     /// <summary>监控目录列表（对应 DOC2MIND_WATCH_PATHS，逗号分隔注入）。</summary>
@@ -101,12 +119,21 @@ public class AppSettings
 
     /// <summary>持久化当前设置到用户级目录（%LOCALAPPDATA%\DocMind\appsettings.json）。
     /// 唯一的落盘出口：LlmApiKey 统一经 DPAPI 加密（幂等：明文迁移为密文、已密文原样、空值原样），
-    /// 内存单例仍持明文供运行时使用。序列化副本，不改动 this 的字段值。</summary>
+    /// 内存单例仍持明文供运行时使用。序列化副本，不改动 this 的字段值。
+    /// LlmProfiles 同样加密各档案的 ApiKey（深拷贝后加密，不污染内存单例的明文）。</summary>
     public void Save()
     {
         EnsureConfigDir();
         var snapshot = (AppSettings)MemberwiseClone();
         snapshot.LlmApiKey = SecretProtector.Protect(LlmApiKey);
+        snapshot.GithubToken = SecretProtector.Protect(GithubToken);
+        // 档案 key 加密：先深拷贝每个档案，只对副本加密，内存单例保持明文供运行时使用
+        snapshot.LlmProfiles = LlmProfiles?.Select(p =>
+        {
+            var clone = p.Clone();
+            clone.ApiKey = SecretProtector.Protect(clone.ApiKey);
+            return clone;
+        }).ToList() ?? new List<Models.LlmProfile>();
         var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions
         {
             WriteIndented = true,

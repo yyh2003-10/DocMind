@@ -165,6 +165,35 @@
                     </StackPanel>
                 </Border>
 
+                <!-- 加载失败错误态：与「暂无图谱数据」区分，提供明确重试入口 -->
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        BorderBrush="{DynamicResource DangerBrush}"
+                        BorderThickness="1"
+                        CornerRadius="14"
+                        Padding="36,40"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        MaxWidth="520"
+                        Visibility="{Binding ShowGraphError, Converter={StaticResource BoolToVisConverter}}">
+                    <StackPanel HorizontalAlignment="Center">
+                        <TextBlock Text="⚠️ 图谱加载失败"
+                                   Style="{StaticResource TitleText}"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,0,0,8"/>
+                        <TextBlock Text="{Binding StatusMessage}"
+                                   Style="{StaticResource BodyText}"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center"
+                                   Margin="0,0,0,20"/>
+                        <Button Content="↻ 重试加载"
+                                Command="{Binding LoadGraphCommand}"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                HorizontalAlignment="Center"
+                                Padding="20,8"/>
+                    </StackPanel>
+                </Border>
+
                 <!-- 降级提示面板 -->
                 <Border x:Name="FallbackPanel"
                         Background="{DynamicResource BackgroundBrush}"
@@ -324,16 +353,11 @@
                             </Border>
 
                             <!-- 2. 本地原著切片速览 (可折叠展示) -->
-                            <Expander IsExpanded="True"
+                            <Expander Header="📖 本地知识库切片 (Ground Truth)"
+                                      IsExpanded="True"
                                       Margin="0,0,0,10"
                                       Background="Transparent"
                                       BorderThickness="0">
-                                <Expander.Header>
-                                    <TextBlock Text="📖 本地知识库切片 (Ground Truth)"
-                                               FontSize="12"
-                                               FontWeight="Bold"
-                                               Foreground="{DynamicResource TextPrimaryBrush}" />
-                                </Expander.Header>
                                 <StackPanel Margin="0,6,0,0">
                                     <ItemsControl ItemsSource="{Binding ContextSnippets}">
                                         <ItemsControl.ItemTemplate>
@@ -384,16 +408,11 @@
                             </Expander>
 
                             <!-- 3. 关联网实体速览 (可下钻) -->
-                            <Expander IsExpanded="False"
+                            <Expander Header="🕸️ 关联网实体 (点击下钻)"
+                                      IsExpanded="False"
                                       Margin="0,0,0,12"
                                       Background="Transparent"
                                       BorderThickness="0">
-                                <Expander.Header>
-                                    <TextBlock Text="🕸️ 关联网实体 (点击下钻)"
-                                               FontSize="12"
-                                               FontWeight="Bold"
-                                               Foreground="{DynamicResource TextPrimaryBrush}" />
-                                </Expander.Header>
                                 <StackPanel Margin="0,6,0,0">
                                     <ItemsControl ItemsSource="{Binding SelectedNodeRelations}">
                                         <ItemsControl.ItemTemplate>
@@ -516,82 +535,301 @@
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
 
-                                    <!-- 多轮对话消息流列表 -->
+                                    <!-- 多轮对话消息流列表（DeepSeek 级富文本与思考链路气泡） -->
                                     <ItemsControl ItemsSource="{Binding EntityChatMessages}" Margin="0,6,0,0">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
-                                                <Border Margin="0,0,0,10">
-                                                    <!-- 用户消息与助手消息自适应 -->
-                                                    <Grid>
-                                                        <!-- 用户消息气泡 -->
-                                                        <Border Background="{DynamicResource PrimaryBrush}"
-                                                                CornerRadius="8,8,2,8"
-                                                                Padding="10,8"
-                                                                HorizontalAlignment="Right"
-                                                                MaxWidth="380"
-                                                                Visibility="{Binding IsUser, Converter={StaticResource BoolToVisConverter}}">
-                                                            <TextBlock Text="{Binding Content}"
-                                                                       Foreground="{DynamicResource TextInverseBrush}"
-                                                                       FontSize="12"
-                                                                       TextWrapping="Wrap" />
-                                                        </Border>
+                                                <Grid Margin="0,0,0,16">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
 
-                                                        <!-- 助手消息卡片 (Markdown 与代码高亮) -->
-                                                        <Border Background="{DynamicResource SurfaceBrush}"
-                                                                BorderBrush="{DynamicResource BorderBrush}"
-                                                                BorderThickness="1"
-                                                                CornerRadius="8"
-                                                                Padding="10,8"
-                                                                HorizontalAlignment="Stretch"
-                                                                Visibility="{Binding IsAssistant, Converter={StaticResource BoolToVisConverter}}">
-                                                            <StackPanel>
-                                                                <!-- 头部模型标记 -->
-                                                                <DockPanel Margin="0,0,0,4">
-                                                                    <TextBlock Text="🤖 DocMind Copilot"
-                                                                               FontSize="11"
-                                                                               FontWeight="Bold"
-                                                                               Foreground="{DynamicResource PrimaryBrush}" />
-                                                                </DockPanel>
+                                                    <!-- 助手头像（左侧，精致微投影徽标） -->
+                                                    <Border Grid.Column="0" Width="28" Height="28" CornerRadius="14"
+                                                            VerticalAlignment="Top" Margin="0,2,8,0"
+                                                            Background="{DynamicResource SurfaceBrush}"
+                                                            BorderBrush="{DynamicResource BorderBrush}"
+                                                            BorderThickness="1"
+                                                            Effect="{DynamicResource ShadowSm}"
+                                                            Visibility="{Binding IsAssistant, Converter={StaticResource BoolToVisConverter}}">
+                                                        <TextBlock Text="🤖" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                    </Border>
 
-                                                                <!-- Markdown 正文 (等宽字体支持 ASCII 流程图对齐) -->
-                                                                <TextBlock Text="{Binding Content}"
-                                                                           FontSize="12"
-                                                                           LineHeight="18"
-                                                                           Foreground="{DynamicResource TextPrimaryBrush}"
-                                                                           TextWrapping="Wrap"
-                                                                           FontFamily="Consolas, 'Cascadia Code', 'Segoe UI Variable Display', 'Segoe UI', sans-serif" />
+                                                    <!-- 用户头像（右侧，品牌渐变圆） -->
+                                                    <Border Grid.Column="2" Width="28" Height="28" CornerRadius="14"
+                                                            VerticalAlignment="Top" Margin="8,2,0,0"
+                                                            Background="{DynamicResource UserBubbleBrush}"
+                                                            Effect="{DynamicResource ShadowSm}"
+                                                            Visibility="{Binding IsUser, Converter={StaticResource BoolToVisConverter}}">
+                                                        <TextBlock Text="我" FontSize="11" FontWeight="Bold"
+                                                                   Foreground="{DynamicResource UserBubbleTextBrush}"
+                                                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                    </Border>
 
-                                                                <!-- 引用来源卡片列表 (双轨：本地原著 + 联网参考) -->
-                                                                <ItemsControl ItemsSource="{Binding Sources}" Margin="0,8,0,0">
-                                                                    <ItemsControl.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <Border Background="{DynamicResource CardBrush}"
-                                                                                    BorderBrush="{DynamicResource BorderBrush}"
-                                                                                    BorderThickness="1"
-                                                                                    CornerRadius="4"
-                                                                                    Padding="6,3"
-                                                                                    Margin="0,0,0,4">
-                                                                                <DockPanel>
-                                                                                    <TextBlock Text="{Binding Index, StringFormat='[{0}] '}"
-                                                                                               FontWeight="Bold"
-                                                                                               FontSize="10"
-                                                                                               Foreground="{DynamicResource PrimaryBrush}" />
-                                                                                    <TextBlock Text="{Binding DisplayTitle}"
-                                                                                               FontSize="10"
+                                                    <!-- 用户消息气泡（品牌渐变，右对齐） -->
+                                                    <Border Grid.Column="1"
+                                                            Background="{DynamicResource UserBubbleBrush}"
+                                                            CornerRadius="14,14,4,14"
+                                                            Padding="12,9"
+                                                            HorizontalAlignment="Right"
+                                                            MaxWidth="380"
+                                                            Effect="{DynamicResource ShadowSm}"
+                                                            Visibility="{Binding IsUser, Converter={StaticResource BoolToVisConverter}}">
+                                                        <TextBlock Text="{Binding Content}"
+                                                                   Foreground="{DynamicResource UserBubbleTextBrush}"
+                                                                   FontSize="12.5"
+                                                                   LineHeight="19"
+                                                                   TextWrapping="Wrap" />
+                                                    </Border>
+
+                                                    <!-- 助手消息卡片 (DeepSeek 级全链路思考 + Markdown + 搜索卡片 + 工具栏) -->
+                                                    <Border Grid.Column="1"
+                                                            Background="{DynamicResource SurfaceBrush}"
+                                                            BorderBrush="{DynamicResource BorderBrush}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="4,14,14,14"
+                                                            Padding="14,10"
+                                                            HorizontalAlignment="Stretch"
+                                                            Margin="0,0,16,0"
+                                                            Effect="{DynamicResource ShadowSm}"
+                                                            Visibility="{Binding IsAssistant, Converter={StaticResource BoolToVisConverter}}">
+                                                        <StackPanel>
+                                                            <!-- 头部模型标记与实时状态 -->
+                                                            <DockPanel Margin="0,0,0,6">
+                                                                <TextBlock Text="🤖 DocMind GraphCopilot"
+                                                                           FontSize="11.5"
+                                                                           FontWeight="Bold"
+                                                                           Foreground="{DynamicResource PrimaryBrush}"
+                                                                           VerticalAlignment="Center"/>
+                                                                <TextBlock Text="{Binding StatusText}"
+                                                                           FontSize="11"
+                                                                           Foreground="{DynamicResource TextTertiaryBrush}"
+                                                                           Margin="8,0,0,0"
+                                                                           VerticalAlignment="Center"
+                                                                           Visibility="{Binding ShowStatus, Converter={StaticResource BoolToVisConverter}}"/>
+                                                            </DockPanel>
+
+                                                            <!-- 1. 真实思考全链路框 (DeepSeek Thinking Process 折叠盒) -->
+                                                            <Border Background="{DynamicResource CardBrush}"
+                                                                    BorderBrush="{DynamicResource BorderBrush}"
+                                                                    BorderThickness="1"
+                                                                    CornerRadius="8"
+                                                                    Margin="0,0,0,8"
+                                                                    Visibility="{Binding HasThinking, Converter={StaticResource BoolToVisConverter}}">
+                                                                <StackPanel>
+                                                                    <!-- 折叠头部：点击展开/收起，展示动态实时秒数与状态 -->
+                                                                    <Button Click="ToggleThinking_Click"
+                                                                            Background="Transparent"
+                                                                            BorderThickness="0"
+                                                                            HorizontalContentAlignment="Stretch"
+                                                                            Padding="8,6"
+                                                                            Cursor="Hand">
+                                                                        <Button.Template>
+                                                                            <ControlTemplate TargetType="Button">
+                                                                                <Border Background="{TemplateBinding Background}" CornerRadius="8">
+                                                                                    <ContentPresenter />
+                                                                                </Border>
+                                                                            </ControlTemplate>
+                                                                        </Button.Template>
+                                                                        <DockPanel>
+                                                                            <!-- 左侧思考状态文案（思考中实时计时 / 已思考耗时） -->
+                                                                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
+                                                                                <TextBlock Text="{Binding ThinkingHeaderText}"
+                                                                                           FontSize="11.5"
+                                                                                           FontWeight="SemiBold"
+                                                                                           Foreground="{DynamicResource PrimaryBrush}" />
+                                                                                <!-- 脉冲指示（思考中流式进行时可见） -->
+                                                                                <Ellipse Width="6" Height="6" Fill="{DynamicResource PrimaryBrush}"
+                                                                                         Margin="6,0,0,0" VerticalAlignment="Center"
+                                                                                         Visibility="{Binding IsThinkingInProgress, Converter={StaticResource BoolToVisConverter}}"/>
+                                                                            </StackPanel>
+
+                                                                            <!-- 右侧折叠箭头指示 -->
+                                                                            <TextBlock Text="{Binding ThinkingIconText}"
+                                                                                       DockPanel.Dock="Right"
+                                                                                       HorizontalAlignment="Right"
+                                                                                       FontSize="11"
+                                                                                       Foreground="{DynamicResource TextTertiaryBrush}"
+                                                                                       VerticalAlignment="Center"/>
+                                                                        </DockPanel>
+                                                                    </Button>
+
+                                                                    <!-- 折叠内容区：结构化检索步骤 + 模型原生推理链 -->
+                                                                    <Border Visibility="{Binding IsThinkingExpanded, Converter={StaticResource BoolToVisConverter}}"
+                                                                            BorderThickness="0,1,0,0"
+                                                                            BorderBrush="{DynamicResource BorderBrush}"
+                                                                            Padding="8,6,8,8">
+                                                                        <StackPanel>
+                                                                            <!-- 检索与上下文准备步骤列表 -->
+                                                                            <ItemsControl ItemsSource="{Binding ThinkingSteps}"
+                                                                                          Visibility="{Binding HasThinkingSteps, Converter={StaticResource BoolToVisConverter}}"
+                                                                                          Margin="0,0,0,6">
+                                                                                <ItemsControl.ItemTemplate>
+                                                                                    <DataTemplate>
+                                                                                        <DockPanel Margin="0,1.5">
+                                                                                            <TextBlock Text="•" FontSize="11" Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,4,0"/>
+                                                                                            <TextBlock Text="{Binding}"
+                                                                                                       FontSize="11"
+                                                                                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                                                       TextWrapping="Wrap"/>
+                                                                                        </DockPanel>
+                                                                                    </DataTemplate>
+                                                                                </ItemsControl.ItemTemplate>
+                                                                            </ItemsControl>
+
+                                                                            <!-- 模型原生 reasoning_content 推理链内容 -->
+                                                                            <Border Background="{DynamicResource BackgroundBrush}"
+                                                                                    CornerRadius="6"
+                                                                                    Padding="8,6"
+                                                                                    Visibility="{Binding HasThinkingText, Converter={StaticResource BoolToVisConverter}}">
+                                                                                <!-- 优先 FlowDocument 富文本排版，降级 TextBlock 纯文本 -->
+                                                                                <Grid>
+                                                                                    <FlowDocumentScrollViewer Document="{Binding RenderedThinkingDocument, Mode=OneWay}"
+                                                                                                              VerticalScrollBarVisibility="Auto"
+                                                                                                              HorizontalScrollBarVisibility="Disabled"
+                                                                                                              IsToolBarVisible="False"
+                                                                                                              Loaded="FlowDocViewer_Loaded"
+                                                                                                              Unloaded="FlowDocViewer_Unloaded"
+                                                                                                              Visibility="{Binding RenderedThinkingDocument, Converter={StaticResource BoolToVisConverter}}"/>
+                                                                                    <TextBlock Text="{Binding ThinkingText}"
+                                                                                               FontSize="11.5"
+                                                                                               LineHeight="17"
                                                                                                Foreground="{DynamicResource TextSecondaryBrush}"
-                                                                                               TextTrimming="CharacterEllipsis" />
-                                                                                </DockPanel>
+                                                                                               TextWrapping="Wrap"
+                                                                                               FontFamily="Consolas, 'Cascadia Code', 'Segoe UI', sans-serif"
+                                                                                               Visibility="{Binding RenderedThinkingDocument, Converter={StaticResource BoolToVisInvertConverter}}"/>
+                                                                                </Grid>
                                                                             </Border>
-                                                                        </DataTemplate>
-                                                                    </ItemsControl.ItemTemplate>
-                                                                </ItemsControl>
+                                                                        </StackPanel>
+                                                                    </Border>
+                                                                </StackPanel>
+                                                            </Border>
 
-                                                                <!-- 底部操作栏：沉淀入库按钮 -->
-                                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                                                            <!-- 2. 搜索源/网页引用卡片摘要 -->
+                                                            <Border Background="{DynamicResource CardBrush}"
+                                                                    BorderBrush="{DynamicResource BorderBrush}"
+                                                                    BorderThickness="1"
+                                                                    CornerRadius="6"
+                                                                    Padding="8,4"
+                                                                    Margin="0,0,0,8"
+                                                                    Visibility="{Binding HasWebSources, Converter={StaticResource BoolToVisConverter}}">
+                                                                <DockPanel>
+                                                                    <TextBlock Text="🌐 " FontSize="11" VerticalAlignment="Center"/>
+                                                                    <TextBlock Text="{Binding SearchSummaryText}"
+                                                                               FontSize="11"
+                                                                               FontWeight="SemiBold"
+                                                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                                                               VerticalAlignment="Center"/>
+                                                                </DockPanel>
+                                                            </Border>
+
+                                                            <!-- 3. Markdown 正文渲染 (Markdig FlowDocument) -->
+                                                            <FlowDocumentScrollViewer Document="{Binding RenderedDocument, Mode=OneWay}"
+                                                                                      VerticalScrollBarVisibility="Disabled"
+                                                                                      HorizontalScrollBarVisibility="Disabled"
+                                                                                      IsToolBarVisible="False"
+                                                                                      Loaded="FlowDocViewer_Loaded"
+                                                                                      Unloaded="FlowDocViewer_Unloaded"
+                                                                                      Visibility="{Binding RenderedDocument, Converter={StaticResource BoolToVisConverter}}"/>
+
+                                                            <!-- 降级纯文本显示 -->
+                                                            <TextBlock Text="{Binding Content}"
+                                                                       FontSize="12.5"
+                                                                       LineHeight="19"
+                                                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                                                       TextWrapping="Wrap"
+                                                                       Visibility="{Binding RenderedDocument, Converter={StaticResource BoolToVisInvertConverter}}" />
+
+                                                            <!-- 4. 引用来源卡片列表 (本地切片 + 联网网页) -->
+                                                            <ItemsControl ItemsSource="{Binding Sources}" Margin="0,8,0,0">
+                                                                <ItemsControl.ItemTemplate>
+                                                                    <DataTemplate>
+                                                                        <Border Background="{DynamicResource CardBrush}"
+                                                                                BorderBrush="{DynamicResource BorderBrush}"
+                                                                                BorderThickness="1"
+                                                                                CornerRadius="4"
+                                                                                Padding="6,3"
+                                                                                Margin="0,0,0,4">
+                                                                            <DockPanel>
+                                                                                <TextBlock Text="{Binding Index, StringFormat='[{0}] '}"
+                                                                                           FontWeight="Bold"
+                                                                                           FontSize="10.5"
+                                                                                           Foreground="{DynamicResource PrimaryBrush}" />
+                                                                                <TextBlock Text="{Binding DisplayTitle}"
+                                                                                           FontSize="10.5"
+                                                                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                                           TextTrimming="CharacterEllipsis" />
+                                                                            </DockPanel>
+                                                                        </Border>
+                                                                    </DataTemplate>
+                                                                </ItemsControl.ItemTemplate>
+                                                            </ItemsControl>
+
+                                                            <!-- 5. 底部操作工具栏 (复制反馈 + 点赞点踩 + 沉淀入库) -->
+                                                            <DockPanel Margin="0,8,0,0" Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisInvertConverter}}">
+                                                                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                                                                    <!-- 复制按钮（带绿色「已复制 ✓」反馈） -->
+                                                                    <Button Command="{Binding CopyCommand}"
+                                                                            FontSize="11"
+                                                                            Padding="6,2"
+                                                                            Margin="0,0,4,0"
+                                                                            ToolTip="复制回答全文到剪贴板">
+                                                                        <Button.Style>
+                                                                            <Style TargetType="Button" BasedOn="{StaticResource TextButtonStyle}">
+                                                                                <Setter Property="Content" Value="📋 复制"/>
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding IsCopied}" Value="True">
+                                                                                        <Setter Property="Content" Value="✓ 已复制"/>
+                                                                                        <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </Button.Style>
+                                                                    </Button>
+
+                                                                    <!-- 点赞 -->
+                                                                    <Button Command="{Binding ToggleLikeCommand}"
+                                                                            FontSize="11"
+                                                                            Padding="5,2"
+                                                                            Margin="0,0,4,0"
+                                                                            ToolTip="点赞此回答">
+                                                                        <Button.Style>
+                                                                            <Style TargetType="Button" BasedOn="{StaticResource TextButtonStyle}">
+                                                                                <Setter Property="Content" Value="👍"/>
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding IsLiked}" Value="True">
+                                                                                        <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}"/>
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </Button.Style>
+                                                                    </Button>
+
+                                                                    <!-- 点踩 -->
+                                                                    <Button Command="{Binding ToggleDislikeCommand}"
+                                                                            FontSize="11"
+                                                                            Padding="5,2"
+                                                                            Margin="0,0,4,0"
+                                                                            ToolTip="点踩此回答">
+                                                                        <Button.Style>
+                                                                            <Style TargetType="Button" BasedOn="{StaticResource TextButtonStyle}">
+                                                                                <Setter Property="Content" Value="👎"/>
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding IsDisliked}" Value="True">
+                                                                                        <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </Button.Style>
+                                                                    </Button>
+
+                                                                    <!-- 沉淀入库按钮 -->
                                                                     <Button Command="{Binding DataContext.IngestMessageCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
                                                                             CommandParameter="{Binding}"
                                                                             FontSize="11"
-                                                                            Padding="8,2"
+                                                                            Padding="6,2"
                                                                             ToolTip="将此回答一键萃取并沉淀为知识库笔记（反哺知识库）">
                                                                         <Button.Style>
                                                                             <Style TargetType="Button" BasedOn="{StaticResource TextButtonStyle}">
@@ -611,10 +849,25 @@
                                                                         </Button.Style>
                                                                     </Button>
                                                                 </StackPanel>
-                                                            </StackPanel>
-                                                        </Border>
-                                                    </Grid>
-                                                </Border>
+
+                                                                <!-- 右侧 Token 统计 -->
+                                                                <Border DockPanel.Dock="Right"
+                                                                        HorizontalAlignment="Right"
+                                                                        VerticalAlignment="Center"
+                                                                        Background="{DynamicResource CardBrush}"
+                                                                        BorderBrush="{DynamicResource BorderBrush}"
+                                                                        BorderThickness="1"
+                                                                        CornerRadius="8"
+                                                                        Padding="6,1.5"
+                                                                        Visibility="{Binding HasTokenStat, Converter={StaticResource BoolToVisConverter}}">
+                                                                    <TextBlock Text="{Binding TokenStatText}"
+                                                                               FontSize="10"
+                                                                               Foreground="{DynamicResource TextTertiaryBrush}"/>
+                                                                </Border>
+                                                            </DockPanel>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </Grid>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>

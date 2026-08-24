@@ -5,6 +5,9 @@ xmlns:local="clr-namespace:DocMind"
 xmlns:helpers="clr-namespace:DocMind.Helpers">
     <Application.Resources>
         <ResourceDictionary>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+            <BooleanToVisibilityConverter x:Key="BoolToVisConverter"/>
+            <BooleanToVisibilityConverter x:Key="B2V"/>
             <helpers:LogLevelToBrushConverter x:Key="LogLevelToBrush"/>
             <helpers:BoolInvertConverter x:Key="BoolInvertConverter"/>
             <helpers:NullToVisibilityConverter x:Key="NullToVis"/>

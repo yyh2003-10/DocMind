@@ -63,7 +63,7 @@ class FileWatcher:
         except ImportError:
             logger.warning(
                 "未安装 watchdog 依赖，文件监控自动摄入未启用；"
-                "如需启用请运行：pip install doc2mind[serve] 或 pip install watchdog"
+                "如需启用请运行：pip install 'doc2mind[server]' 或 pip install watchdog"
             )
             return
 

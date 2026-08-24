@@ -56,6 +56,8 @@ dependencies = [
     # MCP Server
     "mcp==1.26.0",
     "pydantic==2.13.4",
+    # 联网搜索（免 Key，DuckDuckGo）
+    "ddgs>=7.0.0",
     # config.toml 解析：Python 3.11+ 用内置 tomllib，3.10 回退 tomli
     "tomli>=2.0; python_version < '3.11'",
 ]
@@ -80,10 +82,12 @@ ocr = [
 gpu = [
     "fastembed[gpu]==0.8.0",
 ]
-# FastAPI HTTP 服务
+# FastAPI HTTP 服务（watchdog：serve 模式目录监控自动摄入；
+# uvicorn[standard] 不含 watchdog，需显式声明）
 server = [
     "fastapi==0.124.4",
     "uvicorn[standard]==0.48.0",
+    "watchdog==6.0.0",
 ]
 # OpenAI 兼容 API 嵌入
 api = [

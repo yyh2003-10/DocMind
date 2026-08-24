@@ -121,6 +121,7 @@ def _get_ocr(lang: str = "ch", device: str | None = None) -> object:
     except ImportError as e:
         raise LoaderError(
             "PaddleOCR 未安装。请运行：pip install 'doc2mind[ocr]'"
+            "（桌面版用户：设置 → GPU 加速/环境自检 → 增装 OCR 组件，一键安装）"
         ) from e
 
     # 设备检测必须放在 paddleocr import 之后：

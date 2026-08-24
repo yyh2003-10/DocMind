@@ -73,6 +73,28 @@ public partial class ChatView : UserControl
         FocusInput();
     }
 
+    // ── FlowDocumentScrollViewer detach/reattach ─────────────────────────
+    // 每条消息的 DataTemplate 内有一个 FlowDocumentScrollViewer 绑定 RenderedDocument。
+    // WPF 模板重建时同一 FlowDocument 实例可能同时属于两个 Viewer，
+    // 抛出 "文档已属于另一个 FlowDocumentScrollViewer"。
+    // 解决：Unloaded 时清空 Document 释放父引用，Loaded 时重新触发绑定。
+    private void FlowDocViewer_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is FlowDocumentScrollViewer viewer)
+        {
+            var expr = System.Windows.Data.BindingOperations.GetBindingExpression(viewer, FlowDocumentScrollViewer.DocumentProperty);
+            expr?.UpdateTarget();
+        }
+    }
+
+    private void FlowDocViewer_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is FlowDocumentScrollViewer viewer)
+        {
+            viewer.Document = null;
+        }
+    }
+
     /// <summary>回车发送消息（Shift+Enter / Ctrl+Enter 换行）。使用 PreviewKeyDown 避免中文输入法(IME)的回车误触。</summary>
     private void ChatInputBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
@@ -140,5 +162,32 @@ public partial class ChatView : UserControl
             if (result != null) return result;
         }
         return null;
+    }
+
+    /// <summary>折叠/展开消息的「思考过程」区（按钮 DataContext 即消息实例）。</summary>
+    private void ToggleThinking_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is ChatMessage msg)
+        {
+            msg.IsThinkingExpanded = !msg.IsThinkingExpanded;
+        }
+    }
+
+    /// <summary>抽屉内 URL 点击：在浏览器中打开（仅 http/https，防危险协议）。</summary>
+    private void OpenWebSource_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (_vm?.SelectedSource?.Url is not { Length: > 0 } url)
+        {
+            return;
+        }
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri)
+                {
+                    UseShellExecute = true,
+                });
+        }
     }
 }

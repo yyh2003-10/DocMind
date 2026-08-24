@@ -31,6 +31,9 @@ public sealed class TrayService : IDisposable
     /// <summary>状态变化通知。</summary>
     public event EventHandler<string>? StatusChanged;
 
+    /// <summary>窗口隐藏到托盘时触发，供 App 侧弹 Toast 提示用户（避免 TrayService 反向依赖 NotificationService）。</summary>
+    public event EventHandler? HiddenToTray;
+
     public TrayService(Window mainWindow)
     {
         _mainWindow = mainWindow;
@@ -46,6 +49,9 @@ public sealed class TrayService : IDisposable
         menu.Items.Add(new Separator());
         menu.Items.Add(new MenuItem { Header = "退出", Command = new RelayCommand(ExitApp) });
         _icon.ContextMenu = menu;
+        // 单击恢复：用户最小化到托盘后最自然的操作是单击图标。
+        // 旧版只绑了 DoubleClickCommand，单击无反应，用户以为"卡住"。
+        _icon.LeftClickCommand = new RelayCommand(ShowMainWindow);
         _icon.DoubleClickCommand = new RelayCommand(ShowMainWindow);
         _icon.ForceCreate();
     }
@@ -83,13 +89,21 @@ public sealed class TrayService : IDisposable
         }
     }
 
-    public void HideToTray() => _mainWindow.Hide();
+    public void HideToTray()
+    {
+        _mainWindow.Hide();
+        HiddenToTray?.Invoke(this, EventArgs.Empty);
+    }
 
     public void ShowMainWindow()
     {
         _mainWindow.Show();
         _mainWindow.WindowState = WindowState.Normal;
+        // 从托盘恢复时窗口常被其他窗口盖住、Activate() 抢不到前台。
+        // Topmost 瞬时置顶再还原，是 WPF 里可靠的"强制抢前台"手法。
+        _mainWindow.Topmost = true;
         _mainWindow.Activate();
+        _mainWindow.Topmost = false;
         _mainWindow.Focus();
     }
 

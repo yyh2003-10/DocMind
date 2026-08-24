@@ -30,16 +30,18 @@ public partial class QualityViewModel : ViewModelBase
     // ===================== 导航激活自动加载 =====================
 
     private bool _hasLoadedOnce;
+    private bool _refreshSucceeded;
 
-    /// <summary>切换为该页面时触发一次加载（幂等：仅首次自动加载，避免重复请求）。</summary>
+    /// <summary>切换为该页面时触发一次加载；失败不缓存，下一次进入会自动重试。</summary>
     public async Task EnsureLoadedAsync()
     {
         if (_hasLoadedOnce)
         {
             return;
         }
-        _hasLoadedOnce = true;
+        _refreshSucceeded = false;
         await RefreshAsync();
+        _hasLoadedOnce = _refreshSucceeded;
     }
 
     /// <summary>使质量看板缓存失效，下次进入或导入完成后强制刷新数据。</summary>
@@ -148,6 +150,7 @@ public partial class QualityViewModel : ViewModelBase
         }
 
         IsBusy = true;
+        _refreshSucceeded = false;
         StatusMessage = "拉取中…";
         Warnings.Clear();
         Collections.Clear();
@@ -182,6 +185,7 @@ public partial class QualityViewModel : ViewModelBase
             }
 
             StatusMessage = "已更新";
+            _refreshSucceeded = true;
             UpdateChartSeries();
             DebugLog.Info(
                 $"质量报告拉取完成: collections={Stats.Collections.Count} " +

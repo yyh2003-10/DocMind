@@ -66,13 +66,9 @@ public sealed class BackendProcessService : IDisposable
         // MonitorAsync 会把状态灯翻回离线，造成"后端明明在线却显示离线"。
         DebugLog.Debug($"启动后端流程开始: State={State} Url={_settings.BackendUrl}", "Backend");
         
-        // 开发与调试环境下：优先清理历史遗留的旧后端孤儿进程，确保实时加载最新 Python 源码
-        if (_settings.AutoStartBackend && (_settings.BackendUrl.Contains("127.0.0.1") || _settings.BackendUrl.Contains("localhost")))
-        {
-            KillProcessOccupyingPort(ExtractPort());
-            await Task.Delay(200, ct);
-        }
-        else if (await ProbeHealthOnceAsync(ct))
+        // 无论是否自动启动，先探测目标地址上的已有后端。
+        // 不能按端口盲杀进程：端口可能属于用户手动启动的后端或其他本地程序。
+        if (await ProbeHealthOnceAsync(ct))
         {
             DebugLog.Info("健康探测通过：复用 URL 上已有的后端实例，不拉起子进程", "Backend");
             SetState(BackendState.Online);
@@ -130,7 +126,6 @@ public sealed class BackendProcessService : IDisposable
     {
         DebugLog.Info("执行后端强力重启...", "Backend");
         await StopAsync(ct);
-        KillProcessOccupyingPort(ExtractPort());
         await Task.Delay(500, ct);
         return await StartAsync(progress, ct);
     }
@@ -140,7 +135,6 @@ public sealed class BackendProcessService : IDisposable
     {
         if (State == BackendState.Offline && _python == null)
         {
-            KillProcessOccupyingPort(ExtractPort());
             return;
         }
         DebugLog.Info($"停止后端流程开始: State={State} PID={_python?.Id.ToString() ?? "-"}", "Backend");
@@ -748,40 +742,30 @@ public sealed class BackendProcessService : IDisposable
                 // 5s 未退 → 强制 kill
                 DebugLog.Warn($"后端 5s 未优雅退出，强制 kill 进程树 (PID {proc.Id})", "Backend");
                 try { proc.Kill(entireProcessTree: true); } catch { /* ignore */ }
-                try { await proc.WaitForExitAsync(ct); } catch { /* ignore */ }
+                // kill 后等待也必须有上限：ct 可能是 CancellationToken.None，
+                // 一旦 Kill 因权限/句柄问题失败，WaitForExitAsync 会无限挂起，
+                // 直接卡死整个应用退出流程（OnExit 同步等待），导致进程残留后台。
+                using var killCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                killCts.CancelAfter(TimeSpan.FromSeconds(3));
+                try { await proc.WaitForExitAsync(killCts.Token); } catch { /* ignore */ }
             }
         }
         finally
         {
             try { proc.Dispose(); } catch { /* ignore */ }
             _python = null;
-            KillProcessOccupyingPort(ExtractPort());
         }
     }
 
-    /// <summary>强力清理占用指定端口的孤儿进程（彻底杜绝后台僵尸进程残留霸占端口）。</summary>
+    /// <summary>
+    /// 兼容旧调用方的端口清理入口。当前不执行任何进程终止，避免误杀无关程序；
+    /// 后端生命周期只由本服务持有的子进程 PID 管理。
+    /// </summary>
+    [Obsolete("Do not kill arbitrary processes by port; manage the owned child process instead.")]
     public static void KillProcessOccupyingPort(int port)
     {
-        try
-        {
-            if (OperatingSystem.IsWindows())
-            {
-                var cmd = $"/c for /f \"tokens=5\" %a in ('netstat -aon ^| findstr \":{port} \" ^| findstr \"LISTENING\"') do taskkill /f /pid %a";
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "cmd.exe",
-                    Arguments = cmd,
-                    CreateNoWindow = true,
-                    UseShellExecute = false,
-                };
-                using var p = Process.Start(psi);
-                p?.WaitForExit(3000);
-            }
-        }
-        catch (Exception ex)
-        {
-            DebugLog.Warn($"尝试释放端口 {port} 异常: {ex.Message}", "Backend");
-        }
+        // 保留 API 以兼容旧版本调用方，但不再按端口终止任意进程。
+        DebugLog.Warn($"已忽略按端口清理请求（端口 {port}）：为避免误杀其他程序，改由受管子进程生命周期负责清理。", "Backend");
     }
 
     private void SetState(BackendState s)
