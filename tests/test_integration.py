@@ -153,6 +153,39 @@ class TestHTTPChatEndpoint:
         resp = tc.post("/v1/chat", json={"query": "q", "collections": "docs-a"})
         assert resp.status_code == 422
 
+    def test_chat_null_attachments_accepted(self, client_with_app) -> None:
+        """WPF 客户端无附件时发送 attachments=null，后端必须接受（不应 422）。
+
+        此前 attachments 声明为不可空 list[str]，收到 null 触发 pydantic 422
+        "Input should be a valid list"，导致对话页每次发送都报错。
+        """
+        tc, _ = client_with_app
+        resp = tc.post("/v1/chat", json={
+            "query": "架构是什么？",
+            "attachments": None,
+        })
+        assert resp.status_code == 200
+        assert resp.json()["answer"] == "根据文档，DocMind 采用分层架构。"
+
+    def test_chat_wpf_payload_with_null_fields_accepted(self, client_with_app) -> None:
+        """WPF 对话页实际载荷（多选集合 + 模型/服务商/附件全 null）必须通过校验。"""
+        tc, _ = client_with_app
+        resp = tc.post("/v1/chat", json={
+            "query": "架构是什么？",
+            "collection": None,
+            "collections": ["default"],
+            "top_k": None,
+            "chat_id": None,
+            "model": None,
+            "providerConfig": None,
+            "enableWebSearch": False,
+            "entityContext": None,
+            "persona": "office",
+            "attachments": None,
+        })
+        assert resp.status_code == 200
+        assert resp.json()["answer"] == "根据文档，DocMind 采用分层架构。"
+
     def test_chat_stream_returns_sse(self, client_with_app) -> None:
         """流式对话返回 SSE 格式，包含 token 行和终帧。"""
         tc, mock_llm = client_with_app
@@ -165,8 +198,18 @@ class TestHTTPChatEndpoint:
             assert len(events) >= 2
             import json
             first = json.loads(events[0])
-            # 可能是 token 行或 error 行
-            assert "token" in first or "error" in first
+            # 可能是 token 行、status 行或 error 行
+            assert "token" in first or "error" in first or first.get("type") == "status"
+
+    def test_chat_stream_null_attachments_accepted(self, client_with_app) -> None:
+        """流式端点同样接受 attachments=null（WPF 对话页走的就是 /v1/chat/stream）。"""
+        tc, _ = client_with_app
+        with tc.stream("POST", "/v1/chat/stream", json={
+            "query": "架构是什么？",
+            "attachments": None,
+        }) as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
 
 
 # ======================================================================
@@ -257,7 +300,7 @@ class TestHTTPConfigLLMFields:
         assert data["llm_base_url"] is None
         assert data["llm_model"] == ""
         assert data["llm_temperature"] == 0.7
-        assert data["llm_max_tokens"] == 2048
+        assert data["llm_max_tokens"] == 8192
         assert data["rag_top_k"] == 5
         assert data["rag_min_score"] == 0.0
         assert data["llm_api_key_configured"] is False

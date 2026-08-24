@@ -36,7 +36,7 @@ class OllamaClient(LLMClient):
         model: str = "llama3.2",
         host: str | None = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
         timeout: float = 120.0,
     ) -> None:
         self._model = model or "llama3.2"

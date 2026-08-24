@@ -108,7 +108,7 @@ fake ??= new FakeDoc2kbApiService();
         Assert.Null(vm.LlmBaseUrl);
         Assert.Equal("", vm.LlmModel);
         Assert.Equal(0.7, vm.LlmTemperature);
-        Assert.Equal(2048, vm.LlmMaxTokens);
+        Assert.Equal(8192, vm.LlmMaxTokens);
         Assert.Equal(5, vm.RagTopK);
     }
 
@@ -734,7 +734,7 @@ fake ??= new FakeDoc2kbApiService();
         await vm.RefreshLlmModelsCommand.ExecuteAsync(null);
 
         Assert.Equal(3, vm.LlmModels.Count);
-        Assert.Contains("qwen2.5:7b", vm.LlmModels);
+        Assert.Contains("qwen2.5:7b", vm.LlmModels.Select(i => i.Name));
         // 请求带 UI 当前输入值（未保存也能拉）
         Assert.Equal("ollama", captured!.Provider);
         Assert.Contains("3 个模型", vm.StatusMessage);
@@ -901,7 +901,7 @@ fake ??= new FakeDoc2kbApiService();
         Assert.Equal("openai", vm.LlmProvider);
         Assert.Equal("https://api.deepseek.com/v1", vm.LlmBaseUrl);
         Assert.Equal("deepseek-chat", vm.LlmModel);
-        Assert.Contains("deepseek-chat", vm.LlmModels);
+        Assert.Contains("deepseek-chat", vm.LlmModels.Select(i => i.Name));
         Assert.Contains("DeepSeek", vm.StatusMessage);
     }
 
@@ -916,7 +916,7 @@ fake ??= new FakeDoc2kbApiService();
         Assert.Equal("ollama", vm.LlmProvider);
         Assert.Equal("http://localhost:11434", vm.LlmBaseUrl);
         Assert.Equal("qwen2.5:7b", vm.LlmModel);
-        Assert.Contains("qwen2.5:7b", vm.LlmModels);
+        Assert.Contains("qwen2.5:7b", vm.LlmModels.Select(i => i.Name));
     }
 
     [Fact]
@@ -947,5 +947,549 @@ fake ??= new FakeDoc2kbApiService();
         Assert.Equal("95 / 100", vm.DoctorScoreText);
         Assert.Equal(2, vm.DoctorReport.Checks.Count);
         Assert.Contains("95", vm.StatusMessage);
+    }
+
+    // ======================================================================
+    // AI 提供商档案：保存/应用/删除/兼容
+    // ======================================================================
+
+    [Fact]
+    public void Constructor_LoadsSavedProfiles_AndSelectsActive()
+    {
+        var active = new LlmProfile { Id = "p1", Name = "DeepSeek", Provider = "openai" };
+        var other = new LlmProfile { Id = "p2", Name = "Ollama 本地", Provider = "ollama" };
+        var settings = new AppSettings
+        {
+            LlmProfiles = new List<LlmProfile> { active, other },
+            ActiveProfileId = "p1",
+        };
+
+        var vm = CreateVm(settings);
+
+        Assert.Equal(2, vm.SavedProfiles.Count);
+        Assert.Equal("p1", vm.SelectedProfile?.Id);
+        Assert.True(vm.HasSavedProfiles);
+    }
+
+    [Fact]
+    public void Constructor_NoProfiles_EmptyState()
+    {
+        var vm = CreateVm(new AppSettings());
+        Assert.Empty(vm.SavedProfiles);
+        Assert.False(vm.HasSavedProfiles);
+        Assert.Null(vm.SelectedProfile);
+    }
+
+    [Fact]
+    public void SaveProfile_CreatesNewProfile_WithFormFields()
+    {
+        var settings = new AppSettings();
+        var vm = CreateVm(settings);
+
+        vm.LlmProvider = "openai";
+        vm.LlmApiKey = "sk-profile-key";
+        vm.LlmBaseUrl = "https://api.deepseek.com/v1";
+        vm.LlmModel = "deepseek-chat";
+        vm.LlmTemperature = 0.3;
+        vm.LlmMaxTokens = 1024;
+        vm.ProfileNameInput = "工作用 DeepSeek";
+
+        vm.SaveProfileCommand.Execute(null);
+
+        var profile = Assert.Single(vm.SavedProfiles);
+        Assert.Equal("工作用 DeepSeek", profile.Name);
+        Assert.Equal("openai", profile.Provider);
+        Assert.Equal("sk-profile-key", profile.ApiKey);
+        Assert.Equal("https://api.deepseek.com/v1", profile.BaseUrl);
+        Assert.Equal("deepseek-chat", profile.Model);
+        Assert.Equal(0.3, profile.Temperature);
+        Assert.Equal(1024, profile.MaxTokens);
+        // 已同步回 AppSettings（供落盘）
+        Assert.Single(settings.LlmProfiles);
+        Assert.Equal("工作用 DeepSeek", settings.LlmProfiles[0].Name);
+        // 保存后名称输入清空，选中新档案
+        Assert.Equal("", vm.ProfileNameInput);
+        Assert.Equal("工作用 DeepSeek", vm.SelectedProfile?.Name);
+    }
+
+    [Fact]
+    public void SaveProfile_SameName_OverwritesExisting()
+    {
+        var existing = new LlmProfile { Id = "p1", Name = "DeepSeek", Provider = "openai", Model = "deepseek-chat" };
+        var settings = new AppSettings { LlmProfiles = new List<LlmProfile> { existing } };
+        var vm = CreateVm(settings);
+
+        vm.LlmProvider = "openai";
+        vm.LlmModel = "deepseek-reasoner";
+        vm.ProfileNameInput = "DeepSeek"; // 同名 → 覆盖更新
+
+        vm.SaveProfileCommand.Execute(null);
+
+        Assert.Single(vm.SavedProfiles);
+        var updated = vm.SavedProfiles[0];
+        Assert.Equal("p1", updated.Id); // Id 保持不变
+        Assert.Equal("deepseek-reasoner", updated.Model);
+    }
+
+    [Fact]
+    public void SaveProfile_NoName_NoSelection_ShowsWarning()
+    {
+        var vm = CreateVm(new AppSettings());
+        vm.LlmProvider = "openai";
+
+        vm.SaveProfileCommand.Execute(null);
+
+        Assert.Empty(vm.SavedProfiles);
+        Assert.Contains("名称", vm.StatusMessage);
+    }
+
+    [Fact]
+    public void SaveProfile_ProviderNone_Rejected()
+    {
+        var vm = CreateVm(new AppSettings());
+        vm.ProfileNameInput = "未选提供商";
+
+        vm.SaveProfileCommand.Execute(null);
+
+        Assert.Empty(vm.SavedProfiles);
+        Assert.Contains("接口类型", vm.StatusMessage);
+    }
+
+    [Fact]
+    public async Task ApplyProfile_FillsForm_AndPushesToBackend()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(new BackendConfig { Notice = null });
+        };
+
+        var profile = new LlmProfile
+        {
+            Id = "p1",
+            Name = "硅基流动",
+            Provider = "openai",
+            BaseUrl = "https://api.siliconflow.cn/v1",
+            Model = "deepseek-ai/DeepSeek-V3",
+            ApiKey = "sk-profile-2",
+            Temperature = 0.5,
+            MaxTokens = 4096,
+        };
+        var settings = new AppSettings { LlmProfiles = new List<LlmProfile> { profile } };
+        var vm = CreateVm(settings, fake);
+        vm.SelectedProfile = vm.SavedProfiles[0];
+
+        await vm.ApplyProfileCommand.ExecuteAsync(null);
+
+        // 表单回填
+        Assert.Equal("openai", vm.LlmProvider);
+        Assert.Equal("https://api.siliconflow.cn/v1", vm.LlmBaseUrl);
+        Assert.Equal("deepseek-ai/DeepSeek-V3", vm.LlmModel);
+        Assert.Equal("sk-profile-2", vm.LlmApiKey);
+        Assert.Equal(0.5, vm.LlmTemperature);
+        Assert.Equal(4096, vm.LlmMaxTokens);
+        // 推送 payload 断言（含 key 与温度/token 覆盖）
+        Assert.NotNull(captured);
+        Assert.Equal("openai", captured.LlmProvider);
+        Assert.Equal("sk-profile-2", captured.LlmApiKey);
+        Assert.Equal("https://api.siliconflow.cn/v1", captured.LlmBaseUrl);
+        Assert.Equal("deepseek-ai/DeepSeek-V3", captured.LlmModel);
+        Assert.Equal(0.5, captured.LlmTemperature);
+        Assert.Equal(4096, captured.LlmMaxTokens);
+        // 激活档案已记录
+        Assert.Equal("p1", settings.ActiveProfileId);
+        // 保存后 dirty 重置
+        Assert.False(vm.IsDirty);
+    }
+
+    [Fact]
+    public void DeleteProfile_RemovesAndClearsActive()
+    {
+        var active = new LlmProfile { Id = "p1", Name = "DeepSeek", Provider = "openai" };
+        var settings = new AppSettings
+        {
+            LlmProfiles = new List<LlmProfile> { active },
+            ActiveProfileId = "p1",
+        };
+        var vm = CreateVm(settings);
+        vm.DeleteConfirm = _ => true; // 测试绕过确认对话框
+        vm.SelectedProfile = vm.SavedProfiles[0];
+
+        vm.DeleteProfileCommand.Execute(null);
+
+        Assert.Empty(vm.SavedProfiles);
+        Assert.False(vm.HasSavedProfiles);
+        Assert.Null(vm.SelectedProfile);
+        Assert.Null(settings.ActiveProfileId);
+        Assert.Empty(settings.LlmProfiles);
+    }
+
+    [Fact]
+    public void DeleteProfile_Declined_KeepsProfile()
+    {
+        var profile = new LlmProfile { Id = "p1", Name = "DeepSeek", Provider = "openai" };
+        var settings = new AppSettings { LlmProfiles = new List<LlmProfile> { profile } };
+        var vm = CreateVm(settings);
+        vm.DeleteConfirm = _ => false; // 用户取消
+        vm.SelectedProfile = vm.SavedProfiles[0];
+
+        vm.DeleteProfileCommand.Execute(null);
+
+        Assert.Single(vm.SavedProfiles);
+        Assert.Single(settings.LlmProfiles);
+    }
+
+    [Fact]
+    public async Task SaveProfile_ApiKeyPersistsEncrypted_AndReloadsPlaintext()
+    {
+        // 落盘隔离到 temp 目录（SettingsFileFixture 已保证）
+        var settings = new AppSettings();
+        var vm = CreateVm(settings);
+        vm.LlmProvider = "openai";
+        vm.LlmApiKey = "sk-secret-encrypt";
+        vm.LlmModel = "deepseek-chat";
+        vm.ProfileNameInput = "加密档案";
+
+        vm.SaveProfileCommand.Execute(null);
+        vm.SaveCommand.Execute(null); // 触发 AppSettings.Save() 落盘
+
+        // 内存仍持明文（运行态语义）
+        Assert.Equal("sk-secret-encrypt", settings.LlmProfiles[0].ApiKey);
+
+        // 磁盘上的 appsettings.json 中 ApiKey 应为 DPAPI 密文（非明文）
+        var onDisk = System.IO.File.ReadAllText(AppSettings.ConfigPath);
+        Assert.Contains("dpapi:v1:", onDisk);
+        Assert.DoesNotContain("sk-secret-encrypt", onDisk);
+
+        // 模拟 App.LoadSettings 载入路径：反序列化后对密文 Unprotect 还原明文
+        var reloaded = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(
+            onDisk,
+            new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        Assert.NotNull(reloaded);
+        var encrypted = Assert.Single(reloaded!.LlmProfiles).ApiKey;
+        Assert.StartsWith("dpapi:v1:", encrypted);
+        Assert.Equal("sk-secret-encrypt", SecretProtector.Unprotect(encrypted));
+    }
+
+    [Fact]
+    public async Task GithubToken_PersistsEncrypted_AndReloadsPlaintext()
+    {
+        // 落盘隔离到 temp 目录（SettingsFileFixture 已保证）
+        var settings = new AppSettings();
+        var vm = CreateVm(settings);
+        vm.GithubToken = "ghp_每用户自己的令牌";
+
+        vm.SaveCommand.Execute(null); // 触发 AppSettings.Save() 落盘
+
+        // 内存单例持明文（运行态语义，随对话请求发送）
+        Assert.Equal("ghp_每用户自己的令牌", settings.GithubToken);
+        Assert.True(vm.HasSavedGithubToken);
+
+        // 磁盘上应为 DPAPI 密文（非明文），绝不把令牌明文落盘
+        var onDisk = System.IO.File.ReadAllText(AppSettings.ConfigPath);
+        Assert.Contains("dpapi:v1:", onDisk);
+        Assert.DoesNotContain("ghp_每用户自己的令牌", onDisk);
+
+        // 模拟 App.LoadSettings 载入路径：反序列化后 Unprotect 还原明文
+        var reloaded = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(
+            onDisk,
+            new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        Assert.NotNull(reloaded);
+        var encrypted = reloaded!.GithubToken;
+        Assert.StartsWith("dpapi:v1:", encrypted);
+        Assert.Equal("ghp_每用户自己的令牌", SecretProtector.Unprotect(encrypted));
+    }
+
+    [Fact]
+    public async Task GithubToken_BlankSave_KeepsOriginal()
+    {
+        var settings = new AppSettings { GithubToken = "ghp_原值" };
+        var vm = CreateVm(settings);
+
+        // 输入框留空保存 = 保留原值（与 LLM API Key 同语义，避免误清）
+        vm.GithubToken = null;
+        vm.SaveCommand.Execute(null);
+
+        Assert.Equal("ghp_原值", settings.GithubToken);
+    }
+
+    [Fact]
+    public async Task ClearGithubToken_RemovesOnSave()
+    {
+        var settings = new AppSettings { GithubToken = "ghp_原值" };
+        var vm = CreateVm(settings);
+        vm.ClearGithubTokenCommand.Execute(null);
+
+        Assert.True(vm.IsDirty);
+        vm.SaveCommand.Execute(null);
+
+        Assert.Null(settings.GithubToken);
+        Assert.False(vm.HasSavedGithubToken);
+    }
+
+    [Fact]
+    public void ApplyProfile_KeyDecryptFailed_ShowsWarning()
+    {
+        var profile = new LlmProfile
+        {
+            Id = "p1",
+            Name = "坏 Key 档案",
+            Provider = "openai",
+            ApiKey = "sk-still-usable",
+            KeyDecryptFailed = true,
+        };
+        var settings = new AppSettings { LlmProfiles = new List<LlmProfile> { profile } };
+        var vm = CreateVm(settings);
+        vm.SelectedProfile = vm.SavedProfiles[0];
+
+        vm.ApplyProfileCommand.Execute(null);
+
+        Assert.Contains("无法解密", vm.StatusMessage);
+    }
+
+    // ======================================================================
+    // 官方服务商预设目录（Anthropic / Gemini 官方直连）
+    // ======================================================================
+
+    [Fact]
+    public void PresetCatalog_ContainsAnthropicOfficial()
+    {
+        var preset = LlmPresetCatalog.All.FirstOrDefault(p => p.Id == "anthropic");
+        Assert.NotNull(preset);
+        Assert.Equal("anthropic", preset!.Provider);
+        Assert.Equal("https://api.anthropic.com", preset.BaseUrl);
+        Assert.False(string.IsNullOrWhiteSpace(preset.DefaultModel));
+        Assert.Contains(preset.DefaultModel, preset.RecommendedModels);
+        Assert.True(preset.RequiresApiKey);
+    }
+
+    [Fact]
+    public void PresetCatalog_ContainsGeminiOfficial()
+    {
+        var preset = LlmPresetCatalog.All.FirstOrDefault(p => p.Id == "gemini");
+        Assert.NotNull(preset);
+        Assert.Equal("gemini", preset!.Provider);
+        Assert.Equal("https://generativelanguage.googleapis.com", preset.BaseUrl);
+        Assert.False(string.IsNullOrWhiteSpace(preset.DefaultModel));
+        Assert.Contains(preset.DefaultModel, preset.RecommendedModels);
+        Assert.True(preset.RequiresApiKey);
+    }
+
+    [Fact]
+    public void SelectedPreset_AppliesAnthropicOfficial()
+    {
+        var vm = CreateVm(new AppSettings());
+        var preset = vm.AvailablePresets.First(p => p.Id == "anthropic");
+
+        vm.SelectedPreset = preset;
+
+        Assert.Equal("anthropic", vm.LlmProvider);
+        Assert.Equal("https://api.anthropic.com", vm.LlmBaseUrl);
+        Assert.Equal(preset.DefaultModel, vm.LlmModel);
+        Assert.Contains(preset.DefaultModel, vm.LlmModels.Select(i => i.Name));
+    }
+
+    [Fact]
+    public void SelectedPreset_AppliesGeminiOfficial()
+    {
+        var vm = CreateVm(new AppSettings());
+        var preset = vm.AvailablePresets.First(p => p.Id == "gemini");
+
+        vm.SelectedPreset = preset;
+
+        Assert.Equal("gemini", vm.LlmProvider);
+        Assert.Equal("https://generativelanguage.googleapis.com", vm.LlmBaseUrl);
+        Assert.Equal(preset.DefaultModel, vm.LlmModel);
+        Assert.Contains(preset.DefaultModel, vm.LlmModels.Select(i => i.Name));
+    }
+
+    // ======================================================================
+    // 档案一键体检（CheckAllProfiles）
+    // ======================================================================
+
+    [Fact]
+    public async Task CheckAllProfiles_CollectsPerProfileResults()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnLlmTest = (req, _) => Task.FromResult(new LlmTestResult
+        {
+            Ok = req.Provider == "openai",
+            Provider = req.Provider ?? "none",
+            Model = req.Model ?? "",
+            ElapsedMs = 120,
+            Error = req.Provider == "openai" ? null : "API Key 无效或无权限",
+        });
+
+        var settings = new AppSettings
+        {
+            LlmProfiles = new List<LlmProfile>
+            {
+                new() { Id = "p1", Name = "DeepSeek", Provider = "openai", BaseUrl = "https://api.deepseek.com/v1", Model = "deepseek-chat", ApiKey = "sk-1" },
+                new() { Id = "p2", Name = "Claude 官方", Provider = "anthropic", BaseUrl = "https://api.anthropic.com", Model = "claude-sonnet-4-5", ApiKey = "sk-2" },
+            },
+        };
+        var vm = CreateVm(settings, fake);
+
+        await vm.CheckAllProfilesCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, vm.ProfileCheckResults.Count);
+        Assert.True(vm.HasProfileCheckResults);
+        var ok = vm.ProfileCheckResults.First(r => r.Name == "DeepSeek");
+        Assert.True(ok.Ok);
+        Assert.Null(ok.ErrorDetail);
+        Assert.Contains("可用", ok.StatusText);
+        var bad = vm.ProfileCheckResults.First(r => r.Name == "Claude 官方");
+        Assert.False(bad.Ok);
+        Assert.Contains("API Key", bad.ErrorDetail);
+        Assert.Contains("1/2", vm.StatusMessage);
+    }
+
+    [Fact]
+    public async Task CheckAllProfiles_KeyDecryptFailed_MarksWithoutCallingBackend()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnLlmTest = (_, _) => Task.FromResult(new LlmTestResult { Ok = true, Provider = "openai" });
+        var profile = new LlmProfile { Id = "p1", Name = "坏 Key", Provider = "openai", ApiKey = "sk-x", KeyDecryptFailed = true };
+        var settings = new AppSettings { LlmProfiles = new List<LlmProfile> { profile } };
+        var vm = CreateVm(settings, fake);
+
+        await vm.CheckAllProfilesCommand.ExecuteAsync(null);
+
+        var result = Assert.Single(vm.ProfileCheckResults);
+        Assert.False(result.Ok);
+        Assert.Contains("无法解密", result.ErrorDetail);
+        Assert.Contains("0/1", vm.StatusMessage);
+    }
+
+    [Fact]
+    public async Task CheckAllProfiles_NoProfiles_ShowsHintAndDoesNotCallBackend()
+    {
+        var fake = new FakeDoc2kbApiService();
+        var called = false;
+        fake.OnLlmTest = (_, _) => { called = true; return Task.FromResult(new LlmTestResult { Ok = true, Provider = "openai" }); };
+        var vm = CreateVm(new AppSettings(), fake);
+
+        await vm.CheckAllProfilesCommand.ExecuteAsync(null);
+
+        Assert.False(called);
+        Assert.Empty(vm.ProfileCheckResults);
+        Assert.Contains("暂无档案", vm.StatusMessage);
+    }
+
+    // ======================================================================
+    // 服务商 = 档案 新语义：模型列表 / 默认模型 / 下拉合并 / 模型增删
+    // ======================================================================
+
+    [Fact]
+    public void SaveProfile_SavesProviderModelList_AndDefaultModel()
+    {
+        var settings = new AppSettings();
+        var vm = CreateVm(settings);
+
+        vm.LlmProvider = "openai";
+        vm.LlmApiKey = "sk-models";
+        vm.LlmBaseUrl = "https://api.deepseek.com/v1";
+        // 模型候选 = 该服务商全部模型
+        vm.LlmModels.Clear();
+        vm.LlmModels.Add(new LlmModelItem("deepseek-chat"));
+        vm.LlmModels.Add(new LlmModelItem("deepseek-reasoner"));
+        // 默认模型 = 当前表单选中
+        vm.LlmModel = "deepseek-chat";
+        vm.ProfileNameInput = "DeepSeek 全家桶";
+
+        vm.SaveProfileCommand.Execute(null);
+
+        var provider = Assert.Single(vm.SavedProfiles);
+        Assert.Equal("DeepSeek 全家桶", provider.Name);
+        Assert.Equal("deepseek-chat", provider.Model); // 默认模型
+        Assert.Equal(2, provider.Models.Count);
+        Assert.Contains("deepseek-chat", provider.Models);
+        Assert.Contains("deepseek-reasoner", provider.Models);
+        // 已同步回 AppSettings（供落盘）
+        Assert.Equal(2, settings.LlmProfiles[0].Models.Count);
+    }
+
+    [Fact]
+    public async Task ApplyProfile_LoadsProviderModelList_IntoForm()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (_, _) => Task.FromResult(new BackendConfig { Notice = null });
+
+        var profile = new LlmProfile
+        {
+            Id = "p1",
+            Name = "DeepSeek",
+            Provider = "openai",
+            BaseUrl = "https://api.deepseek.com/v1",
+            Model = "deepseek-chat", // 默认模型
+            Models = new List<string> { "deepseek-chat", "deepseek-reasoner", "deepseek-coder" },
+            ApiKey = "sk-p",
+        };
+        var settings = new AppSettings { LlmProfiles = new List<LlmProfile> { profile } };
+        var vm = CreateVm(settings, fake);
+        vm.SelectedProfile = vm.SavedProfiles[0];
+
+        await vm.ApplyProfileCommand.ExecuteAsync(null);
+
+        // 模型下拉候选 = 服务商全部模型
+        Assert.Equal(3, vm.LlmModels.Count);
+        Assert.Contains("deepseek-chat", vm.LlmModels.Select(i => i.Name));
+        Assert.Contains("deepseek-reasoner", vm.LlmModels.Select(i => i.Name));
+        Assert.Contains("deepseek-coder", vm.LlmModels.Select(i => i.Name));
+        // 默认模型已回填
+        Assert.Equal("deepseek-chat", vm.LlmModel);
+    }
+
+    [Fact]
+    public void ProviderOptions_MergeBuiltInPresets_AndCustomProviders()
+    {
+        var settings = new AppSettings
+        {
+            LlmProfiles = new List<LlmProfile>
+            {
+                new() { Id = "p1", Name = "我的 DeepSeek", Provider = "openai" },
+            },
+        };
+        var vm = CreateVm(settings);
+
+        // 合并下拉 = 内置预设 + 自定义服务商
+        Assert.Equal(LlmPresetCatalog.All.Count + 1, vm.ProviderOptions.Count);
+        Assert.Contains(vm.ProviderOptions, o => o.IsBuiltIn && o.Preset?.Id == "deepseek");
+        Assert.Contains(vm.ProviderOptions, o => o.IsCustom && o.Profile?.Id == "p1");
+        // 默认选中：有 ActiveProfileId 时优先；无则首个
+        Assert.NotNull(vm.SelectedProviderOption);
+    }
+
+    [Fact]
+    public void AddModelToProvider_AddsToCandidateList_AndDeduplicates()
+    {
+        var vm = CreateVm(new AppSettings());
+        vm.LlmModels.Add(new LlmModelItem("deepseek-chat"));
+        vm.LlmModel = "deepseek-coder";
+
+        vm.AddModelToProviderCommand.Execute(null);
+
+        Assert.Contains("deepseek-coder", vm.LlmModels.Select(i => i.Name));
+
+        // 重复添加不生效
+        vm.AddModelToProviderCommand.Execute(null);
+        Assert.Equal(2, vm.LlmModels.Count);
+    }
+
+    [Fact]
+    public void RemoveModelFromProvider_RemovesSelectedCandidate()
+    {
+        var vm = CreateVm(new AppSettings());
+        vm.LlmModels.Add(new LlmModelItem("deepseek-chat"));
+        vm.LlmModels.Add(new LlmModelItem("deepseek-reasoner"));
+        vm.LlmModel = "deepseek-chat";
+        vm.SelectedModelCandidate = vm.LlmModels.First(i => i.Name == "deepseek-chat");
+
+        vm.RemoveModelFromProviderCommand.Execute(null);
+
+        Assert.Single(vm.LlmModels);
+        Assert.DoesNotContain("deepseek-chat", vm.LlmModels.Select(i => i.Name));
     }
 }

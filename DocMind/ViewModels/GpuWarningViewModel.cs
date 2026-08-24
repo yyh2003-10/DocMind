@@ -201,6 +201,7 @@ public partial class GpuWarningViewModel : ViewModelBase
         "cuda13" => "CUDA 13（需 cu13 本地 wheel）",
         "directml" => "DirectML（通用 GPU，AMD / Intel / NVIDIA）",
         "paddle-ocr-gpu" => "PaddlePaddle OCR GPU 加速",
+        "ocr-cpu" => "OCR 文字识别 CPU 版（所有设备可用）",
         "cpu" => "当前已是 CPU 模式，无可用 GPU 加速方案",
         _ => ""
     };
@@ -217,7 +218,11 @@ public partial class GpuWarningViewModel : ViewModelBase
                 paths.Add(new("cuda13", "CUDA 13", "需本地 cu13 wheel，仅限特定驱动版本"));
             }
             paths.Add(new("directml", "DirectML", "通用 GPU（AMD / Intel / NVIDIA），无需 CUDA"));
-            paths.Add(new("paddle-ocr-gpu", "PaddlePaddle OCR GPU", "OCR 文字识别加速，需 CUDA 运行时"));
+            // OCR 扩展：CPU 版对所有设备可用（扫描 PDF / 图片识别的必需组件），
+            // GPU 版仅在有 NVIDIA 独显时提供
+            paths.Add(new("ocr-cpu", "OCR 文字识别（CPU）", "扫描件/图片文字识别，无需独显，所有设备可用"));
+            if (hasNvidia)
+                paths.Add(new("paddle-ocr-gpu", "OCR 文字识别（GPU 加速）", "PaddlePaddle GPU 版，大批量扫描件识别提速"));
             return paths;
         }
     }
@@ -358,28 +363,12 @@ public partial class GpuWarningViewModel : ViewModelBase
 
         try
         {
-            await _apiService.InstallGpuAsync(
-                path,
-                onLog: line =>
-                {
-                    _logBuffer.AppendLine(line);
-                    // 回调来自 SSE 后台线程，必须 dispatcher 回 UI 线程更新绑定
-                    Application.Current?.Dispatcher.Invoke(() =>
-                    {
-                        InstallLog = _logBuffer.ToString();
-                    });
-                },
-                onDone: success =>
-                {
-                    _installSucceeded = success;
-                    Application.Current?.Dispatcher.Invoke(() =>
-                    {
-                        StatusMessage = success
-                            ? "安装完成，请点击「重启后端」生效"
-                            : "安装失败，请查看上方日志排查";
-                        OnPropertyChanged(nameof(CanRestart));
-                    });
-                });
+            // OCR 扩展路径走专用安装端点（安装内容相同，但语义与日志归类正确）
+            var isOcrPath = path is "ocr-cpu" or "paddle-ocr-gpu";
+            var installTask = isOcrPath
+                ? _apiService.InstallOcrAsync(path, onLog: OnInstallLog, onDone: OnInstallDone, ct: default)
+                : _apiService.InstallGpuAsync(path, onLog: OnInstallLog, onDone: OnInstallDone, ct: default);
+            await installTask;
         }
         catch (OperationCanceledException)
         {
@@ -390,12 +379,35 @@ public partial class GpuWarningViewModel : ViewModelBase
             StatusMessage = $"安装异常: {ex.Message}";
             _logBuffer.AppendLine($"[异常] {ex.Message}");
             InstallLog = _logBuffer.ToString();
-            _notifications.Error($"GPU 安装异常：{ex.Message}", "GPU 加速");
+            _notifications.Error($"安装异常：{ex.Message}", "环境自检");
         }
         finally
         {
             IsInstalling = false;
         }
+    }
+
+    /// <summary>SSE 安装日志回调（后台线程 → Dispatcher 回 UI 线程）。</summary>
+    private void OnInstallLog(string line)
+    {
+        _logBuffer.AppendLine(line);
+        Application.Current?.Dispatcher.Invoke(() =>
+        {
+            InstallLog = _logBuffer.ToString();
+        });
+    }
+
+    /// <summary>SSE 安装完成回调（后台线程 → Dispatcher 回 UI 线程）。</summary>
+    private void OnInstallDone(bool success)
+    {
+        _installSucceeded = success;
+        Application.Current?.Dispatcher.Invoke(() =>
+        {
+            StatusMessage = success
+                ? "安装完成，请点击「重启后端」生效"
+                : "安装失败，请查看上方日志排查";
+            OnPropertyChanged(nameof(CanRestart));
+        });
     }
 
     [RelayCommand(CanExecute = nameof(CanRestart))]

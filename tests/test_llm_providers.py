@@ -361,6 +361,161 @@ class TestListModels:
         monkeypatch.setattr(type(client._client.models), "list", lambda *a, **kw: _Page(), raising=False)
         assert client.list_models() == ["deepseek-chat", "deepseek-reasoner"]
 
+    def test_openai_stream_exposes_reasoning_chain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """OpenAI 兼容推理模型：reasoning_content 透出为 thinking 帧，正文不受影响。"""
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+
+        def chunk(delta):
+            return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+        frames = [
+            chunk(SimpleNamespace(reasoning_content="用户想知道B3规格", content=None)),
+            chunk(SimpleNamespace(reasoning_content="先查手册再回答", content=None)),
+            chunk(SimpleNamespace(reasoning_content="", content="ASDA-B3")),
+            chunk(SimpleNamespace(reasoning_content=None, content="最高转速3000rpm")),
+        ]
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create",
+            lambda *a, **kw: frames, raising=False,
+        )
+
+        tagged = list(client.stream_chat_tagged([{"role": "user", "content": "q"}], timeout=5))
+        assert tagged == [
+            ("thinking", "用户想知道B3规格"),
+            ("thinking", "先查手册再回答"),
+            ("content", "ASDA-B3"),
+            ("content", "最高转速3000rpm"),
+        ]
+        # 兼容入口 stream_chat 只吐正文，行为与旧实现一致
+        assert list(client.stream_chat([{"role": "user", "content": "q"}], timeout=5)) == [
+            "ASDA-B3", "最高转速3000rpm"
+        ]
+
+    def test_openai_stream_resumes_after_midstream_disconnect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """流中途断连：断点续传而非整段重来。
+
+        第一次流产出部分正文后连接被网关掐断（incomplete chunked read）；
+        重试时把已产出正文作为 assistant 上下文，模型只补全后半段。
+        """
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        import httpx
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+
+        def chunk(content: str):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(reasoning_content=None, content=content),
+            )])
+
+        calls: list = []
+
+        def fake_create(*a: object, **kw: object):
+            calls.append(kw.get("messages"))
+            if len(calls) == 1:
+                # 第一次：先产出「前半段」，再在流中途抛瞬时网络错误
+                def failing_stream():
+                    yield chunk("前半段")
+                    raise httpx.RemoteProtocolError(
+                        "peer closed connection without sending complete message body "
+                        "(incomplete chunked read)"
+                    )
+                return failing_stream()
+            return [chunk("，后半段")]
+
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create", fake_create, raising=False,
+        )
+        monkeypatch.setattr("time.sleep", lambda s: None)
+        monkeypatch.setattr("random.uniform", lambda a, b: 0.0)
+
+        tagged = list(client.stream_chat_tagged([{"role": "user", "content": "q"}], timeout=5))
+        # 断点续传：已产出正文 + 补全的后半段，无重复
+        assert tagged == [("content", "前半段"), ("content", "，后半段")]
+        # 第二次调用携带续传上下文：assistant 已产出正文 + user 续写指令
+        assert len(calls) == 2
+        resume_msgs = calls[1]
+        assert resume_msgs[-2] == {"role": "assistant", "content": "前半段"}
+        assert "继续" in resume_msgs[-1]["content"]
+
+    def test_openai_stream_retries_full_when_nothing_emitted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """未产出任何正文就断连：整段重试（不带续传上下文，避免重复）。"""
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        import httpx
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+
+        def chunk(content: str):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(reasoning_content=None, content=content),
+            )])
+
+        calls: list = []
+
+        def fake_create(*a: object, **kw: object):
+            calls.append(kw.get("messages"))
+            if len(calls) == 1:
+                def failing_stream():
+                    raise httpx.RemoteProtocolError("connection reset by peer")
+                return failing_stream()
+            return [chunk("完整回答")]
+
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create", fake_create, raising=False,
+        )
+        monkeypatch.setattr("time.sleep", lambda s: None)
+        monkeypatch.setattr("random.uniform", lambda a, b: 0.0)
+
+        tagged = list(client.stream_chat_tagged([{"role": "user", "content": "q"}], timeout=5))
+        assert tagged == [("content", "完整回答")]
+        # 未产出正文 → 重试仍用原始消息，不拼接续传上下文
+        assert calls[1] == [{"role": "user", "content": "q"}]
+
+    def test_openai_stream_raises_after_retries_exhausted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """多次重试仍断连：抛带可行动提示的 LLMError，而非静默丢帧。"""
+        pytest.importorskip("openai")
+        import httpx
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+
+        def fake_create(*a: object, **kw: object):
+            def failing_stream():
+                raise httpx.RemoteProtocolError(
+                    "peer closed connection without sending complete message body "
+                    "(incomplete chunked read)"
+                )
+            return failing_stream()
+
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create", fake_create, raising=False,
+        )
+        monkeypatch.setattr("time.sleep", lambda s: None)
+        monkeypatch.setattr("random.uniform", lambda a, b: 0.0)
+
+        with pytest.raises(LLMError) as ei:
+            list(client.stream_chat_tagged([{"role": "user", "content": "q"}], timeout=5))
+        assert "网络连接不稳定" in str(ei.value)
+
     def test_base_default_unsupported(self) -> None:
         class _Bare(LLMClient):
             @property
@@ -502,3 +657,52 @@ class _FakeHttpClient:
 
     def stream(self, method: str, url: str, **kw):  # noqa: ANN003, ARG002
         return _FakeClientCM(self._r)
+
+
+class TestOpenAIClientStreamResilience:
+    def test_smooth_finish_on_peer_closed_connection_without_name_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import httpx
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        class FakeChunk:
+            def __init__(self, content: str | None, reasoning: str | None = None) -> None:
+                class Delta:
+                    def __init__(self, c, r):
+                        self.content = c
+                        self.reasoning_content = r
+                class Choice:
+                    def __init__(self, d):
+                        self.delta = d
+                self.choices = [Choice(Delta(content, reasoning))]
+
+        class BrokenStream:
+            def __iter__(self):
+                # 产生超过 50 个字符的正文
+                for token in ["你好，", "这是针对工业动平衡与伺服调试的完整解答指南。", "包含参数设置和故障排查要点："]:
+                    yield FakeChunk(token)
+                # 随后模拟对端提前关闭连接
+                raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+
+        class FakeChatCompletions:
+            def create(self, **kwargs):
+                return BrokenStream()
+
+        class FakeChat:
+            completions = FakeChatCompletions()
+
+        class MockOpenAI:
+            def __init__(self, **kw):
+                self.chat = FakeChat()
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("openai.OpenAI", MockOpenAI)
+        client = OpenAIClient(api_key="sk-test", base_url="http://test")
+
+        # 验证 stream_chat 正常产出内容且在对端关闭后平滑收尾，不抛出 NameError 或 LLMError
+        tokens = list(client.stream_chat([{"role": "user", "content": "hi"}]))
+        full_text = "".join(tokens)
+        assert len(full_text) >= 30
+        assert "工业动平衡" in full_text
+

@@ -15,8 +15,34 @@ public sealed record SourceRef
     public string? Url { get; init; }
     public string? Title { get; init; }
     public string? Snippet { get; init; }
+    public string? SourceName { get; init; }  // 搜索引擎来源 (DuckDuckGo / WebSearch)
+    public string? Domain { get; init; }
+    public string? PublishedAt { get; init; }
+    public bool ContentFetched { get; init; }
+    public int CorroboratedBy { get; init; }
+    public string EvidenceLevel { get; init; } = "单一来源";
 
     public bool IsWebSource => SourceType == "web" || !string.IsNullOrWhiteSpace(Url);
+
+    public string EvidenceBadgeText => EvidenceLevel switch
+    {
+        "多来源共识" => "✅ 多来源共识",
+        "交叉印证" => "🔎 交叉印证",
+        _ => "⚠️ 单一来源",
+    };
+
+    public string AuthorityBadgeText => Domain?.Contains("deltaww.com", StringComparison.OrdinalIgnoreCase) == true
+        || Domain?.Equals("delta.com", StringComparison.OrdinalIgnoreCase) == true
+        ? "官方域名"
+        : "外部网页";
+
+    public string PublishedText => string.IsNullOrWhiteSpace(PublishedAt)
+        ? "日期未识别"
+        : $"资料日期: {PublishedAt}";
+
+    public string QualityText => Score > 0
+        ? $"综合质量: {Score:P0}"
+        : "综合质量: 未知";
 
     public string DisplayTitle => !string.IsNullOrWhiteSpace(Title) ? Title : Source;
 }

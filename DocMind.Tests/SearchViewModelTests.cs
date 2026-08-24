@@ -81,4 +81,25 @@ public class SearchViewModelTests
         Assert.NotNull(chatPrompt);
         Assert.Contains("doc1.pdf", chatPrompt);
     }
+
+    [Fact]
+    public async Task SearchAsync_UsesBackendEmptyResultMessage()
+    {
+        var fake = new FakeDoc2kbApiService
+        {
+            OnSearch = (_, _) => Task.FromResult(new SearchResponse
+            {
+                Total = 0,
+                Message = "知识库为空：请先导入文档",
+            }),
+        };
+
+        var vm = CreateVm(fake);
+        vm.Query = "不存在的内容";
+
+        await vm.SearchCommand.ExecuteAsync(null);
+
+        Assert.Equal("知识库为空：请先导入文档", vm.StatusMessage);
+        Assert.True(vm.ShowEmptyGuide);
+    }
 }

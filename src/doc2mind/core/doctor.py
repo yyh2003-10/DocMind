@@ -214,7 +214,10 @@ def run_diagnostics(check_network: bool = True) -> DoctorReport:
                 category="extension",
                 status="info",
                 message="未安装 PaddleOCR（扫描件与图片文字识别可选扩展）",
-                fix_suggestion="若需提取图片/扫描件文字，可在设置页安装 OCR 扩展。",
+                fix_suggestion=(
+                    "若需提取图片/扫描件文字，可到【设置 → GPU 加速/环境自检】"
+                    "展开「切换加速方案 / 增装 OCR 加速组件」，选择「OCR 文字识别」一键安装。"
+                ),
             )
         )
 

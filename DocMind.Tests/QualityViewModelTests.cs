@@ -54,4 +54,39 @@ public class QualityViewModelTests
         Assert.Equal(10, vm.Stats!.TotalDocuments);
         Assert.Equal(100, vm.Stats.TotalChunks);
     }
+
+    [Fact]
+    public async Task EnsureLoadedAsync_RetriesAfterInitialFailure()
+    {
+        var attempts = 0;
+        var fake = new FakeDoc2kbApiService
+        {
+            OnGetQuality = (_, _) =>
+            {
+                attempts++;
+                if (attempts == 1)
+                {
+                    throw new BackendConnectionException("暂时不可达");
+                }
+                return Task.FromResult(new QualityReport
+                {
+                    TotalDocuments = 1,
+                    TotalChunks = 2,
+                });
+            },
+            OnGetStats = (_, _) => Task.FromResult(new Stats
+            {
+                Collections = new Dictionary<string, int[]> { { "default", [1, 2, 0] } },
+            }),
+        };
+
+        var vm = CreateVm(fake);
+        await vm.EnsureLoadedAsync();
+        Assert.Contains("不可达", vm.StatusMessage);
+
+        await vm.EnsureLoadedAsync();
+
+        Assert.Equal(2, attempts);
+        Assert.Equal("已更新", vm.StatusMessage);
+    }
 }

@@ -10,38 +10,48 @@
             width: 100vw;
             height: 100vh;
             overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", sans-serif;
-            background-color: var(--bg-color, #FFFFFF);
-            color: var(--text-primary, #1D1D1F);
-            transition: background-color 0.3s ease, color 0.3s ease;
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+            background-color: var(--bg-color, #080A0F);
+            color: var(--text-primary, #F3F4F6);
+            transition: background-color 0.4s ease, color 0.4s ease;
         }
 
         :root {
-            --bg-color: #FFFFFF;
-            --surface-color: rgba(242, 242, 247, 0.85);
-            --card-color: #FFFFFF;
-            --border-color: #E5E5EA;
-            --text-primary: #1D1D1F;
-            --text-secondary: #8E8E93;
-            --text-tertiary: #AEAEB2;
-            --edge-color: rgba(142, 142, 147, 0.35);
-            --edge-highlight: #007AFF;
-            --shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
-            --grid-line: rgba(0, 0, 0, 0.03);
+            --bg-color: #080A0F;
+            --surface-color: rgba(16, 20, 28, 0.85);
+            --border-color: rgba(255, 255, 255, 0.10);
+            --text-primary: #F3F4F6;
+            --text-secondary: #9CA3AF;
+            --text-tertiary: #6B7280;
+            --shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+            --pill-bg: rgba(255, 255, 255, 0.08);
+            --pill-border: rgba(255, 255, 255, 0.18);
         }
 
-        body.dark-theme {
-            --bg-color: #000000;
-            --surface-color: rgba(28, 28, 30, 0.85);
-            --card-color: #1C1C1E;
-            --border-color: #38383A;
-            --text-primary: #F5F5F7;
-            --text-secondary: #8E8E93;
-            --text-tertiary: #636366;
-            --edge-color: rgba(142, 142, 147, 0.3);
-            --edge-highlight: #0A84FF;
-            --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-            --grid-line: rgba(255, 255, 255, 0.03);
+        body.light-theme {
+            --bg-color: #F4F7FB;
+            --surface-color: rgba(255, 255, 255, 0.88);
+            --border-color: rgba(0, 0, 0, 0.08);
+            --text-primary: #0F172A;
+            --text-secondary: #64748B;
+            --text-tertiary: #94A3B8;
+            --shadow: 0 12px 30px rgba(0, 0, 0, 0.06);
+            --pill-bg: rgba(255, 255, 255, 0.90);
+            --pill-border: rgba(0, 0, 0, 0.10);
+        }
+
+        /* 宿主在文档创建时预置的亮色变量（html.light-preload），
+           消除亮色主题用户进入图谱页时先闪一帧深色背景；setTheme 会移除该类 */
+        html.light-preload {
+            --bg-color: #F4F7FB;
+            --surface-color: rgba(255, 255, 255, 0.88);
+            --border-color: rgba(0, 0, 0, 0.08);
+            --text-primary: #0F172A;
+            --text-secondary: #64748B;
+            --text-tertiary: #94A3B8;
+            --shadow: 0 12px 30px rgba(0, 0, 0, 0.06);
+            --pill-bg: rgba(255, 255, 255, 0.90);
+            --pill-border: rgba(0, 0, 0, 0.10);
         }
 
         canvas {
@@ -54,111 +64,264 @@
             cursor: grabbing;
         }
 
-        /* 底部 Apple 风格毛玻璃图例 */
-        #legend {
-            position: absolute;
-            bottom: 20px;
-            left: 20px;
-            background: var(--surface-color);
-            border: 1px solid var(--border-color);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            padding: 8px 14px;
-            border-radius: 12px;
-            font-size: 11px;
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-            box-shadow: var(--shadow);
-            z-index: 10;
-            max-width: calc(100% - 100px);
-            pointer-events: none;
-        }
-        .legend-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            color: var(--text-secondary);
-            font-weight: 500;
-        }
-        .legend-dot {
-            width: 9px;
-            height: 9px;
-            border-radius: 50%;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-        }
-
-        /* 顶部右侧控制浮岛（避免与底部图例及右侧侧边栏冲突） */
-        #controls {
+        /* 顶部导航与控制 */
+        #header-hud {
             position: absolute;
             top: 20px;
+            left: 20px;
             right: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            z-index: 50;
+            pointer-events: none;
+        }
+        #header-hud > * {
+            pointer-events: auto;
+        }
+
+        /* 返回主视图按钮 */
+        #btn-back-overview {
+            display: none;
+            align-items: center;
+            gap: 8px;
             background: var(--surface-color);
             border: 1px solid var(--border-color);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border-radius: 10px;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            padding: 8px 16px;
+            border-radius: 12px;
+            color: var(--text-primary);
+            font-size: 13px;
+            font-weight: 600;
             box-shadow: var(--shadow);
-            z-index: 10;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        #btn-back-overview:hover {
+            background: rgba(59, 130, 246, 0.2);
+            border-color: #3B82F6;
+            color: #3B82F6;
+            transform: translateX(-2px);
+        }
+
+        /* 搜索框 */
+        #search-box-container {
+            width: 270px;
+            position: relative;
+        }
+        #search-bar {
+            width: 100%;
+            height: 38px;
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border-radius: 11px;
+            padding: 0 10px 0 34px;
+            display: flex;
+            align-items: center;
+            box-shadow: var(--shadow);
+            position: relative;
+            transition: all 0.2s ease;
+        }
+        #search-bar:focus-within {
+            border-color: #3B82F6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25), var(--shadow);
+        }
+        #search-icon {
+            position: absolute;
+            left: 11px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            pointer-events: none;
+        }
+        #search-input {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+            border: none;
+            outline: none;
+            font-size: 12px;
+            color: var(--text-primary);
+            font-family: inherit;
+        }
+        #search-input::placeholder {
+            color: var(--text-secondary);
+        }
+        #search-clear {
+            display: none;
+            cursor: pointer;
+            color: var(--text-tertiary);
+            font-size: 12px;
+            padding: 2px 4px;
+        }
+        #search-shortcut-hint {
+            font-size: 10px;
+            color: var(--text-tertiary);
+            border: 1px solid var(--border-color);
+            padding: 1px 4px;
+            border-radius: 4px;
+            pointer-events: none;
+        }
+
+        #search-dropdown {
+            display: none;
+            position: absolute;
+            top: 44px;
+            left: 0;
+            width: 100%;
+            max-height: 270px;
+            overflow-y: auto;
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border-radius: 11px;
+            box-shadow: var(--shadow);
+            padding: 4px;
+            z-index: 51;
+        }
+        .search-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.1s ease;
+        }
+        .search-item:hover, .search-item.selected {
+            background: rgba(59, 130, 246, 0.15);
+        }
+        .search-item-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .search-item-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .search-item-name {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+        .search-item-topic {
+            font-size: 10px;
+            color: var(--text-secondary);
+            background: rgba(156, 163, 175, 0.12);
+            padding: 1px 5px;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+
+        /* 顶部右侧控制浮岛 */
+        #controls-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .hud-island {
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border-radius: 11px;
+            display: flex;
+            align-items: center;
+            box-shadow: var(--shadow);
+            padding: 2px 4px;
+            gap: 2px;
         }
         .ctrl-btn {
             background: transparent;
             border: none;
             outline: none;
-            width: 38px;
-            height: 38px;
+            width: 32px;
+            height: 32px;
             color: var(--text-primary);
-            font-size: 16px;
+            font-size: 13px;
             display: flex;
             align-items: center;
             justify-content: center;
             cursor: pointer;
+            border-radius: 8px;
             transition: background 0.15s ease, color 0.15s ease;
         }
         .ctrl-btn:hover {
-            background: rgba(142, 142, 147, 0.15);
-            color: #007AFF;
-        }
-        .ctrl-btn:active {
-            background: rgba(142, 142, 147, 0.25);
-        }
-        .ctrl-btn + .ctrl-btn {
-            border-top: 1px solid var(--border-color);
+            background: rgba(156, 163, 175, 0.15);
+            color: #3B82F6;
         }
 
-        /* 悬浮 Tooltip 卡片 */
+        /* 底部状态提示栏 */
+        #bottom-tip {
+            position: absolute;
+            bottom: 22px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            box-shadow: var(--shadow);
+            z-index: 10;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        /* 悬浮提示卡片 */
         #tooltip {
             position: absolute;
             display: none;
             pointer-events: none;
             background: var(--surface-color);
             border: 1px solid var(--border-color);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
             padding: 10px 14px;
-            border-radius: 10px;
-            font-size: 12px;
+            border-radius: 11px;
+            font-size: 11px;
             box-shadow: var(--shadow);
             z-index: 100;
-            transform: translate(12px, 12px);
-            max-width: 260px;
+            transform: translate(14px, 14px);
+            max-width: 290px;
         }
         #tooltip .title {
             font-weight: 600;
-            font-size: 14px;
+            font-size: 13px;
             color: var(--text-primary);
             margin-bottom: 4px;
         }
         #tooltip .meta {
             color: var(--text-secondary);
-            font-size: 12px;
+            font-size: 11px;
             line-height: 1.5;
         }
+        #tooltip .meta .desc {
+            margin-top: 2px;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        #tooltip .meta .muted {
+            color: var(--text-tertiary);
+            font-size: 10px;
+            margin-top: 6px;
+        }
 
-        /* 空状态引导 */
+        /* 空状态 */
         #empty-state {
             display: none;
             position: absolute;
@@ -170,103 +333,148 @@
             border: 1px solid var(--border-color);
             backdrop-filter: blur(24px);
             -webkit-backdrop-filter: blur(24px);
-            padding: 32px 40px;
+            padding: 34px 44px;
             border-radius: 16px;
             box-shadow: var(--shadow);
             max-width: 420px;
             z-index: 20;
         }
-        #empty-state .icon {
-            font-size: 40px;
-            margin-bottom: 12px;
-        }
         #empty-state h3 {
             font-size: 17px;
             font-weight: 600;
             color: var(--text-primary);
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }
         #empty-state p {
-            font-size: 13px;
+            font-size: 12px;
             color: var(--text-secondary);
             line-height: 1.6;
             margin-bottom: 18px;
         }
         #empty-state button {
-            background: #007AFF;
+            background: #3B82F6;
             color: #FFFFFF;
             border: none;
             outline: none;
             padding: 10px 20px;
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 600;
             border-radius: 8px;
             cursor: pointer;
-            transition: background 0.15s ease, transform 0.1s ease;
+            transition: all 0.15s ease;
         }
         #empty-state button:hover {
-            background: #0064D6;
-            transform: translateY(-1px);
-        }
-        #empty-state button:active {
-            background: #004FAD;
-            transform: translateY(0);
+            background: #2563EB;
         }
     </style>
 </head>
 <body>
     <canvas id="graph-canvas"></canvas>
 
+    <!-- 顶部 HUD -->
+    <div id="header-hud">
+        <div style="display:flex; align-items:center; gap:12px;">
+            <button id="btn-back-overview" onclick="exitDetailMode()">
+                <span>◀</span>
+                <span>返回总览</span>
+            </button>
+
+            <!-- 搜索框 -->
+            <div id="search-box-container">
+                <div id="search-bar">
+                    <span id="search-icon">🔍</span>
+                    <input type="text" id="search-input" placeholder="搜索主题或实体节点... (/)" autocomplete="off" />
+                    <span id="search-clear" onclick="clearSearch()">✕</span>
+                    <span id="search-shortcut-hint">/</span>
+                </div>
+                <div id="search-dropdown"></div>
+            </div>
+        </div>
+
+        <!-- 顶部右侧控制 -->
+        <div id="controls-bar">
+            <div class="hud-island">
+                <button class="ctrl-btn" title="放大" onclick="zoomBy(1.25)">＋</button>
+                <button class="ctrl-btn" title="缩小" onclick="zoomBy(0.8)">−</button>
+                <button class="ctrl-btn" title="适应全景" onclick="fitView()">⛶</button>
+                <button class="ctrl-btn" title="重排布局" onclick="reheat()">⚡</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 底部操作提示 -->
+    <div id="bottom-tip">💡 点击核心主题节点，展开探索关联实体网络</div>
+
+    <!-- 悬浮提示卡片 -->
     <div id="tooltip">
         <div class="title" id="tt-title"></div>
         <div class="meta" id="tt-meta"></div>
     </div>
 
+    <!-- 空状态 -->
     <div id="empty-state">
-        <div class="icon">🕸️</div>
+        <div style="font-size:36px; margin-bottom:12px;">🕸️</div>
         <h3>当前集合暂无知识图谱</h3>
-        <p>从已有文档中通过大模型一键提取科技、人物、组织等关键实体与关系网。</p>
-        <button id="btn-extract" onclick="requestExtract()">⚡ 一键抽取构建图谱</button>
-    </div>
-
-    <div id="legend">
-        <div class="legend-item"><span class="legend-dot" style="background:#007AFF"></span>科技 (tech)</div>
-        <div class="legend-item"><span class="legend-dot" style="background:#5856D6"></span>概念 (concept)</div>
-        <div class="legend-item"><span class="legend-dot" style="background:#34C759"></span>人物 (person)</div>
-        <div class="legend-item"><span class="legend-dot" style="background:#FF9500"></span>组织 (org)</div>
-        <div class="legend-item"><span class="legend-dot" style="background:#FF2D55"></span>事件 (event)</div>
-        <div class="legend-item"><span class="legend-dot" style="background:#AF52DE"></span>地点 (place)</div>
-        <div class="legend-item"><span class="legend-dot" style="background:#8E8E93"></span>其他 (other)</div>
-    </div>
-
-    <div id="controls">
-        <button class="ctrl-btn" title="放大" onclick="zoomBy(1.25)">＋</button>
-        <button class="ctrl-btn" title="缩小" onclick="zoomBy(0.8)">−</button>
-        <button class="ctrl-btn" title="适应画布" onclick="fitView()">⛶</button>
-        <button class="ctrl-btn" title="重新布局" onclick="reheat()">⚡</button>
+        <p>通过大模型自动从文档中提炼核心主题与实体关联网络。</p>
+        <button id="btn-extract" onclick="requestExtract()">⚡ 立即抽取知识图谱</button>
     </div>
 
     <script>
-        // Apple 经典实体分类调色盘与图标
-        const TYPE_PALETTES = {
-            tech:    { fill: '#007AFF', light: '#E8F2FF', stroke: '#0064D6', text: '#FFFFFF' },
-            concept: { fill: '#5856D6', light: '#EFEBFF', stroke: '#4745B8', text: '#FFFFFF' },
-            person:  { fill: '#34C759', light: '#E9F9EE', stroke: '#28A745', text: '#FFFFFF' },
-            org:     { fill: '#FF9500', light: '#FFF4E6', stroke: '#D97706', text: '#FFFFFF' },
-            event:   { fill: '#FF2D55', light: '#FFEAF0', stroke: '#D91B40', text: '#FFFFFF' },
-            place:   { fill: '#AF52DE', light: '#F7ECFC', stroke: '#9033C0', text: '#FFFFFF' },
-            other:   { fill: '#8E8E93', light: '#F2F2F7', stroke: '#636366', text: '#FFFFFF' }
+        // 关系语义映射
+        const RELATION_LABELS = {
+            'belongs_to_topic': '归属主题',
+            'belongs_to': '从属于',
+            'depends_on': '依赖于',
+            'develops': '研发',
+            'developed_by': '开发者',
+            'part_of': '组成部分',
+            'uses': '使用',
+            'feeds_into': '输入至',
+            'combines_with': '结合',
+            'implements': '实现',
+            'related_to': '关联'
         };
 
-        const TYPE_ICONS = {
-            tech: '⚡',
-            concept: '💡',
-            person: '👤',
-            org: '🏢',
-            event: '📅',
-            place: '📍',
-            other: '🏷️'
+        // 现代柔和低饱和液态色系 (Morandi Soft Liquid Water Palettes)
+        // 只保留主色，tint/glow 等派生色由 withAlpha() 动态生成，避免手写 rgba 与主色漂移
+        const WATER_THEMES = [
+            { name: 'ice-blue',      main: '#38BDF8' },
+            { name: 'mint-spring',   main: '#34D399' },
+            { name: 'lavender-mist', main: '#A78BFA' },
+            { name: 'dawn-peach',    main: '#FB923C' },
+            { name: 'sakura-glow',   main: '#F472B6' },
+            { name: 'teal-lagoon',   main: '#2DD4BF' },
+            { name: 'indigo-dusk',   main: '#818CF8' },
+            { name: 'coral-wave',    main: '#FB7185' },
+            { name: 'honey-amber',   main: '#FBBF24' },
+            { name: 'slate-mist',    main: '#94A3B8' }
+        ];
+
+        // 实体类型 → 语义色：main 用于露珠本体，textDark/textLight 分别用于亮/暗主题下的选中文字
+        // 类型清单对应 graph_store 中实际落库值（extractor 无固定枚举，未匹配类型回退主题色）
+        const NODE_TYPE_COLORS = {
+            person:  { main: '#3B82F6', textDark: '#1D4ED8', textLight: '#93C5FD', label: '人物' },
+            org:     { main: '#10B981', textDark: '#047857', textLight: '#6EE7B7', label: '组织' },
+            tech:    { main: '#8B5CF6', textDark: '#6D28D9', textLight: '#C4B5FD', label: '技术' },
+            concept: { main: '#F59E0B', textDark: '#B45309', textLight: '#FCD34D', label: '概念' },
+            place:   { main: '#06B6D4', textDark: '#0E7490', textLight: '#67E8F9', label: '地点' },
+            event:   { main: '#F43F5E', textDark: '#BE123C', textLight: '#FDA4AF', label: '事件' },
+            other:   { main: '#64748B', textDark: '#334155', textLight: '#CBD5E1', label: '其他' }
         };
+
+        function typeColorOf(node) {
+            const key = ((node && node.type) || '').toString().trim().toLowerCase();
+            return NODE_TYPE_COLORS[key] || null;
+        }
+
+        // '#38BDF8' + alpha -> 'rgba(56, 189, 248, a)'
+        function withAlpha(hex, alpha) {
+            const h = hex.replace('#', '');
+            const r = parseInt(h.substring(0, 2), 16);
+            const g = parseInt(h.substring(2, 4), 16);
+            const b = parseInt(h.substring(4, 6), 16);
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        }
 
         const canvas = document.getElementById('graph-canvas');
         const ctx = canvas.getContext('2d');
@@ -274,21 +482,37 @@
         const tooltip = document.getElementById('tooltip');
         const ttTitle = document.getElementById('tt-title');
         const ttMeta = document.getElementById('tt-meta');
+        const btnBack = document.getElementById('btn-back-overview');
+        const bottomTip = document.getElementById('bottom-tip');
+        const searchInput = document.getElementById('search-input');
+        const searchDropdown = document.getElementById('search-dropdown');
+        const searchClear = document.getElementById('search-clear');
+        const shortcutHint = document.getElementById('search-shortcut-hint');
 
+        let topics = [];
         let nodes = [];
         let edges = [];
         let nodeMap = new Map();
-        let adjMap = new Map(); // nodeId -> Set of neighbor nodeIds
+        let adjMap = new Map();
+        let topicMap = new Map();
 
-        // 视口变换与交互状态
+        // 视口与交互状态
+        let viewState = 'macro'; // 'macro' (主水球群占80%视野) | 'detail' (单水球展开支节点)
+        let activeTopicId = null;
         let transform = { x: 0, y: 0, scale: 1.0 };
         let isDraggingCanvas = false;
         let dragStart = { x: 0, y: 0 };
         let draggedNode = null;
         let hoveredNode = null;
         let selectedNodeId = null;
-        let isSimulating = true;
-        let alpha = 1.0; // 模拟退火衰减因子
+
+        let alpha = 1.0;
+        let time = 0; // 用于流体动态波动方程
+
+        let searchQuery = '';
+        let matchedNodeIds = new Set();
+        let searchDropdownItems = [];
+        let selectedSearchIndex = -1;
 
         function resizeCanvas() {
             const dpr = window.devicePixelRatio || 1;
@@ -302,22 +526,21 @@
         window.addEventListener('DOMContentLoaded', resizeCanvas);
         setTimeout(resizeCanvas, 50);
 
-        // 主题切换接口
         window.setTheme = function(themeName) {
-            if (themeName === 'Dark' || themeName === 'dark') {
-                document.body.classList.add('dark-theme');
+            // 正式主题就位后移除宿主预置的亮色变量，避免后续切换暗色时被残留覆盖
+            document.documentElement.classList.remove('light-preload');
+            if (themeName === 'Light' || themeName === 'light') {
+                document.body.classList.add('light-theme');
             } else {
-                document.body.classList.remove('dark-theme');
+                document.body.classList.remove('light-theme');
             }
             render();
         };
 
-        // 接收数据并初始化（支持多次解包以防双重序列化）
         window.renderGraph = function(dataOrJson) {
             try {
                 if (!dataOrJson) return;
                 let data = dataOrJson;
-                // 循环解包字符串
                 for (let i = 0; i < 5; i++) {
                     if (typeof data === 'string') {
                         try {
@@ -329,13 +552,12 @@
                         break;
                     }
                 }
-                initGraph(data);
+                initFluidWaterSphereGraph(data);
             } catch (err) {
-                console.error("解析图谱数据异常:", err);
+                console.error("解析水球图谱数据异常:", err);
             }
         };
 
-        // 通知 WPF 页面已完全就绪
         function notifyReady() {
             if (window.chrome && window.chrome.webview) {
                 try {
@@ -346,17 +568,19 @@
             }
         }
 
-        // 外部聚焦节点接口
         window.focusNode = function(nodeId) {
             if (!nodeId || !nodeMap.has(nodeId)) return;
             const target = nodeMap.get(nodeId);
-            selectedNodeId = nodeId;
-            
-            // 平滑聚焦到目标节点，不打乱已有排布
-            animateFocusTo(target);
+
+            if (target.is_topic) {
+                enterDetailMode(target.id);
+            } else if (target.topicId) {
+                enterDetailMode(target.topicId);
+                selectedNodeId = nodeId;
+                animateFocusTo(target);
+            }
         };
 
-        // 监听来自 WPF 的原生 PostWebMessage 事件
         if (window.chrome && window.chrome.webview) {
             window.chrome.webview.addEventListener('message', function(e) {
                 if (e.data) {
@@ -365,12 +589,15 @@
             });
         }
 
-        function initGraph(data) {
+        // 初始化 3D 流动水球体系
+        function initFluidWaterSphereGraph(data) {
             if (!data || !data.nodes || data.nodes.length === 0) {
+                topics = [];
                 nodes = [];
                 edges = [];
                 nodeMap.clear();
                 adjMap.clear();
+                topicMap.clear();
                 emptyState.style.display = 'block';
                 render();
                 return;
@@ -378,246 +605,703 @@
 
             emptyState.style.display = 'none';
 
-            // 初始化节点（使用斐波那契发散分布，避免初始重叠堆积）
             const width = window.innerWidth;
             const height = window.innerHeight;
-            const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+            const cx = width / 2;
+            const cy = height / 2;
 
             nodeMap.clear();
             adjMap.clear();
+            topicMap.clear();
+            topics = [];
+            nodes = [];
 
-            // 预设字体以精确测量文本包围盒
-            ctx.font = '500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            // 智能识别：全部集合模式（多集合聚合） VS 单集合模式
+            const collectionMap = new Map();
+            data.nodes.forEach(n => {
+                const col = (n.collection || '').trim() || '通用知识库';
+                if (!collectionMap.has(col)) {
+                    collectionMap.set(col, []);
+                }
+                collectionMap.get(col).push(n);
+            });
 
-            nodes = data.nodes.map((n, i) => {
-                const r = Math.sqrt(i + 1) * 85;
-                const angle = i * goldenAngle;
-                const size = 18 + Math.min((n.size || 1) * 3, 24);
-                
-                // 测量实体文字的实际像素宽度，生成精确包围盒
-                const textMetric = ctx.measureText(n.name);
-                const textW = Math.ceil(textMetric.width);
-                const pillW = Math.max(size * 2 + 12, textW + 16);
-                const pillH = 20;
-                const boxW = pillW + 12; // 计入水平安全间隙
-                const boxH = size * 2 + pillH + 16; // 计入垂直安全间隙
+            const isMultiCollection = collectionMap.size > 1;
+            let explicitTopics = [];
+            let regularNodes = [];
+            let autoExpandSingleTopic = false;
 
-                const nodeObj = {
-                    id: n.id,
-                    name: n.name,
-                    type: (n.type || 'other').toLowerCase(),
-                    size: size,
-                    rawSize: n.size || 1,
-                    textW: textW,
-                    pillW: pillW,
-                    pillH: pillH,
-                    boxW: boxW,
-                    boxH: boxH,
-                    x: width / 2 + Math.cos(angle) * r,
-                    y: height / 2 + Math.sin(angle) * r,
+            if (isMultiCollection) {
+                // 【全部集合模式】：各个集合各为一个顶级主题节点
+                let colIdx = 0;
+                collectionMap.forEach((colNodes, colName) => {
+                    const topicId = `coll_topic_${colName}`;
+                    explicitTopics.push({
+                        id: topicId,
+                        name: `${colName} 集合`,
+                        type: 'collection',
+                        is_topic: true,
+                        auto_generated: true,
+                        target_collection: colName,
+                        colIndex: colIdx++
+                    });
+
+                    colNodes.forEach(cn => {
+                        cn._assignedTopicId = topicId;
+                        regularNodes.push(cn);
+                    });
+                });
+            } else {
+                // 【单集合模式】：以当前集合名称为中心核心节点，直接完整展开所有实体
+                const currentCollName = collectionMap.keys().next().value || '知识库';
+                const topicId = `coll_topic_main`;
+                explicitTopics.push({
+                    id: topicId,
+                    name: `${currentCollName}`,
+                    type: 'collection',
+                    is_topic: true,
+                    auto_generated: true,
+                    target_collection: currentCollName
+                });
+
+                data.nodes.forEach(n => {
+                    if (n.id !== topicId) {
+                        n._assignedTopicId = topicId;
+                        regularNodes.push(n);
+                    }
+                });
+                autoExpandSingleTopic = true;
+            }
+
+            // 1. 构建主水球节点 (Macro Water Spheres)
+            const topicCount = explicitTopics.length;
+            const baseSphereRadius = Math.max(75, Math.min(width, height) * 0.16); // 大水球体量
+            const crowdRadius = (topicCount === 1) ? 0 : Math.max(95, baseSphereRadius * (topicCount > 3 ? 1.45 : 1.30));
+
+            explicitTopics.forEach((top, idx) => {
+                const angle = (topicCount === 1) ? 0 : ((idx / Math.max(1, topicCount)) * Math.PI * 2 - Math.PI / 2);
+                const theme = WATER_THEMES[idx % WATER_THEMES.length];
+                const zIndex = (idx % 2 === 0) ? 1.0 : 0.88;
+
+                const tObj = {
+                    id: top.id,
+                    name: top.name,
+                    type: top.type || 'topic',
+                    is_topic: true,
+                    is_collection: top.type === 'collection',
+                    baseRadius: baseSphereRadius * zIndex,
+                    radius: baseSphereRadius * zIndex,
+                    zIndex: zIndex,
+                    phase1: idx * 1.7,
+                    phase2: idx * 2.3,
+                    phase3: idx * 3.1,
+                    theme: theme,
+                    // 初始位置：单球精确居中，多球环抱
+                    x: cx + ((topicCount === 1) ? 0 : Math.cos(angle) * crowdRadius),
+                    y: cy + ((topicCount === 1) ? 0 : Math.sin(angle) * crowdRadius),
                     vx: 0,
                     vy: 0,
                     fx: null,
                     fy: null,
+                    opacity: 1.0,
+                    targetOpacity: 1.0,
+                    expansion: 0.0,
+                    targetExpansion: 0.0,
+                    keywords: [],
+                    children: [],
+                    raw: top
+                };
+                nodeMap.set(top.id, tObj);
+                adjMap.set(top.id, new Set());
+                topicMap.set(top.id, tObj);
+                topics.push(tObj);
+            });
+
+            // 2. 先构建节点基本对象与边关系（以便按重要度 Degree 科学排布）
+            regularNodes.forEach((n, idx) => {
+                let assignedTopicId = n._assignedTopicId || null;
+                if (!assignedTopicId) {
+                    if (n.topic && nodeMap.has(n.topic)) {
+                        assignedTopicId = n.topic;
+                    } else {
+                        for (let top of topicMap.values()) {
+                            if (top.raw && top.raw.target_type === n.type) {
+                                assignedTopicId = top.id;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!assignedTopicId && topicMap.size > 0) {
+                    assignedTopicId = Array.from(topicMap.keys())[idx % topicMap.size];
+                }
+
+                ctx.font = '500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+                // 胶囊标签超宽截断，避免长实体名互相重叠（全名见 tooltip）
+                const PILL_MAX_TEXT_W = 130;
+                let displayName = n.name || '';
+                if (ctx.measureText(displayName).width > PILL_MAX_TEXT_W) {
+                    while (displayName.length > 1 && ctx.measureText(displayName + '…').width > PILL_MAX_TEXT_W) {
+                        displayName = displayName.slice(0, -1);
+                    }
+                    displayName += '…';
+                }
+                const textW = Math.ceil(ctx.measureText(displayName).width);
+                const dropletRadius = 15 + Math.min((n.size || 1) * 2, 6);
+
+                const nodeObj = {
+                    id: n.id,
+                    name: n.name,
+                    type: n.type || 'concept',
+                    is_topic: false,
+                    topicId: assignedTopicId,
+                    dropletRadius: dropletRadius,
+                    orbitRadius: 180,
+                    orbitAngle: 0,
+                    displayName: displayName,
+                    textW: textW,
+                    pillW: textW + 20,
+                    pillH: 22,
+                    x: cx,
+                    y: cy,
+                    renderX: cx,
+                    renderY: cy,
+                    vx: 0,
+                    vy: 0,
+                    fx: null,
+                    fy: null,
+                    degree: 0,
                     raw: n
                 };
                 nodeMap.set(n.id, nodeObj);
                 adjMap.set(n.id, new Set());
-                return nodeObj;
+                nodes.push(nodeObj);
+
+                const assignedTopic = topicMap.get(assignedTopicId);
+                if (assignedTopic) {
+                    assignedTopic.children.push(nodeObj);
+                    if (assignedTopic.keywords.length < 4) {
+                        assignedTopic.keywords.push(n.name);
+                    }
+                }
             });
 
-            // 初始化边并按节点对分组（支持多重边与双向边对称弧度展开）
+            // 3. 构建关系连线与计算度数 (Degree)
             edges = [];
-            const edgeGroups = new Map();
             (data.edges || []).forEach(e => {
                 const source = nodeMap.get(e.from);
                 const target = nodeMap.get(e.to);
                 if (source && target) {
-                    const pairKey = e.from < e.to ? `${e.from}__${e.to}` : `${e.to}__${e.from}`;
-                    if (!edgeGroups.has(pairKey)) {
-                        edgeGroups.set(pairKey, []);
-                    }
+                    const rawLabel = (e.label || '').trim();
+                    const localizedLabel = RELATION_LABELS[rawLabel.toLowerCase()] || rawLabel;
+
                     const edgeObj = {
                         source: source,
                         target: target,
-                        label: (e.label || '').trim(),
+                        label: localizedLabel,
                         fromId: e.from,
                         toId: e.to,
-                        pairKey: pairKey
+                        isTopicEdge: source.is_topic || target.is_topic
                     };
-                    edgeGroups.get(pairKey).push(edgeObj);
                     edges.push(edgeObj);
+
+                    source.degree = (source.degree || 0) + 1;
+                    target.degree = (target.degree || 0) + 1;
 
                     adjMap.get(e.from).add(e.to);
                     adjMap.get(e.to).add(e.from);
                 }
             });
 
-            // 为每个分组内的边计算非重叠曲率与错峰标签参数 t
-            edgeGroups.forEach((group, pairKey) => {
-                const n = group.length;
-                if (n === 1) {
-                    group[0].curvature = 0;
-                    group[0].tagT = 0.5;
-                    group[0].groupIndex = 0;
-                    group[0].groupTotal = 1;
-                } else {
-                    // 对多条边分配对称的曲率与错峰 t
-                    const curvatures = [];
-                    const tValues = [];
-                    if (n === 2) {
-                        curvatures.push(-0.25, 0.25);
-                        tValues.push(0.42, 0.58);
-                    } else if (n === 3) {
-                        curvatures.push(-0.32, 0, 0.32);
-                        tValues.push(0.38, 0.50, 0.62);
-                    } else if (n === 4) {
-                        curvatures.push(-0.40, -0.18, 0.18, 0.40);
-                        tValues.push(0.34, 0.45, 0.55, 0.66);
-                    } else {
-                        const step = 0.8 / (n - 1);
-                        for (let i = 0; i < n; i++) {
-                            curvatures.push(-0.4 + i * step);
-                            tValues.push(0.3 + (i / (n - 1)) * 0.4);
-                        }
-                    }
+            // 3.5 露珠大小按重要度分级：文档出现次数(size)与关联度(degree)取大者，拉开层级
+            nodes.forEach(n => {
+                const importance = Math.max((n.raw && n.raw.size) || 1, n.degree || 1);
+                n.dropletRadius = 14 + Math.min(importance * 2.2, 9);
+            });
 
-                    for (let i = 0; i < n; i++) {
-                        const e = group[i];
-                        const isCanonical = e.fromId < e.toId;
-                        const c = curvatures[i];
-                        // 考虑连线方向反向时符号调整
-                        e.curvature = isCanonical ? c : -c;
-                        e.tagT = isCanonical ? tValues[i] : (1 - tValues[i]);
-                        e.groupIndex = i;
-                        e.groupTotal = n;
+            // 4. 对每个主球所辖的支节点进行「周长自适应多圈发散 + 碰撞弹性松弛」
+            topics.forEach(top => {
+                if (top.children.length === 0) return;
+
+                // 核心节点排内圈，边缘节点排外圈
+                top.children.sort((a, b) => (b.degree || 0) - (a.degree || 0));
+
+                const R_start = top.baseRadius + 115; // 留出呼吸空间
+                const R_step = 85;
+                let currentRingRadius = R_start;
+                let currentRing = 0;
+                let remaining = [...top.children];
+
+                while (remaining.length > 0) {
+                    const circum = 2 * Math.PI * currentRingRadius;
+                    const capacity = Math.max(6, Math.floor(circum / 140));
+                    const ringItems = remaining.splice(0, capacity);
+                    const ringCount = ringItems.length;
+                    const ringAngleOffset = currentRing * 0.48;
+
+                    ringItems.forEach((cNode, cIdx) => {
+                        const angle = (cIdx / ringCount) * Math.PI * 2 + ringAngleOffset;
+                        cNode.targetRadius = currentRingRadius;
+                        cNode.orbitRadius = currentRingRadius;
+                        cNode.orbitAngle = angle;
+                        cNode.renderX = top.x + Math.cos(angle) * currentRingRadius;
+                        cNode.renderY = top.y + Math.sin(angle) * currentRingRadius;
+                        cNode.x = top.x;
+                        cNode.y = top.y;
+                    });
+
+                    currentRing++;
+                    currentRingRadius += R_step;
+                }
+
+                // 执行 35 步局部微碰撞松弛，彻底消除文字胶囊重叠
+                for (let step = 0; step < 35; step++) {
+                    for (let i = 0; i < top.children.length; i++) {
+                        const a = top.children[i];
+                        for (let j = i + 1; j < top.children.length; j++) {
+                            const b = top.children[j];
+                            const dx = b.renderX - a.renderX;
+                            const dy = b.renderY - a.renderY;
+                            const minW = (a.pillW + b.pillW) / 2 + 16;
+                            const minH = (a.pillH + b.pillH) / 2 + 12;
+
+                            if (Math.abs(dx) < minW && Math.abs(dy) < minH) {
+                                const overlapX = (minW - Math.abs(dx)) * (dx >= 0 ? 1 : -1);
+                                const overlapY = (minH - Math.abs(dy)) * (dy >= 0 ? 1 : -1);
+                                a.renderX -= overlapX * 0.25;
+                                a.renderY -= overlapY * 0.25;
+                                b.renderX += overlapX * 0.25;
+                                b.renderY += overlapY * 0.25;
+                            }
+                        }
+
+                        // 环道向心微约束
+                        const curDx = a.renderX - top.x;
+                        const curDy = a.renderY - top.y;
+                        const curDist = Math.sqrt(curDx * curDx + curDy * curDy) || 1;
+                        const distDiff = curDist - a.targetRadius;
+                        a.renderX -= (curDx / curDist) * distDiff * 0.08;
+                        a.renderY -= (curDy / curDist) * distDiff * 0.08;
+
+                        // 更新对应的 orbitRadius 与 orbitAngle
+                        a.orbitRadius = Math.sqrt((a.renderX - top.x) ** 2 + (a.renderY - top.y) ** 2);
+                        a.orbitAngle = Math.atan2(a.renderY - top.y, a.renderX - top.x);
                     }
                 }
             });
 
-            // 预热迭代 60 步，初始呈现即为完全舒展无重叠布局
+            // 4. 水球集群物理预热
             alpha = 1.0;
-            for (let step = 0; step < 60; step++) {
-                stepSimulation();
+            for (let step = 0; step < 70; step++) {
+                stepCrowdedSpheresPhysics();
             }
 
-            alpha = 0.8;
-            isSimulating = true;
+            if (autoExpandSingleTopic && explicitTopics.length === 1) {
+                enterDetailMode(explicitTopics[0].id);
+                // 确保单个集合直接就绪展开
+                const singleTop = topicMap.get(explicitTopics[0].id);
+                if (singleTop) {
+                    singleTop.expansion = 1.0;
+                    singleTop.targetExpansion = 1.0;
+                }
+                btnBack.style.display = 'none'; // 单集合默认态不强制要求回退按钮
+            } else {
+                viewState = 'macro';
+                activeTopicId = null;
+                btnBack.style.display = 'none';
+                bottomTip.style.display = 'block';
+            }
+
             fitView();
-            requestAnimationFrame(simulationLoop);
+            requestAnimationFrame(renderLoop);
         }
 
-        // 单步物理仿真（基于包围盒 AABB 强力防重叠碰撞算法）
-        function stepSimulation() {
-            const k = 180; // 理想弹簧长度增大，提供充足呼吸空间
-            const width = window.innerWidth;
-            const height = window.innerHeight;
-            const cx = width / 2;
-            const cy = height / 2;
+        // 进入单水球详情探索模式 (Enter Detail Mode)
+        function enterDetailMode(topicId) {
+            const top = topicMap.get(topicId);
+            if (!top) return;
 
-            // 1. 节点间库仑斥力 + AABB 矩形包围盒严密碰撞分离
-            for (let i = 0; i < nodes.length; i++) {
-                const a = nodes[i];
-                for (let j = i + 1; j < nodes.length; j++) {
-                    const b = nodes[j];
+            viewState = 'detail';
+            activeTopicId = topicId;
+            btnBack.style.display = 'flex';
+            bottomTip.style.display = 'none';
+
+            // 其他水球淡出，当前水球居中并展开支节点
+            topics.forEach(t => {
+                if (t.id === topicId) {
+                    t.targetOpacity = 1.0;
+                    t.targetExpansion = 1.0;
+                } else {
+                    t.targetOpacity = 0.0;
+                    t.targetExpansion = 0.0;
+                }
+            });
+
+            animateFocusToTopic(top);
+        }
+
+        // 退出详情模式，返回主水球集群 (Exit Detail Mode)
+        function exitDetailMode() {
+            viewState = 'macro';
+            activeTopicId = null;
+            selectedNodeId = null;
+            btnBack.style.display = 'none';
+            bottomTip.style.display = 'block';
+
+            topics.forEach(t => {
+                t.targetOpacity = 1.0;
+                t.targetExpansion = 0.0;
+            });
+
+            fitView();
+        }
+
+        // 主水球相互柔和聚拢排布力学 (Soft Fluid Droplet Clustering)
+        function stepCrowdedSpheresPhysics() {
+            const cx = window.innerWidth / 2;
+            const cy = window.innerHeight / 2;
+
+            for (let i = 0; i < topics.length; i++) {
+                const a = topics[i];
+                for (let j = i + 1; j < topics.length; j++) {
+                    const b = topics[j];
                     const dx = b.x - a.x;
                     const dy = b.y - a.y;
                     const distSq = dx * dx + dy * dy || 1;
                     const dist = Math.sqrt(distSq);
 
-                    // 基础远距离库仑斥力
-                    const baseForce = (k * k * 3.6) / distSq;
-                    let fx = (dx / dist) * baseForce * alpha;
-                    let fy = (dy / dist) * baseForce * alpha;
-
-                    // 严密的 AABB 文本标签与实体包围盒碰撞排斥
-                    const reqDistX = (a.boxW + b.boxW) / 2 + 18; // 水平最小防遮挡间距
-                    const reqDistY = (a.boxH + b.boxH) / 2 + 14; // 垂直最小防遮挡间距
-
-                    const absDx = Math.abs(dx);
-                    const absDy = Math.abs(dy);
-
-                    if (absDx < reqDistX && absDy < reqDistY) {
-                        const overlapX = reqDistX - absDx;
-                        const overlapY = reqDistY - absDy;
-                        
-                        // 正交硬分离推力，彻底推开文本重叠
-                        const pushFactor = 18;
-                        const pushX = (dx >= 0 ? 1 : -1) * overlapX * pushFactor * alpha;
-                        const pushY = (dy >= 0 ? 1 : -1) * overlapY * pushFactor * alpha;
-
-                        fx += pushX;
-                        fy += pushY;
+                    // 柔和水珠表面张力接触与弹性分离
+                    const touchDist = a.baseRadius + b.baseRadius + 24;
+                    if (dist < touchDist) {
+                        const overlap = touchDist - dist;
+                        const fx = (dx / dist) * overlap * 0.12 * alpha;
+                        const fy = (dy / dist) * overlap * 0.12 * alpha;
+                        if (!a.fx) { a.vx -= fx; a.vy -= fy; }
+                        if (!b.fx) { b.vx += fx; b.vy += fy; }
+                    } else {
+                        // 正向温和凝聚力（a 靠近 b，b 靠近 a）
+                        const pull = (dist - touchDist) * 0.008 * alpha;
+                        const fx = (dx / dist) * pull;
+                        const fy = (dy / dist) * pull;
+                        if (!a.fx) { a.vx += fx; a.vy += fy; }
+                        if (!b.fx) { b.vx -= fx; b.vy -= fy; }
                     }
-
-                    if (!a.fx) { a.vx -= fx; a.vy -= fy; }
-                    if (!b.fx) { b.vx += fx; b.vy += fy; }
                 }
 
-                // 向心弱重力
+                // 全局中心稳固引力
                 const toCenterX = cx - a.x;
                 const toCenterY = cy - a.y;
                 if (!a.fx) {
-                    a.vx += toCenterX * 0.002 * alpha;
-                    a.vy += toCenterY * 0.002 * alpha;
+                    a.vx += toCenterX * 0.02 * alpha;
+                    a.vy += toCenterY * 0.02 * alpha;
                 }
-            }
 
-            // 2. 边的胡克引力
-            for (let i = 0; i < edges.length; i++) {
-                const e = edges[i];
-                const dx = e.target.x - e.source.x;
-                const dy = e.target.y - e.source.y;
-                const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-                const force = ((dist - k) * 0.04) * alpha;
-                const fx = (dx / dist) * force;
-                const fy = (dy / dist) * force;
-
-                if (!e.source.fx) { e.source.vx += fx; e.source.vy += fy; }
-                if (!e.target.fx) { e.target.vx -= fx; e.target.vy -= fy; }
-            }
-
-            // 3. 更新位置与阻尼衰减
-            const damping = 0.78;
-            for (let i = 0; i < nodes.length; i++) {
-                const n = nodes[i];
-                if (n.fx !== null && n.fy !== null) {
-                    n.x = n.fx;
-                    n.y = n.fy;
-                    n.vx = 0;
-                    n.vy = 0;
-                } else {
-                    n.vx *= damping;
-                    n.vy *= damping;
-                    n.x += n.vx;
-                    n.y += n.vy;
-                }
+                // 速度阻尼与物理防飞散约束
+                a.vx = Math.max(-12, Math.min(12, a.vx * 0.82));
+                a.vy = Math.max(-12, Math.min(12, a.vy * 0.82));
+                a.x += a.vx;
+                a.y += a.vy;
             }
 
             alpha *= 0.985;
         }
 
-        // 力导向物理引擎循环
-        function simulationLoop() {
-            if (!isSimulating && alpha < 0.005) return;
+        // 绘制 5 层现代真实光学水滴 (The 5-Layer Crystal Fluid Water Droplet)
+        function drawRealistic3DWaterSphere(ctx, sphere, isDark, tTime) {
+            const sx = sphere.x;
+            const sy = sphere.y;
+            const R0 = sphere.baseRadius;
+            const theme = sphere.theme;
+            const op = sphere.opacity;
+            if (op < 0.01) return;
 
-            stepSimulation();
-            render();
+            const isHovered = (hoveredNode === sphere);
 
-            if (alpha >= 0.005 || draggedNode) {
-                requestAnimationFrame(simulationLoop);
-            } else {
-                isSimulating = false;
+            ctx.save();
+            ctx.globalAlpha = op;
+
+            // 0. 计算表面张力有机平滑轮廓点 (Organic Surface Tension Contour)
+            // 振幅仅 1.6%~2.2%，低频静谧水波呼吸，三次贝塞尔光滑闭合
+            const numPoints = 36;
+            const points = [];
+            const hoverPulse = isHovered ? 1.05 : 1.0;
+            const curR = R0 * hoverPulse;
+
+            for (let i = 0; i < numPoints; i++) {
+                const theta = (i / numPoints) * Math.PI * 2;
+                const wave = 1.0 +
+                    0.020 * Math.sin(2 * theta + tTime * 0.42 + sphere.phase1) +
+                    0.014 * Math.cos(3 * theta - tTime * 0.30 + sphere.phase2) +
+                    0.008 * Math.sin(theta * 4 + tTime * 0.50 + sphere.phase3);
+                const r = curR * wave;
+                points.push({
+                    x: sx + Math.cos(theta) * r,
+                    y: sy + Math.sin(theta) * r
+                });
             }
+
+            function buildWaterContourPath() {
+                ctx.beginPath();
+                const startMidX = (points[0].x + points[numPoints - 1].x) / 2;
+                const startMidY = (points[0].y + points[numPoints - 1].y) / 2;
+                ctx.moveTo(startMidX, startMidY);
+                for (let i = 0; i < numPoints; i++) {
+                    const curr = points[i];
+                    const next = points[(i + 1) % numPoints];
+                    const midX = (curr.x + next.x) / 2;
+                    const midY = (curr.y + next.y) / 2;
+                    ctx.quadraticCurveTo(curr.x, curr.y, midX, midY);
+                }
+                ctx.closePath();
+            }
+
+            // 1. 光学层 0: 主题色柔和外发光（悬浮时增强，赋予水球存在感）
+            const glowGrad = ctx.createRadialGradient(
+                sx, sy, curR * 0.85,
+                sx, sy, curR * 1.52
+            );
+            glowGrad.addColorStop(0, withAlpha(theme.main, isHovered ? (isDark ? 0.24 : 0.18) : (isDark ? 0.14 : 0.10)));
+            glowGrad.addColorStop(1, withAlpha(theme.main, 0));
+            ctx.fillStyle = glowGrad;
+            ctx.beginPath();
+            ctx.arc(sx, sy, curR * 1.52, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 2. 光学层 1: 底面接触柔和微阴影与透镜聚光 (Contact Drop Shadow)
+            ctx.save();
+            ctx.beginPath();
+            ctx.ellipse(sx, sy + curR * 0.76, curR * 0.88, curR * 0.26, 0, 0, Math.PI * 2);
+            const shadowGrad = ctx.createRadialGradient(
+                sx, sy + curR * 0.76, curR * 0.1,
+                sx, sy + curR * 0.76, curR * 0.88
+            );
+            shadowGrad.addColorStop(0, isDark ? 'rgba(0, 0, 0, 0.40)' : 'rgba(15, 23, 42, 0.10)');
+            shadowGrad.addColorStop(0.65, isDark ? 'rgba(0, 0, 0, 0.15)' : 'rgba(15, 23, 42, 0.03)');
+            shadowGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = shadowGrad;
+            ctx.fill();
+            ctx.restore();
+
+            // 2. 光学层 2: 通透清澈水体 (Crystal Translucent Body)
+            ctx.save();
+            buildWaterContourPath();
+            ctx.clip();
+
+            const lightX = sx - curR * 0.35;
+            const lightY = sy - curR * 0.35;
+
+            // 水体渐变：中心微透光，主体显主题色，边缘收深
+            const bodyGrad = ctx.createRadialGradient(
+                lightX, lightY, curR * 0.1,
+                sx, sy, curR * 1.05
+            );
+            if (isDark) {
+                bodyGrad.addColorStop(0, 'rgba(255, 255, 255, 0.05)');
+                bodyGrad.addColorStop(0.35, withAlpha(theme.main, 0.50));
+                bodyGrad.addColorStop(0.78, withAlpha(theme.main, 0.36));
+                bodyGrad.addColorStop(1, 'rgba(15, 23, 42, 0.65)');
+            } else {
+                bodyGrad.addColorStop(0, 'rgba(255, 255, 255, 0.40)');
+                bodyGrad.addColorStop(0.35, withAlpha(theme.main, 0.42));
+                bodyGrad.addColorStop(0.80, withAlpha(theme.main, 0.22));
+                bodyGrad.addColorStop(1, 'rgba(255, 255, 255, 0.40)');
+            }
+            ctx.fillStyle = bodyGrad;
+            ctx.fill();
+
+            ctx.restore(); // 退出 clip
+
+            // 4. 光学层 4: 表面张力菲涅尔微细光缘 (Surface Tension Fresnel Rim Light)
+            buildWaterContourPath();
+            ctx.lineWidth = isHovered ? 1.8 : 1.1;
+            ctx.strokeStyle = isHovered 
+                ? theme.main 
+                : (isDark ? 'rgba(255, 255, 255, 0.40)' : 'rgba(255, 255, 255, 0.80)');
+            ctx.stroke();
+
+            // 5. 光学层 5: 羽化水光主高光（左上方柔和羽化微椭圆）
+            ctx.save();
+            ctx.translate(lightX, lightY);
+            ctx.rotate(-Math.PI / 4);
+            ctx.beginPath();
+            const hlW = curR * 0.35;
+            const hlH = curR * 0.17;
+            ctx.ellipse(0, 0, hlW, hlH, 0, 0, Math.PI * 2);
+            const hlGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, hlW);
+            hlGrad.addColorStop(0, 'rgba(255, 255, 255, 0.82)');
+            hlGrad.addColorStop(0.45, 'rgba(255, 255, 255, 0.38)');
+            hlGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+            ctx.fillStyle = hlGrad;
+            ctx.fill();
+            ctx.restore();
+
+            // 6. 水滴标题与节点徽标（字号随球体比例，超宽截断，全名见 tooltip）
+            const titleFontSize = Math.max(14, Math.min(22, curR * 0.22));
+            ctx.font = `600 ${titleFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = isDark ? '#F8FAFC' : '#0F172A';
+            if (isDark) {
+                ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
+                ctx.shadowBlur = 4;
+            } else {
+                ctx.shadowColor = 'rgba(255, 255, 255, 0.85)';
+                ctx.shadowBlur = 3;
+            }
+            const maxNameW = curR * 1.7;
+            let sphereTitle = sphere.name;
+            if (ctx.measureText(sphereTitle).width > maxNameW) {
+                while (sphereTitle.length > 1 && ctx.measureText(sphereTitle + '…').width > maxNameW) {
+                    sphereTitle = sphereTitle.slice(0, -1);
+                }
+                sphereTitle += '…';
+            }
+            ctx.fillText(sphereTitle, sx, sy - 12);
+            ctx.shadowBlur = 0;
+
+            // 底部轻透微胶囊徽标 (Child Count Badge)
+            const childCount = sphere.children ? sphere.children.length : 0;
+            const badgeText = `${childCount} 个节点`;
+            ctx.font = '500 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            const badgeW = ctx.measureText(badgeText).width + 12;
+            const badgeH = 16;
+            const badgeX = sx - badgeW / 2;
+            const badgeY = sy + 14;
+
+            drawRoundedRect(ctx, badgeX, badgeY, badgeW, badgeH, 8);
+            ctx.fillStyle = isDark ? 'rgba(15, 23, 42, 0.60)' : 'rgba(255, 255, 255, 0.80)';
+            ctx.fill();
+            // 徽标底色浸染一层主题色，让徽标与水球同调
+            ctx.fillStyle = withAlpha(theme.main, isDark ? 0.16 : 0.12);
+            ctx.fill();
+            ctx.lineWidth = 0.8;
+            ctx.strokeStyle = theme.main;
+            ctx.stroke();
+
+            ctx.fillStyle = isDark ? '#94A3B8' : '#475569';
+            ctx.fillText(badgeText, sx, badgeY + badgeH / 2);
+
+            ctx.restore();
         }
 
-        function reheat() {
-            alpha = 0.8;
-            isSimulating = true;
-            requestAnimationFrame(simulationLoop);
+        // 绘制支节点小露珠（类型语义色 + 轻透胶囊标签）
+        function drawFrostedDropletNode(ctx, node, isDark, tTime, isDimmed) {
+            const top = topicMap.get(node.topicId);
+            if (!top || top.expansion < 0.02) return;
+
+            const ep = top.expansion;
+            const tc = typeColorOf(node);
+            const colorMain = tc ? tc.main : top.theme.main;
+            const r = node.dropletRadius * ep;
+            const nx = top.x + (node.renderX - top.x) * ep;
+            const ny = top.y + (node.renderY - top.y) * ep;
+
+            const isCurrent = (selectedNodeId === node.id || hoveredNode === node);
+
+            ctx.save();
+            ctx.globalAlpha = isDimmed ? (ep * 0.18) : ep;
+
+            // 0. 类型色柔和外发光，让露珠"发亮"并与胶囊/连线同调
+            const glowGrad = ctx.createRadialGradient(nx, ny, r * 0.75, nx, ny, r * 1.9);
+            glowGrad.addColorStop(0, withAlpha(colorMain, isCurrent ? (isDark ? 0.30 : 0.22) : (isDark ? 0.18 : 0.12)));
+            glowGrad.addColorStop(1, withAlpha(colorMain, 0));
+            ctx.fillStyle = glowGrad;
+            ctx.beginPath();
+            ctx.arc(nx, ny, r * 1.9, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 1. 微型小露珠水丝张力连线 (Surface Tension Filament)
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(top.x, top.y);
+            ctx.lineTo(nx, ny);
+            ctx.strokeStyle = withAlpha(colorMain, isDark ? 0.12 : 0.09);
+            ctx.lineWidth = 0.8;
+            ctx.stroke();
+            ctx.restore();
+
+            // 2. 小露珠接触阴影
+            ctx.beginPath();
+            ctx.arc(nx, ny + r * 0.45, r * 0.85, 0, Math.PI * 2);
+            ctx.fillStyle = isDark ? 'rgba(0, 0, 0, 0.30)' : 'rgba(15, 23, 42, 0.06)';
+            ctx.fill();
+
+            // 3. 类型色通透小水滴球体
+            const lightX = nx - r * 0.32;
+            const lightY = ny - r * 0.32;
+            const grad = ctx.createRadialGradient(lightX, lightY, r * 0.1, nx, ny, r * 1.05);
+            if (isDark) {
+                grad.addColorStop(0, 'rgba(255, 255, 255, 0.30)');
+                grad.addColorStop(0.35, withAlpha(colorMain, 0.55));
+                grad.addColorStop(0.80, withAlpha(colorMain, 0.38));
+                grad.addColorStop(1, withAlpha(colorMain, 0.26));
+            } else {
+                grad.addColorStop(0, 'rgba(255, 255, 255, 0.55)');
+                grad.addColorStop(0.35, withAlpha(colorMain, 0.42));
+                grad.addColorStop(0.85, withAlpha(colorMain, 0.32));
+                grad.addColorStop(1, 'rgba(255, 255, 255, 0.40)');
+            }
+
+            ctx.beginPath();
+            ctx.arc(nx, ny, r, 0, Math.PI * 2);
+            ctx.fillStyle = grad;
+            ctx.fill();
+
+            // 4. 小露珠表面张力边缘
+            ctx.lineWidth = isCurrent ? 1.8 : 0.8;
+            ctx.strokeStyle = isCurrent ? colorMain : (isDark ? 'rgba(255, 255, 255, 0.45)' : 'rgba(255, 255, 255, 0.80)');
+            ctx.stroke();
+
+            // 4.5 选中/悬浮时的呼吸光环（约 7 秒一个周期，舒缓节奏，适合学习场景）
+            if (isCurrent && !isDimmed) {
+                const breath = (Math.sin(tTime * 0.9) + 1) / 2;
+                const haloR = r + 2.5 + breath * 3.0;
+                ctx.beginPath();
+                ctx.arc(nx, ny, haloR, 0, Math.PI * 2);
+                ctx.strokeStyle = withAlpha(colorMain, 0.16 + breath * 0.20);
+                ctx.lineWidth = 1.2;
+                ctx.stroke();
+            }
+
+            // 5. 小露珠羽化高光（收敛尺寸与强度，避免白点化淹没类型色）
+            ctx.beginPath();
+            ctx.arc(lightX, lightY, r * 0.20, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+            ctx.fill();
+
+            // 6. 轻透毛玻璃文字胶囊 (Frosted Pill Tag)
+            if (ep > 0.35) {
+                const pillFade = Math.min(1.0, (ep - 0.35) / 0.65) * (isDimmed ? 0.20 : 1.0);
+                ctx.globalAlpha = pillFade;
+
+                const pillX = nx - node.pillW / 2;
+                const pillY = ny + r + 5;
+                const pillW = node.pillW;
+                const pillH = node.pillH;
+
+                drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 7);
+                ctx.fillStyle = isCurrent
+                    ? (isDark ? 'rgba(30, 41, 59, 0.95)' : 'rgba(241, 245, 249, 0.96)')
+                    : (isDark ? 'rgba(15, 23, 42, 0.85)' : 'rgba(255, 255, 255, 0.92)');
+                ctx.fill();
+
+                ctx.lineWidth = isCurrent ? 1.4 : 0.6;
+                ctx.strokeStyle = isCurrent ? colorMain : (isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)');
+                ctx.stroke();
+
+                ctx.font = isCurrent ? '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' : '500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                // 选中态文字用类型色深/亮变体，保证明暗主题下均可达标对比度
+                ctx.fillStyle = isCurrent
+                    ? (tc ? (isDark ? tc.textLight : tc.textDark) : (isDark ? '#F8FAFC' : '#334155'))
+                    : (isDark ? '#F1F5F9' : '#1E293B');
+                ctx.fillText(node.displayName || node.name, nx, pillY + pillH / 2);
+            }
+
+            ctx.restore();
         }
 
-        // 绘制圆角矩形辅助函数
         function drawRoundedRect(ctx, x, y, width, height, radius) {
             ctx.beginPath();
             ctx.moveTo(x + radius, y);
@@ -632,220 +1316,266 @@
             ctx.closePath();
         }
 
-        // 矩形碰撞检测函数（带安全 margin）
-        function isBoxOverlap(b1, b2, margin = 4) {
-            return !(b1.x + b1.w + margin < b2.x ||
-                     b2.x + b2.w + margin < b1.x ||
-                     b1.y + b1.h + margin < b2.y ||
-                     b2.y + b2.h + margin < b1.y);
+        // 绘制关系主从流向有向箭头 (Directed Arrow)
+        function drawDirectedArrow(ctx, sx, sy, tx, ty, color, lineWidth, alpha, isHighlighted, hasLabel) {
+            const dx = tx - sx;
+            const dy = ty - sy;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < 18) return;
+
+            const baseAngle = Math.atan2(dy, dx);
+            // 若有居中标签，箭头偏向 74% 位置；无标签时在 64% 位置
+            const ratio = hasLabel ? 0.74 : 0.64;
+            const arrowPosX = sx + dx * ratio;
+            const arrowPosY = sy + dy * ratio;
+
+            const arrowLen = isHighlighted ? 8.0 : 6.0;
+            const arrowAngle = Math.PI / 6.5; // 约 27 度，现代纤细几何感
+
+            const leftX = arrowPosX - arrowLen * Math.cos(baseAngle - arrowAngle);
+            const leftY = arrowPosY - arrowLen * Math.sin(baseAngle - arrowAngle);
+            const rightX = arrowPosX - arrowLen * Math.cos(baseAngle + arrowAngle);
+            const rightY = arrowPosY - arrowLen * Math.sin(baseAngle + arrowAngle);
+
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.strokeStyle = color;
+            ctx.fillStyle = color;
+            ctx.lineWidth = Math.max(0.8, lineWidth * 0.95);
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            ctx.beginPath();
+            ctx.moveTo(leftX, leftY);
+            ctx.lineTo(arrowPosX, arrowPosY);
+            ctx.lineTo(rightX, rightY);
+            ctx.stroke();
+
+            if (isHighlighted) {
+                ctx.beginPath();
+                ctx.moveTo(arrowPosX, arrowPosY);
+                ctx.lineTo(leftX, leftY);
+                ctx.lineTo(rightX, rightY);
+                ctx.closePath();
+                ctx.fill();
+            }
+            ctx.restore();
         }
 
-        // 画布渲染引擎
+        // 主渲染管线
         function render() {
             const dpr = window.devicePixelRatio || 1;
             const w = window.innerWidth;
             const h = window.innerHeight;
+            const isDark = !document.body.classList.contains('light-theme');
 
             ctx.save();
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctx.clearRect(0, 0, w, h);
 
-            // 应用平移与缩放
+            // 背景渐晕：中心微亮、四周收暗，营造水面纵深（屏幕空间，不随视图平移缩放）
+            const bgGrad = ctx.createRadialGradient(
+                w / 2, h * 0.42, Math.min(w, h) * 0.10,
+                w / 2, h * 0.52, Math.max(w, h) * 0.78
+            );
+            if (isDark) {
+                bgGrad.addColorStop(0, '#0C111B');
+                bgGrad.addColorStop(1, '#04060B');
+            } else {
+                bgGrad.addColorStop(0, '#FDFEFF');
+                bgGrad.addColorStop(1, '#E8EEF6');
+            }
+            ctx.fillStyle = bgGrad;
+            ctx.fillRect(0, 0, w, h);
+
             ctx.translate(transform.x, transform.y);
             ctx.scale(transform.scale, transform.scale);
 
-            const isDark = document.body.classList.contains('dark-theme');
-            const edgeDefault = isDark ? 'rgba(142, 142, 147, 0.25)' : 'rgba(142, 142, 147, 0.35)';
-            const edgeActive = isDark ? '#0A84FF' : '#007AFF';
-            const labelColor = isDark ? '#8E8E93' : '#636366';
-            const activeLabelColor = isDark ? '#F5F5F7' : '#1D1D1F';
+            const focusNode = hoveredNode || (selectedNodeId ? nodeMap.get(selectedNodeId) : null);
+            const isFocusing = focusNode && !focusNode.is_topic;
+            const focusNeighbors = isFocusing ? adjMap.get(focusNode.id) : null;
 
-            const activeNode = hoveredNode || (selectedNodeId ? nodeMap.get(selectedNodeId) : null);
-            const activeNeighbors = activeNode ? (adjMap.get(activeNode.id) || new Set()) : null;
+            // 1. 在详情模式下绘制支节点之间的语义轻水流连线（带主从有向箭头，常态极简，悬浮聚焦高亮）
+            if (viewState === 'detail' && activeTopicId) {
+                const activeTop = topicMap.get(activeTopicId);
+                if (activeTop && activeTop.expansion > 0.05) {
+                    const ep = activeTop.expansion;
+                    edges.forEach(e => {
+                        if (e.source.topicId === activeTopicId && e.target.topicId === activeTopicId) {
+                            const isConnected = isFocusing && (e.source.id === focusNode.id || e.target.id === focusNode.id);
 
-            // 1. 绘制关系连线（最底层）
-            for (let i = 0; i < edges.length; i++) {
-                const e = edges[i];
-                const isEdgeActive = activeNode && (e.source.id === activeNode.id || e.target.id === activeNode.id);
-                const isDimmed = activeNode && !isEdgeActive;
+                            let edgeAlpha = ep * 0.30;
+                            let edgeLineWidth = 1.1;
+                            let showLabel = false;
 
-                ctx.beginPath();
-                ctx.moveTo(e.source.x, e.source.y);
+                            if (isFocusing) {
+                                if (isConnected) {
+                                    edgeAlpha = 0.88;
+                                    edgeLineWidth = 1.6;
+                                    showLabel = true;
+                                } else {
+                                    edgeAlpha = 0.03;
+                                }
+                            }
 
-                if (e.curvature && e.curvature !== 0) {
-                    // 双向/多重边：使用二次贝塞尔曲线平滑分离
-                    const dx = e.target.x - e.source.x;
-                    const dy = e.target.y - e.source.y;
-                    const midX = (e.source.x + e.target.x) / 2;
-                    const midY = (e.source.y + e.target.y) / 2;
-                    const ctrlX = midX - dy * e.curvature;
-                    const ctrlY = midY + dx * e.curvature;
-                    ctx.quadraticCurveTo(ctrlX, ctrlY, e.target.x, e.target.y);
-                } else {
-                    ctx.lineTo(e.target.x, e.target.y);
+                            const sx = activeTop.x + (e.source.renderX - activeTop.x) * ep;
+                            const sy = activeTop.y + (e.source.renderY - activeTop.y) * ep;
+                            const tx = activeTop.x + (e.target.renderX - activeTop.x) * ep;
+                            const ty = activeTop.y + (e.target.renderY - activeTop.y) * ep;
+                            // 高亮色优先取源节点类型语义色，退回主题色；常态用中性灰保证可见
+                            const srcTc = typeColorOf(e.source);
+                            const highlightColor = srcTc ? srcTc.main : activeTop.theme.main;
+                            const edgeColor = isConnected ? highlightColor : (isDark ? 'rgba(148, 163, 184, 0.45)' : 'rgba(100, 116, 139, 0.45)');
+
+                            // 绘制主线（聚焦高亮时叠加流动虚线，体现水流方向感）
+                            ctx.save();
+                            ctx.globalAlpha = edgeAlpha;
+                            ctx.beginPath();
+                            ctx.moveTo(sx, sy);
+                            ctx.lineTo(tx, ty);
+                            ctx.strokeStyle = edgeColor;
+                            ctx.lineWidth = edgeLineWidth;
+                            ctx.stroke();
+
+                            if (isConnected) {
+                                ctx.setLineDash([7, 5]);
+                                ctx.lineDashOffset = -((time * 10) % 12);
+                                ctx.strokeStyle = isDark ? 'rgba(248, 250, 252, 0.55)' : 'rgba(255, 255, 255, 0.85)';
+                                ctx.lineWidth = Math.max(1.0, edgeLineWidth * 0.7);
+                                ctx.stroke();
+                                ctx.setLineDash([]);
+                            }
+                            ctx.restore();
+
+                            // 绘制主从流向有向箭头
+                            const hasLabel = showLabel && Boolean(e.label);
+                            drawDirectedArrow(ctx, sx, sy, tx, ty, edgeColor, edgeLineWidth, edgeAlpha, isConnected, hasLabel);
+
+                            // 关系语义微型标签：仅在交互聚焦高亮且有标签时浮现
+                            if (hasLabel) {
+                                const mx = (sx + tx) / 2;
+                                const my = (sy + ty) / 2;
+                                const displayLabel = e.label;
+                                ctx.font = '600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+                                const lw = ctx.measureText(displayLabel).width + 12;
+                                const lh = 18;
+                                drawRoundedRect(ctx, mx - lw / 2, my - lh / 2, lw, lh, 5);
+                                ctx.fillStyle = isDark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.95)';
+                                ctx.fill();
+                                ctx.strokeStyle = highlightColor;
+                                ctx.lineWidth = 1.0;
+                                ctx.stroke();
+
+                                ctx.textAlign = 'center';
+                                ctx.textBaseline = 'middle';
+                                ctx.fillStyle = isDark ? '#F1F5F9' : '#0F172A';
+                                ctx.fillText(displayLabel, mx, my);
+                            }
+                        }
+                    });
                 }
-
-                ctx.strokeStyle = isEdgeActive ? edgeActive : (isDimmed ? (isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.06)') : edgeDefault);
-                ctx.lineWidth = isEdgeActive ? 2.2 : 1.2;
-                ctx.stroke();
             }
 
-            // 2. 绘制线上关系标签（中间层：实心胶囊背景，错峰排列，彻底遮盖下层连线）
-            ctx.font = '500 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-            for (let i = 0; i < edges.length; i++) {
-                const e = edges[i];
-                if (!e.label) continue;
-                const isEdgeActive = activeNode && (e.source.id === activeNode.id || e.target.id === activeNode.id);
-                const isDimmed = activeNode && !isEdgeActive;
+            // 2. 绘制主水球（按 Z-Index 景深分层，后排先画、前排后画）
+            const sortedTopics = [...topics].sort((a, b) => a.zIndex - b.zIndex);
+            sortedTopics.forEach(top => {
+                drawRealistic3DWaterSphere(ctx, top, isDark, time);
+            });
 
-                // 若处于高亮模式且当前边非关联边，则隐藏其标签以减少视觉干扰
-                if (isDimmed) continue;
-
-                const lMetric = ctx.measureText(e.label);
-                const lW = Math.ceil(lMetric.width) + 14;
-                const lH = 18;
-
-                const t = e.tagT !== undefined ? e.tagT : 0.5;
-                const dx = e.target.x - e.source.x;
-                const dy = e.target.y - e.source.y;
-                let posX, posY;
-
-                if (e.curvature && e.curvature !== 0) {
-                    const midX = (e.source.x + e.target.x) / 2;
-                    const midY = (e.source.y + e.target.y) / 2;
-                    const ctrlX = midX - dy * e.curvature;
-                    const ctrlY = midY + dx * e.curvature;
-                    const invT = 1 - t;
-                    posX = invT * invT * e.source.x + 2 * invT * t * ctrlX + t * t * e.target.x;
-                    posY = invT * invT * e.source.y + 2 * invT * t * ctrlY + t * t * e.target.y;
-                } else {
-                    posX = e.source.x + dx * t;
-                    posY = e.source.y + dy * t;
+            // 3. 在详情模式下绘制支节点小水滴晶体
+            if (viewState === 'detail' && activeTopicId) {
+                const activeTop = topicMap.get(activeTopicId);
+                if (activeTop) {
+                    activeTop.children.forEach(c => {
+                        const isDimmed = isFocusing && (c.id !== focusNode.id && (!focusNeighbors || !focusNeighbors.has(c.id)));
+                        drawFrostedDropletNode(ctx, c, isDark, time, isDimmed);
+                    });
                 }
-
-                // 绘制实心微胶囊底框（彻底盖住连线）
-                ctx.save();
-                const boxX = posX - lW / 2;
-                const boxY = posY - lH / 2;
-                drawRoundedRect(ctx, boxX, boxY, lW, lH, 5);
-
-                // 实心不透明背景，防止线条穿透文字
-                ctx.fillStyle = isEdgeActive 
-                    ? (isDark ? '#1C2E4A' : '#EBF5FF') 
-                    : (isDark ? '#242426' : '#FFFFFF');
-                ctx.fill();
-
-                ctx.lineWidth = isEdgeActive ? 1.4 : 0.8;
-                ctx.strokeStyle = isEdgeActive 
-                    ? (isDark ? '#0A84FF' : '#007AFF') 
-                    : (isDark ? 'rgba(255, 255, 255, 0.18)' : 'rgba(0, 0, 0, 0.15)');
-                ctx.stroke();
-
-                // 绘制文字
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillStyle = isEdgeActive ? (isDark ? '#64D2FF' : '#0064D6') : (isDark ? '#AEAEB2' : '#48484A');
-                ctx.fillText(e.label, posX, posY);
-                ctx.restore();
-            }
-
-            // 3. 绘制节点与独立胶囊文字徽章（最顶层）
-            for (let i = 0; i < nodes.length; i++) {
-                const n = nodes[i];
-                const palette = TYPE_PALETTES[n.type] || TYPE_PALETTES.other;
-                const icon = TYPE_ICONS[n.type] || '🏷️';
-                const isCurrent = activeNode && n.id === activeNode.id;
-                const isNeighbor = activeNeighbors && activeNeighbors.has(n.id);
-                const isDimmed = activeNode && !isCurrent && !isNeighbor;
-
-                ctx.save();
-                ctx.globalAlpha = isDimmed ? 0.42 : 1.0;
-
-                // 节点外光晕（仅在选中时呈现）
-                if (isCurrent) {
-                    ctx.beginPath();
-                    ctx.arc(n.x, n.y, n.size + 7, 0, Math.PI * 2);
-                    ctx.fillStyle = isDark ? 'rgba(10, 132, 255, 0.35)' : 'rgba(0, 122, 255, 0.25)';
-                    ctx.fill();
-                }
-
-                // 节点实体圆
-                ctx.beginPath();
-                ctx.arc(n.x, n.y, n.size, 0, Math.PI * 2);
-                ctx.fillStyle = palette.fill;
-                ctx.fill();
-                ctx.lineWidth = isCurrent ? 2.8 : 2;
-                ctx.strokeStyle = isCurrent ? (isDark ? '#FFFFFF' : '#004085') : palette.stroke;
-                ctx.stroke();
-
-                // 节点内部：绘制居中的分类图标
-                ctx.font = `${Math.max(12, Math.min(18, n.size * 0.75))}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
-                ctx.fillStyle = palette.text;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(icon, n.x, n.y);
-
-                // 节点下方：绘制独立的精致胶囊文本徽章（实心背景，盖住穿过的所有发散连线）
-                const pillX = n.x - n.pillW / 2;
-                const pillY = n.y + n.size + 6;
-                const pillW = n.pillW;
-                const pillH = n.pillH;
-                const radius = 6;
-
-                ctx.save();
-                drawRoundedRect(ctx, pillX, pillY, pillW, pillH, radius);
-                ctx.fillStyle = isCurrent 
-                    ? (isDark ? '#1C2E4A' : '#EBF5FF')
-                    : (isDark ? '#2C2C2E' : '#FFFFFF');
-                ctx.fill();
-
-                ctx.lineWidth = isCurrent ? 1.5 : 0.8;
-                ctx.strokeStyle = isCurrent 
-                    ? (isDark ? '#0A84FF' : '#007AFF') 
-                    : (isDark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(0, 0, 0, 0.12)');
-                ctx.stroke();
-
-                // 绘制胶囊内实体全称
-                ctx.font = isCurrent ? 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' : '500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillStyle = isCurrent ? (isDark ? '#64D2FF' : '#0064D6') : (isDark ? '#F5F5F7' : '#1D1D1F');
-                ctx.fillText(n.name, n.x, pillY + pillH / 2);
-                ctx.restore();
-
-                ctx.restore();
             }
 
             ctx.restore();
         }
 
-        // 视口自适应（预留底部图例安全边距）
-        function fitView() {
-            if (nodes.length === 0) return;
-            const w = window.innerWidth;
-            const h = window.innerHeight;
+        // 动画流转循环：基于真实时间增量驱动（与屏幕刷新率无关，60/120Hz 节奏一致）；
+        // 整体节奏刻意舒缓，营造适合沉浸学习的水面静谥感
+        let _lastFrameTs = 0;
+        function renderLoop(ts) {
+            const now = ts || performance.now();
+            if (!_lastFrameTs) _lastFrameTs = now;
+            const dt = Math.min(now - _lastFrameTs, 50); // 切后台回来不跳变
+            _lastFrameTs = now;
+            time += dt / 1000;
 
-            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-            nodes.forEach(n => {
-                if (n.x < minX) minX = n.x;
-                if (n.x > maxX) maxX = n.x;
-                if (n.y < minY) minY = n.y;
-                if (n.y > maxY) maxY = n.y;
+            // 平滑插值动画（约 0.6s 完成淡入淡出，柔和不突兀）
+            const ease = Math.min(1, (dt / 1000) * 5);
+            topics.forEach(t => {
+                t.opacity += (t.targetOpacity - t.opacity) * ease;
+                t.expansion += (t.targetExpansion - t.expansion) * ease;
             });
 
-            const padding = 100;
-            const paddingBottom = 160; // 预留底部图例栏安全空间
-            const graphW = Math.max(maxX - minX + padding * 2, 100);
-            const graphH = Math.max(maxY - minY + padding + paddingBottom, 100);
+            if (viewState === 'macro') {
+                stepCrowdedSpheresPhysics();
+            } else if (viewState === 'detail' && activeTopicId) {
+                const activeTop = topicMap.get(activeTopicId);
+                if (activeTop) {
+                    // 支节点保持静态稳定排布（不自转）
+                    activeTop.children.forEach(c => {
+                        c.renderX = activeTop.x + Math.cos(c.orbitAngle) * c.orbitRadius;
+                        c.renderY = activeTop.y + Math.sin(c.orbitAngle) * c.orbitRadius;
+                    });
+                }
+            }
 
-            const scaleX = w / graphW;
-            const scaleY = h / graphH;
-            transform.scale = Math.max(0.3, Math.min(1.4, Math.min(scaleX, scaleY)));
+            render();
+            requestAnimationFrame(renderLoop);
+        }
 
-            const graphCenterX = (minX + maxX) / 2;
-            const graphCenterY = (minY + maxY - (paddingBottom - padding) / 2) / 2;
-            transform.x = w / 2 - graphCenterX * transform.scale;
-            transform.y = h / 2 - graphCenterY * transform.scale;
+        function reheat() {
+            alpha = 0.8;
+        }
+
+        // 视口自适应居中（默认占屏幕约 80% 黄金主要区域）
+        function fitView() {
+            if (topics.length === 0) return;
+            const w = Math.max(300, window.innerWidth || 800);
+            const h = Math.max(300, window.innerHeight || 600);
+
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            topics.forEach(t => {
+                const r = (t.baseRadius || 75) + 30;
+                minX = Math.min(minX, t.x - r);
+                maxX = Math.max(maxX, t.x + r);
+                minY = Math.min(minY, t.y - r);
+                maxY = Math.max(maxY, t.y + r);
+            });
+
+            const clusterW = Math.max(maxX - minX, 100);
+            const clusterH = Math.max(maxY - minY, 100);
+
+            // 占屏幕 80% 黄金主要面积
+            const targetAreaW = w * 0.82;
+            const targetAreaH = h * 0.80;
+
+            const scaleX = targetAreaW / clusterW;
+            const scaleY = targetAreaH / clusterH;
+            
+            if (isFinite(scaleX) && isFinite(scaleY) && scaleX > 0 && scaleY > 0) {
+                transform.scale = Math.max(0.25, Math.min(1.5, Math.min(scaleX, scaleY)));
+                const graphCenterX = (minX + maxX) / 2;
+                const graphCenterY = (minY + maxY) / 2;
+                transform.x = w / 2 - graphCenterX * transform.scale;
+                transform.y = h / 2 - graphCenterY * transform.scale;
+            } else {
+                transform.scale = 1.0;
+                transform.x = 0;
+                transform.y = 0;
+            }
+
+            if (!isFinite(transform.x) || !isFinite(transform.y) || !isFinite(transform.scale)) {
+                transform.x = 0;
+                transform.y = 0;
+                transform.scale = 1.0;
+            }
 
             render();
         }
@@ -857,7 +1587,7 @@
         }
 
         function zoomAt(screenX, screenY, factor) {
-            const newScale = Math.max(0.15, Math.min(3.5, transform.scale * factor));
+            const newScale = Math.max(0.2, Math.min(3.5, transform.scale * factor));
             const mouseWorldX = (screenX - transform.x) / transform.scale;
             const mouseWorldY = (screenY - transform.y) / transform.scale;
             transform.scale = newScale;
@@ -866,7 +1596,6 @@
             render();
         }
 
-        // 坐标转换
         function screenToWorld(sx, sy) {
             return {
                 x: (sx - transform.x) / transform.scale,
@@ -875,96 +1604,92 @@
         }
 
         function findNodeAt(worldX, worldY) {
-            for (let i = nodes.length - 1; i >= 0; i--) {
-                const n = nodes[i];
-                const dx = worldX - n.x;
-                const dy = worldY - n.y;
-                if (dx * dx + dy * dy <= n.size * n.size) {
-                    return n;
+            if (viewState === 'macro') {
+                // 按 Z-Index 优先命中前清水球
+                const frontSorted = [...topics].sort((a, b) => b.zIndex - a.zIndex);
+                for (let top of frontSorted) {
+                    const dx = worldX - top.x;
+                    const dy = worldY - top.y;
+                    if (dx * dx + dy * dy <= top.baseRadius * top.baseRadius) {
+                        return top;
+                    }
+                }
+            } else if (viewState === 'detail' && activeTopicId) {
+                const activeTop = topicMap.get(activeTopicId);
+                if (activeTop) {
+                    // 检测支节点
+                    for (let c of activeTop.children) {
+                        const nx = activeTop.x + (c.renderX - activeTop.x) * activeTop.expansion;
+                        const ny = activeTop.y + (c.renderY - activeTop.y) * activeTop.expansion;
+                        const dx = worldX - nx;
+                        const dy = worldY - ny;
+                        if (dx * dx + dy * dy <= (c.dropletRadius + 6) * (c.dropletRadius + 6)) {
+                            return c;
+                        }
+                    }
+                    // 检测主水球
+                    const dx = worldX - activeTop.x;
+                    const dy = worldY - activeTop.y;
+                    if (dx * dx + dy * dy <= activeTop.baseRadius * activeTop.baseRadius) {
+                        return activeTop;
+                    }
                 }
             }
             return null;
         }
 
-        // 平滑相机对焦动画引擎（聚焦点击节点及其所有关联邻居节点群）
         let focusAnimationId = null;
+
+        function animateFocusToTopic(topicNode) {
+            if (!topicNode) return;
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+
+            const targetScale = Math.max(0.65, Math.min(1.2, (h * 0.75) / (topicNode.baseRadius * 4.2)));
+            const targetX = w / 2 - topicNode.x * targetScale;
+            const targetY = h / 2 - topicNode.y * targetScale;
+
+            animateCameraTransition(targetX, targetY, targetScale);
+        }
 
         function animateFocusTo(targetNode) {
             if (!targetNode) return;
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+
+            const targetScale = 1.1;
+            const nx = targetNode.renderX || targetNode.x;
+            const ny = targetNode.renderY || targetNode.y;
+            const targetX = w / 2 - nx * targetScale;
+            const targetY = h / 2 - ny * targetScale;
+
+            animateCameraTransition(targetX, targetY, targetScale);
+        }
+
+        function animateCameraTransition(targetX, targetY, targetScale) {
             if (focusAnimationId) {
                 cancelAnimationFrame(focusAnimationId);
                 focusAnimationId = null;
             }
 
-            // 1. 获取目标节点及其所有直接相连的邻居节点（形成一阶子图群）
-            const neighborIds = adjMap.get(targetNode.id) || new Set();
-            const clusterNodes = [targetNode];
-            neighborIds.forEach(id => {
-                const n = nodeMap.get(id);
-                if (n) clusterNodes.push(n);
-            });
-
-            // 2. 计算整个相关节点群的外接包围盒 (Bounding Box)
-            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-            clusterNodes.forEach(n => {
-                const padW = (n.pillW ? n.pillW / 2 : n.size) + 24;
-                const padH = n.size + (n.pillH || 20) + 24;
-                minX = Math.min(minX, n.x - padW);
-                maxX = Math.max(maxX, n.x + padW);
-                minY = Math.min(minY, n.y - padH);
-                maxY = Math.max(maxY, n.y + padH);
-            });
-
-            const clusterW = Math.max(maxX - minX, 100);
-            const clusterH = Math.max(maxY - minY, 100);
-            const clusterCenterX = (minX + maxX) / 2;
-            const clusterCenterY = (minY + maxY) / 2;
-
-            const w = window.innerWidth;
-            const h = window.innerHeight;
-
-            // 3. 计算可用视野（在宽屏下扣除右侧 420px 抽屉占位，预留上下左右安全内边距）
-            const availW = w > 850 ? Math.max(300, w - 450) : Math.max(200, w - 40);
-            const availH = Math.max(200, h - 90);
-
-            // 4. 计算最佳缩放比例：将整个相关节点群完整纳入视野中
-            const scaleX = availW / (clusterW + 40);
-            const scaleY = availH / (clusterH + 40);
-            let finalScale = Math.min(scaleX, scaleY);
-            
-            // 舒适清晰度限制（单节点时放大到 1.15，多关联邻居时自适应但保持在清晰范围 [0.45, 1.25]）
-            if (clusterNodes.length <= 1) {
-                finalScale = 1.15;
-            } else {
-                finalScale = Math.max(0.45, Math.min(1.25, finalScale));
-            }
-
-            // 5. 目标视口中心对齐
-            const visualCenterX = w > 850 ? (w - 420) / 2 : (w / 2);
-            const visualCenterY = h / 2;
-
-            const targetTransformX = visualCenterX - clusterCenterX * finalScale;
-            const targetTransformY = visualCenterY - clusterCenterY * finalScale;
-
             const startX = transform.x;
             const startY = transform.y;
             const startScale = transform.scale;
-
             const startTime = performance.now();
-            const duration = 400; // 400ms 丝滑平移动画
+            const duration = 650;
 
-            function cubicEaseInOut(t) {
-                return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+            function cubicEaseOut(t) {
+                return 1 - Math.pow(1 - t, 4);
             }
 
             function frame(now) {
                 const elapsed = now - startTime;
                 const progress = Math.min(1, elapsed / duration);
-                const ease = cubicEaseInOut(progress);
+                const ease = cubicEaseOut(progress);
 
-                transform.x = startX + (targetTransformX - startX) * ease;
-                transform.y = startY + (targetTransformY - startY) * ease;
-                transform.scale = startScale + (finalScale - startScale) * ease;
+                transform.x = startX + (targetX - startX) * ease;
+                transform.y = startY + (targetY - startY) * ease;
+                transform.scale = startScale + (targetScale - startScale) * ease;
 
                 render();
 
@@ -978,24 +1703,23 @@
             focusAnimationId = requestAnimationFrame(frame);
         }
 
-        // 交互事件监听
         canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
             const factor = e.deltaY < 0 ? 1.12 : 0.89;
             zoomAt(e.clientX, e.clientY, factor);
         }, { passive: false });
 
-        let dragNodePending = null;
-        let isNodeActuallyDragged = false;
+        let dragPending = null;
+        let isActuallyDragged = false;
 
         canvas.addEventListener('mousedown', (e) => {
             if (e.button !== 0) return;
             const pos = screenToWorld(e.clientX, e.clientY);
             const clicked = findNodeAt(pos.x, pos.y);
 
-            if (clicked) {
-                dragNodePending = { node: clicked, startX: e.clientX, startY: e.clientY };
-                isNodeActuallyDragged = false;
+            if (clicked && viewState === 'macro' && clicked.is_topic) {
+                dragPending = { node: clicked, startX: e.clientX, startY: e.clientY };
+                isActuallyDragged = false;
             } else {
                 isDraggingCanvas = true;
                 dragStart.x = e.clientX - transform.x;
@@ -1004,12 +1728,11 @@
         });
 
         window.addEventListener('mousemove', (e) => {
-            // 只有当鼠标实际位移超过 4px 时，才视作拖拽节点，并启动物理扰动
-            if (dragNodePending) {
-                const dist = Math.hypot(e.clientX - dragNodePending.startX, e.clientY - dragNodePending.startY);
+            if (dragPending) {
+                const dist = Math.hypot(e.clientX - dragPending.startX, e.clientY - dragPending.startY);
                 if (dist > 4 || draggedNode) {
-                    draggedNode = dragNodePending.node;
-                    isNodeActuallyDragged = true;
+                    draggedNode = dragPending.node;
+                    isActuallyDragged = true;
                     const pos = screenToWorld(e.clientX, e.clientY);
                     draggedNode.fx = pos.x;
                     draggedNode.fy = pos.y;
@@ -1029,13 +1752,12 @@
                 return;
             }
 
-            // 悬停检测
             const pos = screenToWorld(e.clientX, e.clientY);
             const hovered = findNodeAt(pos.x, pos.y);
+            canvas.style.cursor = hovered ? 'pointer' : 'grab';
 
             if (hovered !== hoveredNode) {
                 hoveredNode = hovered;
-                render();
                 if (hovered) {
                     showTooltip(hovered, e.clientX, e.clientY);
                 } else {
@@ -1046,20 +1768,19 @@
             }
         });
 
-        window.addEventListener('mouseup', (e) => {
+        window.addEventListener('mouseup', () => {
             if (draggedNode) {
                 draggedNode.fx = null;
                 draggedNode.fy = null;
                 draggedNode = null;
             }
-            dragNodePending = null;
+            dragPending = null;
             isDraggingCanvas = false;
         });
 
         canvas.addEventListener('click', (e) => {
-            // 若刚经历大幅拖拽位移，则忽略点击聚焦
-            if (isNodeActuallyDragged) {
-                isNodeActuallyDragged = false;
+            if (isActuallyDragged) {
+                isActuallyDragged = false;
                 return;
             }
 
@@ -1067,27 +1788,102 @@
             const clicked = findNodeAt(pos.x, pos.y);
 
             if (clicked) {
-                selectedNodeId = clicked.id;
-                // 平滑把视口镜头推近并聚焦在点击的节点中心
-                animateFocusTo(clicked);
-                if (window.chrome && window.chrome.webview) {
-                    window.chrome.webview.postMessage(JSON.stringify({
-                        type: 'node_click',
-                        nodeId: clicked.id
-                    }));
+                if (clicked.is_topic) {
+                    if (viewState === 'macro') {
+                        enterDetailMode(clicked.id);
+                    }
+                    if (window.chrome && window.chrome.webview) {
+                        window.chrome.webview.postMessage(JSON.stringify({
+                            type: 'node_click',
+                            nodeId: clicked.id
+                        }));
+                    }
+                } else {
+                    selectedNodeId = clicked.id;
+                    animateFocusTo(clicked);
+                    if (window.chrome && window.chrome.webview) {
+                        window.chrome.webview.postMessage(JSON.stringify({
+                            type: 'node_click',
+                            nodeId: clicked.id
+                        }));
+                    }
                 }
             } else {
-                selectedNodeId = null;
-                render();
+                if (viewState === 'detail') {
+                    exitDetailMode();
+                } else if (selectedNodeId) {
+                    selectedNodeId = null;
+                    render();
+                }
             }
         });
 
+        function escapeHtml(s) {
+            return String(s ?? '').replace(/[&<>"']/g, ch => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[ch]);
+        }
+
+        function entityLabelOf(n) {
+            const tc = typeColorOf(n);
+            return (tc && tc.label) || n.type || '概念';
+        }
+
+        // 汇总一组实体的类型分布，如「技术 3 · 概念 4 · 人物 1」
+        function entityTypeDistribution(children) {
+            const counts = new Map();
+            children.forEach(c => {
+                const lb = entityLabelOf(c);
+                counts.set(lb, (counts.get(lb) || 0) + 1);
+            });
+            return [...counts.entries()].map(([k, v]) => `${k} ${v}`).join(' · ');
+        }
+
+        // 按关联度/出现次数取最重要的前 N 个实体名
+        function coreEntityNames(children, max = 6) {
+            return [...children]
+                .sort((a, b) => ((b.degree || 0) - (a.degree || 0)) || (((b.raw && b.raw.size) || 0) - ((a.raw && a.raw.size) || 0)))
+                .slice(0, max)
+                .map(c => c.displayName || c.name)
+                .join('、');
+        }
+
         function showTooltip(node, screenX, screenY) {
-            ttTitle.textContent = `${node.name}`;
-            ttMeta.innerHTML = `
-                <div>类型: <strong>${node.type}</strong></div>
-                <div>关联文档数: <strong>${node.rawSize}</strong></div>
-            `;
+            if (node.is_topic) {
+                // 主水球（集合节点）：由所辖实体实时生成内容概览
+                const children = node.children || [];
+                ttTitle.textContent = `🏷️ ${node.name}`;
+                if (children.length === 0) {
+                    ttMeta.innerHTML = `<div class="desc">该集合暂无图谱实体，可通过大模型抽取自动生成。</div>`;
+                } else {
+                    const dist = entityTypeDistribution(children);
+                    ttMeta.innerHTML = `
+                        <div class="desc">共 <strong>${children.length}</strong> 个实体${dist ? ` · ${escapeHtml(dist)}` : ''}</div>
+                        <div class="desc">核心实体：${escapeHtml(coreEntityNames(children))}</div>
+                        <div class="muted">点击展开，查看关联实体网络</div>
+                    `;
+                }
+            } else if (node.type === 'topic') {
+                // 主题实体（LLM 抽取的高维主题）：聚合挂载在其下的实体
+                const memberIds = adjMap.get(node.id) || new Set();
+                const members = [...memberIds].map(id => nodeMap.get(id)).filter(n => n && !n.is_topic);
+                const dist = entityTypeDistribution(members);
+                ttTitle.textContent = `🧭 主题：${node.name}`;
+                ttMeta.innerHTML = `
+                    <div>类型: <strong>主题</strong></div>
+                    ${members.length ? `
+                    <div class="desc">聚合 <strong>${members.length}</strong> 个实体${dist ? ` · ${escapeHtml(dist)}` : ''}</div>
+                    <div class="desc">核心实体：${escapeHtml(coreEntityNames(members))}</div>` : ''}
+                    <div>所属分类: <strong>${escapeHtml(node.topicId ? (topicMap.get(node.topicId)?.name || '核心主题') : '通用分类')}</strong></div>
+                `;
+            } else {
+                ttTitle.textContent = `📄 ${node.name}`;
+                ttMeta.innerHTML = `
+                    <div>类型: <strong>${escapeHtml(entityLabelOf(node))}</strong></div>
+                    <div>所属分类: <strong>${escapeHtml(node.topicId ? (topicMap.get(node.topicId)?.name || '核心主题') : '通用分类')}</strong></div>
+                    <div>关联度: <strong>${node.degree || 1}</strong></div>
+                `;
+            }
             tooltip.style.left = `${screenX + 12}px`;
             tooltip.style.top = `${screenY + 12}px`;
             tooltip.style.display = 'block';
@@ -1097,6 +1893,103 @@
             tooltip.style.display = 'none';
         }
 
+        // 极速搜索
+        searchInput.addEventListener('input', () => {
+            const query = searchInput.value.trim().toLowerCase();
+            searchQuery = query;
+            matchedNodeIds.clear();
+
+            if (!query) {
+                searchClear.style.display = 'none';
+                shortcutHint.style.display = 'inline-block';
+                searchDropdown.style.display = 'none';
+                return;
+            }
+
+            searchClear.style.display = 'inline-block';
+            shortcutHint.style.display = 'none';
+
+            searchDropdownItems = [];
+            [...topics, ...nodes].forEach(n => {
+                if (n.name.toLowerCase().includes(query)) {
+                    matchedNodeIds.add(n.id);
+                    searchDropdownItems.push(n);
+                }
+            });
+
+            renderSearchDropdown();
+        });
+
+        function clearSearch() {
+            searchInput.value = '';
+            searchQuery = '';
+            matchedNodeIds.clear();
+            searchClear.style.display = 'none';
+            shortcutHint.style.display = 'inline-block';
+            searchDropdown.style.display = 'none';
+        }
+
+        function renderSearchDropdown() {
+            if (searchDropdownItems.length === 0) {
+                searchDropdown.innerHTML = '<div style="padding: 8px; font-size: 11px; color: var(--text-secondary); text-align: center;">未找到匹配内容</div>';
+                searchDropdown.style.display = 'block';
+                return;
+            }
+
+            let html = '';
+            const topResults = searchDropdownItems.slice(0, 8);
+            topResults.forEach((n, idx) => {
+                const isSelected = idx === selectedSearchIndex ? 'selected' : '';
+                const topicObj = n.is_topic ? n : topicMap.get(n.topicId);
+                const nodeTc = n.is_topic ? null : typeColorOf(n);
+                const dotColor = nodeTc ? nodeTc.main : (topicObj ? topicObj.theme.main : '#3B82F6');
+                const topicName = n.is_topic ? '核心主题' : (topicObj?.name || '核心分类');
+
+                html += `
+                    <div class="search-item ${isSelected}" onclick="selectSearchNode('${n.id}')">
+                        <div class="search-item-left">
+                            <span class="search-item-dot" style="background:${dotColor}"></span>
+                            <span class="search-item-name">${n.name}</span>
+                        </div>
+                        <span class="search-item-topic">${topicName}</span>
+                    </div>
+                `;
+            });
+
+            searchDropdown.innerHTML = html;
+            searchDropdown.style.display = 'block';
+        }
+
+        function selectSearchNode(nodeId) {
+            searchDropdown.style.display = 'none';
+            window.focusNode(nodeId);
+            if (window.chrome && window.chrome.webview) {
+                window.chrome.webview.postMessage(JSON.stringify({
+                    type: 'node_click',
+                    nodeId: nodeId
+                }));
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === '/' && document.activeElement !== searchInput) {
+                e.preventDefault();
+                searchInput.focus();
+                searchInput.select();
+            } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+                e.preventDefault();
+                searchInput.focus();
+                searchInput.select();
+            } else if (e.key === 'Escape') {
+                if (viewState === 'detail') {
+                    exitDetailMode();
+                } else {
+                    clearSearch();
+                    searchInput.blur();
+                }
+            }
+        });
+
         function requestExtract() {
             if (window.chrome && window.chrome.webview) {
                 window.chrome.webview.postMessage(JSON.stringify({
@@ -1105,14 +1998,14 @@
             }
         }
 
-        // 初始化尺寸
         resizeCanvas();
 
         if (window.__graphData) {
             renderGraph(window.__graphData);
+        } else {
+            initFluidWaterSphereGraph({ nodes: [], edges: [] });
         }
 
-        // 触发与 C# 宿主的握手通知
         notifyReady();
         setTimeout(notifyReady, 200);
         setTimeout(notifyReady, 800);

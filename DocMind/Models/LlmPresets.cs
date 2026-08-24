@@ -102,6 +102,26 @@ public static class LlmPresetCatalog
             "OpenAI 原生接口",
             ConsoleUrl: "https://platform.openai.com/api-keys"
         ),
+        new(
+            "anthropic",
+            "🟠 Anthropic Claude 官方",
+            "anthropic",
+            "https://api.anthropic.com",
+            "claude-sonnet-4-5",
+            new[] { "claude-sonnet-4-5", "claude-3-5-haiku-latest", "claude-opus-4-1" },
+            "Anthropic Claude 系列，代码与长文档理解能力顶级",
+            ConsoleUrl: "https://console.anthropic.com/settings/keys"
+        ),
+        new(
+            "gemini",
+            "🔷 Google Gemini 官方",
+            "gemini",
+            "https://generativelanguage.googleapis.com",
+            "gemini-2.5-flash",
+            new[] { "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash" },
+            "Google Gemini 系列，多模态与超长上下文支持好",
+            ConsoleUrl: "https://aistudio.google.com/app/apikey"
+        ),
     };
 }
 

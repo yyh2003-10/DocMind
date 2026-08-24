@@ -1,5 +1,29 @@
 namespace DocMind.Models;
 
+/// <summary>按请求携带的服务商配置（对应后端 ProviderConfigIn）。
+/// 对话页「点选模型即切服务商」时随 /v1/chat 请求传入，按请求生效、不污染后端全局配置；
+/// 全部字段为 null/空时后端忽略，等同使用全局配置。</summary>
+public sealed record ProviderConfig
+{
+    /// <summary>协议类型（openai/anthropic/gemini/ollama）；null = 沿用后端全局 provider。</summary>
+    public string? Provider { get; init; }
+
+    /// <summary>API Key；null/空 = 沿用后端当前配置的 key。</summary>
+    public string? ApiKey { get; init; }
+
+    /// <summary>API 基础地址；null/空 = 沿用后端当前配置。</summary>
+    public string? BaseUrl { get; init; }
+
+    /// <summary>模型名；null/空 = 沿用后端当前配置。</summary>
+    public string? Model { get; init; }
+
+    /// <summary>温度覆盖；null = 沿用后端配置。</summary>
+    public double? Temperature { get; init; }
+
+    /// <summary>最大 token 覆盖；null = 沿用后端配置。</summary>
+    public int? MaxTokens { get; init; }
+}
+
 /// <summary>POST /v1/chat 请求体。</summary>
 public sealed record ChatRequest
 {
@@ -22,6 +46,11 @@ public sealed record ChatRequest
     /// <summary>按请求覆盖模型名（对话页快速切换模型）；null = 用设置页配置的 llm_model。</summary>
     public string? Model { get; init; }
 
+    /// <summary>按请求携带的服务商配置（对话页点选模型即切服务商）；null = 用后端全局配置。
+    /// 多服务商并存时按请求生效，不修改后端全局配置。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("providerConfig")]
+    public ProviderConfig? ProviderConfig { get; init; }
+
     /// <summary>是否开启 AI 实时联网搜索拓宽知识来向。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("enableWebSearch")]
     public bool EnableWebSearch { get; init; }
@@ -37,4 +66,13 @@ public sealed record ChatRequest
     /// <summary>本次对话临时附带的本地文档或图片路径列表（由后端工具实时提取与OCR）。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("attachments")]
     public IReadOnlyList<string>? Attachments { get; init; }
+
+    /// <summary>联网搜索 GitHub 通道用的个人令牌（每个用户填自己的，随请求携带；
+    /// 留空 = 用 GitHub 公开额度 10 次/分钟）。绝不写入后端全局配置，避免多用户共享同一账户。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("githubToken")]
+    public string? GithubToken { get; init; }
+
+    /// <summary>RAG 问答模式（"strict" / "hybrid"）；null = 沿用后端全局配置。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("ragMode")]
+    public string? RagMode { get; init; }
 }

@@ -140,7 +140,29 @@ class LLMClient(ABC):
         timeout: float | None = None,
         stop_event: Any | None = None,
     ) -> Iterator[str]:
-        """流式对话，逐 token 产出（带超时保护与取消事件支持）。
+        """流式对话，逐 token 产出（仅正文；推理链见 stream_chat_tagged）。"""
+        for kind, text in self.stream_chat_tagged(
+            messages, temperature, max_tokens, timeout, stop_event
+        ):
+            if kind == "content":
+                yield text
+
+    def stream_chat_tagged(
+        self,
+        messages: list[dict],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+        stop_event: Any | None = None,
+    ) -> Iterator[tuple[str, str]]:
+        """流式对话，产出 (kind, text) 标记帧：kind ∈ {"thinking", "content"}。
+
+        - "thinking"：模型推理链（如 DeepSeek-R1 / Qwen3 的 reasoning_content），
+          仅在支持推理的提供商实现中产出；
+        - "content"：最终回答正文。
+
+        默认实现把全部输出当作 content；支持推理的提供商会覆写
+        `_do_stream_chat_tagged`。带超时保护与取消事件支持。
 
         Args:
             messages: OpenAI 格式消息列表
@@ -149,20 +171,14 @@ class LLMClient(ABC):
             timeout: 超时秒数，None 使用 DEFAULT_TIMEOUT
             stop_event: 外部取消事件（threading.Event），置位时立即终止生成
 
-        Yields:
-            逐 token 文本
-
         Raises:
             LLMError: API 调用失败
             LLMTimeoutError: 调用超时
 
         实现说明（真流式，勿改回全量缓冲）：
-        早期实现用 `executor.submit(list, generator)` 把 `_do_stream_chat`
-        整体跑完收成 list 再 yield，导致首 token 延迟 = LLM 完整生成时间，
-        SSE 逐字输出「名存实亡」。现改为队列泵：worker 线程逐 token 推入
-        队列，主线程逐个取出即 yield——首 token 在生成器产出第一个 token
-        时立即到达。超时按「整个流必须在 effective_timeout 内结束」计算
-        （与旧实现语义一致），已收发的 token 不受影响。
+        队列泵：worker 线程逐帧推入队列，主线程逐个取出即 yield——首帧在
+        生成器产出第一个帧时立即到达。超时按「整个流必须在 effective_timeout
+        内结束」计算，已收发的帧不受影响。
         """
         from queue import Empty as _QueueEmpty
 
@@ -171,12 +187,12 @@ class LLMClient(ABC):
         sentinel = object()
 
         def _produce() -> None:
-            """worker：跑真实流，逐 token 入队；异常也经队列送回主线程。"""
+            """worker：跑真实流，逐帧入队；异常也经队列送回主线程。"""
             try:
-                for tok in self._do_stream_chat(messages, temperature, max_tokens):
+                for item in self._do_stream_chat_tagged(messages, temperature, max_tokens):
                     if stop_event is not None and stop_event.is_set():
                         break
-                    q.put(tok)
+                    q.put(item)
                 q.put(sentinel)
             except BaseException as e:  # noqa: BLE001 — 异常交给主线程分类处理
                 q.put(e)
@@ -210,5 +226,16 @@ class LLMClient(ABC):
                     if isinstance(item, LLMError):
                         raise item
                     raise LLMError(f"LLM 流式调用失败: {item}") from item
-                assert isinstance(item, str)
-                yield item
+                assert isinstance(item, tuple) and len(item) == 2, item
+                yield item[0], item[1]
+
+    def _do_stream_chat_tagged(
+        self,
+        messages: list[dict],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[tuple[str, str]]:
+        """默认 tagged 实现：不区分推理，全部按正文产出。
+        支持推理的提供商（如 OpenAI 兼容的 DeepSeek-R1/Qwen3）覆写此方法。"""
+        for tok in self._do_stream_chat(messages, temperature, max_tokens):
+            yield "content", tok

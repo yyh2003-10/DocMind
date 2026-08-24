@@ -20,6 +20,9 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Func<ChatRequest, CancellationToken, Task<ChatResponse>>? OnChat { get; set; }
     public Func<ChatRequest, Action<string>, Action<ChatStreamResult>, CancellationToken, Task<ChatStreamResult>>? OnChatStream { get; set; }
 
+    /// <summary>带 onStatus/onThinking 的流式替身：测试「思考过程」步骤与推理链收集用（事件会透传）。</summary>
+    public Func<ChatRequest, Action<string>, Action<ChatStreamResult>, Action<string>?, Action<string>?, CancellationToken, Task<ChatStreamResult>>? OnChatStreamWithStatus { get; set; }
+
     // ── Documents ──
     public Func<string?, int, int, string?, string, string?, CancellationToken, Task<DocumentListResponse>>? OnListDocuments { get; set; }
     public Func<string, int, int, string?, CancellationToken, Task<DocumentDetail>>? OnGetDocument { get; set; }
@@ -103,8 +106,12 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default)
         => OnChat?.Invoke(req, ct) ?? throw new NotImplementedException();
 
-    public async Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, CancellationToken ct = default)
+    public async Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, CancellationToken ct = default)
     {
+        if (OnChatStreamWithStatus is not null)
+        {
+            return await OnChatStreamWithStatus(req, onToken, onDone, onStatus, onThinking, ct);
+        }
         if (OnChatStream is not null)
         {
             return await OnChatStream(req, onToken, onDone, ct);

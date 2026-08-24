@@ -97,11 +97,13 @@ class Settings:
     llm_base_url: str | None = None
     llm_model: str = ""
     llm_temperature: float = 0.7
-    llm_max_tokens: int = 2048
+    llm_max_tokens: int = 8192
 
     # RAG 检索上下文参数
     rag_top_k: int = 5
     rag_min_score: float = 0.0
+    # RAG 问答模式："strict"（严格知识库模式，未命中直接拒绝）或 "hybrid"（混合增强模式，未命中本地文档时使用大模型常识回答）
+    rag_mode: str = "strict"
 
     # 自定义 RAG 系统提示词（人设/回答风格）；None/空 = 用内置默认提示词。
     # 环境变量 DOC2MIND_RAG_SYSTEM_PROMPT 可覆盖。
@@ -220,6 +222,7 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "llm_max_tokens",
     "rag_top_k",
     "rag_min_score",
+    "rag_mode",
     "rag_system_prompt",
     "rag_max_history_tokens",
     "llm_timeout",

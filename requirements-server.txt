@@ -2,3 +2,5 @@
 # 与 requirements-core.txt 一起安装：pip install -r requirements-core.txt -r requirements-server.txt
 fastapi==0.124.4
 uvicorn[standard]==0.48.0
+# 文件监控自动摄入（serve 模式；uvicorn[standard] 不含 watchdog）
+watchdog==6.0.0

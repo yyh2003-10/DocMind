@@ -42,17 +42,21 @@ public partial class DocumentsViewModel : ViewModelBase
     // ===================== 导航激活自动加载 =====================
 
     private bool _hasLoadedOnce;
+    private bool _refreshSucceeded;
+    private bool _suppressCollectionRefresh;
 
-    /// <summary>切换为该页面时触发一次加载（幂等：仅首次自动加载，避免重复请求）。</summary>
+    /// <summary>切换为该页面时触发一次加载；文档列表失败不缓存，失败后再次进入会重试。</summary>
     public async Task EnsureLoadedAsync()
     {
         if (_hasLoadedOnce)
         {
             return;
         }
-        _hasLoadedOnce = true;
+        _refreshSucceeded = false;
         await LoadCollectionsAsync();
         await RefreshAsync();
+        // 文档列表是页面主数据；集合列表失败不应导致文档列表每次导航重复加载。
+        _hasLoadedOnce = _refreshSucceeded;
     }
 
     /// <summary>外部数据变更（如导入完成）后使缓存失效：下次进入页面自动重新加载。</summary>
@@ -64,6 +68,9 @@ public partial class DocumentsViewModel : ViewModelBase
     /// <summary>异步从后端拉取现有集合列表。</summary>
     public async Task LoadCollectionsAsync()
     {
+        // 更新集合下拉时不要由 Collection setter 额外触发一次并发列表请求；
+        // EnsureLoadedAsync / 导入完成流程会在集合更新后显式刷新文档列表。
+        _suppressCollectionRefresh = true;
         try
         {
             var stats = await _apiService.GetStatsAsync();
@@ -89,7 +96,11 @@ public partial class DocumentsViewModel : ViewModelBase
         }
         catch
         {
-            // 离线或初次加载失败时静默使用默认项
+            // 离线或初次加载失败时静默使用默认项；EnsureLoadedAsync 会允许下次重试。
+        }
+        finally
+        {
+            _suppressCollectionRefresh = false;
         }
     }
 
@@ -105,7 +116,10 @@ public partial class DocumentsViewModel : ViewModelBase
                 OnPropertyChanged(nameof(PageInfo));
                 OnPropertyChanged(nameof(CanGoPrev));
                 OnPropertyChanged(nameof(CanGoNext));
-                _ = RefreshAsync();
+                if (!_suppressCollectionRefresh)
+                {
+                    _ = RefreshAsync();
+                }
             }
         }
     }
@@ -318,6 +332,7 @@ public partial class DocumentsViewModel : ViewModelBase
         }
 
         IsBusy = true;
+        _refreshSucceeded = false;
         StatusMessage = "加载中…";
         DebugLog.Info($"加载文档列表: Collection='{(string.IsNullOrWhiteSpace(Collection) ? "(全部)" : Collection.Trim())}' Page={Page}", "Documents");
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -338,6 +353,7 @@ public partial class DocumentsViewModel : ViewModelBase
             SelectedDocument = null;
 
             StatusMessage = $"共 {resp.Total} 个文档 · 本页 {resp.Documents.Count} 个 · 耗时 {sw.ElapsedMilliseconds}ms";
+            _refreshSucceeded = true;
             DebugLog.Info($"文档列表加载完成: total={resp.Total} page={resp.Page}/{Total} 耗时{sw.ElapsedMilliseconds}ms", "Documents");
         }
         catch (ApiException ex)
@@ -619,6 +635,7 @@ public partial class DocumentsViewModel : ViewModelBase
     private bool _isReindexing;
     private string? _reindexStatus;
     private CancellationTokenSource? _reindexCts;
+    private string? _reindexJobId;
 
     /// <summary>是否正在重建索引。</summary>
     public bool IsReindexing
@@ -629,6 +646,7 @@ public partial class DocumentsViewModel : ViewModelBase
             if (SetProperty(ref _isReindexing, value))
             {
                 ReindexCommand.NotifyCanExecuteChanged();
+                CancelReindexCommand.NotifyCanExecuteChanged();
                 OnPropertyChanged(nameof(ReindexProgressPercent));
             }
         }
@@ -658,8 +676,39 @@ public partial class DocumentsViewModel : ViewModelBase
 
     private bool CanReindex => !IsReindexing && !IsBusy;
 
-    /// <summary>取消进行中的重建索引轮询（窗口关闭时由 MainViewModel 统一调用）。</summary>
+    private bool CanCancelReindex => IsReindexing && !string.IsNullOrWhiteSpace(_reindexJobId);
+
+    /// <summary>取消进行中的重建索引轮询；轮询取消后的异常路径会继续请求后端取消任务。</summary>
     public void CancelReindexPolling() => _reindexCts?.Cancel();
+
+    /// <summary>主动取消后端重建任务，而不只是停止前端进度轮询。</summary>
+    [RelayCommand(CanExecute = nameof(CanCancelReindex))]
+    private async Task CancelReindexAsync()
+    {
+        _reindexCts?.Cancel();
+        var jobId = _reindexJobId;
+        if (!string.IsNullOrWhiteSpace(jobId))
+        {
+            await TryCancelReindexJobAsync(jobId);
+        }
+    }
+
+    private async Task TryCancelReindexJobAsync(string jobId)
+    {
+        try
+        {
+            var result = await _apiService.CancelJobAsync(jobId);
+            StatusMessage = result.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase)
+                ? "已请求取消重建索引，后台正在停止…"
+                : $"取消请求已发送，任务状态：{result.Status}";
+            DebugLog.Info($"已请求取消重建索引: jobId={jobId} status={result.Status}", "Documents");
+        }
+        catch (Exception ex)
+        {
+            // 关闭窗口时后端可能已退出；取消请求失败不能覆盖本地已取消反馈。
+            DebugLog.Warn($"取消重建索引请求失败: jobId={jobId} {ex.Message}", "Documents");
+        }
+    }
 
     /// <summary>重建当前集合（或全部）的向量索引，用后端任务轮询进度。</summary>
     [RelayCommand(CanExecute = nameof(CanReindex))]
@@ -691,7 +740,16 @@ public partial class DocumentsViewModel : ViewModelBase
         try
         {
             var job = await _apiService.ReindexAsync(new ReindexRequest { Collection = col });
+            _reindexJobId = job.JobId;
+            CancelReindexCommand.NotifyCanExecuteChanged();
             DebugLog.Info($"重建索引任务已创建: jobId={job.JobId} status={job.Status}", "Documents");
+
+            // 如果窗口关闭/用户在提交响应前已取消，仍需把后端任务取消掉。
+            if (_reindexCts.IsCancellationRequested)
+            {
+                await TryCancelReindexJobAsync(job.JobId);
+                return;
+            }
 
             // 轮询直到完成：progress 0.0-1.0 → 百分比
             var final = await _apiService.PollJobUntilDoneAsync(
@@ -714,6 +772,12 @@ public partial class DocumentsViewModel : ViewModelBase
                 _notifications.Error($"重建索引失败：{final.Error ?? "未知原因"}");
                 DebugLog.Error($"重建索引失败: jobId={final.JobId} error={final.Error}", "Documents");
             }
+            else if (final.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                StatusMessage = "重建索引已取消，后台任务已停止";
+                _notifications.Info("重建索引已取消", "重建索引");
+                DebugLog.Info($"重建索引已取消: jobId={final.JobId} processed={final.Processed}", "Documents");
+            }
             else
             {
                 StatusMessage = $"重建索引完成：{final.Processed}/{final.Total} 分块";
@@ -723,8 +787,13 @@ public partial class DocumentsViewModel : ViewModelBase
         }
         catch (OperationCanceledException) when (_reindexCts?.IsCancellationRequested == true)
         {
-            StatusMessage = "已取消重建索引（窗口关闭/手动取消）";
-            DebugLog.Info("重建索引轮询已取消", "Documents");
+            var jobId = _reindexJobId;
+            if (!string.IsNullOrWhiteSpace(jobId))
+            {
+                await TryCancelReindexJobAsync(jobId);
+            }
+            StatusMessage = "已请求取消重建索引（后台任务正在停止）";
+            DebugLog.Info($"重建索引轮询已取消: jobId={jobId ?? "(尚未创建)"}", "Documents");
         }
         catch (ApiException ex)
         {
@@ -747,6 +816,8 @@ public partial class DocumentsViewModel : ViewModelBase
             ReindexStatus = null;
             _reindexCts?.Dispose();
             _reindexCts = null;
+            _reindexJobId = null;
+            CancelReindexCommand.NotifyCanExecuteChanged();
             // 重建后刷新列表（chunk 数不变，但保持数据新鲜）
             _ = RefreshAsync();
         }

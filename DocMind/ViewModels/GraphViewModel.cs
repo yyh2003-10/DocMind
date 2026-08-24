@@ -22,6 +22,8 @@ public partial class GraphViewModel : ViewModelBase
     private int _totalNodes;
     private int _totalEdges;
     private bool _hasLoadedOnce;
+    private bool _loadSucceeded;
+    private bool _hasLoadError;
 
     public GraphViewModel(IDoc2kbApiService apiService, NotificationService? notifications = null)
     {
@@ -118,7 +120,10 @@ public partial class GraphViewModel : ViewModelBase
         }
     }
 
-    public bool ShowEmptyGraph => !IsBusy && TotalNodes == 0;
+    public bool ShowEmptyGraph => !IsBusy && !HasLoadError && TotalNodes == 0;
+
+    /// <summary>图谱请求失败时显示错误态，避免把网络/后端故障误导成「暂无数据」。</summary>
+    public bool ShowGraphError => !IsBusy && HasLoadError;
 
     public bool IsBusy
     {
@@ -130,6 +135,7 @@ public partial class GraphViewModel : ViewModelBase
                 LoadGraphCommand.NotifyCanExecuteChanged();
                 ExtractGraphCommand.NotifyCanExecuteChanged();
                 OnPropertyChanged(nameof(ShowEmptyGraph));
+                OnPropertyChanged(nameof(ShowGraphError));
             }
         }
     }
@@ -156,6 +162,19 @@ public partial class GraphViewModel : ViewModelBase
     {
         get => _hasGraph;
         private set => SetProperty(ref _hasGraph, value);
+    }
+
+    public bool HasLoadError
+    {
+        get => _hasLoadError;
+        private set
+        {
+            if (SetProperty(ref _hasLoadError, value))
+            {
+                OnPropertyChanged(nameof(ShowEmptyGraph));
+                OnPropertyChanged(nameof(ShowGraphError));
+            }
+        }
     }
 
     public GraphNode? SelectedNode
@@ -194,9 +213,10 @@ public partial class GraphViewModel : ViewModelBase
         {
             return;
         }
-        _hasLoadedOnce = true;
+        _loadSucceeded = false;
         await LoadCollectionsAsync();
         await LoadGraphAsync();
+        _hasLoadedOnce = _loadSucceeded;
     }
 
     /// <summary>使知识图谱缓存失效，下次进入或导入新文档后自动重载图谱。</summary>
@@ -238,12 +258,15 @@ public partial class GraphViewModel : ViewModelBase
     public async Task LoadGraphAsync()
     {
         IsBusy = true;
+        _loadSucceeded = false;
+        HasLoadError = false;
         StatusMessage = "正在加载知识图谱...";
         try
         {
             string? targetColl = (_collection == "全部集合" || string.IsNullOrWhiteSpace(_collection)) ? null : _collection;
             var resp = await _apiService.GetGraphAsync(targetColl);
             GraphData = resp;
+            HasLoadError = false;
             TotalNodes = resp.TotalNodes;
             TotalEdges = resp.Edges?.Count ?? 0;
             HasGraph = TotalNodes > 0;
@@ -251,10 +274,18 @@ public partial class GraphViewModel : ViewModelBase
             GraphJson = JsonSerializer.Serialize(resp);
             GraphDataRenderRequested?.Invoke(GraphJson);
 
+            _loadSucceeded = true;
             StatusMessage = HasGraph ? "就绪" : "当前集合暂无图谱数据（可点击「抽取图谱」构建）";
         }
         catch (Exception ex)
         {
+            HasLoadError = true;
+            HasGraph = false;
+            GraphData = null;
+            TotalNodes = 0;
+            TotalEdges = 0;
+            GraphJson = "{\"nodes\":[],\"edges\":[]}";
+            GraphDataRenderRequested?.Invoke(GraphJson);
             StatusMessage = $"加载图谱失败: {ex.Message}";
             DebugLog.Error($"加载图谱失败: {ex}", "GraphVM");
         }
@@ -279,10 +310,17 @@ public partial class GraphViewModel : ViewModelBase
                 {
                     _notifications?.Success($"成功从 {result.ExtractedCount} 篇文档中抽取实体并构建图谱！", "图谱生成成功");
                 }
+                else if (result.Errors != null && result.Errors.Count > 0)
+                {
+                    var errMsg = string.Join("; ", result.Errors);
+                    _notifications?.Warning($"抽取提示: {errMsg}", "抽取提示");
+                }
                 else
                 {
-                    _notifications?.Info("未发现需要抽取的新文档，或已有图谱已是最新状态。", "提示");
+                    _notifications?.Info("当前集合文档未发现新实体，或已有图谱已是最新状态。", "提示");
                 }
+
+                await LoadCollectionsAsync();
                 await LoadGraphAsync();
             }
             else
@@ -390,25 +428,44 @@ public partial class GraphViewModel : ViewModelBase
     {
         AdaptiveQuickPrompts.Clear();
         var type = node.Type.ToLowerInvariant();
-        if (type is "tech" or "code" or "api" or "class")
+        if (type is "topic")
         {
-            AdaptiveQuickPrompts.Add($"💡 核心机制与设计原理");
-            AdaptiveQuickPrompts.Add($"🛠️ 最佳实践与重构代码");
+            AdaptiveQuickPrompts.Add($"🪐 概括该业务主题的核心范畴与架构蓝图");
+            AdaptiveQuickPrompts.Add($"🕸️ 该主题包含的核心模块与技术栈全景");
+            AdaptiveQuickPrompts.Add($"🔄 该主题与知识库其他主题的上下游协同");
+            AdaptiveQuickPrompts.Add($"🌐 联网检索该领域前沿实践与行业规范");
+        }
+        else if (type is "person")
+        {
+            AdaptiveQuickPrompts.Add($"👤 人物生平履历与核心技术贡献");
+            AdaptiveQuickPrompts.Add($"🏢 关联组织机构、代表作与合作脉络");
+            AdaptiveQuickPrompts.Add($"🌐 联网检索该人物最新动态与学术成果");
+        }
+        else if (type is "org")
+        {
+            AdaptiveQuickPrompts.Add($"🏢 组织机构使命、架构与主力产品");
+            AdaptiveQuickPrompts.Add($"👥 关键团队成员与行业生态位");
+            AdaptiveQuickPrompts.Add($"🌐 联网检索该组织近期重大发布");
+        }
+        else if (type is "tech" or "code" or "api" or "class")
+        {
+            AdaptiveQuickPrompts.Add($"💡 核心机制与底层设计原理");
+            AdaptiveQuickPrompts.Add($"🛠️ 最佳实践与典型工程落地");
             AdaptiveQuickPrompts.Add($"⚠️ 常见排错与踩坑指南");
-            AdaptiveQuickPrompts.Add($"🌐 联网检索业界最新方案与演进");
+            AdaptiveQuickPrompts.Add($"🌐 联网检索业界最新演进趋势");
         }
         else if (type is "concept" or "arch" or "pattern")
         {
-            AdaptiveQuickPrompts.Add($"💡 通俗解释与应用场景");
-            AdaptiveQuickPrompts.Add($"⚖️ 优缺点与技术选型对比");
-            AdaptiveQuickPrompts.Add($"🔄 架构演进与上下游关系");
-            AdaptiveQuickPrompts.Add($"🌐 联网检索前沿行业规范");
+            AdaptiveQuickPrompts.Add($"💡 通俗直观解读与典型应用场景");
+            AdaptiveQuickPrompts.Add($"⚖️ 核心优缺点与方案选型权衡");
+            AdaptiveQuickPrompts.Add($"🔄 架构演进与上下游依赖体系");
+            AdaptiveQuickPrompts.Add($"🌐 联网检索前沿行业权威标准");
         }
         else
         {
-            AdaptiveQuickPrompts.Add($"💡 详细解读核心背景");
-            AdaptiveQuickPrompts.Add($"🕸️ 与其他模块的协作模式");
-            AdaptiveQuickPrompts.Add($"🌐 联网检索相关最新动态");
+            AdaptiveQuickPrompts.Add($"💡 深入解读核心定义与业务背景");
+            AdaptiveQuickPrompts.Add($"🕸️ 与其他关键节点的协同与拓扑关系");
+            AdaptiveQuickPrompts.Add($"🌐 联网检索相关最新行业动态");
         }
     }
 
@@ -441,7 +498,17 @@ public partial class GraphViewModel : ViewModelBase
         {
             Role = "assistant",
             Content = "",
-            IsLoading = true
+            IsLoading = true,
+            IsWaitingForFirstToken = true,
+            IsThinkingInProgress = true
+        };
+        assistantMsg.SourceMarkerRequested += index =>
+        {
+            var src = assistantMsg.Sources?.FirstOrDefault(s => s.Index == index);
+            if (src != null)
+            {
+                OpenSource(src);
+            }
         };
         EntityChatMessages.Add(assistantMsg);
 
@@ -465,21 +532,71 @@ public partial class GraphViewModel : ViewModelBase
         try
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
+            var timerCts = new CancellationTokenSource();
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!timerCts.Token.IsCancellationRequested && assistantMsg.IsLoading && (assistantMsg.IsThinkingInProgress || assistantMsg.IsWaitingForFirstToken))
+                    {
+                        await Task.Delay(100, timerCts.Token).ConfigureAwait(false);
+                        if (timerCts.Token.IsCancellationRequested) break;
+                        var curMs = sw.ElapsedMilliseconds;
+                        System.Windows.Application.Current?.Dispatcher?.InvokeAsync(() =>
+                        {
+                            assistantMsg.UpdateLiveThinkingDuration(curMs);
+                        });
+                    }
+                }
+                catch { /* 取消时静默退出 */ }
+            }, timerCts.Token);
+
             var streamResult = await _apiService.ChatStreamAsync(
                 chatReq,
                 onToken: token =>
                 {
+                    try { timerCts.Cancel(); } catch { }
                     System.Windows.Application.Current?.Dispatcher?.Invoke(() =>
                     {
-                        assistantMsg.IsLoading = false;
-                        assistantMsg.AppendToken(token);
+                        if (assistantMsg.IsWaitingForFirstToken || assistantMsg.IsThinkingInProgress)
+                        {
+                            assistantMsg.CompleteThinking(sw.ElapsedMilliseconds);
+                            assistantMsg.Content = token;
+                        }
+                        else
+                        {
+                            assistantMsg.Content += token;
+                        }
+                        assistantMsg.TokenCount++;
+                    });
+                },
+                onStatus: status =>
+                {
+                    System.Windows.Application.Current?.Dispatcher?.Invoke(() =>
+                    {
+                        assistantMsg.IsThinkingInProgress = true;
+                        assistantMsg.UpdateLiveThinkingDuration(sw.ElapsedMilliseconds);
+                        assistantMsg.AddThinkingStep(status ?? "");
+                        assistantMsg.ShowStatus = true;
+                        assistantMsg.StatusText = status ?? "";
+                    });
+                },
+                onThinking: thinking =>
+                {
+                    System.Windows.Application.Current?.Dispatcher?.Invoke(() =>
+                    {
+                        assistantMsg.IsThinkingInProgress = true;
+                        assistantMsg.UpdateLiveThinkingDuration(sw.ElapsedMilliseconds);
+                        assistantMsg.AppendThinking(thinking ?? "");
                     });
                 },
                 onDone: doneResult =>
                 {
+                    try { timerCts.Cancel(); } catch { }
                     System.Windows.Application.Current?.Dispatcher?.Invoke(() =>
                     {
                         assistantMsg.IsLoading = false;
+                        assistantMsg.CompleteThinking(sw.ElapsedMilliseconds);
                         assistantMsg.Model = doneResult.Model;
                         assistantMsg.Provider = doneResult.Provider;
                         assistantMsg.ElapsedMs = doneResult.ElapsedMs;
@@ -491,7 +608,7 @@ public partial class GraphViewModel : ViewModelBase
                         }
                     });
                 },
-                ct
+                ct: ct
             );
 
             if (assistantMsg.Sources == null || assistantMsg.Sources.Count == 0)
@@ -502,12 +619,16 @@ public partial class GraphViewModel : ViewModelBase
         catch (OperationCanceledException)
         {
             assistantMsg.IsLoading = false;
+            assistantMsg.IsThinkingInProgress = false;
+            assistantMsg.IsWaitingForFirstToken = false;
             assistantMsg.Content += "\n\n*(已手动停止生成)*";
             assistantMsg.ForceRefreshRender();
         }
         catch (Exception ex)
         {
             assistantMsg.IsLoading = false;
+            assistantMsg.IsThinkingInProgress = false;
+            assistantMsg.IsWaitingForFirstToken = false;
             assistantMsg.Content = $"⚠️ 抱歉，AI 问答出现异常: {ex.Message}";
             assistantMsg.ForceRefreshRender();
             DebugLog.Error($"实体 AI 问答失败: {ex}", "GraphVM");
@@ -516,6 +637,84 @@ public partial class GraphViewModel : ViewModelBase
         {
             IsEntityAiGenerating = false;
             OnPropertyChanged(nameof(HasEntityChatMessages));
+        }
+    }
+
+    /// <summary>打开来源详情（Web来源用默认浏览器打开，本地来源提示可在搜索页查证）。</summary>
+    [RelayCommand]
+    public void OpenSource(SourceRef? source)
+    {
+        if (source == null) return;
+        if (source.IsWebSource && !string.IsNullOrWhiteSpace(source.Url) &&
+            Uri.TryCreate(source.Url, UriKind.Absolute, out var uri) &&
+            (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"打开 Web 来源失败: {ex.Message}", "GraphVM");
+            }
+        }
+    }
+
+    /// <summary>撤回并回填实体提问。</summary>
+    [RelayCommand]
+    public void Withdraw(ChatMessage? message = null)
+    {
+        if (IsEntityAiGenerating || EntityChatMessages.Count == 0) return;
+        var target = message;
+        if (target == null)
+        {
+            target = EntityChatMessages.LastOrDefault(m => m.Role == "user");
+        }
+        if (target != null && target.Role == "user")
+        {
+            var idx = EntityChatMessages.IndexOf(target);
+            if (idx >= 0)
+            {
+                EntityChatInput = target.Content;
+                while (EntityChatMessages.Count > idx)
+                {
+                    EntityChatMessages.RemoveAt(EntityChatMessages.Count - 1);
+                }
+                OnPropertyChanged(nameof(HasEntityChatMessages));
+            }
+        }
+    }
+
+    /// <summary>重新生成实体最后一条回答。</summary>
+    [RelayCommand]
+    public void Regenerate()
+    {
+        if (IsEntityAiGenerating || EntityChatMessages.Count == 0) return;
+        var lastUserIdx = -1;
+        for (var i = EntityChatMessages.Count - 1; i >= 0; i--)
+        {
+            if (EntityChatMessages[i].Role == "user")
+            {
+                lastUserIdx = i;
+                break;
+            }
+        }
+        if (lastUserIdx < 0) return;
+        var query = EntityChatMessages[lastUserIdx].Content;
+        while (EntityChatMessages.Count > lastUserIdx)
+        {
+            EntityChatMessages.RemoveAt(EntityChatMessages.Count - 1);
+        }
+        _ = SendEntityChatAsync(query);
+    }
+
+    /// <summary>执行下一步建议行动。</summary>
+    [RelayCommand]
+    public void ExecuteAction(string? action)
+    {
+        if (!string.IsNullOrWhiteSpace(action))
+        {
+            _ = SendEntityChatAsync(action.Trim());
         }
     }
 

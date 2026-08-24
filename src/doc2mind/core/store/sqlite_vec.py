@@ -185,6 +185,12 @@ class StoreStats:
 
 # --- SQL 建表 ---
 _SCHEMA_SQL = """
+-- 空集合也需要持久化，但不应伪装成 documents 表中的占位文档。
+CREATE TABLE IF NOT EXISTS collections (
+    name       TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+
 -- 文档级元数据
 CREATE TABLE IF NOT EXISTS documents (
     id            TEXT    PRIMARY KEY,         -- ULID
@@ -296,6 +302,21 @@ class VectorStore:
                 conn.executescript(_SCHEMA_SQL)
                 # 旧库补齐 AI 整理元数据列（幂等；新库建表已含，此处为 no-op）
                 self._migrate_documents_meta(conn)
+                # 兼容旧版本的占位文档：先登记集合，再删除伪文档，避免污染统计。
+                conn.execute(
+                    "INSERT OR IGNORE INTO collections(name, created_at) "
+                    "SELECT DISTINCT collection, MIN(created_at) FROM documents "
+                    "WHERE source = '__collection_placeholder__' GROUP BY collection"
+                )
+                conn.execute(
+                    "DELETE FROM documents WHERE source = '__collection_placeholder__' "
+                    "AND format = 'placeholder'"
+                )
+                # 真实文档所属集合也登记到集合表，保证旧库升级后集合不丢。
+                conn.execute(
+                    "INSERT OR IGNORE INTO collections(name, created_at) "
+                    "SELECT collection, MIN(created_at) FROM documents GROUP BY collection"
+                )
                 conn.execute(_VEC_SQL_TEMPLATE.format(dim=self.embedding_dim))
                 # 维度以磁盘上已有表的实际建表 SQL 为准：CREATE ... IF NOT
                 # EXISTS 在表已存在时静默跳过，而构造传入的维度可能仍是
@@ -447,28 +468,15 @@ class VectorStore:
             self._require_open()
             try:
                 existing = self._conn.execute(
-                    "SELECT 1 FROM documents WHERE collection = ? LIMIT 1",
+                    "SELECT 1 FROM collections WHERE name = ? LIMIT 1",
                     (name,),
                 ).fetchone()
                 if existing is not None:
                     return
                 now = _now_iso()
                 self._conn.execute(
-                    """
-                    INSERT INTO documents
-                        (id, source, collection, format, file_hash,
-                         size_bytes, page_count, chunk_count, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, ?)
-                    """,
-                    (
-                        _new_id(),
-                        "__collection_placeholder__",
-                        name,
-                        "placeholder",
-                        f"placeholder-{name}",
-                        now,
-                        now,
-                    ),
+                    "INSERT INTO collections(name, created_at) VALUES (?, ?)",
+                    (name, now),
                 )
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"创建集合失败: {e}") from e
@@ -479,6 +487,10 @@ class VectorStore:
         with self._lock:
             self._require_open()
             try:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO collections(name, created_at) VALUES (?, ?)",
+                    (doc.collection, doc.created_at),
+                )
                 self._conn.execute(
                     """
                     INSERT INTO documents
@@ -592,7 +604,11 @@ class VectorStore:
                     self._delete_document_chunks_in_txn(conn, old_id)
                     conn.execute("DELETE FROM documents WHERE id = ?", (old_id,))
 
-                # 2. 写新文档记录
+                # 2. 登记集合并写新文档记录
+                conn.execute(
+                    "INSERT OR IGNORE INTO collections(name, created_at) VALUES (?, ?)",
+                    (doc.collection, doc.created_at),
+                )
                 conn.execute(
                     """
                     INSERT INTO documents
@@ -1247,7 +1263,8 @@ class VectorStore:
                     " title, tags, summary, enriched_at FROM documents"
                 )
                 params: list[Any] = []
-                conds: list[str] = []
+                # 兼容极旧数据库：即使迁移尚未清理占位行，也不把它暴露为真实文档。
+                conds: list[str] = ["source != '__collection_placeholder__'"]
                 if collection:
                     conds.append("collection = ?")
                     params.append(collection)
@@ -1277,7 +1294,8 @@ class VectorStore:
         with self._lock:
             self._require_open()
             try:
-                conds: list[str] = []
+                # 兼容极旧数据库：占位行不计入真实文档总数。
+                conds: list[str] = ["source != '__collection_placeholder__'"]
                 params: list[Any] = []
                 if collection:
                     conds.append("collection = ?")
@@ -1363,21 +1381,23 @@ class VectorStore:
             self._require_open()
             try:
                 doc_total = self._conn.execute(
-                    "SELECT COUNT(*) FROM documents"
+                    "SELECT COUNT(*) FROM documents WHERE source != '__collection_placeholder__'"
                 ).fetchone()[0]
                 chunk_total = self._conn.execute(
                     "SELECT COUNT(*) FROM chunks_meta"
                 ).fetchone()[0]
-                # 各集合 (doc_count, chunk_count, size_bytes)
+                # 各集合 (doc_count, chunk_count, size_bytes)，包含空集合。
                 rows = self._conn.execute(
                     """
-                    SELECT d.collection,
+                    SELECT c.name,
                            COUNT(DISTINCT d.id),
-                           COUNT(c.id),
+                           COUNT(ch.id),
                            COALESCE(SUM(d.size_bytes), 0)
-                    FROM documents d
-                    LEFT JOIN chunks_meta c ON c.document_id = d.id
-                    GROUP BY d.collection
+                    FROM collections c
+                    LEFT JOIN documents d ON d.collection = c.name
+                        AND d.source != '__collection_placeholder__'
+                    LEFT JOIN chunks_meta ch ON ch.document_id = d.id
+                    GROUP BY c.name
                     """
                 ).fetchall()
                 collections = {

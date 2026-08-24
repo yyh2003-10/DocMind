@@ -21,6 +21,10 @@ public class Doc2kbApiService : IDoc2kbApiService
         PropertyNameCaseInsensitive = true,
         // 输出（发往后端）用 snake_case；输入（解析后端响应）仍 case-insensitive
         PropertyNamingPolicy = SnakeCasePolicy,
+        // null 字段不发送（缺省 = 后端字段默认值，语义等价）。此前 ChatRequest 无附件时
+        // 显式发 "attachments":null，遇到把 attachments 声明为不可空 list[str] 的后端版本
+        // 会直接 422（"Input should be a valid list"），省略后旧/新后端均可正常接受。
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
     private readonly HttpClient _httpClient;
@@ -101,7 +105,8 @@ public class Doc2kbApiService : IDoc2kbApiService
         => SendAsync<ChatResponse>(HttpMethod.Post, "v1/chat", req, ct);
 
     public async Task<ChatStreamResult> ChatStreamAsync(
-        ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, CancellationToken ct = default)
+        ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone,
+        Action<string>? onStatus = null, Action<string>? onThinking = null, CancellationToken ct = default)
     {
         var reqBody = JsonSerializer.Serialize(req, JsonOptions);
         DebugLog.Info($"→ POST v1/chat/stream\n  req: {Truncate(RedactSecrets(reqBody), 800)}", "API");
@@ -211,6 +216,22 @@ public class Doc2kbApiService : IDoc2kbApiService
                         continue;
                     }
 
+                    if (root.TryGetProperty("type", out var typeElem)
+                        && typeElem.GetString() == "status"
+                        && root.TryGetProperty("message", out var msgElem))
+                    {
+                        onStatus?.Invoke(msgElem.GetString() ?? string.Empty);
+                        continue;
+                    }
+
+                    if (root.TryGetProperty("type", out var typeElem2)
+                        && typeElem2.GetString() == "thinking"
+                        && root.TryGetProperty("text", out var thElem))
+                    {
+                        onThinking?.Invoke(thElem.GetString() ?? string.Empty);
+                        continue;
+                    }
+
                     if (root.TryGetProperty("done", out var doneElem) && doneElem.ValueKind == JsonValueKind.True)
                     {
                         doneReceived = true;
@@ -271,11 +292,16 @@ public class Doc2kbApiService : IDoc2kbApiService
                 {
                     Index = s.TryGetProperty("index", out var i) && i.TryGetInt32(out var iv) ? iv : 0,
                     Source = s.TryGetProperty("source", out var src) ? (src.GetString() ?? string.Empty) : string.Empty,
+                    ChunkId = s.TryGetProperty("chunk_id", out var cid) && cid.ValueKind == JsonValueKind.Number ? cid.GetInt32() : null,
                     Format = s.TryGetProperty("format", out var f) ? (f.GetString() ?? string.Empty) : string.Empty,
                     Page = s.TryGetProperty("page", out var p) && p.ValueKind == JsonValueKind.Number ? p.GetInt32() : null,
                     Heading = s.TryGetProperty("heading", out var h) ? h.GetString() : null,
                     Score = s.TryGetProperty("score", out var sc) && sc.ValueKind == JsonValueKind.Number ? sc.GetDouble() : 0,
+                    SourceType = s.TryGetProperty("source_type", out var st) ? (st.GetString() ?? "local") : "local",
+                    Url = s.TryGetProperty("url", out var u) ? u.GetString() : null,
+                    Title = s.TryGetProperty("title", out var t) ? t.GetString() : null,
                     Snippet = s.TryGetProperty("snippet", out var snip) ? snip.GetString() : null,
+                    SourceName = s.TryGetProperty("source_name", out var sn) ? sn.GetString() : null,
                 });
             }
         }
@@ -370,13 +396,21 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task<LocalAiEnvironment> GetLocalAiEnvironmentAsync(CancellationToken ct = default)
         => SendAsync<LocalAiEnvironment>(HttpMethod.Get, "v1/system/local-ai-environment", null, ct);
 
-    public async Task InstallGpuAsync(
-        string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default)
+    public Task InstallGpuAsync(string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default)
+        => InstallViaSseAsync("v1/system/install-gpu", path, "GPU install", onLog, onDone, ct);
+
+    public Task InstallOcrAsync(string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default)
+        => InstallViaSseAsync("v1/system/install-ocr", path, "OCR install", onLog, onDone, ct);
+
+    /// <summary>一键安装通用实现：POST 安装端点并逐行消费 SSE 事件流（log/done/error）。</summary>
+    private async Task InstallViaSseAsync(
+        string endpoint, string path, string label,
+        Action<string> onLog, Action<bool> onDone, CancellationToken ct)
     {
         var reqBody = JsonSerializer.Serialize(new { path }, JsonOptions);
-        DebugLog.Info($"→ POST v1/system/install-gpu  path={path}", "API");
+        DebugLog.Info($"→ POST {endpoint}  path={path}", "API");
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "v1/system/install-gpu")
+        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
             Content = new StringContent(reqBody, System.Text.Encoding.UTF8, "application/json"),
         };
@@ -393,7 +427,7 @@ public class Doc2kbApiService : IDoc2kbApiService
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogWarning(ex, "Backend connection failed for v1/system/install-gpu");
+            _logger.LogWarning(ex, "Backend connection failed for {Endpoint}", endpoint);
             throw new BackendConnectionException("Backend is unreachable.", ex);
         }
 
@@ -403,7 +437,7 @@ public class Doc2kbApiService : IDoc2kbApiService
             {
                 var errBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                 DebugLog.Error(
-                    $"✗ POST v1/system/install-gpu -> {(int)response.StatusCode} ({response.ReasonPhrase})\n  resp: {Truncate(errBody, 800)}",
+                    $"✗ POST {endpoint} -> {(int)response.StatusCode} ({response.ReasonPhrase})\n  resp: {Truncate(errBody, 800)}",
                     "API");
                 throw await CreateApiExceptionAsync(response).ConfigureAwait(false);
             }
@@ -439,7 +473,7 @@ public class Doc2kbApiService : IDoc2kbApiService
                     }
                     catch (JsonException ex)
                     {
-                        DebugLog.Error($"GPU install SSE JSON 解析失败: {ex.Message}\n  raw: {Truncate(payload, 300)}", "API", ex);
+                        DebugLog.Error($"{label} SSE JSON 解析失败: {ex.Message}\n  raw: {Truncate(payload, 300)}", "API", ex);
                         throw new ApiException("PARSE_ERROR", $"Invalid SSE frame: {ex.Message}", innerException: ex);
                     }
 
@@ -462,7 +496,7 @@ public class Doc2kbApiService : IDoc2kbApiService
                         else if (eventType == "error" && root.TryGetProperty("message", out var msgElem))
                         {
                             doneReceived = true;
-                            DebugLog.Error($"GPU install 报错: {msgElem.GetString()}", "API");
+                            DebugLog.Error($"{label} 报错: {msgElem.GetString()}", "API");
                             onLog($"[错误] {msgElem.GetString()}");
                             onDone(false);
                         }
@@ -471,19 +505,19 @@ public class Doc2kbApiService : IDoc2kbApiService
             }
             catch (Exception ex) when (ex is not (OperationCanceledException or ApiException))
             {
-                DebugLog.Error($"GPU install SSE 流读取中断: {ex.GetType().Name}: {ex.Message}", "API", ex);
-                throw new ApiException("STREAM_INTERRUPTED", $"GPU install stream interrupted: {ex.Message}", innerException: ex);
+                DebugLog.Error($"{label} SSE 流读取中断: {ex.GetType().Name}: {ex.Message}", "API", ex);
+                throw new ApiException("STREAM_INTERRUPTED", $"{label} stream interrupted: {ex.Message}", innerException: ex);
             }
 
             sw.Stop();
             DebugLog.Info(
-                $"✓ POST v1/system/install-gpu completed in {sw.ElapsedMilliseconds}ms "
+                $"✓ POST {endpoint} completed in {sw.ElapsedMilliseconds}ms "
                 + $"(logLines={logLines} done={doneReceived})",
                 "API");
 
             if (!doneReceived)
             {
-                DebugLog.Warn("GPU install SSE 流结束但未收到 done 终帧", "API");
+                DebugLog.Warn($"{label} SSE 流结束但未收到 done 终帧", "API");
                 onDone(false);
             }
         }

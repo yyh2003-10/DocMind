@@ -49,6 +49,8 @@ _PACKAGE_KEYS: tuple[str, ...] = (
 
 # 国内网络优先镜像（pip 常规安装）
 _PIP_MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
+# Paddle 官方 GPU 稳定源（paddlepaddle-gpu cu126 whl 仅此处提供）
+_PADDLE_GPU_INDEX = "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
 
 # Python 版本 → paddle CUDA wheel 的 cp 标签（支持 3.9 ~ 3.12）
 _PY_TAG: dict[tuple[int, int], str] = {
@@ -367,17 +369,26 @@ def _build_install_commands(path: str) -> list[list[str]] | None:
 
     if path == "paddle-ocr-gpu":
         if "paddlepaddle-gpu" in local_map:
-            return [[*py, "install", local_map["paddlepaddle-gpu"]["path"], "--no-index"]]
-        tag = _py_wheel_tag()
-        if tag is None:
-            return None
-        url = (
-            "https://mirrors.aliyun.com/paddlepaddle/3.3.1/win/"
-            f"paddlepaddle_gpu-3.3.1-{tag}-{tag}-win_amd64.whl"
-        )
-        return [[*py, "install", url]]
+            return [
+                [*py, "install", local_map["paddlepaddle-gpu"]["path"], "--no-index"],
+                _pip_install(["paddleocr==3.7.0", "pillow==12.2.0"], find_links_dirs=find_dirs),
+            ]
+        # paddlepaddle-gpu 只在 Paddle 官方 cu126 索引提供（PyPI/镜像无 GPU whl；
+        # 旧阿里云直链已失效，返回 404 HTML 会被 pip 当 wheel 解析失败）。
+        # 清华源为主、官方源为补充，与 CPU 路径一致地装齐三件套。
+        return [
+            _pip_install(
+                [
+                    "paddlepaddle-gpu==3.3.1",
+                    "paddleocr==3.7.0",
+                    "pillow==12.2.0",
+                    "--extra-index-url", _PADDLE_GPU_INDEX,
+                ],
+                find_links_dirs=find_dirs,
+            ),
+        ]
 
-    if path in ("paddle-ocr-cpu", "ocr-cpu", "ocr"):
+    if path in ("paddle-ocr-cpu", "ocr-cpu", "ocr", "cpu"):
         return [
             _pip_install(["paddlepaddle==3.3.1", "paddleocr==3.7.0", "pillow"], find_links_dirs=find_dirs),
         ]
@@ -385,67 +396,58 @@ def _build_install_commands(path: str) -> list[list[str]] | None:
     return None
 
 
-async def install_gpu_packages(path: str) -> AsyncGenerator[dict[str, Any], None]:
-    """按路径执行 GPU 加速包安装，流式产出事件字典。
+# 各安装路径的磁盘空间预估（wheel 下载缓存 + 解压安装双份占用，留足余量）
+_DISK_SPACE_NEEDS_GB: dict[str, float] = {
+    "cuda12": 4.0,
+    "cuda13": 3.0,
+    "directml": 1.0,
+    "paddle-ocr-gpu": 6.0,
+    "ocr-cpu": 2.5,
+    "cpu": 2.5,
+}
 
-    具备 Windows 运行态文件锁定容错与全流程日志持久化。
+
+def _check_disk_space(path: str) -> str | None:
+    """安装前预检磁盘剩余空间，不足时返回错误文案。
+
+    检查两处：解释器所在盘（安装落盘）与用户主目录所在盘
+    （pip 下载缓存与 %TEMP% 默认在此）。空间不足时 pip 只会抛
+    ``[Errno 28] No space left on device``，对桌面用户如同天书，必须前置拦截。
     """
-    cmds = _build_install_commands(path)
+    import shutil
+    import tempfile
+
+    needed = _DISK_SPACE_NEEDS_GB.get(path, 2.0)
+    roots: list[str] = []
+    for p in (sys.prefix, tempfile.gettempdir()):
+        root = str(Path(p).anchor or "/")
+        if root not in roots:
+            roots.append(root)
+    for root in roots:
+        free_gb = shutil.disk_usage(root).free / (1 << 30)
+        if free_gb < needed:
+            return (
+                f"磁盘空间不足：该方案约需 {needed:.0f}GB，"
+                f"而 {root} 盘仅剩 {free_gb:.1f}GB。"
+                "请清理磁盘（可运行 pip cache purge 清理下载缓存）后重试。"
+            )
+    return None
+
+
+async def _run_install_commands(
+    cmds: list[list[str]] | None, path: str, label: str
+) -> AsyncGenerator[dict[str, Any], None]:
+    """执行安装命令序列并流式产出事件（GPU / OCR 安装共用）。
+
+    具备 Windows 运行态文件锁定容错（卸载被占用时跳过继续）与全流程日志。
+    """
     if cmds is None:
         yield {"type": "error", "message": f"未知的安装路径: {path}"}
         return
 
-    import subprocess
-
-    kwargs: dict[str, Any] = {
-        "stdout": asyncio.subprocess.PIPE,
-        "stderr": asyncio.subprocess.STDOUT,
-        "creationflags": (subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
-    }
-    for cmd in cmds:
-        cmd_str = " ".join(cmd)
-        is_uninstall = len(cmd) >= 4 and cmd[1:3] == ["-m", "pip"] and cmd[3] == "uninstall"
-        yield {"type": "log", "line": "$ " + cmd_str}
-        logger.info("执行 GPU 安装命令: %s", cmd_str)
-
-        proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
-        assert proc.stdout is not None
-        recent_lines: list[str] = []
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="replace").rstrip("\r\n")
-            if text:
-                recent_lines.append(text)
-                if len(recent_lines) > 15:
-                    recent_lines.pop(0)
-                yield {"type": "log", "line": text}
-
-        rc = await proc.wait()
-        if rc != 0:
-            if is_uninstall:
-                warn_msg = "卸载前代组件被系统占用锁定，已跳过卸载并继续尝试覆盖安装..."
-                logger.warning("GPU 卸载步骤跳过（退出码 %d）: %s", rc, warn_msg)
-                yield {"type": "log", "line": f"[提示] {warn_msg}"}
-                continue
-
-            err_details = "\n".join(recent_lines[-5:]) if recent_lines else f"退出码 {rc}"
-            logger.error("GPU 安装步骤失败（退出码 %d）: %s\n详细输出:\n%s", rc, cmd_str, err_details)
-            yield {
-                "type": "error",
-                "message": f"pip 安装失败（退出码 {rc}）：\n{err_details}\n常见原因：网络不可达、包冲突或 wheel 不兼容。",
-            }
-            return
-        logger.info("GPU 安装步骤完成: %s", " ".join(cmd[:4]))
-    yield {"type": "done", "success": True, "path": path}
-
-
-async def install_ocr_packages(path: str = "cpu") -> AsyncGenerator[dict[str, Any], None]:
-    """按路径执行 OCR 依赖安装，流式产出事件字典。"""
-    cmds = _build_install_commands(path)
-    if cmds is None:
-        yield {"type": "error", "message": f"未知的 OCR 安装路径: {path}"}
+    space_err = _check_disk_space(path)
+    if space_err:
+        yield {"type": "error", "message": space_err}
         return
 
     import subprocess
@@ -459,7 +461,7 @@ async def install_ocr_packages(path: str = "cpu") -> AsyncGenerator[dict[str, An
         cmd_str = " ".join(cmd)
         is_uninstall = len(cmd) >= 4 and cmd[1:3] == ["-m", "pip"] and cmd[3] == "uninstall"
         yield {"type": "log", "line": "$ " + cmd_str}
-        logger.info("执行 OCR 安装命令: %s", cmd_str)
+        logger.info("执行 %s 安装命令: %s", label, cmd_str)
 
         proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
         assert proc.stdout is not None
@@ -479,21 +481,38 @@ async def install_ocr_packages(path: str = "cpu") -> AsyncGenerator[dict[str, An
         if rc != 0:
             if is_uninstall:
                 warn_msg = "卸载前代组件被系统占用锁定，已跳过卸载并继续尝试覆盖安装..."
-                logger.warning("OCR 卸载步骤跳过（退出码 %d）: %s", rc, warn_msg)
+                logger.warning("%s 卸载步骤跳过（退出码 %d）: %s", label, rc, warn_msg)
                 yield {"type": "log", "line": f"[提示] {warn_msg}"}
                 continue
 
             err_details = "\n".join(recent_lines[-5:]) if recent_lines else f"退出码 {rc}"
-            logger.error("OCR 安装步骤失败（退出码 %d）: %s\n详细输出:\n%s", rc, cmd_str, err_details)
+            logger.error("%s 安装步骤失败（退出码 %d）: %s\n详细输出:\n%s", label, rc, cmd_str, err_details)
+            if any("no space left" in l.lower() for l in recent_lines):
+                yield {
+                    "type": "error",
+                    "message": "磁盘空间不足导致安装失败，请清理磁盘"
+                    "（可运行 pip cache purge 清理 pip 下载缓存）后重试。",
+                }
+                return
             yield {
                 "type": "error",
-                "message": f"OCR 依赖安装失败（退出码 {rc}）：\n{err_details}\n常见原因：网络不可达或 wheel 不兼容。",
+                "message": f"{label}安装失败（退出码 {rc}）：\n{err_details}\n常见原因：网络不可达、包冲突或 wheel 不兼容。",
             }
             return
-        logger.info("OCR 安装步骤完成: %s", " ".join(cmd[:4]))
+        logger.info("%s 安装步骤完成: %s", label, " ".join(cmd[:4]))
     yield {"type": "done", "success": True, "path": path}
 
-    yield {"type": "done", "success": True, "path": path}
+
+async def install_gpu_packages(path: str) -> AsyncGenerator[dict[str, Any], None]:
+    """按路径执行 GPU 加速包安装，流式产出事件字典。"""
+    async for event in _run_install_commands(_build_install_commands(path), path, "GPU"):
+        yield event
+
+
+async def install_ocr_packages(path: str = "cpu") -> AsyncGenerator[dict[str, Any], None]:
+    """按路径执行 OCR 依赖安装，流式产出事件字典。"""
+    async for event in _run_install_commands(_build_install_commands(path), path, "OCR"):
+        yield event
 
 
 # --- 依赖状态聚合（供设置页「环境自检」面板）---

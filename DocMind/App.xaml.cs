@@ -21,6 +21,11 @@ namespace DocMind
         public IServiceProvider ServiceProvider => _serviceProvider;
         private TrayService? _trayService;
         private static Mutex? _mutex;
+        // 单实例激活：命名事件。第二个实例 Set() 后，第一实例的回调把窗口从托盘/隐藏状态恢复到前台。
+        // 比 MainWindowHandle 路径可靠——窗口 Hide() 到托盘后句柄为 0，旧逻辑唤不起来。
+        private static EventWaitHandle? _showWindowEvent;
+        private static RegisteredWaitHandle? _showWindowRegistration;
+        private static string? _instanceStamp;
 
         public App()
         {
@@ -58,6 +63,34 @@ namespace DocMind
                 DebugLog.Warn("已配置的 LLM API Key 密文无法解密（换过 Windows 用户或文件损坏），本次按未配置处理", "App");
             }
             settings.LlmApiKey = plainKey;
+        }
+
+        // GitHub Token（联网搜索 GitHub 通道，按请求携带）：同样 DPAPI 密文落盘，
+        // 解密失败（换 Windows 用户/文件损坏）按未配置处理（匿名额度），不阻断搜索。
+        if (SecretProtector.IsProtected(settings.GithubToken))
+        {
+            settings.GithubToken = SecretProtector.Unprotect(settings.GithubToken);
+        }
+
+        // AI 提供商档案：逐项解密 ApiKey（内存单例持明文，落盘 Save() 时再加密）。
+        // 单个档案解密失败（换 Windows 用户/文件损坏）置 KeyDecryptFailed 标记，
+        // 应用该档案时由设置页/对话页提示重输，而不是静默丢 key。
+        if (settings.LlmProfiles is { Count: > 0 })
+        {
+            foreach (var profile in settings.LlmProfiles)
+            {
+                if (profile is null || string.IsNullOrEmpty(profile.ApiKey) || !SecretProtector.IsProtected(profile.ApiKey))
+                {
+                    continue;
+                }
+                var plain = SecretProtector.Unprotect(profile.ApiKey);
+                if (string.IsNullOrEmpty(plain))
+                {
+                    profile.KeyDecryptFailed = true;
+                    DebugLog.Warn($"AI 提供商档案「{profile.Name}」的 API Key 密文无法解密，应用时将提示重输", "App");
+                }
+                profile.ApiKey = plain;
+            }
         }
 
         return settings;
@@ -110,23 +143,52 @@ namespace DocMind
         protected override void OnStartup(StartupEventArgs e)
         {
             // ===== 单实例互斥：防止多开争抢后端端口 =====
-            _mutex = new Mutex(true, "DocMind_SingleInstance_" + System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value, out bool createdNew);
+            var sid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value ?? "anon";
+            _instanceStamp = sid;
+            _mutex = new Mutex(true, "DocMind_SingleInstance_" + sid, out bool createdNew);
             if (!createdNew)
             {
-                // 已有实例运行中——激活其窗口并退出当前进程
-                var current = Process.GetCurrentProcess();
-                foreach (var proc in Process.GetProcessesByName(current.ProcessName))
+                // 已有实例运行中——通过命名事件通知其显示窗口，再退出当前进程。
+                // 比 MainWindowHandle 路径可靠：旧实例窗口 Hide() 到托盘后句柄为 0，
+                // 旧逻辑找不到窗口就静默退出，表现为"点图标没反应"。
+                var eventName = "DocMind_ShowWindow_" + sid;
+                if (EventWaitHandle.TryOpenExisting(eventName, out var existing))
                 {
-                    if (proc.Id != current.Id && proc.MainWindowHandle != IntPtr.Zero)
+                    try { existing.Set(); } catch { /* ignore */ }
+                    existing.Dispose();
+                }
+                else
+                {
+                    // 事件打开失败（旧版本实例未创建事件）——回退到窗口句柄激活
+                    var current = Process.GetCurrentProcess();
+                    foreach (var proc in Process.GetProcessesByName(current.ProcessName))
                     {
-                        NativeMethods.SetForegroundWindow(proc.MainWindowHandle);
-                        NativeMethods.ShowWindow(proc.MainWindowHandle, NativeMethods.SW_RESTORE);
-                        break;
+                        if (proc.Id != current.Id && proc.MainWindowHandle != IntPtr.Zero)
+                        {
+                            NativeMethods.SetForegroundWindow(proc.MainWindowHandle);
+                            NativeMethods.ShowWindow(proc.MainWindowHandle, NativeMethods.SW_RESTORE);
+                            break;
+                        }
                     }
                 }
                 Current.Shutdown();
                 return;
             }
+
+            // 第一实例：创建命名事件并注册回调，供后续实例唤起窗口
+            _showWindowEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "DocMind_ShowWindow_" + sid);
+            _showWindowRegistration = ThreadPool.RegisterWaitForSingleObject(
+                _showWindowEvent,
+                (_, _) =>
+                {
+                    System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        _trayService?.ShowMainWindow();
+                    }));
+                },
+                null,
+                Timeout.InfiniteTimeSpan,
+                executeOnlyOnce: false);
 
             base.OnStartup(e);
 
@@ -154,6 +216,16 @@ namespace DocMind
                 {
                     _trayService.HideToTray();
                 }
+            };
+            // 隐藏到托盘时弹一次 Toast，引导用户从托盘恢复
+            // （Windows 11 默认把托盘图标收到溢出区，用户常找不到窗口去哪了）
+            var trayNotifications = _serviceProvider.GetRequiredService<NotificationService>();
+            var trayHintShown = false;
+            _trayService.HiddenToTray += (_, _) =>
+            {
+                if (trayHintShown) return;
+                trayHintShown = true;
+                trayNotifications.Info("已最小化到系统托盘，单击或双击托盘图标可恢复窗口", "最小化到托盘");
             };
 
             // 启动后端子进程（受 AutoStartBackend 开关控制；fire-and-forget；状态灯由事件回调）
@@ -388,16 +460,39 @@ namespace DocMind
                 var backend = _serviceProvider.GetRequiredService<BackendProcessService>();
                 if (settings.StopBackendOnExit)
                 {
-                    // 同步等待：async void OnExit 不会阻塞退出流程（await 后进程可能已退出，
-                    // 优雅停止会被中断）。StopAsync 内部有 5s 优雅 + kill 兜底，阻塞等待可接受。
+                    // StopAsync 内部 5s 优雅 + kill + 3s kill 等待，理论上限 ~8s。
+                    // 这里给 10s 硬上限，超时放弃等待——保证退出流程必然走完，
+                    // Mutex/事件必然释放，杜绝"叉掉后进程残留后台、Mutex 永不释放"。
                     // Task.Run 脱离 UI SynchronizationContext，避免 UI 线程 GetResult 死锁。
-                    Task.Run(() => backend.StopAsync().GetAwaiter().GetResult()).GetAwaiter().GetResult();
+                    try
+                    {
+                        var stop = Task.Run(() => backend.StopAsync());
+                        if (!stop.Wait(TimeSpan.FromSeconds(10)))
+                        {
+                            DebugLog.Warn("后端停止超过 10s，放弃等待直接退出", "App");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugLog.Warn($"退出时停止后端异常（忽略）: {ex.Message}", "App");
+                    }
                 }
                 backend.Dispose();
             }
             catch { /* ignore on exit */ }
+            try
+            {
+                if (_showWindowRegistration != null)
+                {
+                    _showWindowRegistration.Unregister(null);
+                    _showWindowRegistration = null;
+                }
+                _showWindowEvent?.Dispose();
+                _showWindowEvent = null;
+            }
+            catch { /* ignore on exit */ }
             _trayService?.Dispose();
-            _mutex?.ReleaseMutex();
+            try { _mutex?.ReleaseMutex(); } catch { /* ignore on exit */ }
             base.OnExit(e);
         }
     }

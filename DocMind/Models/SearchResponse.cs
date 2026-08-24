@@ -57,4 +57,6 @@ public sealed record SearchResponse
     public int Total { get; init; }
     public int ElapsedMs { get; init; }
     public bool Degraded { get; init; }
+    /// <summary>后端针对空结果或降级检索返回的具体提示。</summary>
+    public string? Message { get; init; }
 }
