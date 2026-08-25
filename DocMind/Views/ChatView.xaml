@@ -791,6 +791,10 @@
 
                     <!-- 第2列：模型选择器（点选模型即切换服务商，按请求生效） -->
                     <Grid Grid.Column="2">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
@@ -808,6 +812,12 @@
                                   ToolTip="点选模型即切换到对应服务商（下条消息生效）；「默认（设置页配置）」= 用设置页填写的服务商配置"
                                   VerticalAlignment="Center"
                                   Margin="0,0,6,0"/>
+                        <TextBlock Grid.Row="1" Grid.Column="1"
+                                   Text="{Binding EffectiveModelSummary}"
+                                   Style="{StaticResource SmallText}"
+                                   Foreground="{StaticResource TextTertiaryBrush}"
+                                   Margin="2,30,6,0"
+                                   TextTrimming="CharacterEllipsis"/>
                         <Button Grid.Column="2"
                                 Content="🔄"
                                 Command="{Binding RefreshModelsCommand}"
