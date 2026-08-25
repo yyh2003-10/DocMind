@@ -1808,13 +1808,11 @@
                         }));
                     }
                 }
-            } else {
-                if (viewState === 'detail') {
-                    exitDetailMode();
-                } else if (selectedNodeId) {
-                    selectedNodeId = null;
-                    render();
-                }
+            } else if (selectedNodeId) {
+                // 点空白只清除选中态，不退出详情模式（防止误触收起已展开的节点）；
+                // 退出详情请用「返回总览」按钮或 Esc 键
+                selectedNodeId = null;
+                render();
             }
         });
 
