@@ -1452,6 +1452,8 @@ public partial class ChatViewModel : ViewModelBase
     public const string DefaultModelLabel = "默认（设置页模型）";
 
     private string _selectedModel = DefaultModelLabel;
+    private string _configuredProvider = "none";
+    private string _configuredModel = "";
 
     /// <summary>可选的办公与创作角色人设列表。</summary>
     public IReadOnlyList<PersonaOption> AvailablePersonas { get; } = new List<PersonaOption>
@@ -1698,10 +1700,28 @@ public partial class ChatViewModel : ViewModelBase
         {
             if (SetProperty(ref _selectedModel, string.IsNullOrWhiteSpace(value) ? DefaultModelLabel : value))
             {
+                OnPropertyChanged(nameof(EffectiveModel));
+                OnPropertyChanged(nameof(EffectiveModelSummary));
                 StatusMessage = value == DefaultModelLabel ? "就绪" : $"模型: {value}（下条消息生效）";
             }
         }
     }
+
+    /// <summary>后端当前配置的 LLM 提供商；不是嵌入模型提供商。</summary>
+    public string EffectiveProvider =>
+        string.IsNullOrWhiteSpace(_configuredProvider) || _configuredProvider == "none"
+            ? "未配置 LLM"
+            : _configuredProvider;
+
+    /// <summary>下一条消息实际会使用的模型，区分默认配置与对话页临时覆盖。</summary>
+    public string EffectiveModel =>
+        SelectedModel == DefaultModelLabel
+            ? (string.IsNullOrWhiteSpace(_configuredModel) ? "未配置模型" : _configuredModel)
+            : SelectedModel;
+
+    public string EffectiveModelSummary =>
+        $"实际生效: {EffectiveProvider} / {EffectiveModel}" +
+        (SelectedModel == DefaultModelLabel ? "（设置页默认）" : "（本次临时覆盖）");
 
     private ChatSessionItem? _selectedSession;
 
@@ -3558,6 +3578,11 @@ public partial class ChatViewModel : ViewModelBase
         {
             var cfg = await _apiService.GetConfigAsync();
             var model = cfg?.LlmModel;
+            _configuredProvider = cfg?.LlmProvider ?? "none";
+            _configuredModel = model ?? string.Empty;
+            OnPropertyChanged(nameof(EffectiveProvider));
+            OnPropertyChanged(nameof(EffectiveModel));
+            OnPropertyChanged(nameof(EffectiveModelSummary));
             if (!string.IsNullOrWhiteSpace(model) && !AvailableModels.Contains(model))
             {
                 AvailableModels.Add(model);

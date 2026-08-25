@@ -30,6 +30,7 @@ from doc2mind.core.config import Settings, get_settings
 from doc2mind.core.creator.prompts import CREATIVE_PERSONA_PROMPTS
 from doc2mind.core.embedder import get_embedder
 from doc2mind.core.llm import LLMClient, LLMError, get_llm_client
+from doc2mind.core.llm.output import OutputSanitizer, sanitize_model_text
 from doc2mind.core.retriever.search import Retriever, SearchHit
 from doc2mind.core.store.chat_store import ChatStore, ChatStoreError
 from doc2mind.core.store.sqlite_vec import VectorStore
@@ -52,7 +53,6 @@ _SYSTEM_PROMPT = (
     "8. 【知识图谱与影响面分析】：若参考资料中包含【知识图谱拓扑关联与潜在影响面网络】，在分析改动或技术原理时，应主动向用户阐明相关改动对上下游技术模块、实体节点的关联影响与协同修改建议；\n"
     "9. 【证据边界】：联网搜索摘要或网页正文只能作为外部参考，不等于已核实事实；遇到资料日期缺失、来源冲突或无法确认的‘最新’结论，必须明确说明不确定性，优先引用官方手册/公告并列出资料日期。"
 )
-
 
 _PERSONA_PROMPTS: dict[str, str] = {
     "office": "【当前角色：💼 知识办公助手】你擅长将复杂技术与业务资料提炼为清晰易懂的核心结论、梳理 Action Items 待办清单与标准汇报公文。行文严谨、结构条理、用语得体。",
@@ -433,7 +433,7 @@ def rag_answer(
     # 6. 调 LLM
     llm_timeout = (s.llm_timeout if s.llm_timeout > 0 else None)
     try:
-        reply = client.chat(messages, timeout=llm_timeout)
+        reply = sanitize_model_text(client.chat(messages, timeout=llm_timeout))
     except LLMError as e:
         raise RagError(str(e)) from e
 
@@ -538,7 +538,8 @@ def rag_answer_stream(
     # 6. 流式调 LLM（含推理链透传：DeepSeek-R1/Qwen3 等模型的 thinking 帧）
     yield json.dumps({"type": "status", "message": "正在生成回答..."}, ensure_ascii=False)
     llm_timeout = (s.llm_timeout if s.llm_timeout > 0 else None)
-    collected = []
+    collected: list[str] = []
+    output_filter = OutputSanitizer()
     try:
         for kind, token in client.stream_chat_tagged(
             messages,
@@ -553,11 +554,17 @@ def rag_answer_stream(
                 if token:
                     yield json.dumps({"type": "thinking", "text": token}, ensure_ascii=False)
                 continue
-            collected.append(token)
-            yield json.dumps({"token": token}, ensure_ascii=False)
+            visible = output_filter.feed(token)
+            if visible:
+                collected.append(visible)
+                yield json.dumps({"token": visible}, ensure_ascii=False)
     except LLMError as e:
         raise RagError(str(e)) from e
 
+    tail = output_filter.flush()
+    if tail:
+        collected.append(tail)
+        yield json.dumps({"token": tail}, ensure_ascii=False)
     reply = "".join(collected)
 
     # 7. 保存历史（含 sources）
@@ -629,6 +636,18 @@ def _format_context(hits: list[SearchHit], start_idx: int = 1) -> tuple[str, lis
             )
         )
     return "\n\n".join(blocks), sources
+
+
+def _should_run_pitfall_advisor(query: str) -> bool:
+    """Run the second retrieval only for troubleshooting/risk-oriented questions."""
+    text = (query or "").lower()
+    keywords = (
+        "error", "exception", "failed", "failure", "bug", "crash", "timeout",
+        "issue", "problem", "warning", "risk", "pitfall", "troubleshoot",
+        "排错", "报错", "错误", "异常", "失败", "故障", "崩溃", "超时",
+        "问题", "风险", "避坑", "缺陷", "修复",
+    )
+    return any(word in text for word in keywords)
 
 
 def _build_context_and_messages(
@@ -739,7 +758,11 @@ def _build_context_and_messages(
             yield "正在查询避坑指南..."
             pitfall_count = 0
             try:
-                if hits and "mock" not in type(retriever).__name__.lower():
+                if (
+                    hits
+                    and _should_run_pitfall_advisor(query)
+                    and "mock" not in type(retriever).__name__.lower()
+                ):
                     pitfall_query = f"{query} 故障 踩坑 异常 避坑 缺陷 零漂 冲突 失败 报错 注意事项"
                     pitfall_hits, _ = retriever.search(
                         query=pitfall_query,
