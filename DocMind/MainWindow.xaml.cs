@@ -1,5 +1,4 @@
 using System.Windows;
-using System.Windows.Input;
 using DocMind.Services;
 using DocMind.ViewModels;
 
@@ -15,24 +14,6 @@ namespace DocMind
             notificationService.NotificationAdded += notification =>
             {
                 Dispatcher.Invoke(() => ToastLayer.Show(notification));
-            };
-
-            // 标题栏支持拖拽与双击切换最大化
-            TitleBarBorder.MouseDown += (s, e) =>
-            {
-                if (e.ChangedButton == MouseButton.Left)
-                {
-                    if (e.ClickCount == 2)
-                    {
-                        WindowState = WindowState == WindowState.Maximized
-                            ? WindowState.Normal
-                            : WindowState.Maximized;
-                    }
-                    else
-                    {
-                        DragMove();
-                    }
-                }
             };
 
             // 窗口状态变化时自适应圆角与边框，防止最大化时屏幕边缘裁剪
