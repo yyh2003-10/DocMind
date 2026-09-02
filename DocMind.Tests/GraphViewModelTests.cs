@@ -276,4 +276,188 @@ public class GraphViewModelTests
         Assert.False(vm.HasLoadError);
         Assert.True(vm.HasGraph);
     }
+
+    [Fact]
+    public async Task DistillEntityCard_WithAppSettings_PassesModelAndProviderConfig()
+    {
+        var fake = new FakeDoc2kbApiService();
+        var nodes = new List<GraphNode>
+        {
+            new("n1", "WebSearchService", "tech", "tech", 2, "default")
+        };
+        fake.OnGetGraph = (_, _, _) => Task.FromResult(new GraphResponse(nodes, new List<GraphEdge>(), 1));
+        fake.OnGetEntityDetail = (eid, _, _) => Task.FromResult(new GraphEntityDetailResponse(
+            new GraphNode("n1", "WebSearchService", "tech", "tech", 2, "default"),
+            new List<GraphEntityRelation>(),
+            new List<GraphContextSnippet>(),
+            new List<GraphSourceDocument>()
+        ));
+
+        EntityDistillRequest? capturedReq = null;
+        fake.OnDistillEntityKnowledge = (req, _) =>
+        {
+            capturedReq = req;
+            return Task.FromResult(new EntityDistillResponse
+            {
+                EntityId = req.EntityId,
+                EntityName = req.EntityName,
+                MarkdownCard = "# 知识卡片",
+                SuggestedTags = new List<string> { "tech" },
+                Model = req.Model ?? "default"
+            });
+        };
+
+        var settings = new AppSettings
+        {
+            LlmProvider = "openai",
+            LlmApiKey = "sk-test-key",
+            LlmBaseUrl = "https://api.openai.com/v1",
+            LlmModel = "gpt-4o",
+            ActiveProfileId = "p1",
+            LlmProfiles = new List<LlmProfile>
+            {
+                new()
+                {
+                    Id = "p1",
+                    Name = "DeepSeek Profile",
+                    Provider = "openai",
+                    ApiKey = "sk-deepseek-key",
+                    BaseUrl = "https://api.deepseek.com",
+                    Model = "deepseek-chat",
+                    Temperature = 0.3,
+                    MaxTokens = 4096
+                }
+            }
+        };
+
+        var vm = new GraphViewModel(fake, null, settings);
+        await vm.LoadGraphAsync();
+        await vm.SelectNodeAsync("n1");
+
+        await vm.DistillEntityCardCommand.ExecuteAsync(null);
+
+        Assert.NotNull(capturedReq);
+        Assert.Equal("deepseek-chat", capturedReq.Model);
+        Assert.NotNull(capturedReq.ProviderConfig);
+        Assert.Equal("openai", capturedReq.ProviderConfig.Provider);
+        Assert.Equal("sk-deepseek-key", capturedReq.ProviderConfig.ApiKey);
+        Assert.Equal("https://api.deepseek.com", capturedReq.ProviderConfig.BaseUrl);
+        Assert.Equal("deepseek-chat", capturedReq.ProviderConfig.Model);
+    }
+
+    [Fact]
+    public async Task LoadGraphAsync_StatsAuthoritative_OverridesVisualizeCounts()
+    {
+        // 权威计数来自 /v1/graph/stats（AUD-017 接通），即使 visualize 被 limit 截断也应显示全集数字
+        var fake = new FakeDoc2kbApiService();
+        fake.OnGetGraph = (coll, limit, _) => Task.FromResult(new GraphResponse(
+            new List<GraphNode> { new("n1", "Node1", "tech", "tech", 1, "default") },
+            new List<GraphEdge>(),
+            1));
+        fake.OnGetGraphStats = (coll, _) => Task.FromResult(new GraphStats
+        {
+            EntityCount = 120,
+            RelationCount = 340,
+            Collection = null
+        });
+
+        var vm = new GraphViewModel(fake);
+        await vm.LoadGraphAsync();
+
+        Assert.Equal(120, vm.TotalNodes);
+        Assert.Equal(340, vm.TotalEdges);
+        Assert.True(vm.HasGraph);
+    }
+
+    [Fact]
+    public async Task LoadGraphAsync_StatsUnavailable_FallsBackToVisualizeCounts()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnGetGraph = (coll, limit, _) => Task.FromResult(new GraphResponse(
+            new List<GraphNode>
+            {
+                new("n1", "Node1", "tech", "tech", 2, "default"),
+                new("n2", "Node2", "concept", "concept", 1, "default"),
+            },
+            new List<GraphEdge> { new("n1", "n2", "relates") },
+            2));
+        // 默认 Fake 的 OnGetGraphStats 返回 null → 应优雅回退可视化计数
+
+        var vm = new GraphViewModel(fake);
+        await vm.LoadGraphAsync();
+
+        Assert.Equal(2, vm.TotalNodes);
+        Assert.Equal(1, vm.TotalEdges);
+    }
+
+    [Fact]
+    public async Task LoadGraphAsync_StatsThrows_FallsBackToVisualizeCounts()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnGetGraph = (coll, limit, _) => Task.FromResult(new GraphResponse(
+            new List<GraphNode> { new("n1", "Node1", "tech", "tech", 1, "default") },
+            new List<GraphEdge>(),
+            1));
+        fake.OnGetGraphStats = (coll, _) => throw new BackendConnectionException("stats 不可达");
+
+        var vm = new GraphViewModel(fake);
+        await vm.LoadGraphAsync();
+
+        Assert.Equal(1, vm.TotalNodes);
+        Assert.Equal(0, vm.TotalEdges);
+        Assert.True(vm.HasGraph);
+    }
+
+    [Fact]
+    public async Task LoadGraphAsync_PopulatesEntityQuickJumpNames()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnGetGraph = (coll, limit, _) => Task.FromResult(new GraphResponse(
+            new List<GraphNode> { new("n1", "Node1", "tech", "tech", 1, "default") },
+            new List<GraphEdge>(),
+            1));
+        fake.OnGetGraphEntities = (coll, limit, _) => Task.FromResult(new List<GraphNode>
+        {
+            new("n1", "Alpha", "tech", "tech", 1, "default"),
+            new("n2", "Beta", "concept", "concept", 1, "default"),
+            new("n3", "Beta", "tech", "tech", 1, "default"),  // 同名去重
+        });
+
+        var vm = new GraphViewModel(fake);
+        await vm.LoadGraphAsync();
+
+        Assert.Contains("Alpha", vm.EntityQuickJumpNames);
+        Assert.Contains("Beta", vm.EntityQuickJumpNames);
+        Assert.Equal(1, vm.EntityQuickJumpNames.Count(n => n == "Beta"));
+    }
+
+    [Fact]
+    public async Task QuickJump_Selection_FocusesNodeAndOpensDetail()
+    {
+        var fake = new FakeDoc2kbApiService();
+        var nodes = new List<GraphNode>
+        {
+            new("n1", "Node1", "tech", "tech", 2, "default"),
+            new("n2", "Node2", "concept", "concept", 1, "default"),
+        };
+        fake.OnGetGraph = (_, _, _) => Task.FromResult(new GraphResponse(nodes, new List<GraphEdge>(), 2));
+        fake.OnGetEntityDetail = (eid, _, _) => Task.FromResult(new GraphEntityDetailResponse(
+            nodes.First(n => n.Id == eid),
+            new List<GraphEntityRelation>(),
+            new List<GraphContextSnippet>(),
+            new List<GraphSourceDocument>()
+        ));
+
+        var vm = new GraphViewModel(fake);
+        await vm.LoadGraphAsync();
+
+        string? focusedNodeId = null;
+        vm.NodeFocusRequested += id => focusedNodeId = id;
+
+        vm.SelectedEntityJumpName = "Node2";
+
+        Assert.Equal("n2", focusedNodeId);
+        Assert.True(vm.IsDetailOpen);
+        Assert.Equal("n2", vm.SelectedNode?.Id);
+    }
 }

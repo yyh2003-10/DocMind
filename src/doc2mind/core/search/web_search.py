@@ -58,6 +58,19 @@ _TRACKING_QUERY_KEYS = {
     "spm",
 }
 
+# 纯视频/聚合/UGC 缩略图站——这类页面几乎无法为技术问答提供事实依据，
+# 却最易因标题含查询词而被误当「相关网页」引用（如「约390个相关视频」「好看视频
+# 缩略图」「bilibili 一张图看懂」）。在候选阶段直接丢弃，不进入评分/抓取流程。
+_JUNK_DOMAIN_SUFFIXES = {
+    "bilibili.com", "b23.tv",
+    "360kan.com", "360doc.com", "360doc.cn",
+    "v.qq.com", "m.v.qq.com", "v.youku.com", "youku.com",
+    "iqiyi.com", "douyin.com", "iesdouyin.com", "kuaishou.com",
+    "haokan.baidu.com",
+    "xiaohongshu.com", "xhslink.com",
+    "smzdm.com",
+}
+
 
 @dataclass
 class WebSearchResult:
@@ -164,6 +177,10 @@ class WebSearchService:
             if self._is_placeholder_snippet(result.snippet):
                 result.snippet = ""
             result.domain = urllib.parse.urlsplit(result.url).netloc.lower()
+            # 丢弃纯视频/聚合/UGC 缩略图站（黑名单），避免「相关视频/缩略图页」
+            # 被当事实依据引用。语义性偏题（如汽车页命中「电源开关」）靠 0.12 相关度门槛排除。
+            if self._is_junk_domain(result.domain):
+                continue
             key = self._canonical_key(result.url)
             if key in seen:
                 continue
@@ -632,6 +649,12 @@ class WebSearchService:
         lowered = text.lower()
         matched = sum(1 for token in tokens if token in lowered)
         return min(1.0, matched / max(1, min(len(tokens), 8)))
+
+    @staticmethod
+    def _is_junk_domain(domain: str) -> bool:
+        """是否纯视频/聚合/UGC 缩略图站（黑名单，候选阶段直接丢弃）。"""
+        host = domain.lower().split(":", 1)[0]
+        return any(host == s or host.endswith("." + s) for s in _JUNK_DOMAIN_SUFFIXES)
 
     @staticmethod
     def _authority_score(domain: str) -> float:

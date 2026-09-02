@@ -234,6 +234,24 @@ _KNOWN_MODEL_SPECS: dict[str, ModelSpec] = {
     ),
 
     # ===== Google Gemini 系列 =====
+    "gemini-2.5-flash": ModelSpec(
+        model_id="gemini-2.5-flash",
+        display_name="Gemini 2.5 Flash",
+        context_window=1048576,
+        max_output_tokens=8192,
+        is_reasoning_model=True,
+        recommended_rag_top_k=15,
+        description="Google Gemini 2.5 Flash，支持思考链",
+    ),
+    "gemini-2.5-pro": ModelSpec(
+        model_id="gemini-2.5-pro",
+        display_name="Gemini 2.5 Pro",
+        context_window=1048576,
+        max_output_tokens=8192,
+        is_reasoning_model=True,
+        recommended_rag_top_k=15,
+        description="Google Gemini 2.5 Pro，支持深度思考",
+    ),
     "gemini-2.0-flash": ModelSpec(
         model_id="gemini-2.0-flash",
         display_name="Gemini 2.0 Flash",
@@ -344,7 +362,7 @@ def get_model_spec(model_name: str | None, provider: str = "") -> ModelSpec:
 
     # 2. 启发式特征提取
     is_reasoning = bool(
-        re.search(r"(reasoner|r1|o1|o3|thinking|qwq|zero|cot|deepseek-r)", clean_id)
+        re.search(r"(reasoner|r1|o1|o3|o4|qwen3|thinking|qwq|zero|cot|deepseek-r)", clean_id)
     )
 
     # 上下文窗口识别
@@ -415,42 +433,3 @@ def _get_default_fallback_spec(provider: str, model_id: str) -> ModelSpec:
     if "ollama" in p:
         return ModelSpec(model_id=model_id, display_name=model_id, context_window=32768, max_output_tokens=4096)
     return ModelSpec(model_id=model_id, display_name=model_id, context_window=65536, max_output_tokens=8192)
-
-
-def calculate_dynamic_rag_budget(
-    spec: ModelSpec,
-    history_tokens: int = 0,
-    system_prompt_tokens: int = 1500,
-) -> dict[str, int]:
-    """根据模型真实规格，自适应计算当前请求的各项容量预算。
-
-    计算公式：
-    最大可用资料预算 = 总上下文 - 预留输出空间 - 系统提示词 - 历史多轮 - 安全缓冲区
-    """
-    safety_margin = 1000  # 安全缓冲 token
-    reserved_output = min(spec.max_output_tokens, 8192)
-    # 对于小上下文模型（<= 16K），收缩预留输出
-    if spec.context_window <= 16384:
-        reserved_output = min(spec.max_output_tokens, 3072)
-
-    available_input_space = (
-        spec.context_window
-        - reserved_output
-        - system_prompt_tokens
-        - history_tokens
-        - safety_margin
-    )
-
-    # 资料预算下限 1500 tokens，上限根据模型能力动态调节
-    rag_token_budget = max(1500, available_input_space)
-
-    # 针对超大上下文模型（如 128K/1M），将单次 RAG 资料注入限制在合理高密度区间（如 32000 tokens），
-    # 避免引发 "Lost in the Middle"（注意力迷失）问题。
-    rag_token_budget = min(rag_token_budget, 32000)
-
-    return {
-        "context_window": spec.context_window,
-        "max_output_tokens": spec.max_output_tokens,
-        "rag_token_budget": rag_token_budget,
-        "recommended_top_k": spec.recommended_rag_top_k,
-    }

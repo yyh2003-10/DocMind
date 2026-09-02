@@ -1822,6 +1822,19 @@
             })[ch]);
         }
 
+        // 属性值转义（HTML 实体 + 反斜杠/引号，用于 data-* 与内嵌 JS 字符串）
+        function escapeAttr(s) {
+            return escapeHtml(s).replace(/\\/g, '&#92;');
+        }
+
+        // 搜索下拉点击：事件委托（替代内联 onclick，杜绝 on* 属性注入）
+        searchDropdown.addEventListener('click', function (ev) {
+            const item = ev.target && ev.target.closest ? ev.target.closest('.search-item') : null;
+            if (item) {
+                selectSearchNode(item.getAttribute('data-node-id'));
+            }
+        });
+
         function entityLabelOf(n) {
             const tc = typeColorOf(n);
             return (tc && tc.label) || n.type || '概念';
@@ -1855,9 +1868,11 @@
                     ttMeta.innerHTML = `<div class="desc">该集合暂无图谱实体，可通过大模型抽取自动生成。</div>`;
                 } else {
                     const dist = entityTypeDistribution(children);
+                    const escDist = escapeHtml(dist);
+                    const escCore = escapeHtml(coreEntityNames(children));
                     ttMeta.innerHTML = `
-                        <div class="desc">共 <strong>${children.length}</strong> 个实体${dist ? ` · ${escapeHtml(dist)}` : ''}</div>
-                        <div class="desc">核心实体：${escapeHtml(coreEntityNames(children))}</div>
+                        <div class="desc">共 <strong>${children.length}</strong> 个实体${dist ? ` · ${escDist}` : ''}</div>
+                        <div class="desc">核心实体：${escCore}</div>
                         <div class="muted">点击展开，查看关联实体网络</div>
                     `;
                 }
@@ -1867,11 +1882,13 @@
                 const members = [...memberIds].map(id => nodeMap.get(id)).filter(n => n && !n.is_topic);
                 const dist = entityTypeDistribution(members);
                 ttTitle.textContent = `🧭 主题：${node.name}`;
+                const escDist2 = escapeHtml(dist);
+                const escCore2 = escapeHtml(coreEntityNames(members));
                 ttMeta.innerHTML = `
                     <div>类型: <strong>主题</strong></div>
                     ${members.length ? `
-                    <div class="desc">聚合 <strong>${members.length}</strong> 个实体${dist ? ` · ${escapeHtml(dist)}` : ''}</div>
-                    <div class="desc">核心实体：${escapeHtml(coreEntityNames(members))}</div>` : ''}
+                    <div class="desc">聚合 <strong>${members.length}</strong> 个实体${dist ? ` · ${escDist2}` : ''}</div>
+                    <div class="desc">核心实体：${escCore2}</div>` : ''}
                     <div>所属分类: <strong>${escapeHtml(node.topicId ? (topicMap.get(node.topicId)?.name || '核心主题') : '通用分类')}</strong></div>
                 `;
             } else {
@@ -1943,13 +1960,20 @@
                 const dotColor = nodeTc ? nodeTc.main : (topicObj ? topicObj.theme.main : '#3B82F6');
                 const topicName = n.is_topic ? '核心主题' : (topicObj?.name || '核心分类');
 
+                // 节点 id/名称均来自知识库（文档原文/LLM 抽取），必须整体转义，
+                // 否则恶意文档内容可在 WebView2 中注入 HTML/JS（存储型 XSS）
+                const escName = escapeHtml(n.name);
+                const escTopic = escapeHtml(topicName);
+                // onclick 内嵌字符串：id 需再对单引号/反斜杠做双重转义，
+                // 并用事件委托（data-node-id + 委托监听）替代内联 onclick，
+                // 彻底消除引号逃逸面。
                 html += `
-                    <div class="search-item ${isSelected}" onclick="selectSearchNode('${n.id}')">
+                    <div class="search-item ${isSelected}" data-node-id="${escapeAttr(n.id)}" role="button" tabindex="0">
                         <div class="search-item-left">
                             <span class="search-item-dot" style="background:${dotColor}"></span>
-                            <span class="search-item-name">${n.name}</span>
+                            <span class="search-item-name">${escName}</span>
                         </div>
-                        <span class="search-item-topic">${topicName}</span>
+                        <span class="search-item-topic">${escTopic}</span>
                     </div>
                 `;
             });

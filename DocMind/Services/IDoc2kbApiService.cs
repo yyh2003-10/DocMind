@@ -28,8 +28,9 @@ public interface IDoc2kbApiService
     Task<SearchResponse> SearchAsync(SearchRequest req, CancellationToken ct = default);
     Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default);
     /// <summary>流式对话：消费 SSE 逐 token 输出。onToken 每收到一个 token 触发，onDone 在终帧触发，返回终帧元数据。
-    /// onStatus 阶段状态；onThinking 推理链增量（DeepSeek-R1/Qwen3 等模型的 reasoning_content）。</summary>
-    Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, CancellationToken ct = default);
+    /// onStatus 阶段状态；onThinking 推理链增量（DeepSeek-R1/Qwen3 等模型的 reasoning_content）；
+    /// onRestart 后端重启生成（上下文溢出精简后重试）时触发，调用方应丢弃已累积的正文重新开始。</summary>
+    Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, Action? onRestart = null, CancellationToken ct = default);
     Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", string? q = null, CancellationToken ct = default);
     Task<DocumentDetail> GetDocumentAsync(string id, int chunks = 5, int chunkContentLength = 200, string? collection = null, CancellationToken ct = default);
     Task<DeleteResult> DeleteDocumentAsync(string id, string? collection = null, CancellationToken ct = default);
@@ -39,12 +40,19 @@ public interface IDoc2kbApiService
     Task<QualityReport> GetQualityAsync(string? collection = null, CancellationToken ct = default);
     Task<ConvertResult> ConvertAsync(ConvertRequest req, CancellationToken ct = default);
     Task<JobStatus> ReindexAsync(ReindexRequest req, CancellationToken ct = default);
+    /// <summary>AI 知识库整理（POST /v1/curate，异步任务）：打标签/摘要/归类/语义去重/归纳合并。
+    /// dry_run=true（默认）只读预览零写入；dedup/consolidate 有损，确认预览后用 dry_run=false 执行。</summary>
+    Task<JobStatus> CurateAsync(CurateRequest req, CancellationToken ct = default);
     Task<JobStatus> GetJobAsync(string jobId, CancellationToken ct = default);
     /// <summary>取消异步任务（DELETE /v1/jobs/{jobId}）。</summary>
     Task<JobStatus> CancelJobAsync(string jobId, CancellationToken ct = default);
     /// <summary>更新分块批注（PUT /v1/chunks/{chunkId}/annotation）。</summary>
     Task UpsertChunkAnnotationAsync(int chunkId, string text, CancellationToken ct = default);
     Task<JobStatus> PollJobUntilDoneAsync(string jobId, IProgress<JobStatus>? progress = null, TimeSpan? pollInterval = null, CancellationToken ct = default);
+
+    /// <summary>订阅 job 进度 SSE（GET /v1/jobs/{id}/events，实时进度），返回最终 JobStatus。
+    /// SSE 不可用/中断时自动回退到轮询，保证任务仍能收敛。</summary>
+    Task<JobStatus> WatchJobUntilDoneAsync(string jobId, IProgress<JobStatus>? progress = null, CancellationToken ct = default);
 
     /// <summary>GPU 加速环境诊断（GET /v1/system/gpu-diagnosis）。</summary>
     Task<GpuDiagnosis> GetGpuDiagnosisAsync(CancellationToken ct = default);
@@ -61,6 +69,13 @@ public interface IDoc2kbApiService
     /// 回调语义与 InstallGpuAsync 相同。</summary>
     Task InstallOcrAsync(string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default);
 
+    /// <summary>运行依赖就绪状态聚合（GET /v1/system/dependencies）。</summary>
+    Task<DependenciesStatus> GetDependenciesAsync(CancellationToken ct = default);
+
+    /// <summary>下载嵌入模型（POST /v1/system/download-model，SSE 流式进度）。
+    /// progress 每收到一帧进度触发；成功返回模型快照目录路径，失败抛 ApiException。</summary>
+    Task<string?> DownloadModelAsync(string? modelName = null, IProgress<DownloadProgressFrame>? progress = null, CancellationToken ct = default);
+
     /// <summary>知识图谱可视化数据（GET /v1/graph/visualize）。</summary>
     Task<GraphResponse> GetGraphAsync(string? collection = null, int limit = 200, CancellationToken ct = default);
 
@@ -69,6 +84,12 @@ public interface IDoc2kbApiService
 
     /// <summary>实体完整知识全景与具体内容（GET /v1/graph/entities/{entityId}/details）。</summary>
     Task<GraphEntityDetailResponse> GetEntityDetailAsync(string entityId, int limit = 8, CancellationToken ct = default);
+
+    /// <summary>图谱规模统计（GET /v1/graph/stats，权威实体/关系总数）。</summary>
+    Task<GraphStats> GetGraphStatsAsync(string? collection = null, CancellationToken ct = default);
+
+    /// <summary>知识图谱实体列表（GET /v1/graph/entities，可分页取前 N 个）。</summary>
+    Task<List<GraphNode>> GetGraphEntitiesAsync(string? collection = null, int limit = 200, CancellationToken ct = default);
 
     /// <summary>触发已有文档的知识图谱实体抽取（POST /v1/graph/extract）。</summary>
     Task<GraphExtractResult> ExtractGraphAsync(string? collection = null, int topK = 20, CancellationToken ct = default);

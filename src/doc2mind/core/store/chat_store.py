@@ -67,6 +67,10 @@ class ChatStore:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, timeout=10.0)
         conn.execute("PRAGMA foreign_keys = ON")
+        # 与 sqlite_vec / graph_store 保持一致：WAL 提升并发读吞吐，
+        # 显式 busy_timeout 避免并发写会话时瞬间抛 SQLITE_BUSY。
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -165,6 +169,60 @@ class ChatStore:
         except sqlite3.Error as e:
             raise ChatStoreError(f"写入会话消息失败: {e}") from e
 
+    def append_turn(
+        self,
+        chat_id: str,
+        user_content: str,
+        assistant_content: str | None,
+        title_hint: str | None = None,
+        sources_json: str | None = None,
+    ) -> None:
+        """一轮对话（user + 可选 assistant）在**单事务**内落库。
+
+        与分两次 `append_message`（各开一个事务）相比：
+        - assistant 写失败时 user 轮一并回滚，不留孤儿轮；
+        - 并发下同一 chat_id 两次请求不会交错成
+          `A_user, B_user, A_asst, B_asst`（`get_history` 按 id 升序取回会错序）。
+
+        assistant_content 为 None 表示本轮无回答（如无检索命中时的提前返回），
+        仅落库用户消息。
+        """
+        if not chat_id or not user_content:
+            raise ChatStoreError(f"非法消息参数: chat_id={chat_id!r}")
+        self._ensure_parent_dir()
+        now = _now_iso()
+        try:
+            with self._conn() as conn:
+                self._ensure_schema(conn)
+                row = conn.execute(
+                    "SELECT id, title FROM chat_sessions WHERE id = ?", (chat_id,)
+                ).fetchone()
+                if row is None:
+                    hint = (title_hint or user_content or "").strip().replace("\n", " ")
+                    title = hint[:_TITLE_MAX] or "新会话"
+                    conn.execute(
+                        "INSERT INTO chat_sessions (id, title, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (chat_id, title, now, now),
+                    )
+                conn.execute(
+                    "INSERT INTO chat_messages (chat_id, role, content, created_at, sources_json) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (chat_id, "user", user_content, now, None),
+                )
+                if assistant_content is not None:
+                    conn.execute(
+                        "INSERT INTO chat_messages (chat_id, role, content, created_at, sources_json) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (chat_id, "assistant", assistant_content, now, sources_json),
+                    )
+                conn.execute(
+                    "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+                    (now, chat_id),
+                )
+        except sqlite3.Error as e:
+            raise ChatStoreError(f"写入会话消息失败: {e}") from e
+
     def get_history(self, chat_id: str, limit: int = 20) -> list[dict[str, str]]:
         """取会话最近 limit 条消息（时间正序），供 LLM 多轮上下文使用。
 
@@ -251,6 +309,16 @@ class ChatStore:
                 ]
         except sqlite3.Error as e:
             raise ChatStoreError(f"列出会话失败: {e}") from e
+
+    def count_sessions(self) -> int:
+        """返回会话总数（供分页列表的 total 字段使用，AUD-013）。"""
+        try:
+            with self._conn() as conn:
+                self._ensure_schema(conn)
+                r = conn.execute("SELECT COUNT(*) FROM chat_sessions").fetchone()
+                return int(r[0]) if r else 0
+        except sqlite3.Error as e:
+            raise ChatStoreError(f"统计会话失败: {e}") from e
 
     def delete_session(self, chat_id: str) -> bool:
         """删除会话及其全部消息（级联）；不存在返回 False。"""

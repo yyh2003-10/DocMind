@@ -46,6 +46,10 @@ public partial class MainViewModel : ViewModelBase
     /// <summary>是否可手动启动后端（仅在离线时显示启动按钮）。</summary>
     public bool CanStartBackend => _backendState is BackendState.Offline;
 
+    // ── 批次 4：全局离线恢复横幅 ──
+    /// <summary>是否显示全局离线横幅（后端离线时显示，含重新检测/重启/日志按钮）。</summary>
+    public bool ShowOfflineBanner => _backendState is BackendState.Offline;
+
     /// <summary>后端地址（底栏显示）。</summary>
     public string BackendUrl => Settings.BackendUrl;
 
@@ -61,6 +65,7 @@ public partial class MainViewModel : ViewModelBase
             _ => ("后端离线", Brushes.Red),
         };
         OnPropertyChanged(nameof(CanStartBackend));
+        OnPropertyChanged(nameof(ShowOfflineBanner));
         StartBackendCommand.NotifyCanExecuteChanged();
 
         // 后端恢复在线时，自动刷新搜索集合、质量看板与对话页的集合/历史会话
@@ -83,6 +88,39 @@ public partial class MainViewModel : ViewModelBase
             StatusMessage = "正在启动后端服务…";
             await _backendService.StartAsync(new Progress<string>(msg => StatusMessage = msg));
         }
+    }
+
+    /// <summary>重新检测后端状态（离线横幅「重新检测」按钮）。</summary>
+    [RelayCommand]
+    private async Task RefreshBackendAsync()
+    {
+        StatusMessage = "正在检测后端状态…";
+        try
+        {
+            var health = await ApiService.GetHealthAsync();
+            if (health is not null)
+            {
+                UpdateBackendState(BackendState.Online);
+                StatusMessage = "✅ 后端在线";
+            }
+            else
+            {
+                UpdateBackendState(BackendState.Offline);
+                StatusMessage = "❌ 后端不可达";
+            }
+        }
+        catch
+        {
+            UpdateBackendState(BackendState.Offline);
+            StatusMessage = "❌ 后端不可达";
+        }
+    }
+
+    /// <summary>跳转到调试日志页（离线横幅「查看日志」按钮）。</summary>
+    [RelayCommand]
+    private void OpenDebugLog()
+    {
+        SelectedNavigationItem = NavigationItems.FirstOrDefault(n => n.ViewModelType == typeof(DebugLogViewModel));
     }
 
     public ObservableCollection<NavigationItem> NavigationItems { get; } = new();
@@ -142,6 +180,13 @@ public partial class MainViewModel : ViewModelBase
 
         // 对话页一键直达设置页（如未配置大模型引导）
         _chatViewModel.NavigateToSettingsRequested += NavigateToSettings;
+
+        // 对话页来源抽屉「在搜索页查找」→ 本地来源跳搜索页检索、web 来源浏览器打开
+        _chatViewModel.SourceSearchRequested += OnSourceSearchRequested;
+
+        // 设置页服务商配置变更 → 对话页重建模型候选。由 Main 统一订阅静态事件，
+        // ChatViewModel 不再自订阅（静态事件长期持有 VM 引用无法退订）
+        SettingsViewModel.ProviderConfigChanged += _chatViewModel.ApplyProviderConfigChanged;
 
         // 导入完成 → 文档库/图谱/质量看板缓存失效并刷新
         _importViewModel.ImportCompleted += OnImportCompleted;

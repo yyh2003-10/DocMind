@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -160,10 +161,17 @@ def search(
     from doc2mind.core.embedder.base import EmbedderError
     from doc2mind.core.embedder.fastembed_impl import first_run_hint
     from doc2mind.core.retriever.search import RetrievalError
+    from doc2mind.core.reranker import get_reranker
+    from doc2mind.core.config import get_settings
 
     store, embedder = _open_store()
     try:
-        retriever = Retriever(store=store, embedder=embedder)
+        retriever = Retriever(
+            store=store,
+            embedder=embedder,
+            reranker=get_reranker(get_settings()),
+            rerank_recall=get_settings().rerank_recall,
+        )
         hits, stats = retriever.search(
             query=query, collection=collection, top_k=top_k
         )
@@ -974,20 +982,45 @@ def _release_port(port: int) -> bool:
                         )
                     else:
                         os.kill(old_pid, signal.SIGKILL)
+            # 旧实例已终止：其服务令牌随之失效（新实例会生成新令牌），
+            # 避免残留 server.token 让无令牌请求继续命中旧实例的鉴权放行
+            with contextlib.suppress(OSError):
+                (_user_data_dir() / "server.token").unlink(missing_ok=True)
             pid_file.unlink(missing_ok=True)
     except Exception:
         pass
 
     # 2. Windows 平台通过 netstat 查找并杀死正在 LISTENING 该端口的所有进程
+    #    （不用 cmd.exe /c 拼接 shell 字符串——进程号/端口号落入 shell 有注入面，
+    #    改为纯 argv 参数传递：netstat 输出拿到 PID 列表后逐个 taskkill）
     if sys.platform == "win32":
         try:
-            cmd = f'for /f "tokens=5" %a in (\'netstat -aon ^| findstr ":{port} " ^| findstr "LISTENING"\') do if not "%a"=="{current_pid}" taskkill /f /pid %a'
-            subprocess.run(
-                ["cmd.exe", "/c", cmd],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+            netstat = subprocess.run(
+                ["netstat", "-ano"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
                 check=False,
             )
+            pids: set[str] = set()
+            for line in netstat.stdout.splitlines():
+                parts = line.split()
+                # 行形如:  TCP  127.0.0.1:8765  0.0.0.0:0  LISTENING  12345
+                if len(parts) >= 5 and parts[3] == "LISTENING":
+                    local_addr = parts[1]
+                    if local_addr.endswith(f":{port}"):
+                        pid = parts[4]
+                        if pid.isdigit() and pid != str(current_pid):
+                            pids.add(pid)
+            for pid in pids:
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", pid],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
         except Exception:
             pass
 

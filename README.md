@@ -66,6 +66,24 @@ doc2mind convert input.docx output.md
 doc2mind convert ./batch/ --format md --out ./out/
 ```
 
+## ✅ 验证核心链路
+
+改动链路或接手新环境时，先跑一遍接口冒烟，确认主链（摄入 → 检索 → 问答 → 流式 → 会话）没坏：
+
+```powershell
+# 连接已运行的后端
+.\scripts\smoke.ps1
+
+# 完全隔离跑：自起后端 + 临时库 + 关鉴权（推荐给 CI）
+.\scripts\smoke.ps1 -StartBackend -TempDb -DisableAuth
+
+# 追加支线：格式转换 / 交付物导出 / 重建索引 / AI 整理 / 知识图谱
+.\scripts\smoke.ps1 -Deep
+```
+
+存在 FAIL 时退出码为 1，可直接接 CI。完整卡点矩阵、验收标准与文档漂移清单见
+[`docs/verification/core-chain-and-smoke.md`](docs/verification/core-chain-and-smoke.md)。
+
 ## MCP 接入
 
 把 `doc2mind mcp` 注册到 AI 工具的 MCP 配置即可：
@@ -82,8 +100,16 @@ doc2mind convert ./batch/ --format md --out ./out/
 }
 ```
 
-暴露 7 个工具：`ingest` / `search` / `list_docs` / `remove_doc` /
-`quality_check` / `convert_file` / `reindex`。
+暴露 **15 个工具**，分四组：
+
+| 分组 | 工具 |
+|---|---|
+| 摄入 | `ingest`、`ingest_job`（异步，返回 `job_id`）、`get_job`、`ingest_text`（文本直入） |
+| 检索与对话 | `search`（BM25 + 向量 RRF 融合）、`chat`（RAG 带引用） |
+| 管理 | `list_docs`、`remove_doc`、`quality_check`、`convert_file`、`reindex` |
+| AI 增强 | `curate`（自动打标签/归类/去重/蒸馏）、`graph_get`（知识图谱）、`create_artifact` / `inspect_artifact`（PPT 大纲生成与体检） |
+
+详见 [docs/mcp.md](docs/mcp.md)。
 
 ## 架构
 

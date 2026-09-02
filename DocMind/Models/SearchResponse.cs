@@ -8,6 +8,8 @@ public sealed record SearchHit
     public string MatchType { get; init; } = string.Empty;
     public double VectorScore { get; init; }
     public double Bm25Score { get; init; }
+    /// <summary>重排分（后端 sigmoid 归一化 0-1）；null=未启用重排。</summary>
+    public double? RerankScore { get; init; }
     public string Source { get; init; } = string.Empty;
     public string Format { get; init; } = string.Empty;
     public int? Page { get; init; }
@@ -19,24 +21,27 @@ public sealed record SearchHit
         ? Source.Substring(5)
         : System.IO.Path.GetFileName(Source);
 
-    /// <summary>归一化百分比与中文相关度评级（将 RRF 倒数分或余弦分换算为 0~100% 易懂文案）。</summary>
+    /// <summary>用于进度条/条形/列表徽标的真实相关度：优先取重排分（最精确），
+    /// 其次按匹配类型取分量分；RRF 融合分仅用于排序，不参与展示。</summary>
+    public double DisplayScore =>
+        RerankScore is double r ? r
+        : MatchType.ToLowerInvariant() switch { "bm25" => Bm25Score, _ => VectorScore };
+
+    /// <summary>归一化百分比与中文相关度评级（基于真实分量分，不再把 RRF 排名分美化）。</summary>
     public string ScorePercentText
     {
         get
         {
-            if (Score <= 0.0) return "0% 相关";
-            // 若为 RRF 融合分 (通常在 0.01 ~ 0.035 之间)
-            if (Score < 0.1)
-            {
-                // 顶级 (0.03+) 映射到 90~99%
-                double pct = Math.Min(99.0, Math.Max(50.0, (Score / 0.033) * 90.0));
-                string label = pct >= 88 ? "极高相关" : (pct >= 75 ? "强相关" : "中度相关");
-                return $"{pct:F0}% · {label}";
-            }
-            // 若为 0~1 余弦相似度
-            double directPct = Math.Min(100.0, Score * 100.0);
-            string directLabel = directPct >= 85 ? "极高相关" : (directPct >= 70 ? "强相关" : "中度相关");
-            return $"{directPct:F0}% · {directLabel}";
+            // 用真实分量分（向量相似度/BM25/重排概率，0-1），不再把 RRF 排名分
+            // （≤0.033）美化成 50%~99% 伪百分比——垃圾结果也会显示「50% 相关」
+            double s = DisplayScore;
+            if (s <= 0.0) return "0% 相关";
+            double pct = Math.Min(100.0, s * 100.0);
+            string label = pct >= 85 ? "极高相关"
+                : pct >= 70 ? "强相关"
+                : pct >= 50 ? "中度相关"
+                : "弱相关";
+            return $"{pct:F0}% · {label}";
         }
     }
 

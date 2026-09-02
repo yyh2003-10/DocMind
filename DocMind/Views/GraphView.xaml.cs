@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using DocMind.Services;
 using DocMind.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,12 +13,15 @@ namespace DocMind.Views;
 public partial class GraphView : UserControl
 {
     private bool _isWebViewInitialized;
+    private bool _isInitializing;
+    private int _lifecycleVersion;
     private string? _pendingJson;
 
     public GraphView()
     {
         InitializeComponent();
         Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
         DataContextChanged += OnDataContextChanged;
     }
 
@@ -40,23 +44,69 @@ public partial class GraphView : UserControl
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        await InitializeWebViewAsync();
+        var version = ++_lifecycleVersion;
+        await InitializeWebViewAsync(version);
+        if (version != _lifecycleVersion || !_isWebViewInitialized)
+        {
+            return;
+        }
         if (DataContext is GraphViewModel vm)
         {
             await vm.EnsureLoadedAsync();
         }
     }
 
-    private async Task InitializeWebViewAsync()
+    private void OnUnloaded(object sender, RoutedEventArgs e)
     {
-        if (_isWebViewInitialized)
+        // 先翻转闸门：Edge 回调可能在 WPF/COM 拆链期间触达半释放的 CoreWebView2 RCW，
+        // 立即让所有回调与注入路径短路，再解绑事件，根除 ExecutionEngineException 触发条件。
+        // 刻意不调用 CoreWebView2.Close()/GraphWeb.Dispose()：保证「离开再返回 Graph 页」时
+        // OnLoaded 仍能复用同一 GraphWeb（EnsureCoreWebView2Async 对已初始化控件为 no-op）。
+        _isWebViewInitialized = false;
+        _lifecycleVersion++;
+        try
+        {
+            var webView = GraphWeb.CoreWebView2;
+            if (webView != null)
+            {
+                webView.WebMessageReceived -= OnWebMessageReceived;
+                webView.NavigationCompleted -= OnNavigationCompleted;
+            }
+        }
+        catch { /* 拆链期间忽略，避免在危险窗口抛二次异常 */ }
+    }
+
+    private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+    {
+        if (!_isWebViewInitialized)
         {
             return;
         }
 
+        ApplyCurrentTheme();
+
+        if (!string.IsNullOrEmpty(_pendingJson))
+        {
+            InjectGraphJson(_pendingJson);
+            _pendingJson = null;
+        }
+    }
+
+    private async Task InitializeWebViewAsync(int version)
+    {
+        if (_isWebViewInitialized || _isInitializing)
+        {
+            return;
+        }
+
+        _isInitializing = true;
         try
         {
             await GraphWeb.EnsureCoreWebView2Async();
+            if (version != _lifecycleVersion)
+            {
+                return;
+            }
             _isWebViewInitialized = true;
 
             try
@@ -127,22 +177,17 @@ public partial class GraphView : UserControl
                 DebugLog.Error("无法加载 GraphTemplate.html 模板文件", "GraphView");
             }
 
-            GraphWeb.CoreWebView2.NavigationCompleted += (_, _) =>
-            {
-                ApplyCurrentTheme();
-
-                if (!string.IsNullOrEmpty(_pendingJson))
-                {
-                    InjectGraphJson(_pendingJson);
-                    _pendingJson = null;
-                }
-            };
+            GraphWeb.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
         }
         catch (Exception ex)
         {
             DebugLog.Error($"WebView2 初始化失败: {ex.Message}", "GraphView", ex);
             GraphWeb.Visibility = Visibility.Collapsed;
             FallbackPanel.Visibility = Visibility.Visible;
+        }
+        finally
+        {
+            _isInitializing = false;
         }
     }
 
@@ -173,6 +218,12 @@ public partial class GraphView : UserControl
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
+        // Unloaded 已置 false 时短路：Edge 可能仍有一帧在飞，避免触达半释放的 CoreWebView2。
+        if (!_isWebViewInitialized)
+        {
+            return;
+        }
+
         try
         {
             string raw = e.TryGetWebMessageAsString();
@@ -259,13 +310,12 @@ public partial class GraphView : UserControl
         {
             if (GraphWeb.CoreWebView2 != null && !string.IsNullOrWhiteSpace(json))
             {
-                // 通道 1: 原生 PostWebMessage（安全高效传递任意大小与结构 JSON）
+                // 唯一渲染通道：PostWebMessageAsJson（安全高效传递任意大小与结构 JSON）。
+                // 模板内 chrome.webview 'message' 监听器收到后调用 window.renderGraph 渲染。
+                // 修复前此处还走第二条 ExecuteScriptAsync(window.renderGraph(...)) 注入，
+                // 导致每份数据 initFluidWaterSphereGraph 执行两遍（重复初始化、动画状态
+                // 重置、性能浪费）——数据注入都在 graph_ready 之后，双通道纯属冗余（AUD-010）。
                 GraphWeb.CoreWebView2.PostWebMessageAsJson(json);
-
-                // 通道 2: 安全转义后注入 window.renderGraph（杜绝语法错误与字符截断）
-                string encodedJson = JsonSerializer.Serialize(json);
-                string script = $"window.renderGraph && window.renderGraph({encodedJson});";
-                GraphWeb.ExecuteScriptAsync(script);
             }
         }
         catch (Exception ex)

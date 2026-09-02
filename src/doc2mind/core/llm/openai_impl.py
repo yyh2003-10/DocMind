@@ -10,7 +10,14 @@ import logging
 from collections.abc import Iterator
 from typing import Any
 
-from doc2mind.core.llm.base import LLMClient, LLMError, sanitize_max_tokens
+from doc2mind.core.llm.base import (
+    LLMClient,
+    LLMError,
+    is_transient_network_error,
+    iter_exception_chain,
+    merge_stream_retry_text,
+    sanitize_max_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +64,7 @@ class OpenAIClient(LLMClient):
         http_client = httpx.Client(
             timeout=httpx.Timeout(timeout=timeout, connect=20.0, read=timeout, write=30.0),
             http2=False,
-            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10, keepalive_expiry=60.0),
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10, keepalive_expiry=30.0),
         )
         kwargs: dict[str, Any] = {
             "api_key": api_key,
@@ -86,15 +93,29 @@ class OpenAIClient(LLMClient):
         此前统一压成一句"OpenAI API 调用失败: ..."，用户无法区分
         401（key 无效）/ 404（模型或地址错）/ 429（限流）/ 网络不通。
         """
-        status = getattr(e, "status_code", None)
+        chain = iter_exception_chain(e)
+        status = None
+        for item in chain:
+            s = getattr(item, "status_code", None)
+            if s is not None:
+                status = s
+                break
+
         if status in (401, 403):
             hint = "API Key 无效或无权限"
         elif status == 404:
-            hint = "模型名或 API 地址不存在（自定义 base_url 需含 /v1）"
+            if "Not found for account" in str(e):
+                # NVIDIA NIM 下架模型的表现：/models 目录仍列出该模型，调用即 404
+                # （Function '<id>': Not found for account '<acct>'）
+                hint = "模型已下架或当前账号无权调用（模型列表可能仍显示），请更换模型"
+            else:
+                hint = "模型名或 API 地址不存在（自定义 base_url 需含 /v1）"
         elif status == 429:
             hint = "请求过于频繁或额度不足"
         elif status is not None and 500 <= status < 600:
             hint = "服务端错误，请稍后重试"
+        elif is_transient_network_error(e):
+            hint = "网络连接不稳定或代理超时，请检查网络或稍后重试"
         else:
             name = type(e).__name__
             if "Timeout" in name:
@@ -102,22 +123,6 @@ class OpenAIClient(LLMClient):
             elif "Connection" in name or "Connect" in name:
                 hint = "无法连接 API 服务，请检查网络或 base_url"
             else:
-                # 对端在流式响应中途掐断连接（网关负载/网络抖动），给可行动提示
-                msg = str(e).lower()
-                if any(
-                    k in msg
-                    for k in (
-                        "peer closed connection",
-                        "incomplete chunked read",
-                        "connection reset",
-                        "connection aborted",
-                        "broken pipe",
-                        "remote protocol",
-                        "stream closed",
-                    )
-                ):
-                    hint = "网络连接不稳定，请检查网络或稍后重试"
-                    return LLMError(f"OpenAI API {action}失败（{hint}）: {e}")
                 return LLMError(f"OpenAI API {action}失败: {e}")
         return LLMError(f"OpenAI API {action}失败（{hint}）: {e}")
 
@@ -167,9 +172,10 @@ class OpenAIClient(LLMClient):
         messages: list[dict],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        stop_event: Any | None = None,
     ) -> Iterator[str]:
         """兼容入口：只吐正文 token（旧调用方/测试用）。"""
-        for _kind, text in self._stream_completions_tagged(messages, temperature, max_tokens):
+        for _kind, text in self._stream_completions_tagged(messages, temperature, max_tokens, stop_event):
             if text:
                 yield text
 
@@ -178,6 +184,7 @@ class OpenAIClient(LLMClient):
         messages: list[dict],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        stop_event: Any | None = None,
     ) -> Iterator[tuple[str, str]]:
         """流式产出 (kind, text) 帧：推理链 thinking + 正文 content。
 
@@ -185,18 +192,20 @@ class OpenAIClient(LLMClient):
         提供 `reasoning_content`（推理链）与 `content`（正文）；普通模型只有
         content，此时全部按正文处理，行为与旧实现一致。
         """
-        yield from self._stream_completions_tagged(messages, temperature, max_tokens)
+        yield from self._stream_completions_tagged(messages, temperature, max_tokens, stop_event)
 
     def _stream_completions_tagged(
         self,
         messages: list[dict],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        stop_event: Any | None = None,
     ) -> Iterator[tuple[str, str]]:
         max_attempts = 3
         backoff = 1.0
         last_exc: Exception | None = None
         emitted_parts: list[str] = []
+        retry_mode = False
 
         calc_max_tokens = _sanitize_max_tokens(
             max_tokens if max_tokens is not None else self._max_tokens
@@ -212,7 +221,7 @@ class OpenAIClient(LLMClient):
                     retry_messages.append({"role": "assistant", "content": "".join(emitted_parts)})
                     retry_messages.append({
                         "role": "user",
-                        "content": "（请从上一条消息的末尾直接无缝继续往下写，不要重复已生成的内容，直接输出剩余正文：）",
+                        "content": "请从上述已生成的末尾直接无缝继续写，不要重复已生成内容，直接输出后续正文：",
                     })
 
                 stream = self._client.chat.completions.create(
@@ -224,6 +233,12 @@ class OpenAIClient(LLMClient):
                 )
                 last_finish_reason: str | None = None
                 for chunk in stream:
+                    if stop_event is not None and stop_event.is_set():
+                        try:
+                            stream.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return
                     choices = getattr(chunk, "choices", None)
                     if not choices:
                         continue
@@ -239,8 +254,12 @@ class OpenAIClient(LLMClient):
                         yield "thinking", reasoning
                     content = getattr(delta, "content", None)
                     if content:
-                        emitted_parts.append(content)
-                        yield "content", content
+                        if retry_mode:
+                            content = merge_stream_retry_text("".join(emitted_parts), content)
+                            retry_mode = False
+                        if content:
+                            emitted_parts.append(content)
+                            yield "content", content
 
                 # 若因达到单次 token 上限 (length) 截断，自动无缝续写补全
                 if last_finish_reason == "length" and attempt < max_attempts - 1:
@@ -258,6 +277,7 @@ class OpenAIClient(LLMClient):
                 if attempt < max_attempts - 1 and self._is_transient_stream_error(e):
                     import random
                     import time
+
                     import httpx
                     from openai import OpenAI
 
@@ -269,7 +289,7 @@ class OpenAIClient(LLMClient):
                         http_client = httpx.Client(
                             timeout=httpx.Timeout(timeout=self._raw_timeout, connect=20.0, read=self._raw_timeout, write=30.0),
                             http2=False,
-                            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10, keepalive_expiry=60.0),
+                            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10, keepalive_expiry=30.0),
                         )
                         kwargs = dict(self._client_kwargs)
                         kwargs["http_client"] = http_client
@@ -278,12 +298,13 @@ class OpenAIClient(LLMClient):
                         pass
 
                     time.sleep(backoff * (2**attempt) + random.uniform(0, 0.5))
+                    retry_mode = True
                     continue
 
-                # 若重试耗尽但已产出足量正文（>= 30 字符），安全平滑收尾，确保已生成内容完整呈现
-                if total_emitted_len >= 30 and self._is_transient_stream_error(e):
+                # 若重试耗尽但已产出足量正文（>= 10 字符），安全平滑收尾，确保已生成内容完整呈现
+                if total_emitted_len >= 10 and self._is_transient_stream_error(e):
                     logger.warning(
-                        "流式传输末尾连接由对端关闭，已安全保留已生成的 %d 字符完整内容: %s",
+                        "流式传输中途连接由对端关闭/抖动中断，已安全保留已生成的 %d 字符完整内容: %s",
                         total_emitted_len,
                         e,
                     )
@@ -295,50 +316,5 @@ class OpenAIClient(LLMClient):
 
     @staticmethod
     def _is_transient_stream_error(e: Exception) -> bool:
-        """判断是否为可重试的瞬时网络错误（连接被对端关闭/截断/重置等）。
-
-        OpenAI SDK(httpx/httpcore)在流式读取中途连接被掐断时，通常抛出
-        `httpx.RemoteProtocolError`（消息含 "peer closed connection without
-        sending complete message body (incomplete chunked read)"）或其
-        httpcore 底层异常。此类错误多为网络抖动，重试一次即可恢复。
-        """
-        # httpx 传输层错误家族（RemoteProtocolError/ConnectError/ReadError 等）
-        try:
-            import httpx
-
-            if isinstance(e, httpx.TransportError):
-                return True
-        except ImportError:
-            pass
-        # httpcore 底层错误（openai SDK 有时直接透传 httpcore 异常）。
-        # 注意：httpcore 1.0.x 中已移除 ExceptionMapping，且不同版本的异常类位置不同，
-        # 因此统一用 getattr 安全引用，避免 AttributeError 导致流式调用失败。
-        try:
-            import httpcore
-
-            err_types = (
-                getattr(httpcore, "ReadError", None),
-                getattr(httpcore, "WriteError", None),
-                getattr(httpcore, "ConnectError", None),
-                getattr(httpcore, "RemoteProtocolError", None),
-                getattr(httpcore, "NetworkError", None),
-            )
-            if any(t is not None and isinstance(e, t) for t in err_types):
-                return True
-        except ImportError:
-            pass
-        # 兜底：按错误信息关键词识别（不依赖具体异常类型）
-        msg = str(e).lower()
-        keywords = (
-            "peer closed connection",
-            "incomplete chunked read",
-            "connection reset",
-            "connection aborted",
-            "broken pipe",
-            "chunked encoding",
-            "remote protocol",
-            "unexpected eof",
-            "stream closed",
-            "connection closed",
-        )
-        return any(k in msg for k in keywords)
+        """判断是否为可重试的瞬时网络错误（连接被对端关闭/截断/重置等）。"""
+        return is_transient_network_error(e)

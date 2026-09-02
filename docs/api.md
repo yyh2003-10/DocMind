@@ -16,7 +16,7 @@
 | ID 类型 | 字符串（ULID 或 UUID），全局唯一 |
 | 分页 | `?page=1&page_size=20`，响应含 `total` |
 | 错误响应 | 统一 `{"code": "...", "message": "...", "detail": {...}?}`，HTTP 状态码 4xx/5xx |
-| 鉴权 | 本地默认无鉴权；可选 `Authorization: Bearer <token>` |
+| 鉴权 | 默认启用 Bearer 令牌：`Authorization: Bearer <token>`；令牌在 `%LOCALAPPDATA%/doc2mind/server.token`（服务启动时自动生成；WPF 客户端自动读取注入）。仅 `/v1/health` 匿名可访问。开发/测试可用 `DOC2MIND_DISABLE_AUTH=1` 显式关闭（不推荐生产）。 |
 
 ### 错误码
 
@@ -236,13 +236,14 @@ RAG 对话问答：从知识库检索相关文档，调用 LLM 生成回答并�
 
 **响应 200：**
 ```jsonc
+// 注意：响应字段为 snake_case（与请求体的 camelCase 别名不同）
 {
   "answer": "根据资料，DocMind 采用分层架构...",
-  "chatId": "chat-abc123",         // 首次自动生成，后续追问传同一值
+  "chat_id": "chat-abc123",        // 首次自动生成，后续追问传同一值
   "model": "deepseek-chat",
   "provider": "openai",
-  "totalChunks": 5,
-  "elapsedMs": 2340,
+  "total_chunks": 5,
+  "elapsed_ms": 2340,
   "sources": [                     // 引用来源列表
     {
       "index": 1,
@@ -250,13 +251,57 @@ RAG 对话问答：从知识库检索相关文档，调用 LLM 生成回答并�
       "format": "pdf",
       "page": 3,
       "heading": "架构概述",
-      "score": 0.8723
+      "score": 0.8723,
+      "score_type": "rerank"   // score 的量纲：rerank(重排相关度)/vector(向量相似度)/
+                               // bm25(关键词匹配)/rrf(RRF 融合分，仅代表排名、量纲
+                               // ~0.016-0.033)/web_relevance(网页相关度)/
+                               // attachment(附件全文)；空 = 旧数据
     }
   ]
 }
 ```
 
 **响应 400 `RAG_ERROR`：** LLM 未配置或配置错误。
+
+---
+
+### `POST /v1/chat/stream`
+
+RAG **流式**对话（SSE）：WPF 对话页实际使用的端点。请求体与 `POST /v1/chat` 完全一致（含 `topK`/`chatId`/`providerConfig`/`enableWebSearch`/`attachments`/`ragMode` 等字段）。响应为 `text/event-stream`，携带 `Cache-Control: no-cache` / `X-Accel-Buffering: no` 头；空闲超 15s 发送心跳注释帧 `: heartbeat` 防代理掐断。
+
+**SSE 帧类型（`data: ` 前缀 JSON 行，`data: [DONE]` 结束）：**
+
+| 帧类型 | 形状 | 说明 |
+|---|---|---|
+| 状态 | `{"type":"status","message":"正在检索知识库..."}` | 检索/联网等阶段进度 |
+| 推理链 | `{"type":"thinking","text":"..."}` | DeepSeek-R1/Qwen3 等模型的思考过程，独立于正文 |
+| 正文 | `{"token":"..."}` | 回答正文增量 |
+| 错误 | `{"error":"..."}` | 后端 RAG/LLM 出错，随后紧跟 `data: [DONE]` |
+| 终帧 | `{"done":true, ...}` | 见下方字段说明 |
+
+**终帧字段：**
+```jsonc
+{
+  "done": true,
+  "chat_id": "chat-abc123",
+  "model": "deepseek-chat",
+  "provider": "openai",
+  "model_spec": {                  // 后端确认的模型规格
+    "display_name": "DeepSeek Chat",
+    "context_window": 65536,
+    "max_output_tokens": 8192,
+    "is_reasoning_model": false,
+    "summary_text": "上下文 64K · 最大输出 8K"
+  },
+  "total_chunks": 5,               // 引用来源数
+  "elapsed_ms": 2340,
+  "partial": false,                // true = 部分回答（网络中断/用户停止），未写入会话历史
+  "warning": "回答因网络连接中断…",  // partial=true 时附带的人类可读警示
+  "sources": [ /* 与 /v1/chat 响应的 sources 字段一致（snake_case，18 字段） */ ]
+}
+```
+
+> 被中断/停止的部分回答不会作为完整 assistant 消息写入会话历史，避免污染后续多轮上下文。
 
 ---
 
@@ -615,3 +660,57 @@ AI 整理知识库（LLM 调用耗时，走异步任务；报告在 `job.report`
 - **后端地址：** 默认 `http://127.0.0.1:8765`，存于 `appsettings.json`，设置页面可改。
 - **启动握手：** WPF 启动时拉起 Python 子进程（`doc2mind serve`），轮询 `GET /v1/health` 最多 30 秒，超时则提示用户。
 - **错误处理：** `ApiException` 统一封装 `{code, message, detail}`，UI 层只关心 `code`。
+
+---
+
+## 附录：已实现未收录端点（2026-08-29 盘点）
+
+以下端点已在 `server/http.py` 实现并被 WPF 客户端/MCP 使用，但正文契约尚未逐个补全。调用约定与正文一致（Bearer 令牌、统一错误结构）。后续按域补文档时可从这里出发：
+
+### 配置与体检
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/v1/config` | GET/POST | 后端配置读写（llm_* / rag_* / chunk_* 等字段）；POST 实时生效，API Key 字段写入不回显 |
+| `/v1/doctor` | GET/POST | 全维体检报告（Python/存储/模型/LLM 连通性）与自愈 |
+| `/v1/sample/ingest` | POST | 一键导入内置示例知识库（对话页「一键导入官方示例库」） |
+
+### 摄入扩展
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/v1/ingest/text` | POST | 直接摄入一段文本（MCP `ingest_text` 同源） |
+| `/v1/ingest/job` | POST | 异步摄入目录，返回 `job_id` 轮询 |
+| `PUT /v1/chunks/{chunk_id}/annotation` | PUT | 分块人工标注（批注/纠错） |
+
+### 知识图谱（`/v1/graph/*`）
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/v1/graph/visualize` | GET | 力导向图数据（nodes/edges，WPF 图谱页） |
+| `/v1/graph/entities` | GET | 实体列表（支持 collection/limit） |
+| `/v1/graph/entities/{entity_id}/details` | GET | 实体详情 + 关联关系 + 命中切片 |
+| `/v1/graph/entity/{entity_id}` | GET | 同上（别名路由，兼容旧客户端） |
+| `/v1/graph/relations/{entity_id}` | GET | 指定实体的关系列表 |
+| `/v1/graph/stats` | GET | 图谱规模统计 |
+| `/v1/graph/entities/distill` | POST | 实体知识卡片蒸馏（LLM 生成 Markdown 档案） |
+| `/v1/graph/extract` | POST | 触发图谱抽取（实体/关系入库） |
+
+### 创意交付物
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/v1/creative/export` | POST | 把对话/知识内容编译导出为 PPTX/DOCX/XLSX/HTML 物理文件 |
+| `/v1/creative/inspect` | POST | 对 PPT 大纲做体检评分（0-100）与排版/密度诊断 |
+
+### 系统环境（`/v1/system/*`）
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/v1/system/gpu-diagnosis` | GET | GPU/运行时诊断（CPU/CUDA/DirectML 推荐路径） |
+| `/v1/system/install-gpu` | POST | 引导安装 GPU 加速依赖 |
+| `/v1/system/install-ocr` | POST | 安装 PaddleOCR 可选扩展（流式日志） |
+| `/v1/system/local-ai-environment` | GET | 本地 LM Studio/Ollama/GPU 环境感知 |
+| `/v1/system/dependencies` | GET | 依赖安装状态清单 |
+| `/v1/system/download-model` | POST | 下载嵌入模型（离线包场景） |
+
+### 任务扩展
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `GET /v1/jobs/{id}/events` | GET(SSE) | 单任务进度事件流（比轮询实时） |
+| `DELETE /v1/jobs/{id}` | DELETE | 取消/清理任务 |

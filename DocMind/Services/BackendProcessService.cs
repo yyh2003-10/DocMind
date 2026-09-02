@@ -61,13 +61,14 @@ public sealed class BackendProcessService : IDisposable
             _python = null;
         }
 
-        // 先探测 URL 上是否已有健康后端（外部实例 / 上次会话遗留的后端仍在线）。
+        // 先探测后端端口上是否已有健康后端（外部实例 / 上次会话遗留的后端仍在线）。
         // 有则直接复用，不再拉起新进程——否则新进程因端口占用立即退出，
-        // MonitorAsync 会把状态灯翻回离线，造成"后端明明在线却显示离线"。
+        // MonitorAsync 会把状态变翻回离线，造成"后端明明在线却显示离线"。
         DebugLog.Debug($"启动后端流程开始: State={State} Url={_settings.BackendUrl}", "Backend");
         
-        // 无论是否自动启动，先探测目标地址上的已有后端。
+        // 无论是否自动启动，都先探测目标地址上的已有后端。
         // 不能按端口盲杀进程：端口可能属于用户手动启动的后端或其他本地程序。
+        Doc2kbApiService.LoadAuthToken(); // 读取服务令牌供后续请求注入（幂等：每次启动覆盖）
         if (await ProbeHealthOnceAsync(ct))
         {
             DebugLog.Info("健康探测通过：复用 URL 上已有的后端实例，不拉起子进程", "Backend");
@@ -339,6 +340,16 @@ public sealed class BackendProcessService : IDisposable
         }
         psi.Environment["DOC2MIND_RAG_MAX_HISTORY_TOKENS"] = _settings.RagMaxHistoryTokens.ToString();
         injectedEnv.Add($"DOC2MIND_RAG_MAX_HISTORY_TOKENS={psi.Environment["DOC2MIND_RAG_MAX_HISTORY_TOKENS"]}");
+        // 检索后重排（Reranker）开关 / 模型 / 候选数
+        psi.Environment["DOC2MIND_RERANK_ENABLED"] = _settings.RerankEnabled ? "true" : "false";
+        injectedEnv.Add($"DOC2MIND_RERANK_ENABLED={psi.Environment["DOC2MIND_RERANK_ENABLED"]}");
+        if (!string.IsNullOrWhiteSpace(_settings.RerankModel))
+        {
+            psi.Environment["DOC2MIND_RERANK_MODEL"] = _settings.RerankModel.Trim();
+            injectedEnv.Add($"DOC2MIND_RERANK_MODEL={psi.Environment["DOC2MIND_RERANK_MODEL"]}");
+        }
+        psi.Environment["DOC2MIND_RERANK_RECALL"] = _settings.RerankRecall.ToString();
+        injectedEnv.Add($"DOC2MIND_RERANK_RECALL={psi.Environment["DOC2MIND_RERANK_RECALL"]}");
 
         if (_settings.WatchPaths != null && _settings.WatchPaths.Count > 0)
         {

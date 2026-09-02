@@ -12,7 +12,46 @@ namespace DocMind.Services;
 
 public class Doc2kbApiService : IDoc2kbApiService
 {
-    /// <summary>snake_case 命名策略：发 POST body 时把 CamelCase 字段名转 snake_case，
+    /// <summary>后端服务访问令牌（服务端生成于 %LOCALAPPDATA%/doc2mind/server.token）。
+    /// 所有请求经 Bearer 注入；令牌文件不存在/读取失败则置空（后端可能未启用鉴权）。</summary>
+    private static string? _authToken;
+
+    /// <summary>从后端数据目录读取服务令牌（server.token）。每次启动/后端重启后调用一次。</summary>
+    public static string? LoadAuthToken()
+    {
+        try
+        {
+            var dataDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "doc2mind");
+            var tokenFile = Path.Combine(dataDir, "server.token");
+            if (!File.Exists(tokenFile))
+            {
+                return null;
+            }
+            var token = File.ReadAllText(tokenFile).Trim();
+            _authToken = string.IsNullOrWhiteSpace(token) ? null : token;
+            return _authToken;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"读取后端服务令牌失败: {ex.Message}", "API");
+            return null;
+        }
+    }
+
+    /// <summary>把令牌注入请求头（Bearer 优先，兼容 X-DocMind-Token）。
+    /// 注意：HttpRequestMessage.Headers.Authorization 对非标准 scheme 会抛异常，
+    /// 这里直接写原始头，避免 "Bearer" + 空格带来的拼写问题。</summary>
+    private static void AttachAuthHeader(HttpRequestMessage request)
+    {
+        if (!string.IsNullOrEmpty(_authToken))
+        {
+            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {_authToken}");
+        }
+    }
+
+    /// <summary>snake_case 命名规范：发 POST body 时把 CamelCase 字段名转 snake_case，
     /// 与后端 pydantic DTO 字段对齐（避免 422）。</summary>
     private static readonly JsonNamingPolicy SnakeCasePolicy = new SnakeCaseNamingPolicy();
 
@@ -106,7 +145,8 @@ public class Doc2kbApiService : IDoc2kbApiService
 
     public async Task<ChatStreamResult> ChatStreamAsync(
         ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone,
-        Action<string>? onStatus = null, Action<string>? onThinking = null, CancellationToken ct = default)
+        Action<string>? onStatus = null, Action<string>? onThinking = null,
+        Action? onRestart = null, CancellationToken ct = default)
     {
         var reqBody = JsonSerializer.Serialize(req, JsonOptions);
         DebugLog.Info($"→ POST v1/chat/stream\n  req: {Truncate(RedactSecrets(reqBody), 800)}", "API");
@@ -115,6 +155,7 @@ public class Doc2kbApiService : IDoc2kbApiService
         {
             Content = new StringContent(reqBody, System.Text.Encoding.UTF8, "application/json"),
         };
+        AttachAuthHeader(request);
 
         HttpResponseMessage response;
         try
@@ -161,10 +202,38 @@ public class Doc2kbApiService : IDoc2kbApiService
             var unknownFrames = 0;
             long firstTokenMs = -1;
             var doneReceived = false;
+            ChatStreamResult? finalResult = null;
             try
             {
-                while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) is not null)
+                // 空闲超时兜底（AUD-007）：ReadLineAsync 阻塞期间不响应父 ct，且
+                // ResponseHeadersRead 使 HttpClient.Timeout 不覆盖 body 读取。后端每
+                // 15s 心跳一次，若 30s 无任何行到达则判定后端卡死，主动报错收敛，
+                // 不再让 UI 永久转圈。
+                var idleTimeout = TimeSpan.FromSeconds(30);
+                while (true)
                 {
+                    string? nextLine;
+                    using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                    {
+                        readCts.CancelAfter(idleTimeout);
+                        try
+                        {
+                            nextLine = await reader.ReadLineAsync(readCts.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                        {
+                            // 空闲超时（非用户取消）→ 明确的流式超时错误
+                            throw new ApiException("STREAM_TIMEOUT",
+                                "后端长时间无响应（30s 无数据），流式对话已自动终止。");
+                        }
+                    }
+
+                    if (nextLine is null)
+                    {
+                        break;
+                    }
+
+                    line = nextLine;
                     ct.ThrowIfCancellationRequested();
 
                     if (string.IsNullOrWhiteSpace(line))
@@ -172,13 +241,15 @@ public class Doc2kbApiService : IDoc2kbApiService
                         continue; // SSE 帧间空行
                     }
 
-                    const string prefix = "data: ";
+                    // 容错前缀解析（AUD-016）：标准为 "data: "，代理可能改写为无空格 "data:"，
+                    // 两种都接受，避免静默丢帧
+                    const string prefix = "data:";
                     if (!line.StartsWith(prefix, StringComparison.Ordinal))
                     {
                         continue;
                     }
 
-                    var payload = line[prefix.Length..].Trim();
+                    var payload = line[prefix.Length..].TrimStart();
                     if (payload == "[DONE]")
                     {
                         break;
@@ -232,11 +303,20 @@ public class Doc2kbApiService : IDoc2kbApiService
                         continue;
                     }
 
+                    // 后端重启生成（上下文过大精简后重试）：此前收到的正文是废弃的半成品，
+                    // 必须由调用方显式丢弃，否则两次尝试的内容会首尾相接变成重复文本
+                    if (root.TryGetProperty("type", out var typeElem3)
+                        && typeElem3.GetString() == "restart")
+                    {
+                        onRestart?.Invoke();
+                        continue;
+                    }
+
                     if (root.TryGetProperty("done", out var doneElem) && doneElem.ValueKind == JsonValueKind.True)
                     {
                         doneReceived = true;
-                        var result = ParseDoneFrame(root);
-                        onDone(result);
+                        finalResult = ParseDoneFrame(root);
+                        onDone(finalResult);
                     }
                     else if (root.ValueKind == JsonValueKind.Object)
                     {
@@ -270,8 +350,9 @@ public class Doc2kbApiService : IDoc2kbApiService
                 DebugLog.Warn("SSE 流结束但未收到 done 终帧（多轮 chat_id 与引用来源将丢失）", "API");
             }
 
-            // 没收到 done 帧时给出空结果（下限保护）
-            return new ChatStreamResult();
+            // 没收到 done 帧时给出空结果（下限保护）；收到则返回解析出的终帧数据
+            //（调用方既可用返回值也可用 onDone 回调，二者一致）
+            return finalResult ?? new ChatStreamResult();
         }
     }
 
@@ -282,6 +363,40 @@ public class Doc2kbApiService : IDoc2kbApiService
         string Provider() => root.TryGetProperty("provider", out var v) ? (v.GetString() ?? string.Empty) : string.Empty;
         int TotalChunks() => root.TryGetProperty("total_chunks", out var v) && v.TryGetInt32(out var n) ? n : 0;
         int ElapsedMs() => root.TryGetProperty("elapsed_ms", out var v) && v.TryGetInt32(out var n) ? n : 0;
+        bool Partial() => root.TryGetProperty("partial", out var v) && v.ValueKind == JsonValueKind.True;
+        string? Warning() => root.TryGetProperty("warning", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        // 后端实际生效人设（创作意图自动路由时可能与请求不同）
+        string? Persona() => root.TryGetProperty("persona", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+        // model_spec：后端确认的模型规格（display_name 等字段可能缺省，需逐个守卫）
+        string? modelDisplayName = null;
+        int? contextWindow = null;
+        int? maxOutputTokens = null;
+        bool? isReasoningModel = null;
+        string? modelSpecSummary = null;
+        if (root.TryGetProperty("model_spec", out var spec) && spec.ValueKind == JsonValueKind.Object)
+        {
+            if (spec.TryGetProperty("display_name", out var dn) && dn.ValueKind == JsonValueKind.String)
+            {
+                modelDisplayName = dn.GetString();
+            }
+            if (spec.TryGetProperty("context_window", out var cw) && cw.TryGetInt32(out var cwVal))
+            {
+                contextWindow = cwVal;
+            }
+            if (spec.TryGetProperty("max_output_tokens", out var mot) && mot.TryGetInt32(out var motVal))
+            {
+                maxOutputTokens = motVal;
+            }
+            if (spec.TryGetProperty("is_reasoning_model", out var rm) && rm.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                isReasoningModel = rm.GetBoolean();
+            }
+            if (spec.TryGetProperty("summary_text", out var st) && st.ValueKind == JsonValueKind.String)
+            {
+                modelSpecSummary = st.GetString();
+            }
+        }
 
         var sources = new List<SourceRef>();
         if (root.TryGetProperty("sources", out var sArr) && sArr.ValueKind == JsonValueKind.Array)
@@ -311,9 +426,17 @@ public class Doc2kbApiService : IDoc2kbApiService
             ChatId = ChatId(),
             Model = Model(),
             Provider = Provider(),
+            Persona = Persona(),
             TotalChunks = TotalChunks(),
             ElapsedMs = ElapsedMs(),
             Sources = sources,
+            Partial = Partial(),
+            Warning = Warning(),
+            ModelDisplayName = modelDisplayName,
+            ContextWindow = contextWindow,
+            MaxOutputTokens = maxOutputTokens,
+            IsReasoningModel = isReasoningModel,
+            ModelSpecSummary = modelSpecSummary,
         };
     }
 
@@ -363,6 +486,9 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task<JobStatus> ReindexAsync(ReindexRequest req, CancellationToken ct = default)
         => SendAsync<JobStatus>(HttpMethod.Post, "v1/reindex", req, ct);
 
+    public Task<JobStatus> CurateAsync(CurateRequest req, CancellationToken ct = default)
+        => SendAsync<JobStatus>(HttpMethod.Post, "v1/curate", req, ct);
+
     public Task<JobStatus> GetJobAsync(string jobId, CancellationToken ct = default)
         => SendAsync<JobStatus>(HttpMethod.Get, $"v1/jobs/{Uri.EscapeDataString(jobId)}", null, ct);
 
@@ -402,6 +528,278 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task InstallOcrAsync(string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default)
         => InstallViaSseAsync("v1/system/install-ocr", path, "OCR install", onLog, onDone, ct);
 
+    /// <summary>下载嵌入模型（POST /v1/system/download-model，SSE 流式进度）。
+    /// progress 每收到一帧进度（downloaded/total 文件与字节）触发；成功返回模型快照目录路径。</summary>
+    public async Task<string?> DownloadModelAsync(string? modelName = null, IProgress<DownloadProgressFrame>? progress = null, CancellationToken ct = default)
+    {
+        var reqBody = JsonSerializer.Serialize(new { model_name = modelName }, JsonOptions);
+        DebugLog.Info($"→ POST v1/system/download-model  model={modelName ?? "(default)"}", "API");
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "v1/system/download-model")
+        {
+            Content = new StringContent(reqBody, System.Text.Encoding.UTF8, "application/json"),
+        };
+        AttachAuthHeader(request);
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
+                .ConfigureAwait(false);
+        }
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            throw new ApiException("TIMEOUT", "Request timed out.", innerException: ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Backend connection failed for download-model");
+            throw new BackendConnectionException("Backend is unreachable.", ex);
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                var errBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                DebugLog.Error(
+                    $"✗ POST v1/system/download-model -> {(int)response.StatusCode} ({response.ReasonPhrase})\n  resp: {Truncate(errBody, 800)}",
+                    "API");
+                throw await CreateApiExceptionAsync(response).ConfigureAwait(false);
+            }
+
+            using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            using var reader = new StreamReader(stream);
+
+            string? snapshotPath = null;
+            TimeSpan idleTimeout = TimeSpan.FromSeconds(60);
+            try
+            {
+                while (true)
+                {
+                    string? nextLine;
+                    using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                    {
+                        try
+                        {
+                            readCts.CancelAfter(idleTimeout);
+                            nextLine = await reader.ReadLineAsync(readCts.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                        {
+                            throw new ApiException("STREAM_TIMEOUT", "模型下载后端长时间无响应，已自动终止。");
+                        }
+                    }
+
+                    if (nextLine is null)
+                        break;
+
+                    ct.ThrowIfCancellationRequested();
+
+                    if (string.IsNullOrWhiteSpace(nextLine))
+                        continue;
+
+                    const string prefix = "data:";
+                    if (!nextLine.StartsWith(prefix, StringComparison.Ordinal))
+                        continue;
+
+                    var payload = nextLine[prefix.Length..].TrimStart();
+                    if (payload == "[DONE]")
+                        break;
+
+                    JsonDocument doc;
+                    try
+                    {
+                        doc = JsonDocument.Parse(payload);
+                    }
+                    catch (JsonException ex)
+                    {
+                        DebugLog.Error($"download-model SSE JSON 解析失败: {ex.Message}\n  raw: {Truncate(payload, 300)}", "API", ex);
+                        throw new ApiException("PARSE_ERROR", $"Invalid SSE frame: {ex.Message}", innerException: ex);
+                    }
+
+                    using var d = doc;
+                    var root = d.RootElement;
+                    if (!root.TryGetProperty("type", out var typeElem))
+                        continue;
+
+                    var eventType = typeElem.GetString() ?? "";
+                    if (eventType == "progress")
+                    {
+                        try
+                        {
+                            var frame = JsonSerializer.Deserialize<DownloadProgressFrame>(root.GetRawText(), JsonOptions);
+                            progress?.Report(frame ?? new DownloadProgressFrame());
+                        }
+                        catch (JsonException)
+                        {
+                            // 单帧解析失败不中断下载，等待终帧
+                        }
+                    }
+                    else if (eventType == "done" && root.TryGetProperty("path", out var pathElem))
+                    {
+                        snapshotPath = pathElem.GetString();
+                        break;
+                    }
+                    else if (eventType == "error" && root.TryGetProperty("message", out var msgElem))
+                    {
+                        DebugLog.Error($"download-model 报错: {msgElem.GetString()}", "API");
+                        throw new ApiException("DOWNLOAD_ERROR", msgElem.GetString() ?? "模型下载失败");
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not (OperationCanceledException or ApiException))
+            {
+                DebugLog.Error($"download-model SSE 流读取中断: {ex.GetType().Name}: {ex.Message}", "API", ex);
+                throw new ApiException("STREAM_INTERRUPTED", $"模型下载流中断: {ex.Message}", innerException: ex);
+            }
+
+            DebugLog.Info($"✓ POST v1/system/download-model done. snapshot={snapshotPath}", "API");
+            return snapshotPath;
+        }
+    }
+
+    /// <summary>订阅 job 进度 SSE（GET /v1/jobs/{id}/events，实时进度），返回最终 JobStatus。
+    /// SSE 不可用/中断时自动回退到轮询（PollJobUntilDoneAsync），保证任务仍能收敛。</summary>
+    public async Task<JobStatus> WatchJobUntilDoneAsync(string jobId, IProgress<JobStatus>? progress = null, CancellationToken ct = default)
+    {
+        var eventsUri = $"v1/jobs/{Uri.EscapeDataString(jobId)}/events";
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, eventsUri);
+            AttachAuthHeader(request);
+
+            HttpResponseMessage response;
+            try
+            {
+                response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, "Backend connection failed for job events {JobId}", jobId);
+                throw new BackendConnectionException("Backend is unreachable.", ex);
+            }
+
+            using (response)
+            {
+                if (!response.IsSuccessStatusCode)
+                {
+                    DebugLog.Warn($"✗ GET {eventsUri} -> {(int)response.StatusCode}，回退轮询", "API");
+                    return await PollJobUntilDoneAsync(jobId, progress, ct: ct).ConfigureAwait(false);
+                }
+
+                using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+                using var reader = new StreamReader(stream);
+
+                // 心跳约 15s 一帧；60s 无任何帧视为连接失效 → 回退轮询
+                var idleTimeout = TimeSpan.FromSeconds(60);
+                while (true)
+                {
+                    string? nextLine;
+                    using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                    {
+                        try
+                        {
+                            readCts.CancelAfter(idleTimeout);
+                            nextLine = await reader.ReadLineAsync(readCts.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                        {
+                            DebugLog.Warn($"job events SSE 空闲超时，回退轮询 {jobId}", "API");
+                            return await PollJobUntilDoneAsync(jobId, progress, ct: ct).ConfigureAwait(false);
+                        }
+                    }
+
+                    if (nextLine is null)
+                    {
+                        // 流意外结束：取一次终态，若未收敛则轮询兜底
+                        var job = await GetJobAsync(jobId, ct).ConfigureAwait(false);
+                        progress?.Report(job);
+                        return IsTerminal(job.Status)
+                            ? job
+                            : await PollJobUntilDoneAsync(jobId, progress, ct: ct).ConfigureAwait(false);
+                    }
+
+                    ct.ThrowIfCancellationRequested();
+
+                    if (string.IsNullOrWhiteSpace(nextLine))
+                        continue;
+
+                    const string prefix = "data:";
+                    if (!nextLine.StartsWith(prefix, StringComparison.Ordinal))
+                        continue;
+
+                    var payload = nextLine[prefix.Length..].TrimStart();
+                    if (payload == "[DONE]")
+                        break;
+
+                    try
+                    {
+                        using var d = JsonDocument.Parse(payload);
+                        var root = d.RootElement;
+                        var type = root.TryGetProperty("type", out var t) ? t.GetString() ?? "" : "";
+                        if (type == "progress")
+                        {
+                            var job = JsonSerializer.Deserialize<JobStatus>(root.GetRawText(), JsonOptions)
+                                      ?? new JobStatus { JobId = jobId };
+                            job = job with { JobId = jobId };
+                            progress?.Report(job);
+                        }
+                        else if (type is "done" or "succeeded" or "completed")
+                        {
+                            var final = await GetJobAsync(jobId, ct).ConfigureAwait(false);
+                            progress?.Report(final);
+                            return final;
+                        }
+                        else if (type == "failed")
+                        {
+                            var msg = root.TryGetProperty("error", out var e) ? e.GetString() : null;
+                            var final = await GetJobAsync(jobId, ct).ConfigureAwait(false);
+                            if (string.IsNullOrEmpty(final.Error) && !string.IsNullOrEmpty(msg))
+                            {
+                                final = final with { Error = msg };
+                            }
+                            progress?.Report(final);
+                            return final;
+                        }
+                        else if (type is "cancelled" or "canceled")
+                        {
+                            var final = await GetJobAsync(jobId, ct).ConfigureAwait(false);
+                            progress?.Report(final);
+                            return final;
+                        }
+                        // heartbeat / 其它帧：忽略，继续读
+                    }
+                    catch (JsonException ex)
+                    {
+                        DebugLog.Warn($"job events SSE JSON 解析失败（忽略）: {ex.Message}", "API");
+                    }
+                }
+
+                // [DONE] 后取一次终态（可能已完成但浏览器/代理截断）
+                var done = await GetJobAsync(jobId, ct).ConfigureAwait(false);
+                progress?.Report(done);
+                return IsTerminal(done.Status)
+                    ? done
+                    : await PollJobUntilDoneAsync(jobId, progress, ct: ct).ConfigureAwait(false);
+            }
+        }
+        catch (ApiException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"job events SSE 异常（{ex.GetType().Name}），回退轮询 {jobId}", "API");
+            return await PollJobUntilDoneAsync(jobId, progress, ct: ct).ConfigureAwait(false);
+        }
+    }
+
     /// <summary>一键安装通用实现：POST 安装端点并逐行消费 SSE 事件流（log/done/error）。</summary>
     private async Task InstallViaSseAsync(
         string endpoint, string path, string label,
@@ -414,6 +812,7 @@ public class Doc2kbApiService : IDoc2kbApiService
         {
             Content = new StringContent(reqBody, System.Text.Encoding.UTF8, "application/json"),
         };
+        AttachAuthHeader(request);
 
         HttpResponseMessage response;
         try
@@ -451,18 +850,38 @@ public class Doc2kbApiService : IDoc2kbApiService
             var doneReceived = false;
             try
             {
-                while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) is not null)
+                while (true)
                 {
+                    // 与 ChatStreamAsync 一致：ReadLineAsync 阻塞期间不响应父 ct，
+                    // 用联动令牌使取消能中断阻塞读（安装可长时间静默，不做空闲超时）
+                    string? nextLine;
+                    using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                    {
+                        try
+                        {
+                            nextLine = await reader.ReadLineAsync(readCts.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                        {
+                            throw new ApiException("STREAM_TIMEOUT", $"{label} 后端长时间无响应，已自动终止。");
+                        }
+                    }
+
+                    if (nextLine is null)
+                        break;
+
+                    line = nextLine;
                     ct.ThrowIfCancellationRequested();
 
                     if (string.IsNullOrWhiteSpace(line))
                         continue;
 
-                    const string prefix = "data: ";
+                    // 容错前缀解析（AUD-016）：标准为 "data: "，代理可能改写为无空格 "data:"
+                    const string prefix = "data:";
                     if (!line.StartsWith(prefix, StringComparison.Ordinal))
                         continue;
 
-                    var payload = line[prefix.Length..].Trim();
+                    var payload = line[prefix.Length..].TrimStart();
                     if (payload == "[DONE]")
                         break;
 
@@ -533,6 +952,29 @@ public class Doc2kbApiService : IDoc2kbApiService
         return await SendAsync<GraphResponse>(HttpMethod.Get, uri, null, ct);
     }
 
+    public async Task<GraphStats> GetGraphStatsAsync(string? collection = null, CancellationToken ct = default)
+    {
+        var uri = "v1/graph/stats";
+        if (!string.IsNullOrWhiteSpace(collection))
+        {
+            uri += $"?collection={Uri.EscapeDataString(collection)}";
+        }
+        return await SendAsync<GraphStats>(HttpMethod.Get, uri, null, ct);
+    }
+
+    public async Task<List<GraphNode>> GetGraphEntitiesAsync(string? collection = null, int limit = 200, CancellationToken ct = default)
+    {
+        var uri = $"v1/graph/entities?limit={limit}";
+        if (!string.IsNullOrWhiteSpace(collection))
+        {
+            uri += $"&collection={Uri.EscapeDataString(collection)}";
+        }
+        return await SendAsync<List<GraphNode>>(HttpMethod.Get, uri, null, ct);
+    }
+
+    public async Task<DependenciesStatus> GetDependenciesAsync(CancellationToken ct = default)
+        => await SendAsync<DependenciesStatus>(HttpMethod.Get, "v1/system/dependencies", null, ct);
+
     public async Task<List<GraphEntityRelation>> GetEntityRelationsAsync(string entityId, int limit = 50, CancellationToken ct = default)
     {
         var uri = $"v1/graph/relations/{Uri.EscapeDataString(entityId)}?limit={limit}";
@@ -584,6 +1026,7 @@ public class Doc2kbApiService : IDoc2kbApiService
                 try
                 {
                     using var req = new HttpRequestMessage(HttpMethod.Get, "v1/events");
+                    AttachAuthHeader(req);
                     using var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token);
                     if (!resp.IsSuccessStatusCode)
                     {
@@ -601,9 +1044,10 @@ public class Doc2kbApiService : IDoc2kbApiService
                         var line = await reader.ReadLineAsync(token);
                         if (string.IsNullOrWhiteSpace(line)) continue;
 
-                        if (line.StartsWith("data: "))
+                        // 容错前缀解析（AUD-016）：标准为 "data: "，代理可能改写为无空格 "data:"
+                        if (line.StartsWith("data:", StringComparison.Ordinal))
                         {
-                            var json = line["data: ".Length..].Trim();
+                            var json = line["data:".Length..].TrimStart();
                             if (string.IsNullOrWhiteSpace(json) || json == "[DONE]") continue;
 
                             try
@@ -655,6 +1099,7 @@ public class Doc2kbApiService : IDoc2kbApiService
         DebugLog.Info($"→ {method} {uri}" + (reqBody is null ? "" : "\n  req: " + Truncate(RedactSecrets(reqBody), 800)), "API");
 
         using var request = new HttpRequestMessage(method, uri);
+        AttachAuthHeader(request);
         if (payload is not null)
         {
             request.Content = System.Net.Http.Json.JsonContent.Create(payload, options: JsonOptions);
@@ -736,7 +1181,14 @@ public class Doc2kbApiService : IDoc2kbApiService
 
     /// <summary>日志脱敏：掩盖请求体中的 *api_key 字段值（如 /v1/config 推送的 llm_api_key），避免明文密钥落入日志文件。</summary>
     private static string RedactSecrets(string body)
-        => Regex.Replace(body, @"(""[^""]*api_key""\s*:\s*"")[^""]*("")", "$1***$2");
+        // 覆盖 snake_case (api_key) 与 camelCase (apiKey, githubToken) 两种序列化风格，
+        // 避免 API Key / GitHub Token 明文泄露到调试日志。
+        // 正则: "(api_key|apiKey|githubToken)"\s*:\s*"[^"]*"  匹配 JSON 中的敏感字段
+        // 替换: "$1":"***"  保留字段名，值替换为 ***
+        => Regex.Replace(body,
+            "\"(api_key|apiKey|githubToken|github_token|access_token|authorization|token|llm_api_key)\"\\s*:\\s*\"(?:\\\\\"|[^\"])*\"",
+            "\"$1\":\"***\"",
+            RegexOptions.IgnoreCase);
 
     private static async Task<ApiException> CreateApiExceptionAsync(HttpResponseMessage response)
     {
@@ -746,19 +1198,84 @@ public class Doc2kbApiService : IDoc2kbApiService
         {
             try
             {
-                var error = JsonSerializer.Deserialize<ApiError>(body, JsonOptions);
-                if (error is not null)
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+
+                // 非对象根（数组/字符串/数字）无从解析字段：TryGetProperty 对非对象会抛
+                // InvalidOperationException，必须先按 ValueKind 守卫，避免把错误变成未处理异常
+                if (root.ValueKind == JsonValueKind.Object)
                 {
-                    return new ApiException(error);
+                    // 优先解析 FastAPI 异常统一格式：{"detail": {"code": "...", "message": "...", ...}}
+                    if (root.TryGetProperty("detail", out var detailElem))
+                    {
+                        if (detailElem.ValueKind == JsonValueKind.Object)
+                        {
+                            var code = detailElem.TryGetProperty("code", out var c) ? c.GetString() : null;
+                            var msg = detailElem.TryGetProperty("message", out var m) ? m.GetString() : null;
+                            var subDetail = detailElem.TryGetProperty("detail", out var d) ? d.ToString() : null;
+                            if (!string.IsNullOrWhiteSpace(msg))
+                            {
+                                return new ApiException(code ?? response.StatusCode.ToString().ToUpperInvariant(), msg, subDetail);
+                            }
+                        }
+                        else if (detailElem.ValueKind == JsonValueKind.String)
+                        {
+                            var msg = detailElem.GetString();
+                            if (!string.IsNullOrWhiteSpace(msg))
+                            {
+                                return new ApiException(response.StatusCode.ToString().ToUpperInvariant(), msg);
+                            }
+                        }
+                        else if (detailElem.ValueKind == JsonValueKind.Array)
+                        {
+                            // 兼容 FastAPI 422 参数验证失败数组（逐项过滤非对象，避免 TryGetProperty 抛异常）
+                            var errors = detailElem.EnumerateArray()
+                                .Where(e => e.ValueKind == JsonValueKind.Object)
+                                .Select(e => e.TryGetProperty("msg", out var m) ? m.GetString() : null)
+                                .Where(m => !string.IsNullOrWhiteSpace(m));
+                            var combined = string.Join("; ", errors);
+                            if (!string.IsNullOrWhiteSpace(combined))
+                            {
+                                return new ApiException("VALIDATION_ERROR", combined, body);
+                            }
+                        }
+                    }
+
+                    // 兼容顶层直接包含 code / message 的错误体
+                    if (root.TryGetProperty("message", out var msgElem) && msgElem.ValueKind == JsonValueKind.String)
+                    {
+                        var msg = msgElem.GetString();
+                        var code = root.TryGetProperty("code", out var c) ? c.GetString() : null;
+                        var detail = root.TryGetProperty("detail", out var d) ? d.ToString() : null;
+                        if (!string.IsNullOrWhiteSpace(msg))
+                        {
+                            return new ApiException(code ?? response.StatusCode.ToString().ToUpperInvariant(), msg, detail);
+                        }
+                    }
+
+                    // 兼容 {"error": "..."} 结构
+                    if (root.TryGetProperty("error", out var errElem) && errElem.ValueKind == JsonValueKind.String)
+                    {
+                        var err = errElem.GetString();
+                        if (!string.IsNullOrWhiteSpace(err))
+                        {
+                            return new ApiException(response.StatusCode.ToString().ToUpperInvariant(), err);
+                        }
+                    }
                 }
             }
             catch (JsonException)
             {
+                // body 非 JSON 时走下方通用状态码异常
+            }
+            catch (InvalidOperationException)
+            {
+                // 兜底：JSON 结构异常（对象/数组嵌套等）不阻断，走通用状态码异常
             }
         }
 
-        var code = response.StatusCode.ToString().ToUpperInvariant();
-        return new ApiException(code, $"Request failed with status code {(int)response.StatusCode} ({response.ReasonPhrase}).", body);
+        var fallbackCode = response.StatusCode.ToString().ToUpperInvariant();
+        return new ApiException(fallbackCode, $"Request failed with status code {(int)response.StatusCode} ({response.ReasonPhrase}).", body);
     }
 
     private static bool IsTerminal(string? status)

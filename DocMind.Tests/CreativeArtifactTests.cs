@@ -72,6 +72,193 @@ public class CreativeArtifactTests
         Assert.Equal("阶段一", s4.TimelineNodes[0].Stage);
     }
 
+    [Fact]
+    public void ChatMessage_PptSlides_MixedLayouts_KeepAllContent()
+    {
+        var msg = new ChatMessage { Role = "assistant" };
+
+        var text = @"
+:::artifact type=""pptx"" title=""混合板式回归防护""
+---
+# 第一页无副标题
+- 项目背景说明
+- 目标与范围
+---
+# 混合卡片与要点
+- 总体要点一
+- 总体要点二
+### 模块C
+- 模块细节
+---
+# 纯指标页
+- 99.9% : 服务可用性
+- 10x : 吞吐提升
+---
+# 指标加普通要点
+- 99.9% : 准确率
+- 架构重构说明
+---
+<!-- layout: table -->
+# 方案对比
+| 方案 | 性能 | 成本 |
+| --- | --- | --- |
+| A | 高 | 低 |
+| B | 中 | 中 |
+:::
+";
+        msg.AppendToken(text);
+        msg.ForceRefreshRender();
+
+        Assert.NotNull(msg.Artifact);
+        Assert.Equal(5, msg.Artifact.SlideCount);
+
+        // 页 1：无副标题的首页不该被判成封面，否则正文要点会被封面框架吞掉
+        var p1 = msg.Artifact.Slides[0];
+        Assert.False(p1.IsCover);
+        Assert.True(p1.HasBullets);
+        Assert.Equal(2, p1.BulletPoints.Count);
+
+        // 页 2：卡片与普通要点叠加共存，普通要点不得因命中卡片板式而丢失
+        var p2 = msg.Artifact.Slides[1];
+        Assert.Single(p2.Cards);
+        Assert.Equal(2, p2.BulletPoints.Count);
+        Assert.True(p2.HasBullets);
+
+        // 页 3：纯指标页应吸收对应要点，避免 KPI 卡片与要点文本重复渲染
+        var p3 = msg.Artifact.Slides[2];
+        Assert.Equal(2, p3.Metrics.Count);
+        Assert.Empty(p3.BulletPoints);
+        Assert.True(p3.IsMetrics);
+
+        // 页 4：指标 + 普通要点混合，两者都必须保留
+        var p4 = msg.Artifact.Slides[3];
+        Assert.Single(p4.Metrics);
+        Assert.Contains("架构重构说明", p4.BulletPoints);
+        Assert.Equal("general", p4.Layout);
+
+        // 页 5：表格必须能渲染出来（此前卡片预览缺少表格区域，整页内容为空）
+        var p5 = msg.Artifact.Slides[4];
+        Assert.True(p5.HasTable);
+        Assert.Equal(3, p5.TableLines.Count);
+        Assert.Contains("方案", p5.TableLines[0]);
+    }
+
+    [Fact]
+    public void ChatMessage_InferPptArtifact_WhenModelOmitsArtifactWrapper()
+    {
+        var msg = new ChatMessage { Role = "assistant" };
+
+        // 模型未输出 :::artifact 包裹，只给了一份纯 Markdown 的 PPT 设计方案
+        var text = @"
+## 动平衡原理 PPT 设计方案
+
+> 目标：为技术培训准备一份演示文稿，内容引用本地知识库[1]。
+
+---
+
+### 目录（Slide 1）
+
+| 页码 | 标题 |
+|------|------|
+| 1 | 标题页 |
+| 2 | 目录 |
+
+---
+
+### Slide 3 – 动平衡概述
+
+- 定义：通过校正不平衡使转子高速旋转时保持平稳
+- 目标：降低振动、延长寿命
+
+> 讲稿提示：先提一句动平衡是核心质量控制环节。
+
+---
+
+### Slide 5 – 双面系统建模
+
+- 采集双面传感器振动矢量
+- 计算影响系数矩阵并求解校正量
+
+---
+
+## 关键洞察
+
+- 刚度匹配可显著提升求解精度
+";
+        msg.AppendToken(text);
+        msg.ForceRefreshRender();
+
+        Assert.True(msg.HasArtifact);
+        Assert.NotNull(msg.Artifact);
+        Assert.True(msg.Artifact!.IsPpt);
+        Assert.True(msg.Artifact.SlideCount >= 2);
+        Assert.Contains("动平衡", msg.Artifact.Title);
+    }
+
+    [Fact]
+    public void ChatMessage_DoesNotInferArtifact_ForOrdinaryAnswer()
+    {
+        var msg = new ChatMessage { Role = "assistant" };
+
+        // 普通短回答（含分隔线与表格）不应被误判成创作物
+        var text = "动平衡是旋转机械的关键环节。\n\n---\n\n| 项目 | 说明 |\n|------|------|\n| 振动 | 降低 |";
+        msg.AppendToken(text);
+        msg.ForceRefreshRender();
+
+        Assert.False(msg.HasArtifact);
+    }
+
+    [Fact]
+    public void ChatMessage_PptSlide_MixedArchetypesOnOnePage_SinglePrimaryVisualNoLoss()
+    {
+        var msg = new ChatMessage { Role = "assistant" };
+
+        // 模型自由输出：单页混合 页级指标 + 卡片（无 quote/时间线干扰）
+        var text = @"
+:::artifact type=""pptx"" title=""混合页回归""
+---
+# 单页混合视觉
+- 99.9% : 服务可用性
+- 10x : 检索吞吐提升
+### 模块A
+- 细节一
+### 模块B
+- 细节二
+:::
+";
+        msg.AppendToken(text);
+        msg.ForceRefreshRender();
+
+        Assert.NotNull(msg.Artifact);
+        var page = msg.Artifact!.Slides[0];
+
+        // 主视觉唯一：卡片页渲染卡片区，指标不得作为独立大块同时显示（否则堆叠混乱）
+        Assert.Equal("cards", page.Layout);
+        Assert.True(page.ShowCards);
+        Assert.Equal(2, page.Cards.Count);
+        Assert.False(page.ShowMetrics);
+        Assert.False(page.ShowTimeline);
+        Assert.False(page.ShowQuote);
+
+        // 指标数据不丢失，降级为补充要点显示
+        Assert.Contains(page.BulletPoints, b => b.Contains("99.9%"));
+        Assert.Contains(page.BulletPoints, b => b.Contains("10x"));
+    }
+
+    [Fact]
+    public void ChatMessage_DoesNotInferArtifact_ForLongTextWithoutSlideFeatures()
+    {
+        var msg = new ChatMessage { Role = "assistant" };
+
+        // 长文本 + 多个 --- 分隔，但没有任何幻灯片特征，不应被误判成 PPT
+        var text = string.Join("\n---\n",
+            Enumerable.Repeat("这是一段普通的说明性文字，用于验证长文本不会因为篇幅或分隔线就被误判成创作交付物。", 6));
+        msg.AppendToken(text);
+        msg.ForceRefreshRender();
+
+        Assert.False(msg.HasArtifact);
+    }
+
     [Theory]
     [InlineData("ppt", "ppt")]
     [InlineData("report", "doc")]

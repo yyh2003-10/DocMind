@@ -103,7 +103,9 @@ public sealed class SlideItem
     public List<TimelineNodeItem> TimelineNodes { get; set; } = new();
     public string QuoteText { get; set; } = string.Empty;
 
-    public bool IsCover => string.Equals(Layout, "cover", StringComparison.OrdinalIgnoreCase) || Index == 1;
+    /// <summary>是否为封面页：显式声明 cover，或首页且确实带副标题（避免首页正文被封面框架吞掉）。</summary>
+    public bool IsCover => string.Equals(Layout, "cover", StringComparison.OrdinalIgnoreCase)
+                           || (Index == 1 && !string.IsNullOrWhiteSpace(Subtitle));
     public bool IsCards => string.Equals(Layout, "cards", StringComparison.OrdinalIgnoreCase) || Cards.Count > 0;
     public bool IsMetrics => string.Equals(Layout, "metrics", StringComparison.OrdinalIgnoreCase) || Metrics.Count > 0;
     public bool IsTimeline => string.Equals(Layout, "timeline", StringComparison.OrdinalIgnoreCase) || TimelineNodes.Count > 0;
@@ -111,8 +113,28 @@ public sealed class SlideItem
     public bool IsQuote => string.Equals(Layout, "quote", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrWhiteSpace(QuoteText);
     public bool IsGeneral => !IsCover && !IsCards && !IsMetrics && !IsTimeline && !IsTable && !IsQuote;
 
+    /// <summary>主视觉是否应渲染为对应块级区域（按 Layout 唯一决定，避免多块大视觉堆叠）。</summary>
+    public bool ShowCards => Cards.Count > 0
+        && !string.Equals(Layout, "metrics", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(Layout, "timeline", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(Layout, "quote", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(Layout, "table", StringComparison.OrdinalIgnoreCase);
+    public bool ShowMetrics => string.Equals(Layout, "metrics", StringComparison.OrdinalIgnoreCase);
+    public bool ShowTimeline => string.Equals(Layout, "timeline", StringComparison.OrdinalIgnoreCase);
+    public bool ShowQuote => string.Equals(Layout, "quote", StringComparison.OrdinalIgnoreCase);
+
     public bool HasNotes => !string.IsNullOrWhiteSpace(SpeakerNotes);
     public bool HasTable => TableData is { Count: > 0 };
+
+    /// <summary>是否有需要以要点列表呈现的普通条目（封面页不展示，避免与封面框架冲突）。
+    /// 与卡片 / 指标 / 时间线等区域叠加共存，避免混合板式内容被整体吞掉。</summary>
+    public bool HasBullets => BulletPoints.Count > 0 && !IsCover;
+
+    /// <summary>扁平化的表格行文本，供预览卡片以紧凑文本形式渲染，避免表格内容在卡片预览中整体丢失。</summary>
+    public IReadOnlyList<string> TableLines =>
+        (TableData ?? new List<List<string>>())
+            .Select(r => string.Join("　|　", r.Select(c => c?.Trim() ?? string.Empty)))
+            .ToList();
 }
 
 /// <summary>创作交付物前端综合模型。</summary>

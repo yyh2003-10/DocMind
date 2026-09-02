@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from contextlib import ExitStack
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -99,12 +101,15 @@ class TestHTTPChatEndpoint:
         hit = _make_hit(content="DocMind 采用分层架构...", source="arch.pdf", page=3, heading="架构")
 
         stack = _mock_rag_patches(mock_llm, hit)
+        # 测试环境关闭 HTTP 鉴权（生产默认开启，见 http.py 中间件）
+        os.environ["DOC2MIND_DISABLE_AUTH"] = "1"
         try:
             from doc2mind.server.http import create_app
             app = create_app()
             test_client = TestClient(app)
             yield test_client, mock_llm
         finally:
+            os.environ.pop("DOC2MIND_DISABLE_AUTH", None)
             stack.close()
 
     def test_chat_returns_answer(self, client_with_app) -> None:
@@ -197,9 +202,13 @@ class TestHTTPChatEndpoint:
             events = [l.replace("data: ", "") for l in lines if l.startswith("data: ")]
             assert len(events) >= 2
             import json
-            first = json.loads(events[0])
-            # 可能是 token 行、status 行或 error 行
-            assert "token" in first or "error" in first or first.get("type") == "status"
+            parsed = [json.loads(e) for e in events]
+            # 后端可能先发 thinking 帧（推理过程展示）再发 token 帧，因此不要求
+            # 首帧即 token/status/error，而是校验整条流最终包含这些帧之一
+            assert any(
+                "token" in p or "error" in p or p.get("type") == "status"
+                for p in parsed
+            ), f"SSE 流未包含 token/status/error 帧，实际前三帧: {parsed[:3]}"
 
     def test_chat_stream_null_attachments_accepted(self, client_with_app) -> None:
         """流式端点同样接受 attachments=null（WPF 对话页走的就是 /v1/chat/stream）。"""
@@ -283,6 +292,7 @@ class TestHTTPConfigLLMFields:
 
         original = get_settings()
         set_settings(Settings())  # 干净默认值，隔离全局单例
+        os.environ["DOC2MIND_DISABLE_AUTH"] = "1"  # 测试环境关闭 HTTP 鉴权
         try:
             # 不写真实 config.toml（endpoint 内部延迟 import，patch 源模块即可）
             with patch("doc2mind.core.config.save_settings"):
@@ -290,6 +300,7 @@ class TestHTTPConfigLLMFields:
                 app = create_app()
                 yield TestClient(app)
         finally:
+            os.environ.pop("DOC2MIND_DISABLE_AUTH", None)
             set_settings(original)  # 恢复全局单例
 
     def test_get_config_returns_llm_defaults(self, config_client) -> None:
@@ -498,10 +509,12 @@ class TestChatModelOverride:
         mock_retriever.search.return_value = ([hit], stats)
         stack.enter_context(patch("doc2mind.core.rag.Retriever", return_value=mock_retriever))
         stack.enter_context(patch("doc2mind.core.rag.get_llm_client", fake_get_llm_client))
+        os.environ["DOC2MIND_DISABLE_AUTH"] = "1"
         try:
             from doc2mind.server.http import create_app
             yield TestClient(create_app()), captured
         finally:
+            os.environ.pop("DOC2MIND_DISABLE_AUTH", None)
             stack.close()
 
     def test_model_override_reaches_llm_client(self, capture_client) -> None:
@@ -533,7 +546,7 @@ class TestChatModelOverride:
 # ======================================================================
 class TestChatsEndpoints:
     @pytest.fixture()
-    def chats_client(self):
+    def chats_client(self, tmp_path):
         try:
             from fastapi.testclient import TestClient
         except ImportError:
@@ -542,12 +555,18 @@ class TestChatsEndpoints:
         _CHAT_SESSIONS.clear()
         mock_llm = MockLLMClient("回答。")
         stack = _mock_rag_patches(mock_llm)
+        old_settings = get_settings()
+        db_file = tmp_path / "test_chats.db"
+        set_settings(Settings(db_path=Path(db_file)))
+        os.environ["DOC2MIND_DISABLE_AUTH"] = "1"
         try:
             from doc2mind.server.http import create_app
             yield TestClient(create_app())
         finally:
+            os.environ.pop("DOC2MIND_DISABLE_AUTH", None)
             stack.close()
             _CHAT_SESSIONS.clear()
+            set_settings(old_settings)
 
     def test_chat_persists_session_to_db(self, chats_client) -> None:
         tc = chats_client
@@ -613,11 +632,13 @@ class TestRagSystemPrompt:
 
         original = get_settings()
         set_settings(Settings())
+        os.environ["DOC2MIND_DISABLE_AUTH"] = "1"
         try:
             with patch("doc2mind.core.config.save_settings"):
                 from doc2mind.server.http import create_app
                 yield TestClient(create_app())
         finally:
+            os.environ.pop("DOC2MIND_DISABLE_AUTH", None)
             set_settings(original)
 
     def test_config_round_trip_and_clear(self, config_client) -> None:
@@ -679,8 +700,12 @@ class TestGraphEndpoints:
         e2 = store.upsert_entity("Python", "tech", "default")
         store.upsert_relation(e1, e2, "written_in")
 
-        app = create_app(s)
-        client = TestClient(app)
+        os.environ["DOC2MIND_DISABLE_AUTH"] = "1"
+        try:
+            app = create_app(s)
+            client = TestClient(app)
+        finally:
+            os.environ.pop("DOC2MIND_DISABLE_AUTH", None)
 
         # GET /v1/graph/visualize
         res = client.get("/v1/graph/visualize?collection=default")
@@ -713,12 +738,96 @@ class TestGraphEndpoints:
         from doc2mind.server.http import create_app
 
         s = Settings(db_path=tmp_path / "graph_extract_test.db", llm_provider="none")
-        app = create_app(s)
-        client = TestClient(app)
+        os.environ["DOC2MIND_DISABLE_AUTH"] = "1"
+        try:
+            app = create_app(s)
+            client = TestClient(app)
 
-        res = client.post("/v1/graph/extract?collection=default")
-        assert res.status_code == 400
-        assert "未配置 LLM" in res.json()["detail"]["message"]
+            res = client.post("/v1/graph/extract?collection=default")
+            assert res.status_code == 400
+            assert "未配置 LLM" in res.json()["detail"]["message"]
+        finally:
+            os.environ.pop("DOC2MIND_DISABLE_AUTH", None)
+
+    def test_graph_entity_distill_requires_llm(self, tmp_path) -> None:
+        from starlette.testclient import TestClient
+
+        from doc2mind.server.http import create_app
+
+        s = Settings(db_path=tmp_path / "graph_distill_test.db", llm_provider="none")
+        os.environ["DOC2MIND_DISABLE_AUTH"] = "1"
+        try:
+            app = create_app(s)
+            client = TestClient(app)
+
+            res = client.post(
+                "/v1/graph/entities/distill",
+                json={
+                    "entityId": "e1",
+                    "entityName": "WebSearch",
+                    "entityType": "tech",
+                },
+            )
+            assert res.status_code == 400
+            assert "未配置 LLM" in res.json()["detail"]["message"]
+        finally:
+            os.environ.pop("DOC2MIND_DISABLE_AUTH", None)
+
+    def test_graph_entity_distill_success_with_mock(self, tmp_path, monkeypatch) -> None:
+        from starlette.testclient import TestClient
+
+        from doc2mind.core.llm.base import LLMClient
+        from doc2mind.server.http import create_app
+
+        class DummyLLM(LLMClient):
+            @property
+            def model_name(self) -> str:
+                return "dummy-model"
+
+            @property
+            def provider(self) -> str:
+                return "dummy"
+
+            def _do_chat(self, messages, temperature=None, max_tokens=None):
+                return "# 📚【知识档案】WebSearch\n## 📌 核心定义\n联网检索服务\n标签：#tech #Search"
+
+            def _do_stream_chat(self, messages, temperature=None, max_tokens=None, stop_event=None):
+                yield "# 📚【知识档案】WebSearch"
+
+        monkeypatch.setattr(
+            "doc2mind.server.http._build_llm_client_from_provider_config",
+            lambda pc, s, model: DummyLLM(),
+        )
+
+        s = Settings(db_path=tmp_path / "graph_distill_test2.db")
+        os.environ["DOC2MIND_DISABLE_AUTH"] = "1"
+        try:
+            app = create_app(s)
+            client = TestClient(app)
+
+            res = client.post(
+                "/v1/graph/entities/distill",
+            json={
+                "entityId": "e1",
+                "entityName": "WebSearch",
+                "entityType": "tech",
+                "localSnippets": ["切片1", "切片2"],
+                "webReferences": ["参考1"],
+                "dialogueSummary": "探讨记录",
+            },
+        )
+        finally:
+            os.environ.pop("DOC2MIND_DISABLE_AUTH", None)
+        assert res.status_code == 200
+        data = res.json()
+        assert data.get("entityId") == "e1" or data.get("entity_id") == "e1"
+        assert data.get("entityName") == "WebSearch" or data.get("entity_name") == "WebSearch"
+        markdown = data.get("markdownCard") or data.get("markdown_card") or ""
+        assert "【知识档案】WebSearch" in markdown
+        tags = data.get("suggestedTags") or data.get("suggested_tags") or []
+        assert "tech" in tags
+        assert "Search" in tags
+        assert data["model"] == "dummy-model"
 
 
 class TestEventsBroadcast:
@@ -768,3 +877,43 @@ class TestEventsBroadcast:
             loop.close()
 
 
+
+
+class TestChatStreamHardening:
+    """流式端点加固：SSE no-cache 响应头 + 请求体大小上限。"""
+
+    @pytest.fixture()
+    def client_with_app(self):
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/testclient not installed")
+
+        mock_llm = MockLLMClient("加固测试回答。")
+        stack = _mock_rag_patches(mock_llm)
+        os.environ["DOC2MIND_DISABLE_AUTH"] = "1"
+        try:
+            from doc2mind.server.http import create_app
+            app = create_app()
+            yield TestClient(app), mock_llm
+        finally:
+            os.environ.pop("DOC2MIND_DISABLE_AUTH", None)
+            stack.close()
+
+    def test_chat_stream_sse_no_cache_headers(self, client_with_app) -> None:
+        """SSE 响应必须携带 no-cache / X-Accel-Buffering 头，防代理缓冲。"""
+        tc, _ = client_with_app
+        with tc.stream("POST", "/v1/chat/stream", json={"query": "q"}) as response:
+            assert response.status_code == 200
+            assert response.headers.get("cache-control") == "no-cache"
+            assert response.headers.get("x-accel-buffering") == "no"
+
+    def test_body_size_limit_returns_413(self, client_with_app) -> None:
+        """Content-Length 超过 10MB 上限的请求返回 413，不再进入业务处理。"""
+        tc, _ = client_with_app
+        resp = tc.get(
+            "/v1/health",
+            headers={"content-length": str(11 * 1024 * 1024)},
+        )
+        assert resp.status_code == 413
+        assert resp.json()["detail"]["code"] == "PAYLOAD_TOO_LARGE"

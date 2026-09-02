@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import patch
 
 
@@ -15,6 +16,10 @@ def _make_client():
 
     from doc2mind.server.http import create_app
 
+    try:
+        from httpx import AsyncClient  # noqa: F401
+    except ImportError:
+        pass
     app = create_app()
     return TestClient(app)
 

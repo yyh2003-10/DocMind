@@ -10,6 +10,11 @@ public sealed class ThinkingStepIconConverter : IValueConverter
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
         var text = (value as string) ?? string.Empty;
+        if (text.StartsWith("✖", StringComparison.Ordinal))
+        {
+            // 失败/中断收尾节点（FailThinkingStep 写入），优先于内容关键词匹配
+            return "❌";
+        }
         if (text.Contains("附件", StringComparison.OrdinalIgnoreCase))
         {
             return "📎";

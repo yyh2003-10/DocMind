@@ -129,6 +129,15 @@ def _build_fts5_match(query: str) -> str:
     return " OR ".join(tokens) if tokens else ""
 
 
+# ---- 短词（<3 chars）LIKE 兜底参数 ----
+# trigram tokenizer 无法索引 2 字词/2 字符缩写（气缸/IP/5A），bm25_search 对它们
+# 改用 `content LIKE '%词%'` 补充召回。单次命中的固定贡献分（非真实 BM25 值，
+# 只需>0 让 match_type 正确呈现 hybrid）；最多取前 _MAX_SHORT_TOKENS 个短词参与，
+# 限制 LIKE 全表扫描次数与噪声。
+_SHORT_TOKEN_SCORE = 1.0
+_MAX_SHORT_TOKENS = 3
+
+
 # --- 数据类型 ---
 @dataclass(frozen=True)
 class StoredChunk:
@@ -788,8 +797,28 @@ class VectorStore:
                         f"DELETE FROM chunks_meta WHERE id IN ({placeholders})",
                         chunk_ids,
                     )
+                # 删文档前先记录 collection 名，用于判断是否需要清理空集合
+                doc_col_row = conn.execute(
+                    "SELECT collection FROM documents WHERE id = ?",
+                    (document_id,),
+                ).fetchone()
+                doc_collection = doc_col_row[0] if doc_col_row else None
+
                 # 删文档
                 conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+
+                # 若集合内已无文档且集合表有对应记录，自动清理空集合
+                if doc_collection:
+                    remaining = conn.execute(
+                        "SELECT COUNT(*) FROM documents WHERE collection = ?",
+                        (doc_collection,),
+                    ).fetchone()
+                    if remaining and remaining[0] == 0:
+                        conn.execute(
+                            "DELETE FROM collections WHERE name = ?",
+                            (doc_collection,),
+                        )
+
                 conn.execute("COMMIT")
                 return len(chunk_ids)
             except Exception as e:  # noqa: BLE001
@@ -1028,42 +1057,75 @@ class VectorStore:
 
         score 越大越相关。collection 支持单集合名或集合名列表。
 
-        注意：用独立 `_fts_conn` 跑查询，避开 vec0 扩展与 trigram tokenizer
-        在同 connection 上评估中文 bm25() 时的 IntegrityError: datatype mismatch。
+        短词（<3 字符，如中文 2 字词"气缸"、英文缩写"IP"）trigram 分词器
+        无法索引/匹配，用 `content LIKE '%词%'` 兜底召回，避免 BM25 静默
+        失效（混合检索退化为纯向量检索）。
+
+        注意：FTS5 用独立 `_fts_conn` 跑查询，避开 vec0 扩展与 trigram
+        tokenizer 在同 connection 上评估中文 bm25() 时的
+        IntegrityError: datatype mismatch；LIKE 兜底走常规 `_conn`。
         """
         if not self._fts_available:
             return []
-        # 构造中文友好的 MATCH 表达式
-        match_expr = _build_fts5_match(query)
-        if not match_expr:
+        tokens = [t.strip() for t in query.split() if t.strip()]
+        if not tokens:
             return []
+        # trigram 只能匹配 ≥3 字符连续子串；短词拆分出来走 LIKE，长词仍走 FTS5
+        fts_tokens = [t for t in tokens if len(t) >= 3]
+        short_tokens = [t for t in tokens if len(t) < 3][:_MAX_SHORT_TOKENS]
         with self._lock:
             self._require_open()
             if self._fts_conn is None:
                 return []
             try:
-                col_filter = ""
-                params: list[Any] = [match_expr]
                 cols = _normalize_collections(collection)
+                col_filter = ""
+                params: list[Any] = []
                 if cols:
                     placeholders = ",".join("?" for _ in sorted(cols))
                     col_filter = f"AND collection IN ({placeholders})"
                     params.extend(sorted(cols))
-                # LIMIT 用字符串拼接（int 已强类型校验，无注入风险）：
-                # FTS5 trigram + LIMIT ? placeholder 触发 IntegrityError: datatype mismatch
-                cur = self._fts_conn.execute(
-                    f"""
-                    SELECT chunk_id, bm25(bm25_index) AS score
-                    FROM bm25_index
-                    WHERE bm25_index MATCH ? {col_filter}
-                    ORDER BY score DESC
-                    LIMIT {int(top_k * 4)}
-                    """,
-                    params,
-                )
-                rows = cur.fetchall()
-                # chunk_id 在 FTS5 UNINDEXED 列中存为 TEXT，需 cast
-                return [(int(str(r[0])), float(r[1])) for r in rows][:top_k]
+
+                merged: dict[int, float] = {}
+
+                # 1) FTS5：≥3 chars 的 token（trigram 可子串匹配）
+                if fts_tokens:
+                    match_expr = _build_fts5_match(" ".join(fts_tokens))
+                    if match_expr:
+                        # LIMIT 用字符串拼接（int 已强类型校验，无注入风险）：
+                        # FTS5 trigram + LIMIT ? placeholder 触发
+                        # IntegrityError: datatype mismatch。
+                        # FTS5 的 bm25() 返回负分且越小越相关，取反为正分后
+                        # "越大越相关" 才与 docstring 及上游归一化假设一致
+                        cur = self._fts_conn.execute(
+                            f"""
+                            SELECT chunk_id, -bm25(bm25_index) AS score
+                            FROM bm25_index
+                            WHERE bm25_index MATCH ? {col_filter}
+                            ORDER BY score DESC
+                            LIMIT {int(top_k * 4)}
+                            """,
+                            [match_expr, *params],
+                        )
+                        for cid, score in cur.fetchall():
+                            # chunk_id 在 FTS5 UNINDEXED 列中存为 TEXT，需 cast
+                            merged[int(str(cid))] = float(score)
+
+                # 2) LIKE 兜底：<3 chars 短词（trigram 无法命中）
+                for tok in short_tokens:
+                    cur = self._conn.execute(
+                        f"""
+                        SELECT id FROM chunks_meta
+                        WHERE content LIKE ? {col_filter}
+                        LIMIT {int(top_k * 4)}
+                        """,
+                        [f"%{tok}%", *params],
+                    )
+                    for (cid,) in cur.fetchall():
+                        merged[cid] = merged.get(cid, 0.0) + _SHORT_TOKEN_SCORE
+
+                ranked = sorted(merged.items(), key=lambda kv: kv[1], reverse=True)
+                return ranked[:top_k]
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"BM25 检索失败: {e}") from e
 

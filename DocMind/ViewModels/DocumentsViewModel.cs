@@ -721,7 +721,7 @@ public partial class DocumentsViewModel : ViewModelBase
 
         var col = string.IsNullOrWhiteSpace(Collection) ? null : Collection.Trim();
         var confirm = System.Windows.MessageBox.Show(
-            $"确定重建索引吗？\n集合：{(col ?? "(全部)")}\n将重新嵌入该集合内所有分块。",
+            $"确定重建索引吗？\n分组：{(col ?? "(全部)")}\n将重新嵌入该分组内所有分块。",
             "确认重建索引",
             System.Windows.MessageBoxButton.YesNo,
             System.Windows.MessageBoxImage.Question);
@@ -752,10 +752,14 @@ public partial class DocumentsViewModel : ViewModelBase
             }
 
             // 轮询直到完成：progress 0.0-1.0 → 百分比
+            // Progress<T> 的回调是异步投递的，可能在轮询返回之后才执行；
+            // 若不设闸，落后的进度回调会把下面的失败/取消/完成终态文案覆盖成中间状态文案。
+            var pollingCompleted = false;
             var final = await _apiService.PollJobUntilDoneAsync(
                 job.JobId,
                 progress: new Progress<JobStatus>(j =>
                 {
+                    if (pollingCompleted) return;
                     _reindexProcessed = j.Processed;
                     _reindexTotal = j.Total;
                     OnPropertyChanged(nameof(ReindexProgressPercent));
@@ -765,6 +769,7 @@ public partial class DocumentsViewModel : ViewModelBase
                 }),
                 pollInterval: TimeSpan.FromSeconds(1),
                 ct: _reindexCts.Token);
+            pollingCompleted = true;
 
             if (final.Status.Equals("failed", StringComparison.OrdinalIgnoreCase))
             {

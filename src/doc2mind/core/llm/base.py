@@ -35,6 +35,151 @@ def sanitize_max_tokens(value: int | None) -> int | None:
     return value
 
 
+def iter_exception_chain(exc: BaseException | None) -> list[BaseException]:
+    """展开异常链（__cause__ / __context__），避免循环引用。"""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen:
+        chain.append(cur)
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return chain
+
+
+def merge_stream_retry_text(existing: str, retry_text: str, max_overlap: int = 512) -> str:
+    """合并断线续写文本，去掉 retry_text 开头与已有正文的最大重叠部分。"""
+    if not retry_text:
+        return ""
+    if not existing:
+        return retry_text
+    candidate = retry_text[: max(0, max_overlap)]
+    max_len = min(len(existing), len(candidate))
+    for size in range(max_len, 0, -1):
+        if existing[-size:] == candidate[:size]:
+            return retry_text[size:]
+    return retry_text
+
+
+def is_transient_network_error(exc: BaseException | None) -> bool:
+    """判断异常是否为可重试的瞬时网络/协议错误（连接重置、断流、超时、EOF 等）。
+
+    递归检查整个异常链（包括底层 httpx / httpcore / socket / OS 错误），
+    精准识别 peer closed connection、incomplete chunked read 等代理与网关断流。
+    """
+    if exc is None:
+        return False
+
+    chain = iter_exception_chain(exc)
+
+    # 1. 尝试按具体异常类型判断
+    # 标准库 socket / 连接错误
+    std_network_types: tuple[type[BaseException], ...] = (
+        ConnectionError,
+        ConnectionResetError,
+        ConnectionAbortedError,
+        BrokenPipeError,
+        TimeoutError,
+    )
+    for e in chain:
+        if isinstance(e, std_network_types):
+            return True
+
+    # httpx 异常
+    try:
+        import httpx
+
+        httpx_types: tuple[type[BaseException], ...] = (
+            httpx.TransportError,
+            httpx.TimeoutException,
+        )
+        for e in chain:
+            if isinstance(e, httpx_types):
+                return True
+    except ImportError:
+        pass
+
+    # httpcore 异常
+    try:
+        import httpcore
+
+        httpcore_types = tuple(
+            t for t in (
+                getattr(httpcore, "NetworkError", None),
+                getattr(httpcore, "ProtocolError", None),
+                getattr(httpcore, "RemoteProtocolError", None),
+                getattr(httpcore, "ReadError", None),
+                getattr(httpcore, "WriteError", None),
+                getattr(httpcore, "ConnectError", None),
+                getattr(httpcore, "PoolTimeout", None),
+                getattr(httpcore, "ReadTimeout", None),
+                getattr(httpcore, "WriteTimeout", None),
+                getattr(httpcore, "ConnectTimeout", None),
+            ) if t is not None
+        )
+        if httpcore_types:
+            for e in chain:
+                if isinstance(e, httpcore_types):
+                    return True
+    except ImportError:
+        pass
+
+    # openai SDK 异常
+    try:
+        from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
+
+        openai_types: tuple[type[BaseException], ...] = (
+            APIConnectionError,
+            APITimeoutError,
+            InternalServerError,
+            RateLimitError,
+        )
+        for e in chain:
+            if isinstance(e, openai_types):
+                return True
+    except ImportError:
+        pass
+
+    # 2. 文本与类名关键字全景匹配（覆盖 Windows Socket 错误码与各类代理网关特征）
+    keywords = (
+        "peer closed connection",
+        "incomplete chunked read",
+        "connection reset",
+        "connection aborted",
+        "broken pipe",
+        "chunked encoding",
+        "remote protocol",
+        "unexpected eof",
+        "stream closed",
+        "connection closed",
+        "connection error",
+        "timed out",
+        "timeout",
+        "unexpected eof",
+        "closed prematurely",
+        "closed prematurely",
+        "server disconnected",
+        "forcibly closed by the remote host",
+        "remoteprotocolerror",
+        "transport error",
+        "transport dropped",
+        "10054",  # WSAECONNRESET
+        "10053",  # WSAECONNABORTED
+        "10060",  # WSAETIMEDOUT
+        "10061",  # WSAECONNREFUSED
+    )
+
+    for e in chain:
+        type_name = type(e).__name__.lower()
+        if any(k in type_name for k in ("connection", "timeout", "network", "protocol", "transport", "stream")):
+            return True
+        msg = str(e).lower()
+        if any(k in msg for k in keywords):
+            return True
+
+    return False
+
+
 class LLMError(Exception):
     """LLM 调用异常。"""
 
@@ -79,6 +224,7 @@ class LLMClient(ABC):
         messages: list[dict],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        stop_event: Any | None = None,
     ) -> Iterator[str]:
         """子类实现的流式 LLM 调用，逐 token 产出。
 
@@ -162,13 +308,13 @@ class LLMClient(ABC):
         - "content"：最终回答正文。
 
         默认实现把全部输出当作 content；支持推理的提供商会覆写
-        `_do_stream_chat_tagged`。带超时保护与取消事件支持。
+        `_do_stream_chat_tagged`。带空闲超时保护与取消事件支持。
 
         Args:
             messages: OpenAI 格式消息列表
             temperature: 温度（覆盖默认值）
             max_tokens: 最大 token 数（覆盖默认值）
-            timeout: 超时秒数，None 使用 DEFAULT_TIMEOUT
+            timeout: 空闲超时秒数，None 使用 DEFAULT_TIMEOUT
             stop_event: 外部取消事件（threading.Event），置位时立即终止生成
 
         Raises:
@@ -177,8 +323,11 @@ class LLMClient(ABC):
 
         实现说明（真流式，勿改回全量缓冲）：
         队列泵：worker 线程逐帧推入队列，主线程逐个取出即 yield——首帧在
-        生成器产出第一个帧时立即到达。超时按「整个流必须在 effective_timeout
-        内结束」计算，已收发的帧不受影响。
+        生成器产出第一个帧时立即到达。
+
+        超时按「帧间隔空闲超时」计算：任意两帧之间超过 effective_timeout
+        未收到新数据才判定挂起；只要持续出帧，长回答不会被整体时限误杀。
+        首 token 前的等待同样受此约束（检索/思考期超过时限仍会超时）。
         """
         from queue import Empty as _QueueEmpty
 
@@ -189,7 +338,15 @@ class LLMClient(ABC):
         def _produce() -> None:
             """worker：跑真实流，逐帧入队；异常也经队列送回主线程。"""
             try:
-                for item in self._do_stream_chat_tagged(messages, temperature, max_tokens):
+                stream_method = self._do_stream_chat_tagged
+                # 兼容第三方/测试子类仍使用旧的三参数 protected hook。
+                import inspect
+
+                if "stop_event" in inspect.signature(stream_method).parameters:
+                    stream = stream_method(messages, temperature, max_tokens, stop_event)
+                else:
+                    stream = stream_method(messages, temperature, max_tokens)
+                for item in stream:
                     if stop_event is not None and stop_event.is_set():
                         break
                     q.put(item)
@@ -197,28 +354,28 @@ class LLMClient(ABC):
             except BaseException as e:  # noqa: BLE001 — 异常交给主线程分类处理
                 q.put(e)
 
-        with ThreadPoolExecutor(max_workers=1) as executor:
+        # 不使用 `with ThreadPoolExecutor(...)`：其退出时 shutdown(wait=True)，
+        # 一旦生产者线程卡在网络读上，消费循环会永久阻塞、流无法结束（断连/超时
+        # 场景下前端只能干等）。改为显式 shutdown(wait=False) 并在退出前置位
+        # stop_event，让生产者尽快自行退出。
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
             executor.submit(_produce)
-            deadline = time.monotonic() + effective_timeout
+            idle_deadline = time.monotonic() + effective_timeout
             while True:
                 if stop_event is not None and stop_event.is_set():
                     break
-                remaining = deadline - time.monotonic()
+                remaining = idle_deadline - time.monotonic()
                 if remaining <= 0:
                     raise LLMTimeoutError(
-                        f"LLM 流式调用超时 ({effective_timeout}s)，"
+                        f"LLM 流式调用空闲超时（{effective_timeout:.0f}s 内无新数据），"
                         "请检查网络或增加 DOC2MIND_LLM_TIMEOUT"
                     )
-                # 使用较短超时切片以便及时响应 stop_event
+                # 使用较短超时切片以便及时响应 stop_event；空转后回到循环顶部重新计算截止时间
                 slice_timeout = min(remaining, 0.5) if stop_event is not None else remaining
                 try:
                     item = q.get(timeout=slice_timeout)
                 except _QueueEmpty:
-                    if remaining <= 0:
-                        raise LLMTimeoutError(
-                            f"LLM 流式调用超时 ({effective_timeout}s)，"
-                            "请检查网络或增加 DOC2MIND_LLM_TIMEOUT"
-                        ) from None
                     continue
                 if item is sentinel:
                     break
@@ -228,14 +385,35 @@ class LLMClient(ABC):
                     raise LLMError(f"LLM 流式调用失败: {item}") from item
                 assert isinstance(item, tuple) and len(item) == 2, item
                 yield item[0], item[1]
+                # 收到新帧 → 重置空闲计时：持续出帧的长回答不受整体时限约束
+                idle_deadline = time.monotonic() + effective_timeout
+        except BaseException:
+            # 取消 / 超时 / 异常路径：置位 stop_event 让仍卡在网络读上的生产者尽快
+            # 收手，且不等待它结束（wait=False），否则消费侧会永久阻塞、流无法收敛。
+            if stop_event is not None:
+                stop_event.set()
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            # 正常结束（已收到 sentinel）：生产者线程已自行退出，直接回收线程池。
+            # 此处不置位 stop_event —— 上游据其判断"是否被用户中断"，
+            # 误置会导致正常完成的回答不被写入多轮历史。
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _do_stream_chat_tagged(
         self,
         messages: list[dict],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        stop_event: Any | None = None,
     ) -> Iterator[tuple[str, str]]:
         """默认 tagged 实现：不区分推理，全部按正文产出。
         支持推理的提供商（如 OpenAI 兼容的 DeepSeek-R1/Qwen3）覆写此方法。"""
-        for tok in self._do_stream_chat(messages, temperature, max_tokens):
+        import inspect
+
+        if "stop_event" in inspect.signature(self._do_stream_chat).parameters:
+            stream = self._do_stream_chat(messages, temperature, max_tokens, stop_event)
+        else:
+            stream = self._do_stream_chat(messages, temperature, max_tokens)
+        for tok in stream:
             yield "content", tok

@@ -19,10 +19,12 @@ RRF (Reciprocal Rank Fusion) 公式：
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
 from doc2mind.core.embedder.base import Embedder, EmbedderError
+from doc2mind.core.reranker.base import Reranker, RerankerError
 from doc2mind.core.store.sqlite_vec import StoreError, VectorStore
 
 
@@ -40,6 +42,11 @@ class SearchHit:
     vector_score: float
     bm25_score: float
     rank: int
+    # 重排相关性分：经 sigmoid 归一化的相关度概率（0-1，越大越相关）。
+    # 重排器原始输出为 cross-encoder logits（可负、可 >1），Retriever 在此统一
+    # 归一化，避免下游展示出「相关度 5.32」或负数、或与 0-1 阈值混用。
+    # None = 未启用重排。仅用于精排与展示，比融合分更能反映真实相关度。
+    rerank_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +80,10 @@ class SearchStats:
     degraded_reason: str | None = None
     # 其他提示（如 min_score 超出 RRF 分数范围被忽略）
     message: str | None = None
+    # 是否启用了重排（cross-encoder 精排）；False = 用原始 RRF 排序
+    reranked: bool = False
+    # 实际使用的重排模型名（reranked=True 时非空）
+    rerank_model: str | None = None
 
 
 class Retriever:
@@ -89,10 +100,18 @@ class Retriever:
         store: VectorStore,
         embedder: Embedder,
         rrf_k: int = 60,
+        reranker: "Reranker | None" = None,
+        rerank_recall: int = 20,
     ) -> None:
         self.store = store
         self.embedder = embedder
         self.rrf_k = max(1, int(rrf_k))
+        # 重排器（可选）：对 RRF 召回候选做 query-doc 相关性精排。
+        # None = 不重排，保留原始 RRF 排序；推理失败由 search() 内部降级处理。
+        self.reranker = reranker
+        # 送入重排器的候选数上限（从 RRF 结果中截取最靠前若干条），
+        # 不宜过大以免拖慢推理；20 对 top_k=5 绰绰有余。
+        self.rerank_recall = max(1, int(rerank_recall))
 
     # --- 主入口 ---
     def search(
@@ -173,6 +192,36 @@ class Retriever:
                 k=self.rrf_k,
             )
 
+            # 4.5 重排（可选）：cross-encoder 对 RRF 召回候选逐对打分，纠正排序偏差
+            # 召回阶段（BM25+向量+RRF）只按排名位置融合，不衡量 query 与文档的
+            # 真实语义相关度；重排能显著提升精度。重排不可用则优雅降级为原始 RRF 排序。
+            reranked = False
+            rerank_scores: dict[int, float] = {}
+            rerank_model_name: str | None = (
+                self.reranker.model_name if self.reranker is not None else None
+            )
+            if self.reranker is not None and fused:
+                recall = min(self.rerank_recall, len(fused))
+                cand = fused[:recall]  # 取前 recall 个候选（顺序无关，重排会重新评估）
+                cand_ids = [c[0] for c in cand]
+                try:
+                    cand_stored = self.store.get_chunks(cand_ids)
+                    id_to_content = {st.id: st.content for st in cand_stored}
+                    docs = [id_to_content.get(cid, "") for cid in cand_ids]
+                    raw_scores = self.reranker.rerank(query, docs)
+                    # 重排器返回原始 logits（可负、可 >1）；统一 sigmoid 归一化到
+                    # 0-1 相关度概率再下游（排序/展示/过滤），避免展示出「相关度 5.32」
+                    # 或负数。sigmoid 单调，不影响重排排序结果。
+                    rerank_scores = {cid: _sigmoid(s) for cid, s in zip(cand_ids, raw_scores)}
+                    reranked = True
+                except RerankerError as e:
+                    # 重排不可用（模型未装/下载失败/推理异常）→ 降级，不阻断检索
+                    degraded = True
+                    degraded_reason = (
+                        f"重排模型不可用（{e}），本次为原始 RRF 排序"
+                    )
+                    rerank_scores = {}
+
             # 5. 取 top_k，过滤 min_score
             # min_score 过滤的是 RRF 融合分（量纲 ≈ 2/(k+1)，k=60 时 ≈ 0.033），
             # 用户直觉填 0.5 会过滤掉全部结果 —— 越界时忽略并提示，而不是静默清空。
@@ -184,7 +233,14 @@ class Retriever:
                     "RRF 分数普遍很小，请参考结果里的 score 值设置"
                 )
                 min_score = 0.0
-            fused.sort(key=lambda x: x[1], reverse=True)
+            # 重排后用 rerank 分数重排（候选优先，非候选置末尾）；未重排保持原 RRF 顺序
+            if reranked:
+                fused.sort(
+                    key=lambda x: rerank_scores.get(x[0], float("-inf")),
+                    reverse=True,
+                )
+            else:
+                fused.sort(key=lambda x: x[1], reverse=True)
             top_hits: list[tuple[int, float, float, float]] = []
             for cid, rrf_score, v_score, b_score in fused:
                 if rrf_score < min_score:
@@ -226,6 +282,7 @@ class Retriever:
                         vector_score=v_score,
                         bm25_score=b_score,
                         rank=rank,
+                        rerank_score=rerank_scores.get(cid) if reranked else None,
                     )
                 )
 
@@ -239,6 +296,8 @@ class Retriever:
                 degraded=degraded,
                 degraded_reason=degraded_reason,
                 message=message,
+                reranked=reranked,
+                rerank_model=rerank_model_name if reranked else None,
             )
             return hits, stats
 
@@ -298,6 +357,15 @@ def _distance_to_score(distance: float) -> float:
     """
     # 用 1/(1+d) 平滑映射，避免负值
     return 1.0 / (1.0 + max(0.0, distance))
+
+
+def _sigmoid(x: float) -> float:
+    """重排器 logits → [0, 1] 相关度概率，数值安全（防 exp 溢出）。"""
+    if x >= 30.0:
+        return 1.0
+    if x <= -30.0:
+        return 0.0
+    return 1.0 / (1.0 + math.exp(-x))
 
 
 def _bm25_normalize(score: float) -> float:

@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Text;
+using System.Text.Json;
 using CommunityToolkit.Mvvm.Input;
 using DocMind.Models;
 using DocMind.Services;
@@ -18,6 +20,12 @@ public partial class QualityViewModel : ViewModelBase
     private string _statusMessage = "就绪";
     private QualityReport? _report;
     private Stats? _stats;
+    private bool _isCurating;
+    private int _curateProgressPercent;
+    private string _curateStatus = "";
+    private string _curateSummary = "";
+    private bool _hasPreviewResult;
+    private CancellationTokenSource? _curateCts;
 
     public QualityViewModel(IDoc2kbApiService apiService)
     {
@@ -216,4 +224,192 @@ public partial class QualityViewModel : ViewModelBase
             DebugLog.Info($"质量报告流程结束，总耗时{sw.ElapsedMilliseconds}ms", "Quality");
         }
     }
+
+    // ===================== AI 知识库整理（curate）=====================
+
+    /// <summary>默认整理动作：打标签/摘要、归类、语义去重、归纳合并（不含 extract，避免意外实体抽取）。</summary>
+    private static readonly string[] CurateActions = ["enrich", "categorize", "dedup", "consolidate"];
+
+    /// <summary>是否正在跑 AI 整理任务。</summary>
+    public bool IsCurating
+    {
+        get => _isCurating;
+        set
+        {
+            if (SetProperty(ref _isCurating, value))
+            {
+                PreviewCurateCommand.NotifyCanExecuteChanged();
+                ExecuteCurateCommand.NotifyCanExecuteChanged();
+                OnPropertyChanged(nameof(CurateProgressPercent));
+            }
+        }
+    }
+
+    /// <summary>整理任务进度（0-100）。</summary>
+    public int CurateProgressPercent
+    {
+        get => IsCurating && _curateProgressPercent > 0 ? _curateProgressPercent : 0;
+        set => SetProperty(ref _curateProgressPercent, value);
+    }
+
+    /// <summary>整理任务状态文本（提交/进度/完成/失败）。</summary>
+    public string CurateStatus
+    {
+        get => _curateStatus;
+        set => SetProperty(ref _curateStatus, value);
+    }
+
+    /// <summary>整理报告摘要（各项动作计数）。</summary>
+    public string CurateSummary
+    {
+        get => _curateSummary;
+        set
+        {
+            if (SetProperty(ref _curateSummary, value))
+            {
+                OnPropertyChanged(nameof(HasCurateSummary));
+            }
+        }
+    }
+
+    public bool HasCurateSummary => !string.IsNullOrWhiteSpace(CurateSummary);
+
+    private bool CanRunCurate => !IsCurating;
+
+    /// <summary>执行按钮（dry_run=false）需先完成一次只读预览（dedup/consolidate 有损，先确认再执行）。</summary>
+    private bool CanRunCurateExecute => !IsCurating && _hasPreviewResult;
+
+    /// <summary>AI 整理只读预览（dry_run=true，零写入）：先看整理方案再决定是否执行。</summary>
+    [RelayCommand(CanExecute = nameof(CanRunCurate))]
+    private Task PreviewCurateAsync() => RunCurateAsync(dryRun: true);
+
+    /// <summary>执行 AI 整理（dry_run=false）：预览确认后的实际落地。dedup/consolidate 有损失。</summary>
+    [RelayCommand(CanExecute = nameof(CanRunCurateExecute))]
+    private Task ExecuteCurateAsync() => RunCurateAsync(dryRun: false);
+
+    /// <summary>页面离开时中止轮询（由外部调用；任务本身不强制取消，后端 job 继续或自然收敛）。</summary>
+    public void CancelCuratePolling() => _curateCts?.Cancel();
+
+    private async Task RunCurateAsync(bool dryRun)
+    {
+        if (IsCurating)
+        {
+            return;
+        }
+
+        var col = string.IsNullOrWhiteSpace(Collection) ? null : Collection.Trim();
+        IsCurating = true;
+        CurateSummary = "";
+        CurateStatus = dryRun ? "AI 整理预览（只读，不写入）提交中…" : "AI 整理执行提交中…";
+        _curateCts = new CancellationTokenSource();
+        var mode = dryRun ? "预览" : "执行";
+        DebugLog.Info($"AI 整理{mode}开始: Collection='{col ?? "(全部)"}'", "Quality");
+
+        try
+        {
+            // 前端显式指定动作（排除 extract）并保持 dry_run 语义，避免后端默认动作与预期偏差
+            var job = await _apiService.CurateAsync(new CurateRequest
+            {
+                Collection = col,
+                Actions = [.. CurateActions],
+                DryRun = dryRun,
+            }, _curateCts.Token);
+            CurateStatus = $"任务已提交（{job.JobId}），等待后端…";
+
+            // Progress<T> 的回调是异步投递的，可能在轮询返回之后才执行；
+            // 若不设闸，落后的进度回调会把下面的失败/完成终态文案覆盖成中间状态文案。
+            var pollingCompleted = false;
+            var progress = new Progress<JobStatus>(j =>
+            {
+                if (pollingCompleted) return;
+                CurateProgressPercent = (int)(j.Progress * 100);
+                CurateStatus = j.Status.Equals("running", StringComparison.OrdinalIgnoreCase)
+                    ? $"{mode}中 {CurateProgressPercent}%（{j.Processed}/{j.Total}）…"
+                    : $"任务状态: {j.Status}";
+            });
+
+            // 优先走 job 进度 SSE 实时流（AUD-017 接通 /v1/jobs/{id}/events）；
+            // 服务内部在 SSE 不可用/中断时已自动回退到轮询，此处无需感知。
+            var final = await _apiService.WatchJobUntilDoneAsync(job.JobId, progress, ct: _curateCts.Token);
+            pollingCompleted = true;
+            CurateProgressPercent = (int)(final.Progress * 100);
+
+            if (final.Status.Equals("failed", StringComparison.OrdinalIgnoreCase))
+            {
+                CurateStatus = $"AI 整理{mode}失败: {final.Error}";
+                DebugLog.Error($"AI 整理{mode}失败: {final.Error}", "Quality");
+            }
+            else if (final.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase)
+                     || final.Status.Equals("canceled", StringComparison.OrdinalIgnoreCase))
+            {
+                CurateStatus = $"AI 整理{mode}已取消";
+            }
+            else
+            {
+                // 预览成功后解锁执行按钮（执行后保持，允许再次执行）
+                _hasPreviewResult = true;
+                CurateSummary = BuildCurateSummary(final);
+                CurateStatus = dryRun
+                    ? "✅ 预览完成（只读，未写入任何数据）——确认无误后可「执行」"
+                    : "✅ AI 整理执行完成";
+            }
+            ExecuteCurateCommand.NotifyCanExecuteChanged();
+        }
+        catch (OperationCanceledException)
+        {
+            CurateStatus = $"AI 整理{mode}已取消";
+        }
+        catch (ApiException ex)
+        {
+            CurateStatus = $"API 错误：{ex.Message}";
+            DebugLog.Error($"AI 整理{mode} API 错误: code={ex.Code} message={ex.Message}", "Quality", ex);
+        }
+        catch (BackendConnectionException ex)
+        {
+            CurateStatus = $"后端不可达：{ex.Message}";
+            DebugLog.Error($"AI 整理{mode}后端不可达: {ex.Message}", "Quality", ex);
+        }
+        catch (Exception ex)
+        {
+            CurateStatus = $"错误：{ex.Message}";
+            DebugLog.Error($"AI 整理{mode}未知异常: {ex.Message}", "Quality", ex);
+        }
+        finally
+        {
+            IsCurating = false;
+            _curateCts?.Dispose();
+            _curateCts = null;
+        }
+    }
+
+    /// <summary>把 curate 任务的 report（原始 JSON）压成一行摘要：各项计数 + 错误数。</summary>
+    private static string BuildCurateSummary(JobStatus job)
+    {
+        var sb = new StringBuilder();
+        var re = job.Report;
+        if (re is null || re.Value.ValueKind != JsonValueKind.Object)
+        {
+            sb.Append("后端未返回整理报告（可能无数据可整理或动作全部跳过）。");
+            return sb.ToString();
+        }
+
+        var root = re.Value;
+        sb.Append(root.TryGetProperty("dry_run", out var dr) && dr.ValueKind == JsonValueKind.True
+            ? "只读预览 · "
+            : "已执行 · ");
+        if (root.TryGetProperty("actions", out var acts) && acts.ValueKind == JsonValueKind.Array)
+        {
+            sb.Append("动作: ").AppendJoin(", ", acts.EnumerateArray().Select(a => a.GetString())).Append(" · ");
+        }
+        sb.Append("打标签/摘要 ").Append(CountOf(root, "enriched")).Append(" 篇 · ");
+        sb.Append("归类 ").Append(CountOf(root, "categorized")).Append(" 篇 · ");
+        sb.Append("去重 ").Append(CountOf(root, "duplicates")).Append(" 组 · ");
+        sb.Append("归纳 ").Append(CountOf(root, "consolidated")).Append(" 组 · ");
+        sb.Append("跳过 ").Append(CountOf(root, "skipped")).Append(" · ");
+        sb.Append("错误 ").Append(CountOf(root, "errors"));
+        return sb.ToString();
+    }
+
+    private static int CountOf(JsonElement root, string key)
+        => root.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Array ? v.GetArrayLength() : 0;
 }
