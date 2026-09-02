@@ -25,6 +25,13 @@ public sealed record BackendConfig
     public double RagMinScore { get; init; } = 0.0;
     public string RagMode { get; init; } = "strict";
 
+    /// <summary>是否启用检索后重排（Reranker / cross-encoder 精排）。</summary>
+    public bool RerankEnabled { get; init; } = true;
+    /// <summary>重排模型名（fastembed TextRanking 支持列表中的模型）。</summary>
+    public string RerankModel { get; init; } = "Xenova/bge-reranker-v2-m3";
+    /// <summary>送入重排器的候选数上限。</summary>
+    public int RerankRecall { get; init; } = 20;
+
     /// <summary>自定义 RAG 系统提示词；null = 未配置（后端用内置默认提示词）。</summary>
     public string? RagSystemPrompt { get; init; }
 
@@ -72,6 +79,13 @@ public sealed record BackendConfigUpdate
     public int? RagTopK { get; init; }
     public double? RagMinScore { get; init; }
     public string? RagMode { get; init; }
+
+    /// <summary>是否启用检索后重排；null = 不修改。</summary>
+    public bool? RerankEnabled { get; init; }
+    /// <summary>重排模型名；null = 不修改。</summary>
+    public string? RerankModel { get; init; }
+    /// <summary>重排候选数上限；null = 不修改。</summary>
+    public int? RerankRecall { get; init; }
 
     /// <summary>自定义 RAG 系统提示词；空字符串=显式清除（回到内置默认），null=不修改。</summary>
     public string? RagSystemPrompt { get; init; }

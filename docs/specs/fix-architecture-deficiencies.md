@@ -78,9 +78,122 @@ DocMind 经过架构审查，发现前后端模型不一致、API 规范与实�
 
 - **测试原则**：只测试外部行为（API 响应字段、CLI 输出），不测试实现细节
 - **后端测试**：在现有 pytest 框架下，为 `ingest_text` 去重、集合级联删除添加用例
-- **前端测试**：WPF 无自动化测试框架，通过手动验证：导入页勾选 force → 确认后端收到 force=true → 文件被重新摄入
+- **前端测试**：⚠️ 原文「WPF 无自动化测试框架」已过时 —— 现有 `DocMind.Tests` 共 **200 项** xUnit 测试（`FakeDoc2kbApiService` 为 Fake 模式），前端模型/DTO 变更应补单测，不再只靠手动验证
 - **回归验证**：修改后运行 `pytest` 确保现有测试不破坏；手动验证质量页、导入页、设置页功能正常
 - **先例**：项目已有 `tests/test_pipeline.py`、`tests/test_http.py` 等测试文件，新测试遵循相同模式
+
+## Success Metrics
+
+> 本节补于 2026-08-31。原 Testing Decisions 只有「回归门」，缺少可判定的验收标准，故补本节。
+> 基线数字以实测为准（原文 129 / 47 已过期，见 AUD-020 / D-03）。
+> 可执行验证：`scripts/smoke.ps1`；完整卡点矩阵：`docs/verification/core-chain-and-smoke.md`。
+
+### 回归门（每一批改动都必须满足，缺一不可）
+
+| 层 | 命令 | 通过判据 |
+|---|---|---|
+| 后端 | `python -m pytest tests/ -q` | **442 通过 / 0 失败 / 1 跳过**；跳过项须写明依赖原因（SSE 无限流 TestClient 挂起） |
+| 前端 | `dotnet test DocMind.Tests -v q` | **250 通过 / 0 失败** |
+| 接口 | `scripts/smoke.ps1` | **FAIL = 0**（WARN / SKIP / KNOWN 不阻塞） |
+
+> 回归门只证明「没改坏」。每条 story 还须满足下表专属验收条件，才算「做对了」。
+
+### 🔴 实施前必须先核实的阻塞前提
+
+**P1-4（质量报告补齐 6 字段）前提不成立**：`avg_chunk_tokens`、`empty_chunks`、`oversized_chunks`、`duplicate_ratio`、`coverage_by_heading_level` 在 `src/` 全库检索 **0 命中**；`QualityResponse`（`server/http.py:797-802`）实际只有 `collection` / `total_documents` / `total_chunks` / `format_distribution` / `warnings` 五个字段。
+
+因此该 story **不能按「仅前端补齐映射」实施**，须调整为先后端后端补计算，再对齐两端：
+
+| 步骤 | 完成判据 |
+|---|---|
+| ① 后端补字段 | `GET /v1/quality?collection=X` 响应含这 5 个统计字段，数值由真实库内数据算出（非硬编码） |
+| ② MCP 对齐 | MCP `quality_check` 与 HTTP `/v1/quality` 的**字段集合完全一致**（含「无告警」语义：MCP 会追加「未发现质量问题」，HTTP 不追加 —— 二者取一，`mcp.py:357-358`） |
+| ③ 前端补映射 | `DocMind/Models/QualityReport.cs` 补齐字段，质量看板能展示 |
+
+### 各 story 验收条件（逐条可判定）
+
+**P0 — 立即修复**
+
+| # | story | 验收条件 | 验证方式 |
+|---|---|---|---|
+| 1 | 删除 `pipeline.py` 重复 `ingest_text` | 全库 `def ingest_text` 定义数 == 1（`core/pipeline.py:155`）；`POST /v1/ingest/text` 仍返回 `chunk_count>0` | `grep -c "def ingest_text" src/doc2mind/core/pipeline.py` + 冒烟 2.04 |
+| 2 | 导入页「强制重新摄入」 | `IngestRequest.cs` 含 `Force`；导入页勾选后抓包/日志确认请求体 `force=true`；对已存在文件触发**真实重摄入**（`ingested` 非空而非 `skipped`） | 手动 + 单测断言请求体 |
+| 3 | `docs/api.md` 字段名对齐 | `IngestResult` 用 `source`（非 `document`）、`chunk_count`（非 `chunks_added`）；与 `IngestResultDTO`（`http.py:733`）逐字段比对无差异 | 人工 diff |
+
+**P1 — 前后端对齐**
+
+| # | story | 验收条件 | 验证方式 |
+|---|---|---|---|
+| 4 | 质量报告完整展示 | 见上文「阻塞前提」三步 | 接口 + 前端走查 |
+| 5 | `HealthStatus` 移除 `Timestamp` | 前端 DTO 字段集合 ⊆ `HealthResponse`（`http.py:563`）；反序列化后无未映射残留 | 单测 + 冒烟 1.02 |
+| 6 | `ConvertRequest` 移除 `Collection` | `POST /v1/convert` 请求体不再带 `collection`；转换功能不受影响 | 冒烟 6.01 |
+| 7 | `StatsResponse.collections` 类型注释 | `DocMind/Models/StatsResponse.cs` 中该属性有注释说明 `dict[str, list[int]]`（`[doc_count, chunk_count, total_bytes]`） | 代码走查 |
+
+**P2 — 配置与体验**
+
+| # | story | 验收条件 | 验证方式 |
+|---|---|---|---|
+| 8 | `RequestTimeoutSec` 默认 60 | `AppSettings.cs` 默认值 == 60；未手动改过时读回 60 | 单测断言默认值 |
+| 9 | 配置边界注释 | `AppSettings.cs` 有「仅前端配置」与「推送后端的共享配置」两段分隔注释 | 代码走查 |
+| 10 | MCP `quality_check` 对齐 | 与 HTTP `/v1/quality` 字段集合一致（含 warnings 语义） | 见阻塞前提 ② |
+
+**P3 — 健壮性**
+
+| # | story | 验收条件 | 验证方式 |
+|---|---|---|---|
+| 11 | 空集合自动清理 | 删除集合内最后一个文档后，`GET /v1/stats` 的 `collections` 不含该集合 | 新增 pytest + `GET /v1/stats` 前后对比 |
+| 12 | `list` / `list_docs` 分页 | 支持 `limit` / `offset`，文档数 > 上限时不静默截断（返回 `total` 供前端判断） | CLI + MCP 各验一次 |
+| 13 | api.md `Stats.collections` 类型 | 文档描述改为 `dict[str, list[int]]`（当前写成嵌套对象，与 `StatsResponse`（`http.py:791`）不符） | 文档 diff |
+| 14/15 | 搜索 `highlight` / `filter` | 后端已支持 `highlight` 与 `filter` 参数；`POST /v1/search` 传 `highlight=true` 时结果含高亮片段 | 新增 pytest（当前属新功能，见 Out of Scope） |
+
+### 完成定义（DoD）
+
+- [ ] 回归门三件套全绿
+- [ ] 上表每条 story 的验收条件逐条核对通过
+- [ ] 阻塞前提（质量 6 字段）已按三步实施或明确降级为「前端只展示后端现有 5 字段」
+- [ ] `docs/api.md` 与实现逐字段比对无差异
+- [ ] 按 `AGENTS.md` 约定，把本次踩到的契约漂移沉淀进知识库
+
+## Success Metrics
+
+> 2026-08-31 补。此前本节缺失，导致「测试全绿」被误当成验收标准 —— 它只能证明没改坏，不能证明做对了。
+> 回归门数字已按实测更新（原 129 / 47 已过期，见 AUD-020；实际 **442 通过 / 1 跳过** 与 **250 通过**）。
+
+### 回归门（每个优先级批次都必须过，缺一不可）
+
+| 门 | 命令 | 通过判定 |
+|---|---|---|
+| Python 后端 | `python -m pytest tests/ -q` | 442 通过 / 0 失败 / 1 跳过（跳过项须有依赖缺失原因：SSE 无限流） |
+| WPF 客户端 | `dotnet test DocMind.Tests -v q` | 250 通过 / 0 失败 |
+| API 冒烟 | `scripts/smoke.ps1` | 0 FAIL（KNOWN 不计，见下） |
+
+### 可判定验收条件（逐条对应 User Stories）
+
+| Story | 验收条件（写成断言） | 验证方式 |
+|---|---|---|
+| 1 · 移除重复 `ingest_text` | `grep -c "^def ingest_text" src/doc2mind/core/pipeline.py` == **1**；`ingest_text` 行为用例全绿 | 命令 + pytest |
+| 2 · 导入页「强制重新摄入」 | 勾选 force 后，后端 `POST /v1/ingest` 收到 `force=true` 且同一文件被重新摄入（`ingested[0].status="ingested"`）；不勾选时重复摄入被跳过（`skipped>=1` 或 409） | 手动 + `smoke.ps1` 项 2.02 / 2.03 |
+| 3 · api.md 字段对齐 | api.md 的 `IngestResult` 字段名与 `IngestResultDTO`（`http.py:733`）逐字段一致；**并修掉 D-09~D-13 共 5 处新发现漂移** | 逐字段核对 |
+| 4 · 质量报告 6 字段 | ⚠️ **前置门**：先确认后端是否返回这 6 个字段。**2026-08-31 实测后端不存在**（见 `docs/verification/core-chain-and-smoke.md` D-08）。若确认要补，验收 = `GET /v1/quality` 返回全部 6 字段且数值与库内真实统计一致；若决定不改后端，则本 story 应从 spec 移除或改写 | 先决策，再实施 |
+| 5 · 移除 `Timestamp` | `DocMind/Models/HealthStatus.cs` 中 `Timestamp` 命中数 == **0** | grep |
+| 6 · 移除 `Collection` | `DocMind/Models/ConvertRequest.cs` 中 `Collection` 命中数 == **0** | grep |
+| 7 · 类型链条注释 | `StatsResponse.collections` 的 `dict[str, list[int]]` 语义（tuple→list→int[]）在前端模型处有注释 | 人工核对 |
+| 8 · 超时默认 60 | `AppSettings.RequestTimeoutSec` 默认值 == **60** | 单测或 grep |
+| 9 · 配置边界说明 | `AppSettings.cs` 中存在「仅前端配置 / 推送到后端的共享配置」分隔注释 | 人工核对 |
+| 10 · MCP 与 HTTP 对齐 | `mcp.py:quality_check` 与 `GET /v1/quality` 对**同一份数据**返回相同的 `warnings`（当前 MCP 会额外追加「未发现质量问题」，见 D-14） | 对比两个出口的输出 |
+| 11 · 空集合清理 | 删除集合内最后一个文档后，`GET /v1/stats` 的 `collections` 中不再出现该集合 | pytest |
+| 12 / 13 · 分页与类型描述 | 见「已知限制」：仅记录，不在本 spec 内验收 | — |
+
+### 状态语义（与 `scripts/smoke.ps1` 一致）
+
+`PASS` 通过 ｜ `FAIL` 回归（阻塞）｜ `WARN` 需人工确认 ｜ `SKIP` 前置缺失 ｜ `KNOWN` 已登记缺陷复现（不阻塞退出码）
+
+### Definition of Done
+
+1. 上表每条 story 的验收条件均可被复现（命令或断言，不是主观描述）
+2. 三条回归门全绿
+3. `scripts/smoke.ps1` 无新增 FAIL
+4. 文档与实现同步更新（api.md 的漂移一并修掉，避免二次返工）
 
 ## Out of Scope
 

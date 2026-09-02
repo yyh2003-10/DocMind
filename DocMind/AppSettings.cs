@@ -17,7 +17,7 @@ public class AppSettings
     /// <summary>拉起后端用的命令（绝对路径优先；空表示自动探测 doc2mind / python -m doc2mind）。</summary>
     public string? BackendCommand { get; set; }
 
-    // ===== 后端模型/分块参数（注入 DOC2MIND_* 环境变量，重启后端生效） =====
+    // ===== 推送到后端的共享配置（注入 DOC2MIND_* 环境变量，重启后端生效） =====
     /// <summary>嵌入模型名（对应后端 DOC2MIND_EMBED_MODEL）。</summary>
     public string EmbedModel { get; set; } = "BAAI/bge-small-zh-v1.5";
     /// <summary>本地模型目录（对应后端 DOC2MIND_EMBED_MODEL_PATH；空 = 用 EmbedModel 联网下载）。</summary>
@@ -34,7 +34,7 @@ public class AppSettings
     /// <summary>HuggingFace 镜像端点（注入 HF_ENDPOINT 环境变量；空 = 用内置默认值 hf-mirror.com）。</summary>
     public string? HfEndpoint { get; set; }
 
-    // ===== LLM / RAG 对话（启动时注入 DOC2MIND_* 环境变量） =====
+    // ===== 推送到后端的共享配置 — LLM / RAG 对话（启动时注入 DOC2MIND_* 环境变量） =====
     /// <summary>LLM 提供商标识（none | openai | ollama）。</summary>
     public string LlmProvider { get; set; } = "none";
     /// <summary>OpenAI 兼容 API Key（对应 DOC2MIND_LLM_API_KEY）。</summary>
@@ -62,6 +62,14 @@ public class AppSettings
     /// <summary>RAG 问答模式（"strict" = 严格知识库模式；"hybrid" = 混合常识增强模式，未命中本地文档时使用大模型常识解答）。</summary>
     public string RagMode { get; set; } = "hybrid";
 
+    /// <summary>是否启用检索后重排（Reranker / cross-encoder 精排），对应 DOC2MIND_RERANK_ENABLED。
+    /// 开启后用重排模型对召回候选逐对打分重排，显著提升知识检索相关性；模型不可用时自动降级为原始 RRF 排序。</summary>
+    public bool RerankEnabled { get; set; } = true;
+    /// <summary>重排模型名（fastembed TextRanking 支持列表中的模型），对应 DOC2MIND_RERANK_MODEL。默认多语言模型，首次使用需联网下载约 1.3GB。</summary>
+    public string RerankModel { get; set; } = "Xenova/bge-reranker-v2-m3";
+    /// <summary>送入重排器的候选数上限（对应 DOC2MIND_RERANK_RECALL），默认 20。</summary>
+    public int RerankRecall { get; set; } = 20;
+
     /// <summary>AI 提供商档案列表：可复用命名配置（提供商/BaseURL/Key/模型/温度等），
     /// 设置页与对话页一键应用与切换。ApiKey 落盘时经 DPAPI 加密（与 LlmApiKey 同机制）。</summary>
     public List<Models.LlmProfile> LlmProfiles { get; set; } = new();
@@ -69,16 +77,41 @@ public class AppSettings
     /// <summary>最后应用的档案 Id（仅用于 UI 高亮/默认选中，不自动改配置）。</summary>
     public string? ActiveProfileId { get; set; }
 
+    /// <summary>对话页最后选择的模型名（持久化，重启/新建对话后还原）。
+    /// null = 选中「默认」项（用设置页配置的默认模型）；非空 = 对话页点选的模型名
+    /// （配合 LastChatProfileId 定位到具体服务商条目）。</summary>
+    public string? LastChatModel { get; set; }
+
+    /// <summary>对话页最后选择模型所属的服务商档案 Id；null = 默认提供商分组
+    /// （裸模型名，用设置页全局配置的 provider/key/地址）。</summary>
+    public string? LastChatProfileId { get; set; }
+
     /// <summary>对话页「🌐 联网搜索」开关是否开启（持久化，重启后保持勾选状态）。</summary>
     public bool EnableWebSearch { get; set; } = false;
 
-    // ===== 文件系统监控 =====
+    /// <summary>对话页勾选的知识库集合名（持久化，重启后恢复勾选）。
+    /// 空 = 未记录过，首次加载维持原行为（默认勾选 default）。</summary>
+    public List<string> LastChatCollections { get; set; } = new();
+
+    /// <summary>搜索页历史搜索词列表（持久化，重启后保留；最新在前，上限 20 条）。</summary>
+    public List<string> SearchHistory { get; set; } = new();
+
+    /// <summary>联网来源「官方域名」徽章的权威域名表。静态共享：SourceRef 的徽章是
+    /// 反序列化后计算的纯展示属性、无 DI 上下文，故挂在 AppSettings 类级别；
+    /// 默认仅台达官网，可按需在启动时扩展。</summary>
+    public static HashSet<string> AuthoritativeWebDomains { get; } = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "deltaww.com",
+        "delta.com",
+    };
+
+    // ===== 仅前端配置（WPF 客户端独有，不推送后端） =====
     /// <summary>监控目录列表（对应 DOC2MIND_WATCH_PATHS，逗号分隔注入）。</summary>
     public List<string> WatchPaths { get; set; } = new();
     /// <summary>监控防抖秒数（对应 DOC2MIND_WATCH_DEBOUNCE_SECONDS）。</summary>
     public double WatchDebounceSeconds { get; set; } = 5.0;
 
-    // ===== 启动选项 =====
+    // ===== 仅前端配置 — 启动选项 =====
     /// <summary>启动 WPF 时自动拉起后端子进程（false = 仅轮询外部已运行的后端）。</summary>
     public bool AutoStartBackend { get; set; } = true;
     /// <summary>WPF 退出时联动终止后端子进程（false = 退出后保留后端继续运行）。</summary>

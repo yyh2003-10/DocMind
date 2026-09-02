@@ -45,7 +45,7 @@
                                Foreground="{DynamicResource TextPrimaryBrush}"
                                VerticalAlignment="Center"
                                Margin="0,0,20,0" />
-                    <TextBlock Text="集合过滤:"
+                    <TextBlock Text="分组过滤:"
                                VerticalAlignment="Center"
                                Foreground="{DynamicResource TextSecondaryBrush}"
                                FontSize="13"
@@ -54,7 +54,21 @@
                               ItemsSource="{Binding Collections}"
                               SelectedItem="{Binding Collection}"
                               Height="32"
-                              VerticalContentAlignment="Center" />
+                              VerticalContentAlignment="Center"
+                              Margin="0,0,12,0" />
+                    <TextBlock Text="实体:"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               FontSize="13"
+                               Margin="0,0,8,0" />
+                    <ComboBox Width="170"
+                              ItemsSource="{Binding EntityQuickJumpNames}"
+                              SelectedItem="{Binding SelectedEntityJumpName}"
+                              Height="32"
+                              VerticalContentAlignment="Center"
+                              IsTextSearchEnabled="True"
+                              TextSearch.TextPath=""
+                              ToolTip="输入实体名快速聚焦图谱节点并打开实体档案" />
                 </StackPanel>
 
                 <!-- 操作按钮组 -->
@@ -323,7 +337,7 @@
                                                 CornerRadius="4"
                                                 Padding="5,1"
                                                 Margin="0,0,6,4">
-                                            <TextBlock Text="{Binding SelectedNode.Collection, StringFormat='集合: {0}'}"
+                                            <TextBlock Text="{Binding SelectedNode.Collection, StringFormat='分组: {0}'}"
                                                        FontSize="11"
                                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                                         </Border>
@@ -647,12 +661,14 @@
                                                                             </StackPanel>
 
                                                                             <!-- 右侧折叠箭头指示 -->
-                                                                            <TextBlock Text="{Binding ThinkingIconText}"
-                                                                                       DockPanel.Dock="Right"
-                                                                                       HorizontalAlignment="Right"
-                                                                                       FontSize="11"
+                                                                            <TextBlock Text="▾" FontSize="11" DockPanel.Dock="Right"
                                                                                        Foreground="{DynamicResource TextTertiaryBrush}"
-                                                                                       VerticalAlignment="Center"/>
+                                                                                       HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                                                       Visibility="{Binding IsThinkingExpanded, Converter={StaticResource BoolToVisConverter}}"/>
+                                                                            <TextBlock Text="▸" FontSize="11" DockPanel.Dock="Right"
+                                                                                       Foreground="{DynamicResource TextTertiaryBrush}"
+                                                                                       HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                                                       Visibility="{Binding IsThinkingExpanded, Converter={StaticResource BoolInvertConverter}}"/>
                                                                         </DockPanel>
                                                                     </Button>
 
@@ -1109,7 +1125,7 @@
                                                 <ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
                                             <StackPanel Grid.Column="0">
-                                                <TextBlock Text="目标集合" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,4"/>
+                                                <TextBlock Text="目标分组" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,4"/>
                                                 <TextBox Text="{Binding IngestDialogCollection, UpdateSourceTrigger=PropertyChanged}"
                                                          FontSize="11" Padding="6,4"/>
                                             </StackPanel>

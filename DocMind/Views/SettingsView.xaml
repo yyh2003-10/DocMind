@@ -190,6 +190,54 @@
                         </DockPanel>
                     </Border>
 
+                    <!-- ═══════════════════════════════════════════════════════
+                         批次 2：当前生效配置状态卡
+                         ═══════════════════════════════════════════════════════ -->
+                    <Border Style="{StaticResource CardStyle}"
+                            Margin="0,0,0,18"
+                            Visibility="{Binding IsBackendConfigLoaded, Converter={StaticResource BoolToVis}}">
+                        <StackPanel>
+                            <TextBlock Text="📊 当前生效配置（来自后端）" FontWeight="SemiBold" FontSize="13" Margin="0,0,0,10"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <!-- 嵌入模型 -->
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="嵌入模型：" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,0,6"/>
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding ActiveBackendEmbedModel, FallbackValue='—'}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,0,6"/>
+                                <!-- API Key 状态 -->
+                                <TextBlock Grid.Row="0" Grid.Column="2" Text="API Key：" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="16,0,0,6"/>
+                                <TextBlock Grid.Row="0" Grid.Column="3" FontSize="12" VerticalAlignment="Center" Margin="0,0,0,6">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Text" Value="未配置"/>
+                                            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HasSavedApiKey}" Value="True">
+                                                    <Setter Property="Text" Value="已配置 ✓"/>
+                                                    <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                                <!-- LLM 提供商 -->
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="LLM 提供商：" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding ActiveBackendLlmProvider, FallbackValue='—'}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                <!-- LLM 模型 -->
+                                <TextBlock Grid.Row="1" Grid.Column="2" Text="LLM 模型：" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                                <TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding ActiveBackendLlmModel, FallbackValue='—'}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
                     <!-- =========================================================
                          面板 1: 🤖 AI 模型与对话
                          ========================================================= -->
@@ -200,6 +248,10 @@
                             <TextBlock Text="🤖 AI 模型与对话配置" FontSize="18" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
                             <TextBlock Text="支持开箱即用的本地 LM Studio / Ollama 感知绑定，以及 DeepSeek / 阿里通义 / 智谱等主流云端服务商。"
                                        FontSize="12" Foreground="{StaticResource TextTertiaryBrush}" Margin="0,4,0,0"/>
+                            <!-- 批次 2：分区生效标签 -->
+                            <Border Background="{DynamicResource SuccessLightBrush}" CornerRadius="4" Padding="6,3" Margin="0,6,0,0" HorizontalAlignment="Left">
+                                <TextBlock Text="✅ 模型/Key 参数保存后立即生效" FontSize="11" Foreground="{StaticResource SuccessBrush}"/>
+                            </Border>
                         </StackPanel>
 
                         <!-- 🌟 本地 AI 环境智能感知卡片 -->
@@ -341,7 +393,7 @@
                                                         IsEnabled="{Binding HasSelectedProfile}"
                                                         Style="{StaticResource SecondaryButtonStyle}"
                                                         Padding="10,4" Margin="0,0,6,4" FontSize="11"
-                                                        ToolTip="把选中的自定义服务商设为默认（对话页「默认」项使用它）"/>
+                                                        ToolTip="把选中的自定义服务商标记为默认（仅设置页高亮；对话页「默认」项用设置页当前模型配置，如需对话页默认使用该服务商请点「应用该服务商」）"/>
                                                 <Button Command="{Binding ToggleProviderEnabledCommand}"
                                                         IsEnabled="{Binding HasSelectedProfile}"
                                                         Padding="10,4" Margin="0,0,6,4" FontSize="11"
@@ -418,8 +470,25 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <!-- API Key -->
-                                <TextBlock Text="API Key 密钥" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                                <!-- API Key（批次 2：含状态徽章） -->
+                                <DockPanel Margin="0,0,0,6">
+                                    <TextBlock Text="API Key 密钥" Style="{StaticResource CaptionText}" DockPanel.Dock="Left"/>
+                                    <!-- 状态徽章 -->
+                                    <TextBlock DockPanel.Dock="Right" FontSize="11" VerticalAlignment="Center">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="● 未配置"/>
+                                                <Setter Property="Foreground" Value="{StaticResource TextTertiaryBrush}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding HasSavedApiKey}" Value="True">
+                                                        <Setter Property="Text" Value="● 已配置 ✓"/>
+                                                        <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </DockPanel>
                                 <Grid Margin="0,0,0,12">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -446,6 +515,25 @@
                                             Padding="12,4"
                                             ToolTip="用当前输入值测试（无需先保存）：先测后端可达，再向所选提供商发一条最小消息验证 Key 与地址"/>
                                 </Grid>
+
+                                <!-- 批次 2：API Key 清除确认对话框 -->
+                                <Border Background="{DynamicResource WarningLightBrush}" BorderBrush="{DynamicResource WarningBrush}"
+                                        BorderThickness="1" CornerRadius="8" Padding="14,10" Margin="0,0,0,12"
+                                        Visibility="{Binding ShowApiKeyClearConfirm, Converter={StaticResource BoolToVis}}">
+                                    <DockPanel LastChildFill="True">
+                                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Button Content="确认清除"
+                                                    Command="{Binding ConfirmClearApiKeyCommand}"
+                                                    Style="{StaticResource DangerButtonStyle}"
+                                                    Padding="12,4" Margin="8,0,0,0"/>
+                                            <Button Content="取消"
+                                                    Command="{Binding CancelClearApiKeyCommand}"
+                                                    Style="{StaticResource SecondaryButtonStyle}"
+                                                    Padding="12,4" Margin="8,0,0,0"/>
+                                        </StackPanel>
+                                        <TextBlock Text="⚠️ 清除 API Key 后，保存时会同时删除本地和后端的 Key。" FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center"/>
+                                    </DockPanel>
+                                </Border>
 
                                 <!-- GitHub Token（可选）：联网搜索 GitHub 通道按用户认证 -->
                                 <TextBlock Text="GitHub Token（可选，联网搜索 GitHub 仓库/源码时用）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
@@ -615,6 +703,10 @@
                             <TextBlock Text="📚 知识库与检索调优" FontSize="18" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
                             <TextBlock Text="管理本地嵌入向量模型、语义切片策略、召回精度（Top-K）与目录自动监控。"
                                        FontSize="12" Foreground="{StaticResource TextTertiaryBrush}" Margin="0,4,0,0"/>
+                            <!-- 批次 2：分区生效标签 -->
+                            <Border Background="{DynamicResource SurfaceBrush}" CornerRadius="4" Padding="6,3" Margin="0,6,0,0" HorizontalAlignment="Left">
+                                <TextBlock Text="🔄 保存后需重启后端生效" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
+                            </Border>
                         </StackPanel>
 
                         <!-- 嵌入模型卡片 -->
@@ -650,6 +742,30 @@
                                            Foreground="{StaticResource TextTertiaryBrush}">
                                     留空 = 使用上方下拉的推荐模型（首次自动下载，之后用本地缓存）；填本地目录 = 完全离线使用自己的模型。
                                 </TextBlock>
+
+                                <!-- 手动下载嵌入模型（离线包/补缓存场景，POST /v1/system/download-model SSE） -->
+                                <DockPanel LastChildFill="False" Margin="0,12,0,0">
+                                    <Button DockPanel.Dock="Right"
+                                            Content="⬇️ 下载嵌入模型"
+                                            Command="{Binding DownloadModelCommand}"
+                                            IsEnabled="{Binding IsDownloadingModel, Converter={StaticResource BoolInvertConverter}}"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Padding="12,5" FontSize="11"
+                                            ToolTip="手动下载当前选择的嵌入模型到本地缓存（默认首次使用自动下载；此按钮用于断网预下载/修复缓存场景）"/>
+                                    <TextBlock Text="{Binding ModelDownloadStatusDisplay}"
+                                               FontSize="11"
+                                               VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"
+                                               Margin="0,0,10,0"
+                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                </DockPanel>
+                                <ProgressBar Height="5"
+                                             Maximum="1"
+                                             Value="{Binding ModelDownloadProgress}"
+                                             Foreground="{DynamicResource PrimaryBrush}"
+                                             Margin="0,6,0,0"
+                                             ToolTip="{Binding ModelDownloadProgressText}"
+                                             Visibility="{Binding IsDownloadingModel, Converter={StaticResource BoolToVis}}"/>
                             </StackPanel>
                         </Border>
 
@@ -678,6 +794,42 @@
                                             </StackPanel>
                                         </ComboBoxItem>
                                     </ComboBox>
+                                </StackPanel>
+
+                                <!-- 检索后重排（Reranker）开关与参数 -->
+                                <StackPanel Margin="0,0,0,12">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="检索后重排精排（Reranker）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                            <TextBlock Style="{StaticResource SmallText}" Foreground="{StaticResource TextTertiaryBrush}" TextWrapping="Wrap">
+                                                开启后用 cross-encoder 对召回候选逐对打分重排，显著提升回答相关性；模型不可用时自动降级为原始排序。
+                                            </TextBlock>
+                                        </StackPanel>
+                                        <CheckBox Grid.Column="1" IsChecked="{Binding RerankEnabled}" VerticalAlignment="Center"
+                                                  ToolTip="启用检索后重排精排（提升相关性）"/>
+                                    </Grid>
+
+                                    <Grid Margin="0,10,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="20"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="重排模型名" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                                            <TextBox Text="{Binding RerankModel, UpdateSourceTrigger=PropertyChanged}"
+                                                     ToolTip="fastembed TextRanking 支持的模型；默认多语言模型，首次使用需联网下载约 1.3GB"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="重排候选数上限" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                                            <TextBox Text="{Binding RerankRecall, UpdateSourceTrigger=PropertyChanged}"
+                                                     ToolTip="送入重排器的候选数上限（默认 20）；越大越准但越慢"/>
+                                        </StackPanel>
+                                    </Grid>
                                 </StackPanel>
 
                                 <Grid Margin="0,0,0,12">
@@ -1130,6 +1282,52 @@
                                         </StackPanel>
                                     </Border>
                                 </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 运行依赖就绪状态 (GET /v1/system/dependencies) -->
+                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
+                            <StackPanel>
+                                <DockPanel LastChildFill="False" Margin="0,0,0,10">
+                                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
+                                        <TextBlock Text="🧩" Style="{StaticResource SectionIcon}"/>
+                                        <TextBlock Text="运行依赖就绪状态" Style="{StaticResource SubtitleText}" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                    <Button DockPanel.Dock="Right" Content="🔄 刷新"
+                                            Command="{Binding RefreshDependenciesCommand}"
+                                            IsEnabled="{Binding IsDependenciesLoading, Converter={StaticResource BoolInvertConverter}}"
+                                            Style="{StaticResource TextButtonStyle}" FontSize="11" Padding="6,2"
+                                            HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </DockPanel>
+
+                                <TextBlock Text="⏳ 正在检测运行依赖就绪状态..."
+                                           Visibility="{Binding IsDependenciesLoading, Converter={StaticResource BoolToVis}}"
+                                           Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+
+                                <ItemsControl ItemsSource="{Binding DependencyCheckSummary}"
+                                              Visibility="{Binding HasDependencies, Converter={StaticResource BoolToVis}}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <DockPanel LastChildFill="False" Margin="0,4">
+                                                <TextBlock DockPanel.Dock="Right" Text="{Binding Detail}"
+                                                           FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"
+                                                           TextWrapping="Wrap" HorizontalAlignment="Right" MaxWidth="340"/>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="✓ " FontSize="12" FontWeight="Bold"
+                                                               Foreground="{StaticResource SuccessBrush}" Margin="0,0,6,0"
+                                                               Visibility="{Binding Ok, Converter={StaticResource BoolToVis}}"/>
+                                                    <TextBlock Text="✗ " FontSize="12" FontWeight="Bold"
+                                                               Foreground="{StaticResource WarningBrush}" Margin="0,0,6,0"
+                                                               Visibility="{Binding Ok, Converter={StaticResource InvertBoolVis}}"/>
+                                                    <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="SemiBold"/>
+                                                </StackPanel>
+                                            </DockPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <TextBlock Text="💡 详细介绍各依赖的安装与状态含义，可在上方「GPU 硬件加速」卡片或下方「系统环境自检」中查看。"
+                                           FontSize="11" Foreground="{StaticResource TextTertiaryBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                             </StackPanel>
                         </Border>
 

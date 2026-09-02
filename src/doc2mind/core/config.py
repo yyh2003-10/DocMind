@@ -101,18 +101,45 @@ class Settings:
 
     # RAG 检索上下文参数
     rag_top_k: int = 5
+    # 对话检索命中的相关性下限：按每条命中的 max(vector_score, bm25_score) 分量纲
+    # 原始分（0-1）过滤。注意与 POST /v1/search 的请求参数 min_score 不同——后者
+    # 过滤的是 RRF 融合分（约 0.016~0.033 区间），两者量纲不同，不可混用。
     rag_min_score: float = 0.0
     # RAG 问答模式："strict"（严格知识库模式，未命中直接拒绝）或 "hybrid"（混合增强模式，未命中本地文档时使用大模型常识回答）
     rag_mode: str = "strict"
+
+    # --- 检索后重排（Reranker / cross-encoder）---
+    # 是否启用重排精排：召回（BM25+向量+RRF）后，用 cross-encoder 对候选逐对打分重排，
+    # 显著提升相关性（客服/问答场景最有效）。模型不可用（未装 fastembed / 下载失败）
+    # 时自动降级为原始 RRF 排序，绝不阻断检索。
+    rerank_enabled: bool = True
+    # 重排模型名（须为 fastembed TextRanking 支持列表中的模型）。
+    # 默认多语言模型，中英混合检索最佳；首次使用需联网下载约 1.3GB。
+    rerank_model: str = "Xenova/bge-reranker-v2-m3"
+    # 送入重排器的候选数上限（从 RRF 结果截取最靠前若干条），
+    # 越大越准但越慢；20 对默认 top_k=5 已绰绰有余。
+    rerank_recall: int = 20
 
     # 自定义 RAG 系统提示词（人设/回答风格）；None/空 = 用内置默认提示词。
     # 环境变量 DOC2MIND_RAG_SYSTEM_PROMPT 可覆盖。
     rag_system_prompt: str | None = None
 
     # 多轮对话历史 token 预算：从最新消息向前保留,直到累计 token 超过此值。
-    # 0 = 不按 token 截断(仍受 _MAX_HISTORY=20 条上限保护)。
+    # 0 = 不按 token 截断(仍受历史上限条数保护)。
     # 环境变量 DOC2MIND_RAG_MAX_HISTORY_TOKENS 可覆盖。
     rag_max_history_tokens: int = 4096
+
+    # 多轮对话历史上限（条）：仅保留最近 N 条 user/assistant 消息,防止内存与上下文无限增长。
+    # 0/负数 = 用内置默认 20；正数下限 2（至少保留一轮问答）。
+    # 环境变量 DOC2MIND_RAG_MAX_HISTORY_MESSAGES 可覆盖（旧名
+    # DOC2MIND_RAG_MAX_HISTORY_TURNS 兼容读取，语义同为消息条数）。
+    rag_max_history_messages: int = 20
+
+    # 对话附件允许目录（可选白名单）：非空时，对话请求携带的附件路径必须位于
+    # 其中一个目录下（逗号分隔；环境变量 DOC2MIND_ATTACHMENT_ALLOWED_DIRS 可覆盖）。
+    # 空列表 = 不限制目录（仍受扩展名白名单约束：仅 loader 支持的文档/代码/图片
+    # 与纯文本类型可读）。
+    attachment_allowed_dirs: list[str] = field(default_factory=list)
 
     # LLM 调用超时（秒），0 = 使用默认值 120s
     llm_timeout: float = 0.0
@@ -180,6 +207,20 @@ class Settings:
                     kwargs[f.name] = raw
             except (ValueError, TypeError):
                 continue
+        # 兼容旧环境变量名：DOC2MIND_RAG_MAX_HISTORY_TURNS（语义一直是消息条数，
+        # AUD-011 改名 DOC2MIND_RAG_MAX_HISTORY_MESSAGES）
+        if (
+            os.environ.get("DOC2MIND_RAG_MAX_HISTORY_MESSAGES") is None
+            and (legacy := os.environ.get("DOC2MIND_RAG_MAX_HISTORY_TURNS")) is not None
+        ):
+            logger.warning(
+                "环境变量 DOC2MIND_RAG_MAX_HISTORY_TURNS 已改名为 "
+                "DOC2MIND_RAG_MAX_HISTORY_MESSAGES（语义同为消息条数），本次按新名生效"
+            )
+            try:
+                kwargs["rag_max_history_messages"] = int(legacy)
+            except (ValueError, TypeError):
+                pass
         s = cls(**kwargs)  # type: ignore[arg-type]
 
         # embed_dim 与 embed_model 对齐：catalog 已收录的模型直接查维度，
@@ -223,8 +264,13 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "rag_top_k",
     "rag_min_score",
     "rag_mode",
+    "rerank_enabled",
+    "rerank_model",
+    "rerank_recall",
     "rag_system_prompt",
     "rag_max_history_tokens",
+    "rag_max_history_messages",
+    "attachment_allowed_dirs",
     "llm_timeout",
     # AI 自动整理（curate）
     "auto_curate_on_ingest",
@@ -238,8 +284,10 @@ _PERSIST_FIELDS: tuple[str, ...] = (
 
 # 敏感字段：不写入 config.toml（API Key 明文落盘有泄漏风险）。
 # 运行时 key 由 WPF 前端通过环境变量 / POST /v1/config 注入；
-# 手动编辑 config.toml 写入的 llm_api_key 仍可被读取（向后兼容 CLI 用户）。
-_SENSITIVE_FIELDS: frozenset[str] = frozenset({"llm_api_key"})
+# 历史版本允许手写 config.toml 的 llm_api_key 生效；为消除 API Key 明文
+# 落盘的泄漏面，1.1 起不再从 config.toml 读取任何敏感字段（llm_api_key 仅
+# 由环境变量 DOC2MIND_LLM_API_KEY / POST /v1/config 运行时注入）。
+_SENSITIVE_FIELDS: frozenset[str] = frozenset()
 
 
 def config_file_path() -> Path:
@@ -277,11 +325,18 @@ def load_config_file() -> dict[str, object]:
         with open(path, "rb") as f:
             data = tomllib.load(f)
         root = data.get("doc2mind", data) if isinstance(data, dict) else {}
-        # 读取集合 = 持久化字段 + 敏感字段（手写 toml 的 llm_api_key 仍生效，
-        # 只是 save_settings 不会把它写回去）
+        # 读取集合 = 持久化字段（密钥不再从 config.toml 读取，见 _SENSITIVE_FIELDS）
         readable = set(_PERSIST_FIELDS) | _SENSITIVE_FIELDS
+        result = {k: v for k, v in root.items() if k in readable}
+        # 兼容旧配置文件：rag_max_history_turns → rag_max_history_messages（AUD-011 改名）
+        if "rag_max_history_messages" not in result and "rag_max_history_turns" in root:
+            logger.warning(
+                "config.toml 中的 rag_max_history_turns 已改名为 "
+                "rag_max_history_messages（语义同为消息条数），本次按新名生效"
+            )
+            result["rag_max_history_messages"] = root["rag_max_history_turns"]
         _config_load_error = None
-        return {k: v for k, v in root.items() if k in readable}
+        return result
     except Exception as e:  # noqa: BLE001 — 配置损坏时回退默认值
         _config_load_error = f"config.toml 解析失败（{path}）：{e}，已临时回退默认配置"
         logger.warning("%s；请修复或删除该文件后重启", _config_load_error)

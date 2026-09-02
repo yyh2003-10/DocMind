@@ -493,7 +493,13 @@ fake ??= new FakeDoc2kbApiService();
         var vm = CreateVm(settings, fake);
 
         vm.ClearApiKeyCommand.Execute(null);
+        // 批次 2：有已配置 key 时弹确认对话框
+        Assert.True(vm.ShowApiKeyClearConfirm);
+        Assert.False(vm.IsDirty); // 确认前尚未清除
+
+        vm.ConfirmClearApiKeyCommand.Execute(null);
         Assert.Null(vm.LlmApiKey);
+        Assert.False(vm.ShowApiKeyClearConfirm);
         Assert.True(vm.IsDirty); // 清除请求本身标记 dirty，保存按钮可用
 
         await vm.SaveCommand.ExecuteAsync(null);
@@ -625,6 +631,9 @@ fake ??= new FakeDoc2kbApiService();
 
         // 此时「清除」应真正推到后端（推 "" 而不是 null = 不修改）
         vm.ClearApiKeyCommand.Execute(null);
+        // 批次 2：有已配置 key 时弹确认对话框
+        Assert.True(vm.ShowApiKeyClearConfirm);
+        vm.ConfirmClearApiKeyCommand.Execute(null);
         Assert.True(vm.IsDirty);
         await vm.SaveCommand.ExecuteAsync(null);
         Assert.Equal("", captured!.LlmApiKey);
@@ -1492,4 +1501,231 @@ fake ??= new FakeDoc2kbApiService();
         Assert.Single(vm.LlmModels);
         Assert.DoesNotContain("deepseek-chat", vm.LlmModels.Select(i => i.Name));
     }
+
+    // ======================================================================
+    // 重置为默认值（增强）
+    // ======================================================================
+
+    [Fact]
+    public void ResetToDefaults_RestoresAllFieldsTo出厂Values()
+    {
+        var settings = new AppSettings
+        {
+            LlmProvider = "anthropic",
+            LlmApiKey = "sk-custom",
+            LlmBaseUrl = "https://api.anthropic.com",
+            LlmModel = "claude-sonnet",
+            LlmTemperature = 0.1,
+            LlmMaxTokens = 16384,
+            RagTopK = 15,
+            EmbedModel = "custom-model",
+            ChunkMaxTokens = 1000,
+        };
+        var vm = CreateVm(settings);
+
+        // 确认当前值非默认
+        Assert.Equal("anthropic", vm.LlmProvider);
+        Assert.Equal(0.1, vm.LlmTemperature);
+
+        vm.ResetToDefaultsCommand.Execute(null);
+
+        // 应恢复为 new AppSettings() 的默认值
+        Assert.Equal("none", vm.LlmProvider);
+        Assert.Null(vm.LlmApiKey);
+        Assert.Null(vm.LlmBaseUrl);
+        Assert.Equal("", vm.LlmModel);
+        Assert.Equal(0.7, vm.LlmTemperature);
+        Assert.Equal(8192, vm.LlmMaxTokens);
+        Assert.Equal(5, vm.RagTopK);
+        Assert.Equal("BAAI/bge-small-zh-v1.5", vm.EmbedModel);
+        Assert.Null(vm.ChunkMaxTokens);
+        // 应标记 dirty（需手动保存才生效）
+        Assert.True(vm.IsDirty);
+    }
+
+    [Fact]
+    public void ResetToDefaults_DoesNotOverwriteAppSettingsUntilSave()
+    {
+        var settings = new AppSettings { LlmProvider = "ollama", LlmModel = "llama3.2" };
+        var vm = CreateVm(settings);
+
+        vm.ResetToDefaultsCommand.Execute(null);
+
+        // VM 字段已重置
+        Assert.Equal("none", vm.LlmProvider);
+        // 但 AppSettings 尚未被覆盖（需手动保存）
+        Assert.Equal("ollama", settings.LlmProvider);
+        Assert.Equal("llama3.2", settings.LlmModel);
+    }
+
+    [Fact]
+    public void ResetToDefaults_ClearsApiKeyAndGithubToken()
+    {
+        var settings = new AppSettings
+        {
+            LlmProvider = "openai",
+            LlmApiKey = "sk-secret",
+            GithubToken = "ghp_token",
+        };
+        var vm = CreateVm(settings);
+
+        vm.ResetToDefaultsCommand.Execute(null);
+
+        Assert.Null(vm.LlmApiKey);
+        Assert.Null(vm.GithubToken);
+    }
+
+    // ======================================================================
+    // 批次 2：配置状态透明化
+    // ======================================================================
+
+    [Fact]
+    public async Task LoadBackendConfigAsync_FillsStatusCardProperties()
+    {
+        // 用无 OnGetConfig 的 fake 创建 VM：构造函数 fire-and-forget 不会成功加载
+        var fake = new FakeDoc2kbApiService();
+        var vm = CreateVm(fake: fake);
+
+        // 此时后端配置未加载
+        Assert.False(vm.IsBackendConfigLoaded);
+        Assert.Null(vm.ActiveBackendEmbedModel);
+
+        // 现在设置 OnGetConfig 并显式加载
+        fake.OnGetConfig = _ => Task.FromResult(new BackendConfig
+        {
+            EmbedModel = "BAAI/bge-base-en-v1.5",
+            LlmProvider = "openai",
+            LlmModel = "gpt-4o-mini",
+            LlmApiKeyConfigured = true,
+        });
+
+        await vm.LoadBackendConfigAsync();
+
+        // 加载后状态卡属性应填充
+        Assert.True(vm.IsBackendConfigLoaded);
+        Assert.Equal("BAAI/bge-base-en-v1.5", vm.ActiveBackendEmbedModel);
+        Assert.Equal("openai", vm.ActiveBackendLlmProvider);
+        Assert.Equal("gpt-4o-mini", vm.ActiveBackendLlmModel);
+    }
+
+    [Fact]
+    public async Task LoadBackendConfigAsync_BackendUnreachable_KeepsStatusCardHidden()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnGetConfig = _ => throw new HttpRequestException("connection refused");
+        var vm = CreateVm(fake: fake);
+
+        await vm.LoadBackendConfigAsync();
+
+        Assert.False(vm.IsBackendConfigLoaded);
+        Assert.Null(vm.ActiveBackendEmbedModel);
+    }
+
+    [Fact]
+    public void ApiKeyStatusText_ShowsCorrectBadge()
+    {
+        // 无 key 时显示「未配置」
+        var vm = CreateVm(new AppSettings());
+        Assert.Equal("未配置", vm.ApiKeyStatusText);
+        Assert.False(vm.HasSavedApiKey);
+
+        // 有 key 时显示「已配置 ✓」
+        var vm2 = CreateVm(new AppSettings { LlmApiKey = "sk-test" });
+        Assert.Equal("已配置 ✓", vm2.ApiKeyStatusText);
+        Assert.True(vm2.HasSavedApiKey);
+    }
+
+    [Fact]
+    public void ClearApiKey_WithSavedKey_ShowsConfirmationDialog()
+    {
+        var vm = CreateVm(new AppSettings { LlmApiKey = "sk-test" });
+        Assert.False(vm.ShowApiKeyClearConfirm);
+
+        vm.ClearApiKeyCommand.Execute(null);
+
+        Assert.True(vm.ShowApiKeyClearConfirm); // 弹出确认
+        Assert.False(string.IsNullOrEmpty(vm.LlmApiKey)); // key 尚未被清除
+    }
+
+    [Fact]
+    public void ConfirmClearApiKey_ClearsKeyAndHidesDialog()
+    {
+        var vm = CreateVm(new AppSettings { LlmApiKey = "sk-test" });
+        vm.ClearApiKeyCommand.Execute(null); // 先触发确认
+        Assert.True(vm.ShowApiKeyClearConfirm);
+
+        vm.ConfirmClearApiKeyCommand.Execute(null);
+
+        Assert.False(vm.ShowApiKeyClearConfirm);
+        Assert.Null(vm.LlmApiKey);
+        Assert.True(vm.IsDirty);
+    }
+
+    [Fact]
+    public void CancelClearApiKey_HidesDialog_KeepsKey()
+    {
+        var vm = CreateVm(new AppSettings { LlmApiKey = "sk-test" });
+        vm.ClearApiKeyCommand.Execute(null);
+        Assert.True(vm.ShowApiKeyClearConfirm);
+
+        vm.CancelClearApiKeyCommand.Execute(null);
+
+        Assert.False(vm.ShowApiKeyClearConfirm);
+        Assert.Equal("sk-test", vm.LlmApiKey); // key 保留
+    }
+
+    [Fact]
+    public void ClearApiKey_WithoutSavedKey_ClearsDirectly()
+    {
+        var vm = CreateVm(new AppSettings()); // 无 key
+        Assert.False(vm.ShowApiKeyClearConfirm);
+
+        vm.ClearApiKeyCommand.Execute(null);
+
+        // 无已配置 key 时跳过确认直接清除
+        Assert.False(vm.ShowApiKeyClearConfirm);
+    }
+
+    [Fact]
+    public void SaveAsync_DetectsRestartRequiredFieldChanges()
+    {
+        // 验证重启类字段变更检测逻辑（不触发 MessageBox）
+        var settings = new AppSettings
+        {
+            BackendUrl = "http://localhost:8000",
+            StartupTimeoutSec = 30,
+            BackendCommand = "python -m doc2mind",
+        };
+        var vm = CreateVm(settings);
+
+        // 初始值已记录快照
+        Assert.False(vm.IsDirty);
+
+        // 改后端连接（重启类字段）→ dirty
+        vm.BackendUrl = "http://localhost:9999";
+        Assert.True(vm.IsDirty);
+
+        // 改启动超时（重启类字段）→ dirty
+        vm.StartupTimeoutSec = 60;
+        Assert.True(vm.IsDirty);
+
+        // 改后端命令（重启类字段）→ dirty
+        vm.BackendCommand = "python3 -m doc2mind";
+        Assert.True(vm.IsDirty);
+    }
+
+    [Fact]
+    public void SaveAsync_PushOnlyFields_NoRestartDetection()
+    {
+        // 验证推送类字段不触发重启检测
+        var settings = new AppSettings();
+        var vm = CreateVm(settings);
+
+        vm.RagTopK = 10;  // 推送类字段
+        vm.LlmTemperature = 0.3;  // 推送类字段
+        Assert.True(vm.IsDirty);
+        // 这些字段变更不应触发重启（保存后 ShowRestartBanner 应保持 false）
+    }
+
+
 }

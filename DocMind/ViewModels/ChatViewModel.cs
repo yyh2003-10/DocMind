@@ -102,6 +102,45 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
     private static readonly System.Text.RegularExpressions.Regex ArtifactRegex =
         new(@":::\s*artifact(?:\s+type=[""']?([a-zA-Z0-9_-]+)[""']?)?(?:\s+title=[""']?([^""'\n\r]+)[""']?)?(?:\s+theme=[""']?([a-zA-Z0-9_-]+)[""']?)?\s*\n([\s\S]*?)(?::::|\Z)", System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.Compiled);
 
+    /// <summary>从纯 Markdown 内容特征推断交付物类型（模型未输出 :::artifact 包裹时的自愈推断，
+    /// 对齐后端 parser.extract_artifact 的容错能力）。
+    /// 只推断特征足够明确的 PPT / HTML，不推断普通文档，避免日常对话被误判成创作物。</summary>
+    private static string? InferArtifactType(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content) || content.Length < 200) return null;
+
+        var lower = content.ToLowerInvariant();
+
+        // 1) HTML：出现完整 HTML 文档标记
+        if (lower.Contains("<!doctype html") || lower.Contains("<html")) return "html";
+
+        // 2) PPT：多个 `---` 分页 + 幻灯片特征（板式标记或幻灯片关键词）
+        var dashPages = System.Text.RegularExpressions.Regex.Split(content, @"(?m)^---\s*$");
+        var hasSlideMarker = lower.Contains("<!-- layout:") || lower.Contains("<!-- note:");
+        var hasSlideKeyword = lower.Contains("slide")
+                              || lower.Contains("幻灯片")
+                              || lower.Contains("ppt")
+                              || lower.Contains("演示文稿")
+                              || lower.Contains("演讲");
+        if (dashPages.Length >= 3 && (hasSlideMarker || hasSlideKeyword)) return "pptx";
+
+        return null;
+    }
+
+    /// <summary>从内容首个标题行推断交付物标题（自愈推断场景使用）。</summary>
+    private static string InferArtifactTitle(string content)
+    {
+        foreach (var line in content.Split('\n'))
+        {
+            var ls = line.Trim();
+            if (ls.StartsWith('#'))
+            {
+                return ls.TrimStart('#').Trim();
+            }
+        }
+        return "知识创作交付物";
+    }
+
     /// <summary>正文引用角标匹配：[1] / [1,2] / [1、2]。
     /// 边界仅用 ASCII 字符类（.NET 的 \w 会把中文算作单词字符，导致“见[1]”不匹配）；
     /// 前后粘着英文/数字/方括号时不转换，避免误伤代码里的下标如 arr[1]。</summary>
@@ -180,6 +219,17 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             var cleanContent = rawContent;
 
             // 1. 嗅探提取 Artifact 交付物
+            // 自愈容错：模型有时不写 :::artifact 包裹，只输出一份纯 Markdown 方案。
+            // 此时先按内容特征推断类型并合成一个等价的 artifact 块，让后续统一走同一套解析逻辑，
+            // 否则这类内容在气泡下完全没有「创作物工作台」预览入口。
+            if (!ArtifactRegex.IsMatch(rawContent))
+            {
+                var inferredType = InferArtifactType(rawContent);
+                if (inferredType != null)
+                {
+                    rawContent = $":::artifact type=\"{inferredType}\" title=\"{InferArtifactTitle(rawContent)}\" theme=\"tech_blue\"\n{rawContent}\n:::";
+                }
+            }
             var artMatch = ArtifactRegex.Match(rawContent);
             if (artMatch.Success)
             {
@@ -303,34 +353,68 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
 
                         if (curCard != null) sCards.Add(curCard);
 
-                        // 启发式指标抽取
+                        // 启发式指标抽取（命中的条目从要点中剔除，避免与 KPI 卡片重复渲染）
                         var metricRx = new System.Text.RegularExpressions.Regex(@"^([0-9]+(?:\.[0-9]+)?(?:%|x|X|ms|s|MB|GB|KB|倍|万|亿)?)\s*[:：\-—]\s*(.*)$");
-                        foreach (var b in sBullets)
+                        var absorbed = new List<int>();
+                        for (var bi = 0; bi < sBullets.Count; bi++)
                         {
-                            var mm = metricRx.Match(b);
-                            if (mm.Success) sMetrics.Add(new MetricItem { Value = mm.Groups[1].Value.Trim(), Label = mm.Groups[2].Value.Trim() });
+                            var mm = metricRx.Match(sBullets[bi]);
+                            if (mm.Success)
+                            {
+                                sMetrics.Add(new MetricItem { Value = mm.Groups[1].Value.Trim(), Label = mm.Groups[2].Value.Trim() });
+                                absorbed.Add(bi);
+                            }
                         }
 
-                        // 启发式时间线抽取
+                        // 启发式时间线抽取（同上，命中的条目剔除）
                         var timeRx = new System.Text.RegularExpressions.Regex(@"^(阶段[一二三四五六七八九十1-9]|Step\s*\d+|Q[1-4]|步骤[1-9])\s*[:：\-—]\s*(.*)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                        foreach (var b in sBullets)
+                        for (var bi = 0; bi < sBullets.Count; bi++)
                         {
-                            var tm = timeRx.Match(b);
-                            if (tm.Success) sTimeline.Add(new TimelineNodeItem { Stage = tm.Groups[1].Value.Trim(), Title = tm.Groups[2].Value.Trim() });
+                            var tm = timeRx.Match(sBullets[bi]);
+                            if (tm.Success)
+                            {
+                                sTimeline.Add(new TimelineNodeItem { Stage = tm.Groups[1].Value.Trim(), Title = tm.Groups[2].Value.Trim() });
+                                if (!absorbed.Contains(bi)) absorbed.Add(bi);
+                            }
                         }
 
-                        // 板式智能裁决
+                        // 已被指标 / 时间线卡片吸收的要点不再重复展示
+                        foreach (var bi in absorbed.OrderByDescending(i => i))
+                        {
+                            if (bi < sBullets.Count) sBullets.RemoveAt(bi);
+                        }
+
+                        // 板式智能裁决（预览卡片中各板式区域叠加展示，此处仅用于识别主视觉形态）
                         if (sLayout == "general")
                         {
-                            if (sIndex == 1) sLayout = "cover";
+                            // 仅当首页确实带副标题时才认定为封面，避免首页正文被封面框架吞掉
+                            if (sIndex == 1 && !string.IsNullOrEmpty(sSub)) sLayout = "cover";
                             else if (sCards.Count >= 2 && sCards.Count <= 4) sLayout = "cards";
-                            else if (sMetrics.Count >= 2 && sMetrics.Count == sBullets.Count) sLayout = "metrics";
-                            else if (sTimeline.Count >= 2 && sTimeline.Count == sBullets.Count) sLayout = "timeline";
+                            else if (sBullets.Count == 0 && sMetrics.Count >= 2) sLayout = "metrics";
+                            else if (sBullets.Count == 0 && sTimeline.Count >= 2) sLayout = "timeline";
                             else if (sTable.Count >= 2) sLayout = "table";
                             else if (!string.IsNullOrEmpty(sQuote)) sLayout = "quote";
-                        }
+                            }
 
-                        item.Slides.Add(new SlideItem
+                            // 主视觉唯一化：被更特殊主视觉覆盖的块级数据降级为补充要点，避免多块大视觉堆叠导致预览“混乱”，同时不丢失内容。
+                            // 注：general/agenda/cover 页的卡片仍由卡片区渲染，不在此降级（否则会与卡片区重复）。
+                            if (sLayout != "cards" && sLayout != "general" && sLayout != "agenda" && sLayout != "cover")
+                            {
+                                foreach (var c in sCards)
+                                {
+                                    var ct = string.IsNullOrEmpty(c.Content) ? c.Title : $"{c.Title}：{c.Content}";
+                                    if (c.Bullets.Count > 0) ct += "（" + string.Join("；", c.Bullets) + "）";
+                                    sBullets.Add(ct);
+                                }
+                            }
+                            if (sLayout != "metrics")
+                                foreach (var m in sMetrics) sBullets.Add($"{m.Value} {m.Label}".Trim());
+                            if (sLayout != "timeline")
+                                foreach (var t in sTimeline) sBullets.Add($"{t.Stage}：{t.Title}");
+                            if (sLayout != "quote" && !string.IsNullOrWhiteSpace(sQuote))
+                                sBullets.Add(sQuote);
+
+                            item.Slides.Add(new SlideItem
                         {
                             Index = sIndex,
                             Title = sTitle,
@@ -349,6 +433,8 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
                 }
 
                 Artifact = item;
+                // 通知 ViewModel 触发自动导出（仅在流式完成时）
+                ArtifactParsed?.Invoke(this, item);
             }
 
             var match = ActionRegex.Match(cleanContent);
@@ -418,8 +504,13 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         }
         catch (Exception ex)
         {
-            // 解析失败:清空 RenderedDocument,UI 会 fallback 到纯 TextBlock(由 Visibility 控制)
-            DebugLog.Warn($"Markdown 解析失败,降级纯文本: {ex}", "Chat");
+            // 解析失败:清空 RenderedDocument,UI 会 fallback 到纯文本兜底 TextBox(由 Visibility 控制)。
+            // 记录原文长度与片段：排查"回答只剩标题/代码块消失"时，
+            // 需要能区分是原文本身不完整，还是渲染层把内容丢了。
+            var preview = Content.Length > 200 ? Content[..200] + "…" : Content;
+            DebugLog.Warn(
+                $"Markdown 解析失败,降级纯文本: 原文 {Content.Length} 字, {ex.GetType().Name}: {ex.Message}\n" +
+                $"  原文片段: {preview}", "Chat");
             if (_renderedDocument is not null)
             {
                 RenderedDocument = null;
@@ -918,6 +1009,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(TokenStatText)));
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasTokenStat)));
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
             }
         }
     }
@@ -932,6 +1024,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             {
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CanCopy)));
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
             }
         }
     }
@@ -940,7 +1033,14 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
     public bool IsWaitingForFirstToken
     {
         get => _isWaitingForFirstToken;
-        set => SetField(ref _isWaitingForFirstToken, value);
+        set
+        {
+            if (SetField(ref _isWaitingForFirstToken, value))
+            {
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
+            }
+        }
     }
 
     /// <summary>是否显示「重新生成」（仅最后一条 assistant 消息、非生成中；由 VM 维护）。</summary>
@@ -1009,6 +1109,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             if (SetField(ref _isThinkingInProgress, value))
             {
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
             }
         }
     }
@@ -1024,6 +1125,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             if (SetField(ref _thinkingDurationText, value))
             {
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
             }
         }
     }
@@ -1042,6 +1144,17 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             return !string.IsNullOrEmpty(ThinkingDurationText)
                 ? $"已思考（{ThinkingDurationText}）"
                 : "已思考";
+        }
+    }
+
+    /// <summary>思考状态图标文字（🧠 思考中 / 💭 已完成 / 空 无思考）。</summary>
+    public string ThinkingIconText
+    {
+        get
+        {
+            if (IsLoading && (IsThinkingInProgress || IsWaitingForFirstToken))
+                return "🧠";
+            return HasThinking ? "💭" : "";
         }
     }
 
@@ -1112,6 +1225,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
                 UpdateRenderedThinkingDocument();
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinkingText)));
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
             }
         }
     }
@@ -1137,6 +1251,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             _thinkingDurationText = $"{Math.Max(0.1, elapsedMs / 1000.0):F1} 秒";
             PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingDurationText)));
             PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
         }
     }
 
@@ -1150,6 +1265,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsThinkingInProgress)));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingDurationText)));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
         UpdateRenderedThinkingDocument(force: true);
     }
 
@@ -1197,13 +1313,13 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             var parts = new List<string>();
             if (TokenCount > 0)
             {
-                parts.Add($"{TokenCount} tok");
+                parts.Add($"{TokenCount} 帧");
                 if (ElapsedMs is > 0)
                 {
                     var secs = ElapsedMs.Value / 1000.0;
                     if (secs > 0)
                     {
-                        parts.Add($"{TokenCount / secs:F1} tok/s");
+                        parts.Add($"{TokenCount / secs:F1} 帧/s");
                     }
                 }
             }
@@ -1224,6 +1340,9 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
 
     /// <summary>用户点击正文引用角标 [n] 时触发（n 为来源索引）。</summary>
     public event Action<int>? SourceMarkerRequested;
+
+    /// <summary>创作物解析完成时触发（供 ViewModel 订阅以自动导出）。</summary>
+    public event Action<object, ArtifactItem>? ArtifactParsed;
 
     /// <summary>
     /// 追加一条思考/搜索步骤（去重连续重复）。
@@ -1249,6 +1368,35 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         }
         ThinkingSteps.Add(text);
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinkingSteps)));
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
+    }
+
+    /// <summary>生成失败/中断时收尾思考步骤：把末尾「正在…」替换为「✖」标记，
+    /// 避免错误提示旁仍挂着进行中状态（调用方需配合 CompleteThinking 关闭阶段胶囊）。</summary>
+    public void FailThinkingStep(string? reason, string label = "回答生成失败")
+    {
+        var detail = (reason ?? "").Trim();
+        var nl = detail.IndexOfAny(['\n', '\r']);
+        if (nl >= 0)
+        {
+            detail = detail[..nl].Trim();
+        }
+        if (detail.Length > 80)
+        {
+            detail = detail[..80] + "…";
+        }
+        var step = string.IsNullOrEmpty(detail) ? $"✖ {label}" : $"✖ {label}：{detail}";
+        if (ThinkingSteps.Count > 0 && ThinkingSteps[^1].StartsWith("正在", StringComparison.Ordinal))
+        {
+            ThinkingSteps[^1] = step;
+        }
+        else if (ThinkingSteps.Count == 0 || ThinkingSteps[^1] != step)
+        {
+            ThinkingSteps.Add(step);
+        }
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinkingSteps)));
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
     }
 
@@ -1451,9 +1599,12 @@ public partial class ChatViewModel : ViewModelBase
     /// <summary>模型下拉首项伪值：表示「用设置页配置的默认模型」。</summary>
     public const string DefaultModelLabel = "默认（设置页模型）";
 
-    private string _selectedModel = DefaultModelLabel;
     private string _configuredProvider = "none";
     private string _configuredModel = "";
+
+    /// <summary>「默认提供商（设置页全局配置）」分组的候选模型：本地 AppSettings 种子 + 🔄 拉取结果。
+    /// 点选该组模型只随请求带 model 参数覆盖，不携带 ProviderConfig、不改全局配置。</summary>
+    private readonly List<string> _defaultProviderModels = new();
 
     /// <summary>可选的办公与创作角色人设列表。</summary>
     public IReadOnlyList<PersonaOption> AvailablePersonas { get; } = new List<PersonaOption>
@@ -1470,6 +1621,11 @@ public partial class ChatViewModel : ViewModelBase
     };
 
     private PersonaOption _selectedPersona;
+
+    /// <summary>创作类人设集合（后端自动路由创作意图时使用）。
+    /// 仅当后端回传的实际生效人设属于此集合时，才静默同步前端人设下拉框，
+    /// 避免把用户手动选择的 architect/brainstorm/office 覆写为回传值。</summary>
+    private static readonly HashSet<string> CreativePersonaIds = new() { "ppt", "doc", "lesson", "table", "web" };
 
     /// <summary>当前选中的办公角色人设。</summary>
     public PersonaOption SelectedPersona
@@ -1513,10 +1669,10 @@ public partial class ChatViewModel : ViewModelBase
 
     private readonly AppSettings _appSettings;
     private ModelChoice? _selectedModelChoice;
-    private ProfileOption _selectedProfileOption;
-    private bool _isInitializingProfiles;
-    private bool _isSwitchingProfile;
     private bool _isWebSearchEnabled;
+
+    /// <summary>构造期间抑制选择持久化（避免初始 RebuildModelChoices 覆盖上次落盘的模型选择）。</summary>
+    private bool _isInitializingModelChoice;
 
     /// <summary>当前选中模型项；选中自定义服务商的模型 → 记录该服务商（发送时随请求携带 ProviderConfig）；默认项 → 用后端全局配置。</summary>
     public ModelChoice? SelectedModelChoice
@@ -1526,48 +1682,37 @@ public partial class ChatViewModel : ViewModelBase
         {
             if (SetProperty(ref _selectedModelChoice, value) && value is not null)
             {
-                // 同步 SelectedModel 显示（默认项 → 默认标签）
-                if (value.IsDefault)
+                // 点选即持久化：新建会话/重启后还原上次选择的模型（与 EnableWebSearch 同机制）
+                if (!_isInitializingModelChoice)
                 {
-                    SelectedModel = DefaultModelLabel;
+                    PersistModelChoice(value);
                 }
-                else if (!string.IsNullOrWhiteSpace(value.Model))
-                {
-                    SelectedModel = value.Model;
-                }
+                // 单一事实源：Effective*/SelectedModel 均由此派生，避免双轨状态不同步
+                OnPropertyChanged(nameof(SelectedModel));
+                OnPropertyChanged(nameof(EffectiveProvider));
+                OnPropertyChanged(nameof(EffectiveModel));
+                OnPropertyChanged(nameof(EffectiveModelSummary));
+                OnPropertyChanged(nameof(IsLlmConfigured));
+                OnPropertyChanged(nameof(EmptyGuideText));
+                StatusMessage = value.IsDefault ? "就绪" : $"模型: {value.DisplayName}（下条消息生效）";
             }
         }
     }
 
-    /// <summary>当前选中服务商项；自定义服务商 → 应用（推送后端）；内置预设 → 填入地址与推荐模型；默认项 → 切回设置页配置。</summary>
-    public ProfileOption SelectedProfileOption
+    /// <summary>把对话页模型选择落盘（AppSettings.LastChatModel/LastChatProfileId），重启/新建对话后还原。
+    /// 默认项 → 两项皆空；默认提供商分组（裸模型名）→ 仅模型名；某服务商模型 → 模型名 + 档案 Id。</summary>
+    private void PersistModelChoice(ModelChoice choice)
     {
-        get => _selectedProfileOption;
-        set
+        _appSettings.LastChatProfileId = choice.Provider?.Id;
+        _appSettings.LastChatModel = choice.IsDefault ? null : choice.Model;
+        try
         {
-            if (SetProperty(ref _selectedProfileOption, value) && value is not null && !_isInitializingProfiles)
-            {
-                if (value.IsCustom && value.Profile is { } profile)
-                {
-                    _ = ApplyProfileSwitchAsync(profile);
-                }
-                else if (value.IsBuiltIn && value.Preset is { } preset)
-                {
-                    _ = ApplyPresetSwitchAsync(preset);
-                }
-                else
-                {
-                    _ = ApplyProfileSwitchAsync(null);
-                }
-            }
+            _appSettings.Save();
         }
-    }
-
-    /// <summary>是否正在切换档案（推送后端 + 刷新模型列表中）。</summary>
-    public bool IsSwitchingProfile
-    {
-        get => _isSwitchingProfile;
-        private set => SetProperty(ref _isSwitchingProfile, value);
+        catch
+        {
+            // 落盘失败不阻断对话
+        }
     }
 
     public ChatViewModel(IDoc2kbApiService apiService, NotificationService? notifications = null, AppSettings? appSettings = null)
@@ -1602,18 +1747,44 @@ public partial class ChatViewModel : ViewModelBase
         AddCollectionCommand = new AsyncRelayCommand<string?>(AddCollectionAsync);
 
         Sessions = new ObservableCollection<ChatSessionItem>();
-        AvailableModels = new ObservableCollection<string> { DefaultModelLabel };
 
-        // 模型选择器：首项「设置页默认」伪值 + 各启用服务商的全部模型（显示「模型名（服务商名）」）
+        // 默认提供商（设置页全局配置）候选模型：先用本地 AppSettings 同步种子，后端拉回后再补充。
+        // provider 无条件同步（IsLlmConfigured/EffectiveProvider 的判断依据）；
+        // 模型名为空时仅跳过默认分组种子（无法预设具体模型）。
+        _configuredProvider = string.IsNullOrWhiteSpace(_appSettings.LlmProvider) ? "none" : _appSettings.LlmProvider;
+        if (!string.IsNullOrWhiteSpace(_appSettings.LlmModel))
+        {
+            _configuredModel = _appSettings.LlmModel;
+            _defaultProviderModels.Add(_appSettings.LlmModel.Trim());
+        }
+        // 已持久化的「默认提供商分组」选择（无档案）：补入候选，重启后即使不在默认模型种子也能还原
+        if (string.IsNullOrWhiteSpace(_appSettings.LastChatProfileId)
+            && !string.IsNullOrWhiteSpace(_appSettings.LastChatModel))
+        {
+            _defaultProviderModels.Add(_appSettings.LastChatModel.Trim());
+        }
+
+        // 模型选择器：首项「默认模型」伪值 + 默认提供商分组 + 各启用服务商的全部模型
         // Key 已在 App.LoadSettings 解密为明文；停用的服务商不出现在点选列表
-        RebuildModelChoices();
-        // 默认选中最后应用的档案的默认模型（仅高亮，不触发切换/不改配置）
-        _isInitializingProfiles = true;
-        SelectedModelChoice = ModelChoices.FirstOrDefault(c =>
-            c.Provider?.Id == _appSettings.ActiveProfileId && c.Model == c.Provider?.Model)
-            ?? ModelChoices.FirstOrDefault(c => c.Provider?.Id == _appSettings.ActiveProfileId)
-            ?? ModelChoices.FirstOrDefault();
-        _isInitializingProfiles = false;
+        // 还原上次对话页选择的模型（持久化字段）；无记录时默认选中首项「默认模型」
+        // （不再按 ActiveProfileId 高亮档案模型——用户明确要求默认选中默认项）
+        _isInitializingModelChoice = true;
+        try
+        {
+            RebuildModelChoices();
+            var lastProfileId = _appSettings.LastChatProfileId;
+            var lastModel = _appSettings.LastChatModel;
+            SelectedModelChoice = ModelChoices.FirstOrDefault(c =>
+                    c.Provider?.Id == lastProfileId && c.Model == lastModel)
+                ?? ModelChoices.FirstOrDefault(c => c.Provider is null && c.Model == lastModel)
+                ?? ModelChoices.FirstOrDefault(c =>
+                    c.Provider is { } twin && IsSameEndpointAsDefault(twin) && c.Model == lastModel)
+                ?? ModelChoices.FirstOrDefault();
+        }
+        finally
+        {
+            _isInitializingModelChoice = false;
+        }
 
         // 恢复上次勾选的「联网搜索」状态（持久化字段，避免每次启动重新勾选）
         _isWebSearchEnabled = _appSettings.EnableWebSearch;
@@ -1622,6 +1793,7 @@ public partial class ChatViewModel : ViewModelBase
         {
             OnPropertyChanged(nameof(ShowEmptyGuide));
             OnPropertyChanged(nameof(EmptyGuideText));
+            OnPropertyChanged(nameof(MessagesCountText));
             UpdateMessageFlags();
         };
 
@@ -1630,24 +1802,47 @@ public partial class ChatViewModel : ViewModelBase
         _ = LoadSessionsAsync();
         _ = SeedModelFromConfigAsync();
 
-        // 订阅服务商配置变更：设置页新增/更新/删除/启停服务商后，对话页立即重建模型候选
-        SettingsViewModel.ProviderConfigChanged += OnProviderConfigChanged;
+        // 服务商配置变更订阅已上移至 MainViewModel（静态事件由页面容器统一管理），
+        // 设置页新增/更新/删除/启停服务商后 Main 会调用 ApplyProviderConfigChanged
     }
 
-    /// <summary>设置页服务商配置变更回调：重建对话页模型候选（首项默认 + 各启用服务商模型）。</summary>
-    private void OnProviderConfigChanged()
+    /// <summary>设置页服务商配置变更回调（由 MainViewModel 订阅静态事件转调）：同步默认提供商配置后重建对话页模型候选（首项默认模型名 + 各启用服务商模型）。</summary>
+    public void ApplyProviderConfigChanged()
     {
+        // 设置页保存后同步默认提供商（provider/model，含清空），让首项「默认 · xx」显示最新默认模型
+        _configuredProvider = string.IsNullOrWhiteSpace(_appSettings.LlmProvider) ? "none" : _appSettings.LlmProvider;
+        _configuredModel = _appSettings.LlmModel ?? "";
+        OnPropertyChanged(nameof(IsLlmConfigured));
+        OnPropertyChanged(nameof(EmptyGuideText));
         RebuildModelChoices();
     }
 
-    /// <summary>重建模型选择器候选：首项「设置页默认」伪值 + 各启用服务商的全部模型（「模型名（服务商名）」）。
+    /// <summary>重建模型选择器候选：首项「默认 · 默认模型名」伪值（无默认模型时显示「默认（设置页配置）」）
+    /// + 默认提供商分组（按请求覆盖 model，不带 ProviderConfig；与默认端点相同的启用档案已列出的模型不再重复出现）
+    /// + 各启用服务商的全部模型（「模型名（服务商名）」，携带该服务商配置按请求生效）。
     /// 设置页变更服务商/模型后调用（任务 #6 事件驱动），保证对话页立即看到最新模型。</summary>
     public void RebuildModelChoices()
     {
         var currentId = SelectedModelChoice?.Provider?.Id;
         var currentModel = SelectedModelChoice?.Model;
         ModelChoices.Clear();
-        ModelChoices.Add(new ModelChoice(DefaultProfileLabel, null, null));
+        // 首项：真实默认模型名（设置页 LlmModel / 后端配置），无配置时回退到通用标签
+        var defaultModelName = string.IsNullOrWhiteSpace(_configuredModel) ? null : _configuredModel.Trim();
+        ModelChoices.Add(new ModelChoice(
+            defaultModelName is null ? DefaultProfileLabel : $"默认 · {defaultModelName}",
+            null,
+            null));
+        // 默认提供商分组：显示裸模型名，发送时只带 model 参数覆盖（用设置页的 provider/key/地址）；
+        // 与默认端点相同的启用档案在下方已带「（服务商名）」列出同名模型，这里跳过，避免同一端点同模型出现两条
+        var twinModels = CollectSameEndpointProfileModels();
+        foreach (var m in _defaultProviderModels
+            .Where(m => !string.IsNullOrWhiteSpace(m))
+            .Select(m => m.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(m => !twinModels.Contains(m)))
+        {
+            ModelChoices.Add(new ModelChoice(m, null, m));
+        }
         if (_appSettings.LlmProfiles is { Count: > 0 })
         {
             foreach (var p in _appSettings.LlmProfiles.Where(p => p is not null && p.IsEnabled))
@@ -1669,12 +1864,21 @@ public partial class ChatViewModel : ViewModelBase
                 }
             }
         }
-        // 恢复选中：优先同服务商同模型，其次同服务商，否则默认项
+        // 恢复选中：优先同服务商同模型，其次默认组同模型（被去重时落到同端点档案的孪生条目），否则默认项
         if (currentId is not null)
         {
             SelectedModelChoice = ModelChoices.FirstOrDefault(c =>
                     c.Provider?.Id == currentId && c.Model == currentModel)
                 ?? ModelChoices.FirstOrDefault(c => c.Provider?.Id == currentId)
+                ?? ModelChoices.FirstOrDefault();
+        }
+        else if (!string.IsNullOrWhiteSpace(currentModel) && currentModel != DefaultProfileLabel)
+        {
+            SelectedModelChoice = ModelChoices.FirstOrDefault(c =>
+                    c.IsDefault == false && c.Provider is null && c.Model == currentModel)
+                ?? ModelChoices.FirstOrDefault(c =>
+                    c.IsDefault == false && c.Provider is { } twin
+                    && IsSameEndpointAsDefault(twin) && c.Model == currentModel)
                 ?? ModelChoices.FirstOrDefault();
         }
         else
@@ -1683,35 +1887,63 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
+    /// <summary>收集与设置页默认配置指向同一端点的启用档案的全部模型（含各档案默认模型）。
+    /// 这些模型在服务商分组里已有「模型名（服务商名）」条目，默认提供商分组不再以裸名重复列出。</summary>
+    private HashSet<string> CollectSameEndpointProfileModels()
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in _appSettings.LlmProfiles ?? new List<LlmProfile>())
+        {
+            if (p is not { IsEnabled: true } || !IsSameEndpointAsDefault(p))
+            {
+                continue;
+            }
+            foreach (var m in (p.Models ?? new List<string>()).Append(p.Model))
+            {
+                if (!string.IsNullOrWhiteSpace(m))
+                {
+                    result.Add(m.Trim());
+                }
+            }
+        }
+        return result;
+    }
+
+    /// <summary>档案端点与设置页默认配置是否一致：BaseUrl 归一化（去空白/结尾斜杠，忽略大小写）后比较；
+    /// 两边都未填 BaseUrl 时按 provider 类型判断（同为官方默认端点）。</summary>
+    private bool IsSameEndpointAsDefault(LlmProfile profile)
+    {
+        var profileUrl = NormalizeEndpoint(profile.BaseUrl);
+        var defaultUrl = NormalizeEndpoint(_appSettings.LlmBaseUrl);
+        if (profileUrl.Length > 0 || defaultUrl.Length > 0)
+        {
+            return string.Equals(profileUrl, defaultUrl, StringComparison.OrdinalIgnoreCase);
+        }
+        return string.Equals(profile.Provider, _appSettings.LlmProvider, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeEndpoint(string? url) => (url ?? "").Trim().TrimEnd('/');
+
     /// <summary>可勾选的知识库集合列表（复选框）。</summary>
     public ObservableCollection<CollectionItem> Collections { get; }
 
     /// <summary>历史会话列表（持久化在后端 SQLite，重启可恢复）。</summary>
     public ObservableCollection<ChatSessionItem> Sessions { get; }
 
-    /// <summary>模型下拉候选（首项为「默认」伪值，其余为拉取/种子模型）。</summary>
-    public ObservableCollection<string> AvailableModels { get; }
+    /// <summary>当前选中模型的显示名；由 SelectedModelChoice 单一事实源派生，避免双轨状态不同步。
+    /// DefaultModelLabel = 用设置页配置（请求不带 model）。</summary>
+    public string SelectedModel =>
+        SelectedModelChoice is { IsDefault: false, Model: { } m } && !string.IsNullOrWhiteSpace(m)
+            ? m
+            : DefaultModelLabel;
 
-    /// <summary>当前选中模型；DefaultModelLabel = 用设置页配置（请求不带 model）。</summary>
-    public string SelectedModel
-    {
-        get => _selectedModel;
-        set
-        {
-            if (SetProperty(ref _selectedModel, string.IsNullOrWhiteSpace(value) ? DefaultModelLabel : value))
-            {
-                OnPropertyChanged(nameof(EffectiveModel));
-                OnPropertyChanged(nameof(EffectiveModelSummary));
-                StatusMessage = value == DefaultModelLabel ? "就绪" : $"模型: {value}（下条消息生效）";
-            }
-        }
-    }
-
-    /// <summary>后端当前配置的 LLM 提供商；不是嵌入模型提供商。</summary>
+    /// <summary>下一条消息实际会用的提供商：选了某服务商模型 → 该服务商名；否则后端全局配置。</summary>
     public string EffectiveProvider =>
-        string.IsNullOrWhiteSpace(_configuredProvider) || _configuredProvider == "none"
-            ? "未配置 LLM"
-            : _configuredProvider;
+        SelectedModelChoice?.Provider is { } p
+            ? p.Name
+            : string.IsNullOrWhiteSpace(_configuredProvider) || _configuredProvider == "none"
+                ? "未配置 LLM"
+                : _configuredProvider;
 
     /// <summary>下一条消息实际会使用的模型，区分默认配置与对话页临时覆盖。</summary>
     public string EffectiveModel =>
@@ -1721,7 +1953,7 @@ public partial class ChatViewModel : ViewModelBase
 
     public string EffectiveModelSummary =>
         $"实际生效: {EffectiveProvider} / {EffectiveModel}" +
-        (SelectedModel == DefaultModelLabel ? "（设置页默认）" : "（本次临时覆盖）");
+        (SelectedModel == DefaultModelLabel ? "（设置页默认）" : "（对话页选择）");
 
     private ChatSessionItem? _selectedSession;
 
@@ -1733,6 +1965,12 @@ public partial class ChatViewModel : ViewModelBase
         {
             if (SetProperty(ref _selectedSession, value) && value is not null && !_isLoadingSessions)
             {
+                // 切换会话前必须先取消进行中的流式请求：否则旧流收尾时会用旧会话 id
+                // 覆盖 _chatId 并重载会话列表，把用户刚选中的会话顶掉。
+                if (_cts is { IsCancellationRequested: false })
+                {
+                    try { _cts.Cancel(); } catch { /* 取消失败不阻塞切换 */ }
+                }
                 _ = LoadSessionMessagesAsync(value);
             }
         }
@@ -1887,11 +2125,40 @@ public partial class ChatViewModel : ViewModelBase
         {
             OnPropertyChanged(nameof(HasSelectedCollection));
             SendCommand.NotifyCanExecuteChanged();
+            // 勾选/取消即落盘，重启后恢复（与联网搜索开关同机制）
+            PersistCollectionSelection();
         }
     }
 
+    /// <summary>构造期间/刷新期间抑制勾选落盘（避免重建列表的中间状态反复写盘）。</summary>
+    private bool _isRestoringCollections;
+
+    /// <summary>把对话页勾选的知识库集合落盘（AppSettings.LastChatCollections），重启后恢复。
+    /// 加载/恢复期间（_isRestoringCollections）跳过，由加载流程结束后统一落一次终态。</summary>
+    private void PersistCollectionSelection()
+    {
+        if (_isRestoringCollections)
+        {
+            return;
+        }
+        _appSettings.LastChatCollections = SelectedCollections.ToList();
+        try
+        {
+            _appSettings.Save();
+        }
+        catch
+        {
+            // 落盘失败不阻断对话
+        }
+    }
+
+    /// <summary>是否仍需用落盘的勾选（AppSettings.LastChatCollections）恢复一次选中状态。
+    /// 仅首次加载生效，之后的刷新只保留本会话内的运行时勾选（避免覆盖用户当次的选择）。</summary>
+    private bool _collectionsSeedPending = true;
+
     private async Task LoadCollectionsAsync()
     {
+        _isRestoringCollections = true;
         try
         {
             var stats = await _apiService.GetStatsAsync();
@@ -1912,12 +2179,27 @@ public partial class ChatViewModel : ViewModelBase
                 .Select(c => c.Name)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+            // 首次加载：用上次落盘的勾选恢复（重启后保持同样的知识库选择）
+            if (_collectionsSeedPending)
+            {
+                _collectionsSeedPending = false;
+                foreach (var saved in _appSettings.LastChatCollections)
+                {
+                    if (!string.IsNullOrWhiteSpace(saved))
+                    {
+                        selectedNames.Add(saved);
+                    }
+                }
+                // 只保留后端仍存在的集合：落盘的集合全部被删除时退回默认勾选 default
+                selectedNames.IntersectWith(names);
+            }
+
             Collections.Clear();
             var list = names.ToList();
             list.Sort(StringComparer.OrdinalIgnoreCase);
             foreach (var name in list)
             {
-                // 已有勾选则恢复；无任何勾选时（首次加载）默认选 default
+                // 已有勾选则恢复；无任何勾选时（首次加载且无落盘记录）默认选 default
                 var isSelected = selectedNames.Contains(name)
                     || (selectedNames.Count == 0 && string.Equals(name, "default", StringComparison.OrdinalIgnoreCase));
                 Collections.Add(new CollectionItem { Name = name, IsSelected = isSelected });
@@ -1926,6 +2208,8 @@ public partial class ChatViewModel : ViewModelBase
             OnPropertyChanged(nameof(HasSelectedCollection));
             SendCommand.NotifyCanExecuteChanged();
             DebugLog.Info($"集合列表加载完成: {list.Count} 个 [{string.Join(", ", list)}]", "Chat");
+            // 终态统一落盘一次（幂等）；放在成功路径，加载失败不吞掉用户已有落盘记录
+            PersistCollectionSelection();
         }
         catch (Exception ex)
         {
@@ -1935,6 +2219,10 @@ public partial class ChatViewModel : ViewModelBase
             {
                 Collections.Add(new CollectionItem { Name = "default", IsSelected = true });
             }
+        }
+        finally
+        {
+            _isRestoringCollections = false;
         }
     }
 
@@ -1946,6 +2234,7 @@ public partial class ChatViewModel : ViewModelBase
             return;
         }
 
+        _isRestoringCollections = true;
         try
         {
             // 真正在后端创建一个新的空知识库集合，并刷新列表
@@ -1984,10 +2273,16 @@ public partial class ChatViewModel : ViewModelBase
                 Collections.Add(new CollectionItem { Name = trimmed, IsSelected = true });
             }
         }
+        finally
+        {
+            _isRestoringCollections = false;
+        }
 
         NewCollectionName = string.Empty;
         OnPropertyChanged(nameof(HasSelectedCollection));
         SendCommand.NotifyCanExecuteChanged();
+        // 新建集合已勾选 → 落盘终态，重启后同样恢复
+        PersistCollectionSelection();
     }
 
     /// <summary>对话消息列表。</summary>
@@ -1999,15 +2294,30 @@ public partial class ChatViewModel : ViewModelBase
     /// <summary>无消息时显示空态。</summary>
     public bool ShowEmptyGuide => !IsBusy && Messages.Count == 0;
 
-    /// <summary>空态引导文案。</summary>
+    /// <summary>当前会话消息数（工具条展示，如「💬 8 条消息」；无消息返回空串隐藏）。</summary>
+    public string MessagesCountText =>
+        Messages.Count == 0 ? string.Empty : $"💬 {Messages.Count} 条消息";
+
+    /// <summary>LLM 是否已可用：对话页选中了某服务商档案的模型（发送时按请求携带 ProviderConfig，
+    /// 不依赖全局配置），或设置页全局 provider 已配置（非 none）。
+    /// 空态引导与发送前事前拦截共用此判断。</summary>
+    public bool IsLlmConfigured =>
+        SelectedModelChoice?.Provider is not null
+        || (!string.IsNullOrWhiteSpace(_configuredProvider) && _configuredProvider != "none");
+
+    /// <summary>空态引导文案：LLM 未配置时优先引导配置（事前引导），已配置时引导导入与提问。</summary>
     public string EmptyGuideText =>
-        "开始与知识库对话。\n\n"
-        + "DocMind 会检索已导入的文档，\n"
-        + "结合多轮上下文生成带来源标注的回答。\n\n"
-        + "还没导入文档？先到【导入】页添加文件。\n\n"
-        + "💡 需要先配置 LLM：到【设置 → 大模型对话】\n"
-        + "  选择提供商（OpenAI 兼容 / Claude / Gemini / Ollama）\n"
-        + "  填写 API Key 后点「测试连接」验证";
+        IsLlmConfigured
+            ? "开始与知识库对话。\n\n"
+              + "DocMind 会检索已导入的文档，\n"
+              + "结合多轮上下文生成带来源标注的回答。\n\n"
+              + "还没导入文档？先到【导入】页添加文件。"
+            : "尚未配置大模型，暂无法开始对话。\n\n"
+              + "请到【设置 → 大模型对话】：\n"
+              + "  1️⃣ 选择提供商（OpenAI 兼容 / Claude / Gemini / Ollama）\n"
+              + "  2️⃣ 填写 API Key 后点「测试连接」验证\n"
+              + "  3️⃣ 回到对话页即可开始提问\n\n"
+              + "💡 本地离线方案：设置页选 Ollama，无需联网与 API Key";
 
     private bool CanSend => !IsBusy && HasInput;
 
@@ -2300,6 +2610,14 @@ public partial class ChatViewModel : ViewModelBase
     /// <summary>发送核心：添加用户消息（可选）+ 流式请求 + 终帧回写。Send 与 Regenerate 共用。</summary>
     private async Task SendCoreAsync(string query, bool addUserMessage)
     {
+        // 事前拦截：LLM 未配置时直接引导配置，不发注定失败的请求（覆盖发送/快捷提问/重新生成入口）
+        if (!IsLlmConfigured)
+        {
+            StatusMessage = "尚未配置大模型：请到【设置 → 大模型对话】完成配置后重试";
+            _notifications?.Warning("尚未配置大模型，无法开始对话：请到【设置 → 大模型对话】完成配置", "需要配置");
+            return;
+        }
+
         // 提取附件列表
         var attachments = PendingAttachments.Select(a => a.FullPath).ToList();
         var attachLabels = PendingAttachments.Select(a => $"{a.Icon} {a.FileName}").ToList();
@@ -2326,6 +2644,11 @@ public partial class ChatViewModel : ViewModelBase
         // 发送开始前，清空输入框
         InputText = string.Empty;
 
+        // 先建取消令牌再置 IsBusy：消除「停止按钮已可用但 _cts 尚未创建」的竞态空窗
+        _cts?.Dispose();
+        _cts = new CancellationTokenSource();
+        var cts = _cts;
+
         IsBusy = true;
         ShowStopChanged();
         StatusMessage = "对话中…";
@@ -2350,10 +2673,15 @@ public partial class ChatViewModel : ViewModelBase
             catch { /* 取消时静默退出 */ }
         }, timerCts.Token);
 
-        _cts = new CancellationTokenSource();
         // 流式排查统计：token 帧数 + 首 token 延迟（TTFT）
         var tokenCount = 0;
         long firstTokenMs = -1;
+        // 本条消息是否已落地过首个正文 token。
+        // 不能用 IsWaitingForFirstToken / IsThinkingInProgress 代替：这两个标志会被
+        // onStatus/onThinking 回调反复置 True（模型推理链、上下文溢出重试状态帧、
+        // 生成结束后的 Agent 自省帧），流中途一旦复位，下一个 token 就会把已累积的
+        // 正文整体覆盖，气泡里只剩该帧之后的内容（表现为「回答只剩一个标题」）。
+        var firstTokenApplied = false;
         try
         {
             var selected = SelectedCollections;
@@ -2369,6 +2697,14 @@ public partial class ChatViewModel : ViewModelBase
                 if (src is not null)
                 {
                     OpenSource(src);
+                }
+            };
+            // 创作物解析完成 → 自动导出物理文件
+            assistantMsg.ArtifactParsed += (_, artifact) =>
+            {
+                if (!assistantMsg.IsLoading)  // 仅在流式完成时触发
+                {
+                    _ = AutoExportArtifactAsync(artifact);
                 }
             };
             // 发送时按选中模型项构造请求：
@@ -2420,8 +2756,11 @@ public partial class ChatViewModel : ViewModelBase
 
                     void ApplyToken()
                     {
-                        if (assistantMsg.IsWaitingForFirstToken || assistantMsg.IsThinkingInProgress)
+                        // 只在真正的首帧做一次「重置」（首帧前 Content 是空占位）；
+                        // 此后一律追加，任何 status/thinking 帧都不得再清空已累积的正文。
+                        if (!firstTokenApplied)
                         {
+                            firstTokenApplied = true;
                             assistantMsg.CompleteThinking(sw.ElapsedMilliseconds);
                             assistantMsg.Content = token;
                         }
@@ -2480,6 +2819,25 @@ public partial class ChatViewModel : ViewModelBase
                         ApplyThinking();
                     }
                 },
+                onRestart: () =>
+                {
+                    void ApplyRestart()
+                    {
+                        // 后端精简上下文后重新生成：上一次尝试的正文是废弃半成品，
+                        // 必须显式丢弃，否则新旧两次尝试会首尾相接变成重复内容
+                        firstTokenApplied = false;
+                        assistantMsg.Content = string.Empty;
+                    }
+
+                    if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
+                    {
+                        dispatcher.InvokeAsync(ApplyRestart);
+                    }
+                    else
+                    {
+                        ApplyRestart();
+                    }
+                },
                 onDone: result =>
                 {
                     final = result;
@@ -2488,12 +2846,28 @@ public partial class ChatViewModel : ViewModelBase
                     {
                         assistantMsg.IsLoading = false;
                         assistantMsg.CompleteThinking(sw.ElapsedMilliseconds);
-                        assistantMsg.Model = result.Model;
+                        // 优先用后端 done 帧 model_spec 确认的显示名（而非本地预测的模型 ID）
+                        assistantMsg.Model = string.IsNullOrEmpty(result.ModelDisplayName)
+                            ? result.Model
+                            : result.ModelDisplayName;
                         assistantMsg.Provider = result.Provider;
                         assistantMsg.ElapsedMs = result.ElapsedMs;
                         assistantMsg.Sources = result.Sources;
                         // 终帧后强制重新解析 Markdown,确保最终渲染完整(不受流式节流影响)
                         assistantMsg.ForceRefreshRender();
+                        // 后端自动路由的创作意图会回传实际生效人设；仅当其为创作模式且与当前
+                        // 不同时，静默同步人设下拉框（不重发请求），保证下一句请求与 UI 状态一致。
+                        if (!string.IsNullOrEmpty(result.Persona)
+                            && CreativePersonaIds.Contains(result.Persona!)
+                            && result.Persona != _selectedPersona?.Id)
+                        {
+                            var persona = AvailablePersonas.FirstOrDefault(x => x.Id == result.Persona);
+                            if (persona is not null)
+                            {
+                                _selectedPersona = persona;
+                                OnPropertyChanged(nameof(SelectedPersona));
+                            }
+                        }
                     }
 
                     if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
@@ -2505,7 +2879,7 @@ public partial class ChatViewModel : ViewModelBase
                         ApplyDone();
                     }
                 },
-                ct: _cts.Token);
+                ct: cts.Token);
 
             sw.Stop();
             DebugLog.Info(
@@ -2513,15 +2887,12 @@ public partial class ChatViewModel : ViewModelBase
                 $"收到done帧={(final is not null ? "是" : "否")} 总耗时{sw.ElapsedMilliseconds}ms",
                 "Chat");
 
-            // 终帧：回写多轮 chat_id + 来源 + 元数据（流式多轮不中断的关键）
+            // 终帧：回写多轮 chat_id + 元数据（消息属性已由 onDone 回调在 UI 线程写入，
+            // 此处不再重复赋值 Sources/Model/Provider/ElapsedMs）
             if (final is not null)
             {
                 var isNewChat = _chatId is null && !string.IsNullOrEmpty(final.ChatId);
                 _chatId = final.ChatId ?? _chatId;
-                assistantMsg.Sources = final.Sources;
-                assistantMsg.Model = final.Model;
-                assistantMsg.Provider = final.Provider;
-                assistantMsg.ElapsedMs = final.ElapsedMs;
                 // 状态统计：token 数（流式帧计数）+ 思考耗时文案
                 assistantMsg.TokenCount = tokenCount;
                 if (final.ElapsedMs > 0)
@@ -2530,7 +2901,7 @@ public partial class ChatViewModel : ViewModelBase
                 }
 
                 StatusMessage = $"模型: {final.Model} ({final.Provider}) · 引用 {final.TotalChunks} 块 · 耗时 {final.ElapsedMs}ms";
-                DebugLog.Info($"对话完成(流式): elapsed={final.ElapsedMs}ms model={final.Model} chunks={final.TotalChunks} sources={final.Sources.Count} chatId='{final.ChatId}'", "Chat");
+                DebugLog.Info($"对话完成(流式): elapsed={final.ElapsedMs}ms model={final.Model} chunks={final.TotalChunks} sources={final.Sources.Count} chatId='{final.ChatId}' partial={final.Partial}", "Chat");
 
                 // 新会话首条回答完成 → 刷新会话列表（标题/条数已生成），选中当前会话
                 if (isNewChat)
@@ -2541,13 +2912,34 @@ public partial class ChatViewModel : ViewModelBase
             else
             {
                 DebugLog.Warn("未收到 done 终帧：多轮 chat_id 未更新、来源/模型元数据缺失（后端可能异常中断流）", "Chat");
-                StatusMessage = $"对话完成 · 耗时 {sw.ElapsedMilliseconds}ms";
+                StatusMessage = "回答生成失败 · 连接中断";
+                // 流被对端关闭但没给终帧：同样收尾思考链路，避免「思考中/正在生成…」悬挂
+                assistantMsg.CompleteThinking(sw.ElapsedMilliseconds);
+                assistantMsg.FailThinkingStep("连接中断，未收到完成帧");
+                // 流中断时恢复输入框，避免用户丢失原始问题
+                if (tokenCount > 0)
+                {
+                    // 已收到部分 token 但终帧丢失：保留已生成内容，追加重试引导
+                    assistantMsg.Content += $"\n\n> ⚠️ 回答因连接中断未完成，以上为已生成的部分内容。";
+                    assistantMsg.Content += $"\n> 可点击「重新生成」获取完整回答。";
+                }
+                else
+                {
+                    assistantMsg.Content = "❌ 回答生成失败：与模型服务的连接中断，未收到完成帧。";
+                    assistantMsg.Content += $"\n\n💡 可能原因：";
+                    assistantMsg.Content += $"\n1. 模型服务暂时不可用或响应超时";
+                    assistantMsg.Content += $"\n2. 网络连接不稳定";
+                    assistantMsg.Content += $"\n3. 上下文过长（多个知识库 + 联网搜索结果拼接）导致超时";
+                    assistantMsg.Content += $"\n\n建议：点击「重新生成」重试，或减少勾选的知识库数量后重试。";
+                }
+                // 恢复原始问题到输入框，方便用户修改后重试
+                InputText = query;
             }
-
             assistantMsg.IsLoading = false;
-            if (string.IsNullOrEmpty(assistantMsg.Content))
+            // 后端声明的部分回答（网络中断/用户停止等）：追加警示说明，与正常完成区分
+            if (final is not null && final.Partial && !string.IsNullOrEmpty(final.Warning))
             {
-                assistantMsg.Content = "（无内容返回）";
+                assistantMsg.Content += $"\n\n> ⚠️ {final.Warning}";
             }
             UpdateMessageFlags();
         }
@@ -2556,6 +2948,8 @@ public partial class ChatViewModel : ViewModelBase
             sw.Stop();
             StatusMessage = "已停止生成";
             DebugLog.Info("对话已停止", "Chat");
+            assistantMsg.CompleteThinking(sw.ElapsedMilliseconds);
+            assistantMsg.FailThinkingStep(null, "已停止生成");
             if (string.IsNullOrEmpty(assistantMsg.Content))
             {
                 assistantMsg.Content = "（已停止生成）";
@@ -2571,6 +2965,10 @@ public partial class ChatViewModel : ViewModelBase
             DebugLog.Error($"对话 API 错误: code={ex.Code} message={ex.Message}", "Chat", ex);
             assistantMsg.IsLoading = false;
             assistantMsg.IsWaitingForFirstToken = false;
+            // 收尾思考链路：锁定耗时、关闭阶段胶囊、末尾「正在…」改为失败标记，
+            // 避免错误提示旁仍显示「正在生成回答…」
+            assistantMsg.CompleteThinking(sw.ElapsedMilliseconds);
+            assistantMsg.FailThinkingStep(ex.Message);
             if (string.IsNullOrWhiteSpace(assistantMsg.Content))
             {
                 // 首字都没收到：整条替换为错误提示
@@ -2594,6 +2992,8 @@ public partial class ChatViewModel : ViewModelBase
             DebugLog.Error($"对话连接失败: {ex.Message}", "Chat", ex);
             assistantMsg.IsLoading = false;
             assistantMsg.IsWaitingForFirstToken = false;
+            assistantMsg.CompleteThinking(sw.ElapsedMilliseconds);
+            assistantMsg.FailThinkingStep(ex.Message);
             assistantMsg.Content = $"❌ 无法连接到后端服务: {ex.Message}\n\n💡 请检查:\n1. 端口是否被占用\n2. 可尝试在【设置】中修改「后端连接地址」端口并保存";
             InputText = query;
         }
@@ -2604,11 +3004,15 @@ public partial class ChatViewModel : ViewModelBase
             DebugLog.Error($"对话未知异常: {ex.GetType().Name}: {ex.Message}", "Chat", ex);
             assistantMsg.IsLoading = false;
             assistantMsg.IsWaitingForFirstToken = false;
+            assistantMsg.CompleteThinking(sw.ElapsedMilliseconds);
+            assistantMsg.FailThinkingStep(ex.Message);
             assistantMsg.Content = $"❌ 错误：{ex.Message}";
             InputText = query;
         }
         finally
         {
+            timerCts.Cancel();
+            timerCts.Dispose();
             _cts?.Dispose();
             _cts = null;
             IsBusy = false;
@@ -2709,7 +3113,9 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
-    /// <summary>撤回用户消息并回填到输入框（可传入特定消息，默认撤回最后一条用户消息）。</summary>
+    /// <summary>撤回用户消息并回填到输入框。
+    /// 支持任意位置的用户消息：移除该消息及其后续所有消息（含对应的 AI 回答），
+    /// 回填到输入框供修改后重新发送。后续消息会作为新的轮次附加到现有对话中（保留多轮上下文）。</summary>
     [RelayCommand]
     private void Withdraw(ChatMessage? message = null)
     {
@@ -2723,6 +3129,7 @@ public partial class ChatViewModel : ViewModelBase
         }
         else
         {
+            // 默认撤回最后一条用户消息
             for (var i = Messages.Count - 1; i >= 0; i--)
             {
                 if (Messages[i].Role == "user")
@@ -2737,6 +3144,7 @@ public partial class ChatViewModel : ViewModelBase
             return;
 
         var content = Messages[userIdx].Content;
+        var removedCount = Messages.Count - userIdx;
         // 移除该用户消息及其后的所有消息（如对应的 AI 回答）
         while (Messages.Count > userIdx)
         {
@@ -2744,8 +3152,10 @@ public partial class ChatViewModel : ViewModelBase
         }
 
         InputText = content;
-        StatusMessage = "已撤回消息并回填至输入框";
-        DebugLog.Info($"已撤回用户消息: '{content}'", "Chat");
+        StatusMessage = removedCount > 2
+            ? $"已撤回第 {userIdx / 2 + 1} 轮对话（含 {removedCount - 1} 条后续消息）并回填至输入框"
+            : "已撤回消息并回填至输入框";
+        DebugLog.Info($"已撤回用户消息: idx={userIdx} removed={removedCount} content='{(content.Length > 50 ? content[..50] + "…" : content)}'", "Chat");
         UpdateMessageFlags();
     }
 
@@ -2903,7 +3313,10 @@ public partial class ChatViewModel : ViewModelBase
             ? slides[CurrentSlideIndex]
             : null;
 
-    /// <summary>幻灯片页码文案（如 "1 / 8"）。</summary>
+            /// <summary>是否存在可预览的当前幻灯片页（无则预览卡显示空状态提示）。</summary>
+            public bool HasSelectedSlide => SelectedSlide != null;
+
+            /// <summary>幻灯片页码文案（如 "1 / 8"）。</summary>
     public string SlideCountText => SelectedArtifact?.Slides is { Count: > 0 } slides
         ? $"{CurrentSlideIndex + 1} / {slides.Count}"
         : "0 / 0";
@@ -3088,6 +3501,53 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
+    /// <summary>自动导出创作物为物理文件（后台静默执行，不阻塞 UI）。</summary>
+    private async Task AutoExportArtifactAsync(ArtifactItem artifact)
+    {
+        try
+        {
+            // 延迟 500ms 等待流式完成渲染
+            await Task.Delay(500);
+
+            var fmt = artifact.Type;
+            var req = new CreativeExportRequest
+            {
+                Content = artifact.RawContent,
+                Format = fmt,
+                Title = artifact.Title,
+                Theme = artifact.Theme ?? "tech_blue",
+            };
+
+            var res = await _apiService.ExportCreativeArtifactAsync(req);
+            if (res.Ok && !string.IsNullOrWhiteSpace(res.FilePath))
+            {
+                StatusMessage = $"✅ 已自动导出 {fmt.ToUpperInvariant()}：{res.FileName}";
+                DebugLog.Info($"自动导出创作物成功: path={res.FilePath} size={res.FileSizeBytes}", "Chat");
+
+                // 尝试在 Windows 资源管理器中高亮选中生成的文件
+                try
+                {
+                    if (System.IO.File.Exists(res.FilePath))
+                    {
+                        Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{res.FilePath}\"") { UseShellExecute = true });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Warn($"在资源管理器中定位自动导出文件异常: {ex.Message}", "Chat");
+                }
+            }
+            else
+            {
+                DebugLog.Warn($"自动导出创作物失败: {res.Error}", "Chat");
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"自动导出创作物异常（不影响对话）: {ex.Message}", "Chat");
+        }
+    }
+
     private PptInspectionReportDto? _inspectionReport;
     private bool _isInspectionReportOpen;
 
@@ -3250,7 +3710,7 @@ public partial class ChatViewModel : ViewModelBase
         IsArtifactMode = false;
         SelectedSource = src;
         IsSourceDrawerOpen = true;
-        StatusMessage = $"查看切片出处：{src.DisplayTitle} (相似度: {src.Score:F2})";
+        StatusMessage = $"查看切片出处：{src.DisplayTitle} ({src.ScoreBadgeText})";
         DebugLog.Info($"展开引用来源抽屉: index={src.Index} source={src.Source} page={src.Page}", "Chat");
     }
 
@@ -3402,7 +3862,7 @@ public partial class ChatViewModel : ViewModelBase
         sb.AppendLine($"# DocMind 对话记录导出");
         sb.AppendLine($"- **导出时间**：{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         sb.AppendLine($"- **会话 ID**：{_chatId ?? "临时会话"}");
-        sb.AppendLine($"- **使用模型**：{SelectedModel}");
+        sb.AppendLine($"- **使用模型**：{EffectiveModel}");
         sb.AppendLine();
         sb.AppendLine("---");
         sb.AppendLine();
@@ -3426,7 +3886,7 @@ public partial class ChatViewModel : ViewModelBase
                     sb.AppendLine("**📚 引用参考资料：**");
                     foreach (var s in msg.Sources)
                     {
-                        sb.AppendLine($"- [{s.Index}] `{s.Source}` (相似度: {s.Score:F2})");
+                        sb.AppendLine($"- [{s.Index}] `{s.Source}` ({s.ScoreBadgeText})");
                     }
                     sb.AppendLine();
                 }
@@ -3549,18 +4009,34 @@ public partial class ChatViewModel : ViewModelBase
                 return;
             }
 
-            var current = SelectedModel;
-            AvailableModels.Clear();
-            AvailableModels.Add(DefaultModelLabel);
+            // 拉取结果并入「默认提供商」分组（保留种子模型）；选中项由 RebuildModelChoices 保留，不改全局配置
+            _defaultProviderModels.Clear();
+            if (!string.IsNullOrWhiteSpace(_configuredModel))
+            {
+                _defaultProviderModels.Add(_configuredModel);
+            }
+            // 持久化的「默认提供商分组」选择保留在候选池：拉取结果不含它时也不会丢失选择
+            if (string.IsNullOrWhiteSpace(_appSettings.LastChatProfileId)
+                && !string.IsNullOrWhiteSpace(_appSettings.LastChatModel))
+            {
+                _defaultProviderModels.Add(_appSettings.LastChatModel.Trim());
+            }
             foreach (var m in result.Models)
             {
                 if (!string.IsNullOrWhiteSpace(m))
                 {
-                    AvailableModels.Add(m);
+                    _defaultProviderModels.Add(m);
                 }
             }
-            // 保留用户此前选择（已不在列表中则回到默认）
-            SelectedModel = AvailableModels.Contains(current) ? current : DefaultModelLabel;
+            if (!string.IsNullOrWhiteSpace(result.Provider) && result.Provider != _configuredProvider)
+            {
+                _configuredProvider = result.Provider;
+                OnPropertyChanged(nameof(EffectiveProvider));
+                OnPropertyChanged(nameof(EffectiveModelSummary));
+                OnPropertyChanged(nameof(IsLlmConfigured));
+                OnPropertyChanged(nameof(EmptyGuideText));
+            }
+            RebuildModelChoices();
             StatusMessage = $"✅ 获取到 {result.Models.Count} 个模型（{result.Provider}）";
             DebugLog.Info($"对话页模型列表: provider={result.Provider} count={result.Models.Count}", "Chat");
         }
@@ -3571,7 +4047,8 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
-    /// <summary>种子模型：从后端配置取当前 llm_model 加入候选（未拉列表前至少能看到配置值）。</summary>
+    /// <summary>种子默认提供商候选：从后端配置取 llm_provider/llm_model（未拉列表前至少能看到配置值）。
+    /// 同步后统一重建候选：首项「默认 · xx」显示名与默认提供商分组都会随后端配置更新。</summary>
     private async Task SeedModelFromConfigAsync()
     {
         try
@@ -3583,210 +4060,19 @@ public partial class ChatViewModel : ViewModelBase
             OnPropertyChanged(nameof(EffectiveProvider));
             OnPropertyChanged(nameof(EffectiveModel));
             OnPropertyChanged(nameof(EffectiveModelSummary));
-            if (!string.IsNullOrWhiteSpace(model) && !AvailableModels.Contains(model))
+            OnPropertyChanged(nameof(IsLlmConfigured));
+            OnPropertyChanged(nameof(EmptyGuideText));
+            if (!string.IsNullOrWhiteSpace(model)
+                && !_defaultProviderModels.Any(m => string.Equals(m.Trim(), model.Trim(), StringComparison.OrdinalIgnoreCase)))
             {
-                AvailableModels.Add(model);
+                _defaultProviderModels.Add(model.Trim());
             }
+            // 模型名可能变化（首项显示「默认 · xx」），统一重建候选（保留当前选中项）
+            RebuildModelChoices();
         }
         catch (Exception ex)
         {
             DebugLog.Debug($"读取后端配置种子模型失败（忽略）: {ex.Message}", "Chat");
-        }
-    }
-
-    /// <summary>切换档案：把档案（提供商/Key/地址/模型/温度/token）推送后端生效（免重启），
-    /// 并同步本地 AppSettings（重启后端后经环境变量仍生效），随后刷新模型列表并重置模型选中。
-    /// profile 为 null = 切回「设置页默认」（仅重置模型选中，不改后端配置）。</summary>
-    private async Task ApplyProfileSwitchAsync(LlmProfile? profile)
-    {
-        if (IsSwitchingProfile)
-        {
-            return;
-        }
-        if (profile is null)
-        {
-            // 切回设置页默认：重置模型选中为「默认」，并重新种子当前后端配置的模型
-            SelectedModel = DefaultModelLabel;
-            AvailableModels.Clear();
-            AvailableModels.Add(DefaultModelLabel);
-            _ = SeedModelFromConfigAsync();
-            StatusMessage = "已切回设置页默认模型配置";
-            return;
-        }
-
-        IsSwitchingProfile = true;
-        try
-        {
-            StatusMessage = $"正在切换档案「{profile.Name}」…";
-            DebugLog.Info($"对话页切换档案: name={profile.Name} provider={profile.Provider}", "Chat");
-
-            // 推送后端（免重启生效）；失败不阻断本地保存（重启后端后经环境变量生效）
-            var pushFailed = false;
-            try
-            {
-                await _apiService.UpdateConfigAsync(new BackendConfigUpdate
-                {
-                    LlmProvider = profile.Provider,
-                    LlmApiKey = profile.ApiKey,
-                    LlmBaseUrl = profile.BaseUrl,
-                    LlmModel = profile.Model,
-                    LlmTemperature = profile.Temperature,
-                    LlmMaxTokens = profile.MaxTokens,
-                });
-            }
-            catch (Exception ex)
-            {
-                pushFailed = true;
-                DebugLog.Warn($"对话页切换档案后端推送失败（重启后生效）: {ex.Message}", "Chat");
-            }
-
-            // 同步本地 AppSettings 当前 LLM 字段 + 记录激活档案并落盘
-            _appSettings.LlmProvider = profile.Provider;
-            _appSettings.LlmApiKey = profile.ApiKey;
-            _appSettings.LlmBaseUrl = profile.BaseUrl;
-            _appSettings.LlmModel = profile.Model ?? "";
-            if (profile.Temperature is not null)
-            {
-                _appSettings.LlmTemperature = profile.Temperature.Value;
-            }
-            if (profile.MaxTokens is not null)
-            {
-                _appSettings.LlmMaxTokens = profile.MaxTokens.Value;
-            }
-            _appSettings.ActiveProfileId = profile.Id;
-            _appSettings.Save();
-
-            // 重置模型选中为「默认」，并把该服务商全部模型载入候选（默认模型若不在候选则追加）
-            SelectedModel = DefaultModelLabel;
-            AvailableModels.Clear();
-            AvailableModels.Add(DefaultModelLabel);
-            var hasDefault = false;
-            foreach (var m in profile.Models ?? new List<string>())
-            {
-                if (!string.IsNullOrWhiteSpace(m))
-                {
-                    AvailableModels.Add(m.Trim());
-                    if (string.Equals(m.Trim(), profile.Model?.Trim(), StringComparison.OrdinalIgnoreCase))
-                    {
-                        hasDefault = true;
-                    }
-                }
-            }
-            if (!string.IsNullOrWhiteSpace(profile.Model) && !hasDefault)
-            {
-                AvailableModels.Add(profile.Model.Trim());
-            }
-            StatusMessage = pushFailed
-                ? $"⚠ 已切换服务商「{profile.Name}」（后端推送失败，重启后端后生效）"
-                : $"✅ 已切换服务商「{profile.Name}」（{profile.Provider} / {profile.Model ?? "默认模型"}）";
-            _notifications?.Success($"已切换到服务商「{profile.Name}」", "切换服务商");
-            await RefreshModelsAsync();
-            // RefreshModelsAsync 会用拉取结果重建候选；把该服务商自带模型补回（并集），
-            // 保证「服务商的全部模型」不因拉取结果缺失而丢失
-            foreach (var m in profile.Models ?? new List<string>())
-            {
-                var t = m.Trim();
-                if (!string.IsNullOrWhiteSpace(t) && !AvailableModels.Contains(t))
-                {
-                    AvailableModels.Add(t);
-                }
-            }
-            // RefreshModelsAsync 会覆盖 StatusMessage，恢复切换结果提示
-            StatusMessage = pushFailed
-                ? $"⚠ 已切换服务商「{profile.Name}」（后端推送失败，重启后端后生效）"
-                : $"✅ 已切换服务商「{profile.Name}」（{profile.Provider} / {profile.Model ?? "默认模型"}）";
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"❌ 切换服务商失败: {ex.Message}";
-            DebugLog.Error($"对话页切换服务商异常: {ex.Message}", "Chat", ex);
-        }
-        finally
-        {
-            IsSwitchingProfile = false;
-        }
-    }
-
-    /// <summary>切换到内置预设：填入提供商/地址与推荐模型候选（不改 Key——内置预设无 Key，
-    /// 沿用后端当前已配置的 Key 或提示到设置页填写），模型下拉默认选中预设默认模型。</summary>
-    private async Task ApplyPresetSwitchAsync(LlmPreset preset)
-    {
-        if (IsSwitchingProfile)
-        {
-            return;
-        }
-
-        IsSwitchingProfile = true;
-        try
-        {
-            StatusMessage = $"正在应用预设「{preset.DisplayName}」…";
-            DebugLog.Info($"对话页应用内置预设: {preset.Id} provider={preset.Provider}", "Chat");
-
-            // 推送后端（provider/地址/默认模型；Key 沿用后端当前配置）
-            var pushFailed = false;
-            try
-            {
-                await _apiService.UpdateConfigAsync(new BackendConfigUpdate
-                {
-                    LlmProvider = preset.Provider,
-                    LlmBaseUrl = preset.BaseUrl,
-                    LlmModel = preset.DefaultModel,
-                });
-            }
-            catch (Exception ex)
-            {
-                pushFailed = true;
-                DebugLog.Warn($"对话页应用预设后端推送失败（重启后生效）: {ex.Message}", "Chat");
-            }
-
-            // 同步本地 AppSettings（Key 保留原值，不清除）
-            _appSettings.LlmProvider = preset.Provider;
-            _appSettings.LlmBaseUrl = preset.BaseUrl;
-            _appSettings.LlmModel = preset.DefaultModel;
-            _appSettings.ActiveProfileId = null;
-            _appSettings.Save();
-
-            // 模型候选 = 预设推荐模型；默认选中预设默认模型，仍可自由切换
-            SelectedModel = DefaultModelLabel;
-            AvailableModels.Clear();
-            AvailableModels.Add(DefaultModelLabel);
-            foreach (var m in preset.RecommendedModels)
-            {
-                if (!string.IsNullOrWhiteSpace(m))
-                {
-                    AvailableModels.Add(m);
-                }
-            }
-            if (!AvailableModels.Contains(preset.DefaultModel))
-            {
-                AvailableModels.Add(preset.DefaultModel);
-            }
-            StatusMessage = pushFailed
-                ? $"⚠ 已应用预设「{preset.DisplayName}」（后端推送失败，重启后端后生效）"
-                : $"✅ 已应用预设「{preset.DisplayName}」：请在设置页填入该服务商 API Key 后使用";
-            _notifications?.Info($"已应用预设「{preset.DisplayName}」，请确认 API Key 已配置", "切换服务商");
-            await RefreshModelsAsync();
-            // RefreshModelsAsync 会用拉取结果重建候选；把预设推荐模型补回（并集）
-            foreach (var m in preset.RecommendedModels)
-            {
-                if (!string.IsNullOrWhiteSpace(m) && !AvailableModels.Contains(m))
-                {
-                    AvailableModels.Add(m);
-                }
-            }
-            // RefreshModelsAsync 会覆盖 StatusMessage，恢复应用预设结果提示
-            StatusMessage = pushFailed
-                ? $"⚠ 已应用预设「{preset.DisplayName}」（后端推送失败，重启后端后生效）"
-                : $"✅ 已应用预设「{preset.DisplayName}」：请在设置页填入该服务商 API Key 后使用";
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"❌ 应用预设失败: {ex.Message}";
-            DebugLog.Error($"对话页应用预设异常: {ex.Message}", "Chat", ex);
-        }
-        finally
-        {
-            IsSwitchingProfile = false;
         }
     }
 
@@ -3807,19 +4093,6 @@ public sealed record ModelChoice(string DisplayName, LlmProfile? Provider, strin
 {
     /// <summary>是否「设置页默认」伪项（用后端全局配置，请求不携带 providerConfig）。</summary>
     public bool IsDefault => Provider is null && Model is null;
-
-    public override string ToString() => DisplayName;
-}
-
-/// <summary>服务商下拉项：DisplayName 显示文本；Profile 非空 = 自定义服务商；Preset 非空 = 内置预设；两者皆空 = 「设置页默认」伪项。</summary>
-public sealed record ProfileOption(string DisplayName, LlmProfile? Profile, LlmPreset? Preset = null)
-{
-    public bool IsCustom => Profile is not null;
-
-    public bool IsBuiltIn => Preset is not null;
-
-    /// <summary>是否「设置页默认」伪项。</summary>
-    public bool IsDefault => Profile is null && Preset is null;
 
     public override string ToString() => DisplayName;
 }

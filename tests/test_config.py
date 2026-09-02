@@ -6,7 +6,12 @@ import os
 
 import pytest
 
+import doc2mind.core.config as _config_mod
 from doc2mind.core.config import Settings, get_settings, set_settings
+
+# 捕获真实实现：下方 autouse fixture 会把 load_config_file 替换为 lambda，
+# 测试「旧 config.toml 键映射」时需要调用原始实现而非 stub
+_ORIGINAL_LOAD_CONFIG = _config_mod.load_config_file
 
 
 @pytest.fixture(autouse=True)
@@ -161,6 +166,44 @@ class TestSettings:
         assert get_settings().server_port == 1234
         # 恢复
         set_settings(Settings())
+
+    def test_history_messages_default(self) -> None:
+        """AUD-011：字段更名后默认值与语义（消息条数而非轮数）。"""
+        s = Settings()
+        assert s.rag_max_history_messages == 20
+        assert not hasattr(s, "rag_max_history_turns")
+
+    def test_legacy_history_turns_env_mapped(self) -> None:
+        """旧环境变量 DOC2MIND_RAG_MAX_HISTORY_TURNS 兼容读取（AUD-011）。"""
+        os.environ["DOC2MIND_RAG_MAX_HISTORY_TURNS"] = "6"
+        try:
+            s = Settings.from_env()
+            assert s.rag_max_history_messages == 6
+        finally:
+            del os.environ["DOC2MIND_RAG_MAX_HISTORY_TURNS"]
+
+    def test_new_history_messages_env_wins_over_legacy(self) -> None:
+        """新旧环境变量同时存在时新名优先（AUD-011）。"""
+        os.environ["DOC2MIND_RAG_MAX_HISTORY_TURNS"] = "6"
+        os.environ["DOC2MIND_RAG_MAX_HISTORY_MESSAGES"] = "8"
+        try:
+            s = Settings.from_env()
+            assert s.rag_max_history_messages == 8
+        finally:
+            del os.environ["DOC2MIND_RAG_MAX_HISTORY_TURNS"]
+            del os.environ["DOC2MIND_RAG_MAX_HISTORY_MESSAGES"]
+
+    def test_legacy_history_turns_toml_key_mapped(self, tmp_path, monkeypatch) -> None:
+        """旧 config.toml 键 rag_max_history_turns → rag_max_history_messages（AUD-011）。"""
+        import pathlib
+
+        cfg = pathlib.Path(tmp_path) / "config.toml"
+        cfg.write_text('[doc2mind]\nrag_max_history_turns = 5\n', encoding="utf-8")
+        monkeypatch.setattr("doc2mind.core.config.config_file_path", lambda: cfg)
+        # 恢复真实的 load_config_file（autouse fixture 的 stub 在此被覆盖）
+        monkeypatch.setattr(_config_mod, "load_config_file", _ORIGINAL_LOAD_CONFIG)
+        loaded = _config_mod.load_config_file()
+        assert loaded["rag_max_history_messages"] == 5
 
     def test_watch_paths_from_env(self) -> None:
         os.environ["DOC2MIND_WATCH_PATHS"] = "C:/docs, D:/notes/kb , /var/data"

@@ -1,20 +1,23 @@
-"""MCP Server — 暴露 12 个工具给 Cursor / Claude Desktop / Windsurf 等 AI 工具。
+"""MCP Server — 暴露 15 个工具给 Cursor / Claude Desktop / Windsurf 等 AI 工具。
 
 传输方式：stdio（MCP 默认）
 
 暴露的工具：
-    ingest         path, collection="default", recursive=False, force=False
-    search         query, collection="default", top_k=10
-    ingest_text    text, title="", collection=None（AI 自动归类）, force=False
-    ingest_job     path, collection="default", recursive=False, force=False
-    get_job        job_id
-    list_docs      collection=None, limit=50
-    remove_doc     target (file path or doc_id), collection="default"
-    quality_check  collection="default"
-    convert_file   input_path, output_format="md"
-    reindex        collection="default", model=None
-    chat           query, collection="default", top_k=5, chat_id=None
-    curate         collection=None, actions=None, dry_run=True, top_k=10
+    ingest           path, collection="default", recursive=False, force=False
+    search           query, collection="default", top_k=10
+    ingest_text      text, title="", collection=None（AI 自动归类）, force=False
+    ingest_job       path, collection="default", recursive=False, force=False
+    get_job          job_id
+    list_docs        collection=None, limit=50
+    remove_doc       target (file path or doc_id), collection="default"
+    quality_check    collection="default"
+    convert_file     input_path, output_format="md"
+    reindex          collection="default", model=None
+    chat             query, collection="default", top_k=5, chat_id=None
+    curate           collection=None, actions=None, dry_run=True, top_k=10
+    graph_get        collection="default", limit=100
+    create_artifact  content, format="docx", output_path=None, title=None, theme=None
+    inspect_artifact content
 
 启动：
     doc2mind mcp
@@ -43,6 +46,7 @@ from doc2mind.core.embedder import get_embedder
 from doc2mind.core.loader.detect import get_loader, is_supported
 from doc2mind.core.pipeline import ingest_path, ingest_text
 from doc2mind.core.rag import RagError, rag_answer
+from doc2mind.core.reranker import get_reranker
 from doc2mind.core.retriever.search import Retriever
 from doc2mind.core.store.sqlite_vec import VectorStore
 
@@ -230,13 +234,19 @@ def _tool_search(
     query: str,
     collection: str = "default",
     top_k: int = 10,
+    min_score: float = 0.0,
 ) -> str:
     """混合检索 Top-K。"""
     store, embedder = _open_store()
     try:
-        retriever = Retriever(store=store, embedder=embedder)
+        retriever = Retriever(
+            store=store,
+            embedder=embedder,
+            reranker=get_reranker(get_settings()),
+            rerank_recall=get_settings().rerank_recall,
+        )
         hits, stats = retriever.search(
-            query=query, collection=collection, top_k=top_k
+            query=query, collection=collection, top_k=top_k, min_score=min_score
         )
     finally:
         store.close()
@@ -245,11 +255,18 @@ def _tool_search(
         "query": query,
         "total": len(hits),
         "elapsed_ms": stats.elapsed_ms,
+        "degraded": stats.degraded,
+        # message：min_score 越界被忽略 / 降级原因等 agent 提示；None=无
+        "message": stats.message,
         "hits": [
             {
                 "rank": h.rank,
                 "score": round(h.score, 4),
                 "match_type": h.match_type,
+                "vector_score": round(h.vector_score, 4),
+                "bm25_score": round(h.bm25_score, 4),
+                # 重排分（已 sigmoid 归一化 0-1）；None=未启用重排
+                "rerank_score": round(h.rerank_score, 4) if h.rerank_score is not None else None,
                 "source": h.chunk.source,
                 "format": h.chunk.format,
                 "page": h.chunk.page,
@@ -339,8 +356,6 @@ def _tool_quality_check(collection: str = "default") -> str:
                     f"({d.size_bytes / (1024 * 1024):.1f} MB)，建议拆分后导入"
                 )
         warnings = warnings[:20]
-        if not warnings and docs:
-            warnings.append("未发现质量问题")
 
         return _ok({
             "collection": collection,
@@ -514,6 +529,10 @@ def _tool_chat(
                 "page": s.page,
                 "heading": s.heading,
                 "score": s.score,
+                # score 量纲：rerank(0-1 sigmoid)/vector(0-1 相似度)/
+                # bm25(0-1 关键词匹配)/rrf(排名分 ~0.016-0.033)/
+                # web_relevance/attachment；agent 据此判断可信度
+                "score_type": s.score_type,
             }
             for s in answer.sources
         ],
@@ -659,13 +678,18 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
     },
     {
         "name": "search",
-        "description": "在知识库中执行混合检索（BM25 + 向量余弦，RRF 融合），返回 Top-K 命中分块。",
+        "description": (
+            "在知识库中执行混合检索（BM25 + 向量余弦，RRF 融合），返回 Top-K 命中分块。"
+            "score 为 RRF 融合分（约 0.016~0.033，只代表排名贡献、不代表语义相关度）；"
+            "判断相关性请参考每条命中的 vector_score（余弦相似度）与 bm25_score（归一化关键词强度）。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "搜索查询词。"},
                 "collection": {"type": "string", "default": "default"},
                 "top_k": {"type": "integer", "default": 10, "minimum": 1, "maximum": 100},
+                "min_score": {"type": "number", "default": 0.0, "description": "低于该 RRF 融合分的结果被丢弃（0 = 不过滤）。"},
             },
             "required": ["query"],
         },

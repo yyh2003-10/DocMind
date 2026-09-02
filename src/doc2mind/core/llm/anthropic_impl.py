@@ -7,11 +7,21 @@ OpenAI 格式不兼容，需要单独实现消息转换与 SSE 解析。
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterator
+from typing import Any
 
 import httpx
 
-from doc2mind.core.llm.base import LLMClient, LLMError, sanitize_max_tokens
+from doc2mind.core.llm.base import (
+    LLMClient,
+    LLMError,
+    is_transient_network_error,
+    merge_stream_retry_text,
+    sanitize_max_tokens,
+)
+
+logger = logging.getLogger(__name__)
 
 _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -80,6 +90,17 @@ class AnthropicClient(LLMClient):
             "content-type": "application/json",
         }
 
+    def _enable_thinking(self) -> bool:
+        """是否启用 extended thinking：注册表标记的推理模型（如 claude-3-7-sonnet）
+        或名字显式含 thinking 的变体。其余 Claude 型号不带 thinking 参数，
+        保持与不支持该特性的网关/代理兼容。"""
+        from doc2mind.core.llm.model_registry import get_model_spec
+
+        return (
+            get_model_spec(self._model, self.provider).is_reasoning_model
+            or "thinking" in self._model.lower()
+        )
+
     def _payload(
         self,
         messages: list[dict],
@@ -100,6 +121,16 @@ class AnthropicClient(LLMClient):
         }
         if system:
             payload["system"] = system
+        if self._enable_thinking():
+            total = payload["max_tokens"]
+            # API 约束：1024 <= budget_tokens < max_tokens；不满足时宁可不启用
+            if total > 1024:
+                payload["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": min(max(1024, total // 2), total - 1),
+                }
+                # extended thinking 要求 temperature=1；省略即服务端默认值
+                payload.pop("temperature", None)
         return payload
 
     def list_models(self, timeout: float | None = None) -> list[str]:
@@ -158,19 +189,54 @@ class AnthropicClient(LLMClient):
         messages: list[dict],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        stop_event: Any | None = None,
     ) -> Iterator[str]:
-        import httpx
+        """兼容入口：只吐正文 token（旧调用方/测试用）。"""
+        for kind, text in self._do_stream_chat_tagged(messages, temperature, max_tokens, stop_event):
+            if kind == "content" and text:
+                yield text
+
+    def _do_stream_chat_tagged(
+        self,
+        messages: list[dict],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        stop_event: Any | None = None,
+    ) -> Iterator[tuple[str, str]]:
+        """流式产出 (kind, text) 帧：thinking_delta（extended thinking 思考链）
+        走 thinking 帧，text_delta 正文走 content。未启用 thinking 的请求
+        只会有 text_delta，行为与旧实现一致。带网络抖动自动重试与平滑收尾保护。"""
+        import random
+        import time
 
         url = f"{self._base_url}/v1/messages"
-        try:
-            with httpx.Client(timeout=self._timeout) as client, client.stream(
+        max_attempts = 3
+        backoff = 1.0
+        emitted_parts: list[str] = []
+        last_exc: Exception | None = None
+        retry_mode = False
+
+        for attempt in range(max_attempts):
+            try:
+                retry_messages = list(messages)
+                if emitted_parts:
+                    # 断点续传：将已生成正文加入上下文无缝续写
+                    retry_messages.append({"role": "assistant", "content": "".join(emitted_parts)})
+                    retry_messages.append({
+                        "role": "user",
+                        "content": "请从上述已生成的末尾直接无缝继续写，不要重复已生成内容，直接输出后续正文：",
+                    })
+
+                with httpx.Client(timeout=self._timeout) as client, client.stream(
                     "POST",
                     url,
-                    json=self._payload(messages, temperature, max_tokens, stream=True),
+                    json=self._payload(retry_messages, temperature, max_tokens, stream=True),
                     headers=self._headers(),
                 ) as response:
                     self._raise_for_status(response)
                     for line in response.iter_lines():
+                        if stop_event is not None and stop_event.is_set():
+                            return
                         if not line.startswith("data:"):
                             continue
                         raw = line[len("data:"):].strip()
@@ -181,19 +247,47 @@ class AnthropicClient(LLMClient):
                         except json.JSONDecodeError:
                             continue
                         if event.get("type") == "content_block_delta":
-                            text = event.get("delta", {}).get("text", "")
-                            if text:
-                                yield text
+                            delta = event.get("delta", {})
+                            if delta.get("type") == "thinking_delta":
+                                thought = delta.get("thinking", "")
+                                if thought:
+                                    yield ("thinking", thought)
+                            else:
+                                text = delta.get("text", "")
+                                if text:
+                                    if retry_mode:
+                                        text = merge_stream_retry_text("".join(emitted_parts), text)
+                                        retry_mode = False
+                                    if text:
+                                        emitted_parts.append(text)
+                                        yield ("content", text)
                         elif event.get("type") == "error":
                             raise LLMError(f"Anthropic 流式返回错误: {event.get('error', {}).get('message', raw)}")
-        except LLMError:
-            raise
-        except httpx.RequestError as e:
-            raise LLMError(
-                f"无法连接 Anthropic API ({self._base_url})，请检查网络或 API 地址: {e}"
-            ) from e
-        except Exception as e:
-            raise LLMError(f"Anthropic 流式调用失败: {e}") from e
+                return
+            except LLMError:
+                raise
+            except Exception as e:
+                last_exc = e
+                total_len = len("".join(emitted_parts))
+                if attempt < max_attempts - 1 and is_transient_network_error(e):
+                    time.sleep(backoff * (2**attempt) + random.uniform(0, 0.5))
+                    retry_mode = True
+                    continue
+                if total_len >= 10 and is_transient_network_error(e):
+                    logger.warning(
+                        "Anthropic 流式传输中途连接断开/抖动，已安全保留已生成的 %d 字符完整内容: %s",
+                        total_len,
+                        e,
+                    )
+                    return
+                if isinstance(e, httpx.RequestError):
+                    raise LLMError(
+                        f"无法连接 Anthropic API ({self._base_url})，请检查网络或 API 地址: {e}"
+                    ) from e
+                raise LLMError(f"Anthropic 流式调用失败: {e}") from e
+
+        if last_exc:
+            raise LLMError(f"Anthropic 流式调用失败: {last_exc}") from last_exc
 
     @staticmethod
     def _raise_for_status(resp: httpx.Response) -> None:

@@ -14,7 +14,8 @@ namespace DocMind.Tests;
 public class ChatViewModelTests
 {
     private static ChatViewModel CreateVm(FakeDoc2kbApiService fake)
-        => new(fake);
+        // 默认已配置 LLM（模拟正常可用环境）；「未配置」场景的测试需显式传 new AppSettings()
+        => new(fake, null, new AppSettings { LlmProvider = "openai" });
 
     private static FakeDoc2kbApiService CreateFake()
     {
@@ -534,7 +535,7 @@ public class ChatViewModelTests
     }
 
     [Fact]
-    public async Task RefreshModels_FillsAvailableModelsAndKeepsDefault()
+    public async Task RefreshModels_FillsDefaultProviderGroupAndKeepsSelection()
     {
         var fake = CreateFake();
         fake.OnLlmModels = (_, _) => Task.FromResult(new LlmModelsResult
@@ -547,9 +548,9 @@ public class ChatViewModelTests
         var vm = CreateVm(fake);
         await vm.RefreshModelsCommand.ExecuteAsync(null);
 
-        Assert.Equal(3, vm.AvailableModels.Count); // 默认伪值 + 2 个模型
-        Assert.Equal(ChatViewModel.DefaultModelLabel, vm.AvailableModels[0]);
-        Assert.Contains("qwen2.5:7b", vm.AvailableModels);
+        // 拉取结果并入「默认提供商」分组（Provider 为空、非默认伪项）
+        Assert.Contains(vm.ModelChoices, c => c.Provider is null && !c.IsDefault && c.Model == "qwen2.5:7b");
+        Assert.Contains(vm.ModelChoices, c => c.Provider is null && !c.IsDefault && c.Model == "llama3.2:latest");
         Assert.Equal(ChatViewModel.DefaultModelLabel, vm.SelectedModel); // 不改变当前选择
     }
 
@@ -567,7 +568,8 @@ public class ChatViewModelTests
         var vm = CreateVm(fake);
         await vm.RefreshModelsCommand.ExecuteAsync(null);
 
-        Assert.Single(vm.AvailableModels); // 仅剩默认伪值
+        Assert.Single(vm.ModelChoices); // 仅剩默认伪项，列表不变
+        Assert.True(vm.ModelChoices[0].IsDefault);
         Assert.Contains("获取模型列表失败", vm.StatusMessage);
     }
 
@@ -769,6 +771,67 @@ public class ChatViewModelTests
         });
     }
 
+    [Fact]
+    public void MarkdownCodeBlock_ContentIsRendered_NotDropped()
+    {
+        // 回归防护：AI 写代码类回答曾出现「气泡里只剩标题、代码块整块消失」。
+        // 仅断言 Blocks 非空测不出代码块被丢，必须校验代码文本确实渲染到了 FlowDocument。
+        RunOnSta(() =>
+        {
+            var msg = new ChatMessage { Role = "assistant" };
+            msg.Content = "### 代码示例\n\n```python\nimport os\nprint(os.getcwd())\n```\n\n结尾说明。";
+
+            Assert.NotNull(msg.RenderedDocument);
+            var paras = FindParagraphs(msg.RenderedDocument!).ToList();
+            var texts = paras.Select(TextOf).ToList();
+
+            Assert.Contains(texts, t => t.Contains("代码示例"));
+            Assert.Contains(texts, t => t.Contains("os.getcwd"));
+            Assert.Contains(texts, t => t.Contains("结尾说明"));
+        });
+    }
+
+    [Fact]
+    public async Task SendAsync_ThinkingFrameMidStream_DoesNotWipeAlreadyStreamedContent()
+    {
+        // 回归防护：推理模型的 reasoning_content、上下文溢出重试状态帧、生成结束后的
+        // Agent 自省帧，都会在正文流到一半时到达。此前 ApplyToken 用
+        // IsThinkingInProgress/IsWaitingForFirstToken 判定「首帧」，这些帧会把标志复位成
+        // True，导致下一个 token 走 Content = token 覆盖分支，把已累积的正文整体抹掉，
+        // 表现为「回答只剩标题 / 只剩最后一段」。
+        var fake = CreateFake();
+        fake.OnChatStreamWithStatus = (_, onToken, onDone, onStatus, onThinking, _) =>
+        {
+            onStatus?.Invoke("正在检索知识库...");
+            onToken("### 代码示例\n\n");
+            // 正文流到一半时插入推理链帧（此前会触发正文被清空）
+            onThinking?.Invoke("让我先想想用哪种写法");
+            onToken("```python\nprint('hi')\n```");
+            onDone(new ChatStreamResult { ChatId = "chat-test123", Model = "mock-model", Provider = "mock" });
+            return Task.FromResult(new ChatStreamResult { ChatId = "chat-test123", Model = "mock-model", Provider = "mock" });
+        };
+        var vm = CreateVm(fake);
+
+        vm.InputText = "写个 python 程序";
+        await vm.SendCommand.ExecuteAsync(null);
+
+        var assistantMsg = vm.Messages.LastOrDefault(m => m.Role == "assistant");
+        Assert.NotNull(assistantMsg);
+        Assert.Contains("代码示例", assistantMsg!.Content);
+        Assert.Contains("print('hi')", assistantMsg.Content);
+    }
+
+    private static string TextOf(Paragraph p)
+        => string.Concat(p.Inlines.SelectMany(FlattenRuns).Select(r => r.Text));
+
+    private static IEnumerable<Run> FlattenRuns(Inline inline) => inline switch
+    {
+        Run r => new[] { r },
+        Hyperlink h => h.Inlines.SelectMany(FlattenRuns),
+        Span sp => sp.Inlines.SelectMany(FlattenRuns),
+        _ => Enumerable.Empty<Run>(),
+    };
+
     private static IEnumerable<Paragraph> FindParagraphs(FlowDocument doc)
         => doc.Blocks.SelectMany(FindParagraphs);
 
@@ -905,9 +968,95 @@ public class ChatViewModelTests
         // token 统计与搜索摘要
         Assert.Equal(2, msg.TokenCount);
         Assert.Equal("搜索到 2 个网页 · 浏览 1 个页面", msg.SearchSummaryText);
-        Assert.Contains("2 tok", msg.TokenStatText);
+        Assert.Contains("2 帧", msg.TokenStatText);
         Assert.Contains("3 个来源", msg.TokenStatText);
         Assert.Contains("5000ms", msg.TokenStatText);
+    }
+
+    [Fact]
+    public async Task SendAsync_StreamStatusThenApiError_FinalizesThinkingSteps()
+    {
+        // 回归：流式状态发出后 API 报错，末尾「正在生成回答...」不得悬挂，
+        // 阶段胶囊（ShowStatus）与等待首字状态必须关闭（错误提示旁不再显示进行中）。
+        var fake = CreateFake();
+        fake.OnChatStreamWithStatus = (req, onToken, onDone, onStatus, onThinking, _) =>
+        {
+            onStatus?.Invoke("正在检索知识库...");
+            onStatus?.Invoke("正在生成回答...");
+            throw new ApiException("RAG_ERROR", "回答生成中断：Error code: 404 - Function not found for account");
+        };
+        var vm = CreateVm(fake);
+
+        vm.InputText = "问题";
+        await vm.SendCommand.ExecuteAsync(null);
+
+        var msg = vm.Messages.Last(m => m.Role == "assistant");
+        // 末尾「正在…」步骤被替换为「✖」失败标记（带底层原因摘要）
+        Assert.Equal(2, msg.ThinkingSteps.Count);
+        Assert.Equal("正在检索知识库...", msg.ThinkingSteps[0]);
+        Assert.StartsWith("✖ 回答生成失败", msg.ThinkingSteps[1]);
+        Assert.Contains("404", msg.ThinkingSteps[1]);
+        // 阶段胶囊与等待首字状态均已关闭
+        Assert.False(msg.ShowStatus);
+        Assert.False(msg.IsWaitingForFirstToken);
+        Assert.False(msg.IsLoading);
+        // 正文仍展示错误提示
+        Assert.Contains("API 错误", msg.Content);
+        Assert.Contains("404", msg.Content);
+    }
+
+    [Fact]
+    public async Task SendAsync_StopDuringThinking_FinalizesThinkingSteps()
+    {
+        // 停止生成路径：末尾「正在…」替换为「✖ 已停止生成」，同样不悬挂
+        var fake = CreateFake();
+        var vm = CreateVm(fake);
+        fake.OnChatStreamWithStatus = async (req, onToken, onDone, onStatus, onThinking, ct) =>
+        {
+            onStatus?.Invoke("正在生成回答...");
+            // 挂起直到用户取消（模拟首字未到达时点停止）
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            return new ChatStreamResult { ChatId = "c-stop" };
+        };
+
+        vm.InputText = "问题";
+        var sendTask = vm.SendCommand.ExecuteAsync(null);
+        vm.StopCommand.Execute(null);
+        await sendTask;
+
+        var msg = vm.Messages.Last(m => m.Role == "assistant");
+        Assert.EndsWith("✖ 已停止生成", msg.ThinkingSteps.Last());
+        Assert.False(msg.ShowStatus);
+    }
+
+    [Fact]
+    public async Task SendAsync_StreamEndsWithoutDoneFrame_FinalizesThinkingSteps()
+    {
+        // 回归：SSE 流被对端优雅关闭但没发 done 终帧（无异常抛出）时，
+        // 「思考中」头部与「正在生成回答…」胶囊同样必须收尾，不得永久悬挂。
+        var fake = CreateFake();
+        fake.OnChatStreamWithStatus = (req, onToken, onDone, onStatus, onThinking, _) =>
+        {
+            onStatus?.Invoke("正在生成回答...");
+            // 不调用 onToken / onDone，直接返回（模拟后端中断流）
+            return Task.FromResult(new ChatStreamResult { ChatId = "c-nodone" });
+        };
+        var vm = CreateVm(fake);
+
+        vm.InputText = "问题";
+        await vm.SendCommand.ExecuteAsync(null);
+
+        var msg = vm.Messages.Last(m => m.Role == "assistant");
+        Assert.EndsWith("✖ 回答生成失败：连接中断，未收到完成帧", msg.ThinkingSteps.Last());
+        Assert.False(msg.ShowStatus);
+        Assert.False(msg.IsLoading);
+        Assert.False(msg.IsThinkingInProgress);
+        // 新行为：流中断时提供详细的错误信息和重试引导，而非简单的"（无内容返回）"
+        Assert.Contains("回答生成失败", msg.Content);
+        Assert.Contains("连接中断", msg.Content);
+        Assert.Contains("重新生成", msg.Content);
+        // 恢复输入框
+        Assert.Equal("问题", vm.InputText);
     }
 
     [Fact]
@@ -926,6 +1075,121 @@ public class ChatViewModelTests
         // 重新勾选 → 写回并落盘
         vm.IsWebSearchEnabled = true;
         Assert.True(settings.EnableWebSearch);
+    }
+
+    // ======================================================================
+    // 知识库勾选持久化
+    // ======================================================================
+
+    [Fact]
+    public void Collections_SelectionPersistsToSettings_AndRestoredOnRestart()
+    {
+        var fake = CreateFake();
+        fake.OnGetStats = (_, _) => Task.FromResult(new Stats
+        {
+            TotalDocuments = 0,
+            TotalChunks = 0,
+            Collections = new Dictionary<string, int[]> { { "default", [0, 0, 0] }, { "docs-a", [0, 0, 0] } },
+        });
+        var settings = new AppSettings();
+
+        var vm = new ChatViewModel(fake, null, settings);
+        // 构造时首次加载已同步完成（Fake 返回已完成 Task）→ 勾选 docs-a 即落盘
+        vm.Collections.First(c => c.Name == "docs-a").IsSelected = true;
+
+        Assert.Contains("docs-a", settings.LastChatCollections);
+        Assert.Contains("default", settings.LastChatCollections);
+
+        // 模拟重启：同一份 AppSettings 新建 VM → 勾选恢复
+        var vm2 = new ChatViewModel(fake, null, settings);
+        Assert.True(vm2.Collections.First(c => c.Name == "docs-a").IsSelected);
+        Assert.True(vm2.Collections.First(c => c.Name == "default").IsSelected);
+    }
+
+    [Fact]
+    public void Collections_SavedCollectionDeleted_FallsBackToDefault()
+    {
+        var fake = CreateFake();
+        fake.OnGetStats = (_, _) => Task.FromResult(new Stats
+        {
+            TotalDocuments = 0,
+            TotalChunks = 0,
+            Collections = new Dictionary<string, int[]> { { "default", [0, 0, 0] }, { "docs-a", [0, 0, 0] } },
+        });
+        var settings = new AppSettings();
+
+        var vm = new ChatViewModel(fake, null, settings);
+        vm.Collections.First(c => c.Name == "docs-a").IsSelected = true;
+        Assert.Contains("docs-a", settings.LastChatCollections);
+
+        // 重启时 docs-a 已在后端删除（Fake 只返回 default）→ 恢复匹配不到 → 回退默认勾选 default
+        fake.OnGetStats = (_, _) => Task.FromResult(new Stats
+        {
+            TotalDocuments = 0,
+            TotalChunks = 0,
+            Collections = new Dictionary<string, int[]> { { "default", [0, 0, 0] } },
+        });
+        var vm2 = new ChatViewModel(fake, null, settings);
+        Assert.True(vm2.Collections.First(c => c.Name == "default").IsSelected);
+        Assert.False(vm2.Collections.Any(c => c.Name == "docs-a"));
+    }
+
+    // ======================================================================
+    // LLM 未配置事前引导
+    // ======================================================================
+
+    [Fact]
+    public async Task SendAsync_WithoutLlmConfigured_InterceptsWithGuidance()
+    {
+        var fake = CreateFake();
+        // LlmProvider 默认 none 且未选服务商模型 → 未配置；Fake 的 GetConfigAsync 未设置会抛，
+        // 但 SeedModelFromConfigAsync 内部吞掉异常，不影响拦截判断
+        var vm = new ChatViewModel(fake, null, new AppSettings());
+        vm.InputText = "问题";
+        await vm.SendCommand.ExecuteAsync(null);
+
+        Assert.False(vm.IsLlmConfigured);
+        Assert.Empty(vm.Messages); // 事前拦截：不产生任何消息、不发请求
+        Assert.Contains("尚未配置大模型", vm.StatusMessage);
+    }
+
+    [Fact]
+    public void EmptyGuideText_BranchesOnLlmConfigured()
+    {
+        var unconfigured = new ChatViewModel(CreateFake(), null, new AppSettings());
+        Assert.Contains("尚未配置大模型", unconfigured.EmptyGuideText);
+
+        var configured = CreateVm(CreateFake());
+        Assert.Contains("开始与知识库对话", configured.EmptyGuideText);
+    }
+
+    // ======================================================================
+    // 会话消息数展示
+    // ======================================================================
+
+    [Fact]
+    public async Task MessagesCountText_UpdatesAsMessagesArrive()
+    {
+        var fake = CreateFake();
+        fake.OnChatStreamWithStatus = (req, onToken, onDone, onStatus, onThinking, _) =>
+        {
+            onToken("回答内容");
+            var res = new ChatStreamResult
+            {
+                ChatId = "c1", Model = "m", Provider = "p", ElapsedMs = 100,
+                Sources = new List<SourceRef>(),
+            };
+            onDone(res);
+            return Task.FromResult(res);
+        };
+        var vm = CreateVm(fake);
+        Assert.Equal(string.Empty, vm.MessagesCountText); // 无消息时隐藏
+
+        vm.InputText = "问题";
+        await vm.SendCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, vm.Messages.Count); // 用户消息 + 助手消息
+        Assert.Equal("💬 2 条消息", vm.MessagesCountText);
     }
 
     [Fact]
@@ -1201,6 +1465,121 @@ public class ChatViewModelTests
         Assert.Equal("engineer", capturedReq.Persona);
     }
 
+    [Fact]
+    public async Task SendAsync_NaturalLanguagePptRequest_AutoRoutesToPptPersona()
+    {
+        // 用户仅用自然语言说「做个 PPT」，未显式选创作人设（默认 office）。
+        // 后端应自动路由到 ppt 人设并在 done 帧回传，前端静默同步人设下拉框，
+        // 助手消息解析出结构化创作物（:::artifact），供前端自动导出 PPTX。
+        var fake = CreateFake();
+        fake.OnChatStream = (req, onToken, onDone, _) =>
+        {
+            Assert.Equal("office", req.Persona); // 前端仍按默认 office 发出
+            onToken(":::artifact type=\"pptx\" title=\"AI 汇报\" theme=\"tech_blue\"\n" +
+                    "---\n# 人工智能演示文稿\n## 副标题\n:::\n");
+            var res = new ChatStreamResult
+            {
+                Model = "m",
+                Provider = "p",
+                Persona = "ppt", // 后端自动切换后的实际生效人设
+                TotalChunks = 0,
+                ElapsedMs = 10,
+                Sources = [],
+            };
+            onDone(res);
+            return Task.FromResult(res);
+        };
+
+        var vm = CreateVm(fake);
+        Assert.Equal("office", vm.SelectedPersona.Id); // 默认人设
+        vm.InputText = "帮我做个关于人工智能的PPT";
+
+        await vm.SendCommand.ExecuteAsync(null);
+
+        // 人设下拉框被后端回传的 ppt 自动同步
+        Assert.Equal("ppt", vm.SelectedPersona.Id);
+        // 助手消息应解析出结构化创作物（:::artifact）
+        var assistantMsg = vm.Messages.LastOrDefault(m => m.Role == "assistant");
+        Assert.NotNull(assistantMsg);
+        Assert.True(assistantMsg.HasArtifact);
+        Assert.NotNull(assistantMsg.Artifact);
+        Assert.True(assistantMsg.Artifact.IsPpt);
+    }
+
+    [Fact]
+    public async Task SendAsync_NaturalLanguageWordRequest_AutoRoutesToDocPersona()
+    {
+        // 「用 word 写个文档」未显式选创作人设（默认 office），后端自动路由到 doc，
+        // 前端静默同步人设下拉框，助手消息解析出 :::artifact 交付物。
+        var fake = CreateFake();
+        fake.OnChatStream = (req, onToken, onDone, _) =>
+        {
+            Assert.Equal("office", req.Persona);
+            onToken(":::artifact type=\"docx\" title=\"项目立项书\"\n" +
+                    "---\n# 项目背景\n正文内容\n:::\n");
+            var res = new ChatStreamResult
+            {
+                Model = "m",
+                Provider = "p",
+                Persona = "doc",
+                TotalChunks = 0,
+                ElapsedMs = 10,
+                Sources = [],
+            };
+            onDone(res);
+            return Task.FromResult(res);
+        };
+
+        var vm = CreateVm(fake);
+        Assert.Equal("office", vm.SelectedPersona.Id);
+        vm.InputText = "用 word 写个项目立项书";
+
+        await vm.SendCommand.ExecuteAsync(null);
+
+        Assert.Equal("doc", vm.SelectedPersona.Id);
+        var assistantMsg = vm.Messages.LastOrDefault(m => m.Role == "assistant");
+        Assert.NotNull(assistantMsg);
+        Assert.True(assistantMsg.HasArtifact);
+        Assert.NotNull(assistantMsg.Artifact);
+    }
+
+    [Fact]
+    public async Task SendAsync_NaturalLanguageExcelRequest_AutoRoutesToTablePersona()
+    {
+        // 「做个 excel 报表」未显式选创作人设（默认 office），后端自动路由到 table，
+        // 前端静默同步人设下拉框，助手消息解析出 :::artifact 交付物。
+        var fake = CreateFake();
+        fake.OnChatStream = (req, onToken, onDone, _) =>
+        {
+            Assert.Equal("office", req.Persona);
+            onToken(":::artifact type=\"xlsx\" title=\"季度对比表\"\n" +
+                    "---\n| 维度 | A | B |\n|---|---|---|\n| 营收 | 100 | 120 |\n:::\n");
+            var res = new ChatStreamResult
+            {
+                Model = "m",
+                Provider = "p",
+                Persona = "table",
+                TotalChunks = 0,
+                ElapsedMs = 10,
+                Sources = [],
+            };
+            onDone(res);
+            return Task.FromResult(res);
+        };
+
+        var vm = CreateVm(fake);
+        Assert.Equal("office", vm.SelectedPersona.Id);
+        vm.InputText = "帮我做个 excel 季度对比表";
+
+        await vm.SendCommand.ExecuteAsync(null);
+
+        Assert.Equal("table", vm.SelectedPersona.Id);
+        var assistantMsg = vm.Messages.LastOrDefault(m => m.Role == "assistant");
+        Assert.NotNull(assistantMsg);
+        Assert.True(assistantMsg.HasArtifact);
+        Assert.NotNull(assistantMsg.Artifact);
+    }
+
     // ======================================================================
     // 对话一键沉淀入库 (Knowledge Flywheel)
     // ======================================================================
@@ -1349,7 +1728,7 @@ public class ChatViewModelTests
     // ======================================================================
 
     [Fact]
-    public void Constructor_LoadsModelChoices_DefaultFirst_SelectsActiveDefaultModel()
+    public void Constructor_LoadsModelChoices_DefaultFirst_SelectsDefaultItem()
     {
         var fake = CreateFake();
         var active = new LlmProfile
@@ -1372,16 +1751,220 @@ public class ChatViewModelTests
 
         var vm = new ChatViewModel(fake, null, settings);
 
-        // 首项为「设置页默认」伪值，其后为各启用服务商的模型（「模型名（服务商名）」）
+        // 首项为「默认」伪，其后为各启用服务商的模型（「模型名（服务商名）」）
         Assert.Equal(1 + 2 + 1, vm.ModelChoices.Count);
         Assert.True(vm.ModelChoices[0].IsDefault);
         Assert.Null(vm.ModelChoices[0].Provider);
         Assert.Contains(vm.ModelChoices, c => c.DisplayName == "deepseek-chat（DeepSeek）");
         Assert.Contains(vm.ModelChoices, c => c.DisplayName == "deepseek-reasoner（DeepSeek）");
         Assert.Contains(vm.ModelChoices, c => c.DisplayName == "llama3.2（Ollama 本地）");
-        // 默认选中最后应用的档案的默认模型（仅高亮，不触发请求）
-        Assert.Equal("deepseek-chat", vm.SelectedModelChoice?.Model);
+        // 无持久化记录时默认选中首项「默认」伪项（用设置页配置），而不是档案模型
+        Assert.True(vm.SelectedModelChoice?.IsDefault);
+        Assert.Null(vm.SelectedModelChoice?.Provider);
+        Assert.Null(vm.SelectedModelChoice?.Model);
+    }
+
+    [Fact]
+    public void Constructor_DefaultItem_ShowsRealDefaultModelName()
+    {
+        var fake = CreateFake();
+        // 设置页配置了默认模型 → 首项显示「默认 · 模型名」
+        var vm = new ChatViewModel(fake, null, new AppSettings { LlmModel = "qwen2.5:7b", LlmProvider = "ollama" });
+        Assert.Equal("默认 · qwen2.5:7b", vm.ModelChoices[0].DisplayName);
+        Assert.True(vm.ModelChoices[0].IsDefault);
+        Assert.Null(vm.ModelChoices[0].Model);
+
+        // 未配置默认模型 → 回退到通用标签
+        var vm2 = new ChatViewModel(fake, null, new AppSettings());
+        Assert.Equal(ChatViewModel.DefaultProfileLabel, vm2.ModelChoices[0].DisplayName);
+    }
+
+    [Fact]
+    public void SelectedModelChoice_IsPersistedAndRestoredOnNewViewModel()
+    {
+        var fake = CreateFake();
+        var settings = new AppSettings
+        {
+            LlmModel = "qwen2.5:7b",
+            LlmProvider = "ollama",
+            LlmProfiles = new List<LlmProfile>
+            {
+                new() { Id = "p1", Name = "DeepSeek", Provider = "openai", Model = "deepseek-chat", Models = new List<string> { "deepseek-chat" } },
+            },
+        };
+        var vm1 = new ChatViewModel(fake, null, settings);
+        // 点选某服务商的模型 → 落盘（档案 Id + 模型名）
+        vm1.SelectedModelChoice = vm1.ModelChoices.First(c => c.Model == "deepseek-chat" && c.Provider?.Id == "p1");
+        Assert.Equal("p1", settings.LastChatProfileId);
+        Assert.Equal("deepseek-chat", settings.LastChatModel);
+
+        // 模拟重启：新 VM 用同一 AppSettings → 还原上次对话页选择
+        var vm2 = new ChatViewModel(fake, null, settings);
+        Assert.Equal("deepseek-chat", vm2.SelectedModelChoice?.Model);
+        Assert.Equal("p1", vm2.SelectedModelChoice?.Provider?.Id);
+    }
+
+    [Fact]
+    public void SelectedModelChoice_DefaultGroupModel_PersistedAndRestored()
+    {
+        var fake = CreateFake();
+        var settings = new AppSettings { LlmModel = "qwen2.5:7b", LlmProvider = "ollama" };
+        var vm1 = new ChatViewModel(fake, null, settings);
+        // 点选「默认提供商分组」的模型（Provider 为 null、非默认伪项）
+        vm1.SelectedModelChoice = vm1.ModelChoices.First(c => c.Provider is null && !c.IsDefault && c.Model == "qwen2.5:7b");
+        Assert.Null(settings.LastChatProfileId);
+        Assert.Equal("qwen2.5:7b", settings.LastChatModel);
+
+        // 模拟重启且默认模型已更换（分组种子不再是旧选择）→ 仍应还原上次选择
+        settings.LlmModel = "new-default-model";
+        var vm2 = new ChatViewModel(fake, null, settings);
+        Assert.Equal("qwen2.5:7b", vm2.SelectedModelChoice?.Model);
+        Assert.Null(vm2.SelectedModelChoice?.Provider);
+    }
+
+    [Fact]
+    public async Task RefreshModels_KeepsPersistedGroupModelInPool()
+    {
+        var fake = CreateFake();
+        // 拉取结果不含持久化的分组模型（如换服务商后列表变化）
+        fake.OnLlmModels = (_, _) => Task.FromResult(new LlmModelsResult
+        {
+            Ok = true,
+            Provider = "ollama",
+            Models = new[] { "llama3.2:latest" },
+        });
+
+        var settings = new AppSettings
+        {
+            LlmModel = "qwen2.5:7b",
+            LlmProvider = "ollama",
+            LastChatModel = "deepseek-r1:8b",
+        };
+        var vm = new ChatViewModel(fake, null, settings);
+
+        await vm.RefreshModelsCommand.ExecuteAsync(null);
+
+        // 持久化的分组模型仍在候选池（不因拉取结果丢失）
+        Assert.Contains(vm.ModelChoices, c => c.Provider is null && !c.IsDefault && c.Model == "deepseek-r1:8b");
+    }
+
+    [Fact]
+    public void RebuildModelChoices_SameEndpointProfile_DeduplicatesDefaultGroupModels()
+    {
+        var fake = CreateFake();
+        // 设置页默认配置与启用档案指向同一端点（BaseUrl 归一化比较，结尾斜杠差异不影响判定）
+        var settings = new AppSettings
+        {
+            LlmModel = "01-ai/yi-large",
+            LlmProvider = "openai",
+            LlmBaseUrl = "https://integrate.api.nvidia.com/v1",
+            LlmProfiles = new List<LlmProfile>
+            {
+                new()
+                {
+                    Id = "p1",
+                    Name = "nvidia",
+                    Provider = "openai",
+                    BaseUrl = "https://integrate.api.nvidia.com/v1/",
+                    Model = "01-ai/yi-large",
+                    Models = new List<string> { "01-ai/yi-large", "adept/fuyu-8b" },
+                },
+            },
+        };
+        var vm = new ChatViewModel(fake, null, settings);
+
+        // 默认分组不再以裸名重复列出同端点档案已有的模型；档案条目正常保留
+        Assert.DoesNotContain(vm.ModelChoices, c => c.Provider is null && !c.IsDefault);
+        Assert.Contains(vm.ModelChoices, c => c.DisplayName == "01-ai/yi-large（nvidia）");
+        Assert.Contains(vm.ModelChoices, c => c.DisplayName == "adept/fuyu-8b（nvidia）");
+        Assert.Equal(3, vm.ModelChoices.Count); // 默认伪项 + 档案两个模型
+    }
+
+    [Fact]
+    public void RebuildModelChoices_DifferentEndpointProfile_KeepsDefaultGroupModels()
+    {
+        var fake = CreateFake();
+        // 默认配置走官方端点（无 BaseUrl），档案走中转端点：同名模型分属不同端点，不去重
+        var settings = new AppSettings
+        {
+            LlmModel = "gpt-4o",
+            LlmProvider = "openai",
+            LlmProfiles = new List<LlmProfile>
+            {
+                new()
+                {
+                    Id = "p1",
+                    Name = "中转",
+                    Provider = "openai",
+                    BaseUrl = "https://relay.example.com/v1",
+                    Model = "gpt-4o",
+                    Models = new List<string> { "gpt-4o" },
+                },
+            },
+        };
+        var vm = new ChatViewModel(fake, null, settings);
+
+        Assert.Contains(vm.ModelChoices, c => c.Provider is null && !c.IsDefault && c.Model == "gpt-4o");
+        Assert.Contains(vm.ModelChoices, c => c.DisplayName == "gpt-4o（中转）");
+        Assert.Equal(3, vm.ModelChoices.Count);
+    }
+
+    [Fact]
+    public void SelectedModelChoice_DedupedDefaultGroupEntry_RestoresToSameEndpointTwin()
+    {
+        var fake = CreateFake();
+        var settings = new AppSettings
+        {
+            LlmModel = "01-ai/yi-large",
+            LlmProvider = "openai",
+            LlmBaseUrl = "https://integrate.api.nvidia.com/v1",
+            LlmProfiles = new List<LlmProfile>
+            {
+                new()
+                {
+                    Id = "p1",
+                    Name = "nvidia",
+                    Provider = "openai",
+                    BaseUrl = "https://integrate.api.nvidia.com/v1",
+                    Model = "01-ai/yi-large",
+                    Models = new List<string> { "01-ai/yi-large" },
+                },
+            },
+            // 旧版本遗留的持久化：选中默认分组裸项（无档案 Id）
+            LastChatProfileId = null,
+            LastChatModel = "01-ai/yi-large",
+        };
+        var vm = new ChatViewModel(fake, null, settings);
+
+        // 裸项已被去重 → 还原到同端点档案的「01-ai/yi-large（nvidia）」孪生条目，而不是退回默认项
         Assert.Equal("p1", vm.SelectedModelChoice?.Provider?.Id);
+        Assert.Equal("01-ai/yi-large", vm.SelectedModelChoice?.Model);
+    }
+
+    [Fact]
+    public void SelectedModelChoice_DefaultItem_PersistedAndRestored()
+    {
+        var fake = CreateFake();
+        var settings = new AppSettings
+        {
+            LlmModel = "qwen2.5:7b",
+            LlmProvider = "ollama",
+            LlmProfiles = new List<LlmProfile>
+            {
+                new() { Id = "p1", Name = "DeepSeek", Provider = "openai", Model = "deepseek-chat", Models = new List<string> { "deepseek-chat" } },
+            },
+        };
+        var vm1 = new ChatViewModel(fake, null, settings);
+        // 先选某服务商模型，再切回「默认」项 → 两项皆空
+        vm1.SelectedModelChoice = vm1.ModelChoices.First(c => c.Model == "deepseek-chat" && c.Provider?.Id == "p1");
+        vm1.SelectedModelChoice = vm1.ModelChoices.First(c => c.IsDefault);
+        Assert.Null(settings.LastChatProfileId);
+        Assert.Null(settings.LastChatModel);
+
+        // 模拟重启：还原为「默认」项
+        var vm2 = new ChatViewModel(fake, null, settings);
+        Assert.True(vm2.SelectedModelChoice?.IsDefault);
+        Assert.Equal(ChatViewModel.DefaultModelLabel, vm2.SelectedModel);
     }
 
     [Fact]
@@ -1486,7 +2069,7 @@ public class ChatViewModelTests
             Provider = "openai",
             Models = new List<string> { "deepseek-chat" },
         };
-        var settings = new AppSettings { LlmProfiles = new List<LlmProfile> { profile } };
+        var settings = new AppSettings { LlmProvider = "openai", LlmProfiles = new List<LlmProfile> { profile } };
         var vm = new ChatViewModel(fake, null, settings);
         // 选中「设置页默认」伪项
         vm.SelectedModelChoice = vm.ModelChoices.First(c => c.IsDefault);
@@ -1514,7 +2097,7 @@ public class ChatViewModelTests
 
         // 本机用户自己的 GitHub Token（设置页配置，DPAPI 加密落盘）随请求携带，
         // 后端按请求生效，绝不作为全局配置共享给其他用户
-        var settings = new AppSettings { GithubToken = "ghp_自己的令牌" };
+        var settings = new AppSettings { LlmProvider = "openai", GithubToken = "ghp_自己的令牌" };
         var vm = new ChatViewModel(fake, null, settings);
         vm.InputText = "帮我搜一下 GitHub 上的开源仓库";
         await vm.SendCommand.ExecuteAsync(null);
@@ -1536,7 +2119,7 @@ public class ChatViewModelTests
             return Task.FromResult(res);
         };
 
-        var vm = new ChatViewModel(fake, null, new AppSettings());
+        var vm = new ChatViewModel(fake, null, new AppSettings { LlmProvider = "openai" });
         vm.InputText = "搜索 GitHub";
         await vm.SendCommand.ExecuteAsync(null);
 
@@ -1564,5 +2147,92 @@ public class ChatViewModelTests
         // 切回默认
         vm.SelectedModelChoice = vm.ModelChoices.First(c => c.IsDefault);
         Assert.Equal(ChatViewModel.DefaultModelLabel, vm.SelectedModel);
+    }
+
+    // ======================================================================
+    // 撤回中间消息（增强）
+    // ======================================================================
+
+    [Fact]
+    public async Task Withdraw_MiddleMessage_RemovesMessageAndFollowingResponses()
+    {
+        var fake = CreateFake();
+        fake.OnChat = (_, _) => Task.FromResult(MakeResponse("回答"));
+        var vm = CreateVm(fake);
+
+        // 构造 3 轮对话
+        vm.InputText = "第一轮";
+        await vm.SendCommand.ExecuteAsync(null);
+        vm.InputText = "第二轮";
+        await vm.SendCommand.ExecuteAsync(null);
+        vm.InputText = "第三轮";
+        await vm.SendCommand.ExecuteAsync(null);
+        Assert.Equal(6, vm.Messages.Count); // 3 user + 3 assistant
+
+        // 撤回第二轮（中间消息）
+        var secondUserMsg = vm.Messages[2]; // idx 2 = 第二轮 user
+        Assert.Equal("第二轮", secondUserMsg.Content);
+        vm.WithdrawCommand.Execute(secondUserMsg);
+
+        // 只剩第一轮（user+assistant），第二轮及之后全部移除
+        Assert.Equal(2, vm.Messages.Count);
+        Assert.Equal("第一轮", vm.Messages[0].Content);
+        Assert.Equal("回答", vm.Messages[1].Content);
+        // 第二轮内容回填到输入框
+        Assert.Equal("第二轮", vm.InputText);
+    }
+
+    [Fact]
+    public async Task Withdraw_MiddleMessage_KeepsPriorConversation()
+    {
+        var fake = CreateFake();
+        fake.OnChat = (req, _) => Task.FromResult(MakeResponse($"回复: {req.Query}"));
+        var vm = CreateVm(fake);
+
+        // 构造 2 轮对话
+        vm.InputText = "问题A";
+        await vm.SendCommand.ExecuteAsync(null);
+        vm.InputText = "问题B";
+        await vm.SendCommand.ExecuteAsync(null);
+        Assert.Equal(4, vm.Messages.Count);
+
+        // 撤回第一轮
+        vm.WithdrawCommand.Execute(vm.Messages[0]);
+
+        // 第一轮被移除，只剩空列表（没有更早的消息）
+        Assert.Empty(vm.Messages);
+        Assert.Equal("问题A", vm.InputText);
+    }
+
+    [Fact]
+    public async Task Withdraw_MiddleMessage_CanResendAndContinuesChatId()
+    {
+        var fake = CreateFake();
+        var chatIds = new List<string?>();
+        fake.OnChat = (req, _) =>
+        {
+            chatIds.Add(req.ChatId);
+            return Task.FromResult(MakeResponse(chatId: "chat-123"));
+        };
+        var vm = CreateVm(fake);
+
+        // 第一轮
+        vm.InputText = "问题A";
+        await vm.SendCommand.ExecuteAsync(null);
+        // 第二轮
+        vm.InputText = "问题B";
+        await vm.SendCommand.ExecuteAsync(null);
+
+        // 撤回第二轮
+        vm.WithdrawCommand.Execute(vm.Messages[2]);
+        Assert.Equal("问题B", vm.InputText);
+        Assert.Equal(2, vm.Messages.Count); // 只剩第一轮
+
+        // 修改后重新发送（续聊，保留 chatId）
+        vm.InputText = "修改后的问题B";
+        await vm.SendCommand.ExecuteAsync(null);
+
+        Assert.Equal(4, vm.Messages.Count); // 第一轮 + 新的第二轮
+        Assert.Equal("chat-123", chatIds[2]); // 第三轮请求带上 chatId
     }
 }

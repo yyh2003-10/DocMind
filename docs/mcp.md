@@ -87,7 +87,7 @@ doc2mind  →  command: doc2mind mcp
 }
 ```
 
-## 四、工具清单（12 个）
+## 四、工具清单（15 个）
 
 | 工具 | 说明 | 关键参数 |
 |---|---|---|
@@ -103,15 +103,20 @@ doc2mind  →  command: doc2mind mcp
 | `convert_file` | 单个文档转 Markdown / JSON / TXT / HTML，返回内容 | `input_path`、`output_format` |
 | `reindex` | 重建指定集合的向量索引（可换嵌入模型），返回 `job_id` | `collection`、`model` |
 | `curate` | **AI 整理知识库**：enrich（打标签/摘要）、categorize（自动归类/建集合）、dedup（语义去重）、consolidate（归纳合并蒸馏笔记）。`dry_run=true` 只读预览零写入 | `collection`、`actions`、`dry_run`、`top_k` |
+| `graph_get` | **知识图谱查询**：返回实体与关系图谱数据（需先由 `/v1/graph/extract` 抽取入库） | `collection`、`limit` |
+| `create_artifact` | **创作导出**：把大纲/内容编译为 PPTX / DOCX / XLSX / HTML 物理文件 | `content`、`format`、`output_path` |
+| `inspect_artifact` | **PPT 大纲体检**：0-100 评分 + 排版/密度/版式多样性诊断 | `content` |
 
-> `chat` 和 `curate` 需要先配置 LLM（`DOC2MIND_LLM_PROVIDER` + 相关密钥），详见下方「RAG 对话配置」。
+> `chat`、`curate`、`graph_get`（抽取环节）需要先配置 LLM（`DOC2MIND_LLM_PROVIDER` + 相关密钥），详见下方「RAG 对话配置」。
+>
+> 数量口径以本文档为准（**15 个**）。HTTP 侧等价能力见 [docs/api.md](api.md)。
 
 ## 五、给 agent 的提示词模板
 
 把下面这段放进你的 agent 系统提示或项目说明，它就知道怎么用了：
 
 ```text
-你有一个外置知识库工具 DocMind，通过 MCP 提供 12 个工具。
+你有一个外置知识库工具 DocMind，通过 MCP 提供 15 个工具。
 
 用法约定：
 - 摄入项目代码/文档：优先用 ingest_job（异步、有进度），路径给绝对路径，

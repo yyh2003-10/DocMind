@@ -44,7 +44,7 @@ class CuratorError(Exception):
     """知识库整理异常。"""
 
 
-class CurateCancelled(Exception):
+class CurateCancelledError(Exception):
     """整理任务收到取消请求后用于中止后续阶段。"""
 
 
@@ -732,7 +732,7 @@ def curate(
 
         for i, doc in enumerate(docs, start=1):
             if cancel_check is not None and cancel_check():
-                raise CurateCancelled("整理任务已被取消")
+                raise CurateCancelledError("整理任务已被取消")
             if "enrich" in report.actions:
                 report.enriched.append(
                     enrich_document(store, llm, doc,
@@ -787,7 +787,7 @@ def curate(
     # 阶段 2：dedup + consolidate（逐集合）
     for c in collections:
         if cancel_check is not None and cancel_check():
-            raise CurateCancelled("整理任务已被取消")
+            raise CurateCancelledError("整理任务已被取消")
         if "dedup" in report.actions:
             try:
                 report.duplicates.extend(

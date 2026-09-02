@@ -35,6 +35,8 @@ import contextlib
 import dataclasses
 import json
 import logging
+import os
+import secrets
 import threading
 import time
 import uuid
@@ -42,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from doc2mind.core.config import Settings, get_config_load_error, get_settings
+from doc2mind.core.config import Settings, _user_data_dir, get_config_load_error, get_settings
 from doc2mind.core.converter import (
     SUPPORTED_FORMATS,
     ConversionError,
@@ -62,6 +64,7 @@ from doc2mind.core.logging_setup import setup_logging
 from doc2mind.core.models import LoadedDocument
 from doc2mind.core.pipeline import ingest_path, ingest_text
 from doc2mind.core.rag import RagError, clear_session, rag_answer, rag_answer_stream
+from doc2mind.core.reranker import get_reranker
 from doc2mind.core.retriever.search import Retriever
 from doc2mind.core.store.chat_store import ChatStore, ChatStoreError
 from doc2mind.core.store.graph_store import GraphStore
@@ -76,8 +79,10 @@ try:
         FastAPI,
         HTTPException,
         Query,
+        Request,
     )
     from fastapi.responses import (
+        JSONResponse,  # type: ignore[import-untyped, import-not-found]
         StreamingResponse,  # type: ignore[import-untyped, import-not-found]
     )
 except ImportError:
@@ -85,6 +90,8 @@ except ImportError:
     HTTPException = Exception  # type: ignore[misc, assignment]
     Query = Any  # type: ignore[misc, assignment]
     Body = Any  # type: ignore[misc, assignment]
+    Request = Any  # type: ignore[misc, assignment]
+    JSONResponse = Any  # type: ignore[misc, assignment]
     StreamingResponse = Any  # type: ignore[misc, assignment]
 
 try:
@@ -277,6 +284,35 @@ class ProviderConfigIn(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+def _build_llm_client_from_provider_config(
+    pc: ProviderConfigIn | None, s: Settings, model_override: str | None = None
+) -> Any:
+    """按请求携带的 providerConfig 构造临时 LLM 客户端；未携带时按 model_override / 全局配置构造。"""
+    if pc is not None:
+        provider = (pc.provider or s.llm_provider or "none").strip()
+        if provider != "none":
+            tmp = dataclasses.replace(
+                s,
+                llm_provider=provider,
+                llm_api_key=(pc.api_key or "").strip() or s.llm_api_key,
+                llm_base_url=(pc.base_url or "").strip() or s.llm_base_url,
+                llm_model=(pc.model or model_override or "").strip() or s.llm_model,
+                llm_temperature=(
+                    pc.temperature if pc.temperature is not None else s.llm_temperature
+                ),
+                llm_max_tokens=(
+                    pc.max_tokens if pc.max_tokens is not None else s.llm_max_tokens
+                ),
+            )
+            return get_llm_client(tmp)
+
+    if model_override:
+        tmp = dataclasses.replace(s, llm_model=model_override.strip())
+        return get_llm_client(tmp)
+
+    return get_llm_client(s)
+
+
 def _build_llm_client_from_provider(
     req: ChatRequest, s: Settings
 ) -> Any:
@@ -286,26 +322,9 @@ def _build_llm_client_from_provider(
     仅按请求生效，不修改后端全局配置、不落盘，多服务商并存互不干扰。
     provider 为空或为 "none" 时视为未指定，返回 None（用全局配置）。
     """
-    pc = req.provider_config
-    if pc is None:
+    if req.provider_config is None:
         return None
-    provider = (pc.provider or s.llm_provider or "none").strip()
-    if provider == "none":
-        return None
-    tmp = dataclasses.replace(
-        s,
-        llm_provider=provider,
-        llm_api_key=(pc.api_key or "").strip() or s.llm_api_key,
-        llm_base_url=(pc.base_url or "").strip() or s.llm_base_url,
-        llm_model=(pc.model or "").strip() or s.llm_model,
-        llm_temperature=(
-            pc.temperature if pc.temperature is not None else s.llm_temperature
-        ),
-        llm_max_tokens=(
-            pc.max_tokens if pc.max_tokens is not None else s.llm_max_tokens
-        ),
-    )
-    return get_llm_client(tmp)
+    return _build_llm_client_from_provider_config(req.provider_config, s, req.model)
 
 
 class ChatRequest(BaseModel):
@@ -346,6 +365,8 @@ class SourceRefDTO(BaseModel):
     page: int | None = None
     heading: str | None = None
     score: float = 0.0
+    # score 量纲：rerank/vector/bm25/rrf/web_relevance/attachment；空 = 旧数据
+    score_type: str = ""
     source_type: str = Field("local", validation_alias="sourceType")  # "local" | "web"
     url: str | None = None
     title: str | None = None
@@ -370,6 +391,7 @@ class EntityDistillRequest(BaseModel):
     local_snippets: list[str] = Field(default_factory=list, validation_alias="localSnippets")
     web_references: list[str] = Field(default_factory=list, validation_alias="webReferences")
     model: str | None = None
+    provider_config: ProviderConfigIn | None = Field(None, validation_alias="providerConfig")
 
     model_config = {"populate_by_name": True}
 
@@ -391,21 +413,6 @@ class ChatResponse(BaseModel):
     chat_id: str
     model: str
     provider: str
-    total_chunks: int = 0
-    elapsed_ms: int = 0
-    sources: list[SourceRefDTO] = []
-
-
-class StreamChunk(BaseModel):
-    """SSE 流式输出单元（token 或元数据）。"""
-    token: str | None = None
-    done: bool = False
-    type: str | None = None       # "status" / None
-    step: str | None = None       # pipeline 阶段名
-    message: str | None = None    # 面向用户的文案
-    chat_id: str | None = None
-    model: str | None = None
-    provider: str | None = None
     total_chunks: int = 0
     elapsed_ms: int = 0
     sources: list[SourceRefDTO] = []
@@ -519,6 +526,12 @@ class ConfigUpdate(BaseModel):
     rag_mode: str | None = None
     # 自定义 RAG 系统提示词；空字符串 = 显式清除（回到内置默认提示词）
     rag_system_prompt: str | None = None
+    # 多轮对话历史 token 预算（0 = 不按 token 截断）
+    rag_max_history_tokens: int | None = None
+    # --- 检索后重排（Reranker / cross-encoder）---
+    rerank_enabled: bool | None = None
+    rerank_model: str | None = None
+    rerank_recall: int | None = None
     llm_timeout: float | None = None
     # --- 文件系统监控 ---
     watch_paths: list[str] | None = None
@@ -635,6 +648,12 @@ class ConfigResponse(BaseModel):
     rag_mode: str = "strict"
     # 自定义 RAG 系统提示词；None = 未配置（用内置默认提示词）
     rag_system_prompt: str | None = None
+    # 多轮对话历史 token 预算（0 = 不按 token 截断）
+    rag_max_history_tokens: int = 4096
+    # --- 检索后重排（Reranker / cross-encoder）---
+    rerank_enabled: bool = True
+    rerank_model: str = "Xenova/bge-reranker-v2-m3"
+    rerank_recall: int = 20
     llm_timeout: float = 0.0
     # --- 文件系统监控 ---
     watch_paths: list[str] = []
@@ -745,6 +764,8 @@ class SearchHitDTO(BaseModel):
     match_type: str
     vector_score: float
     bm25_score: float
+    # 重排分（已 sigmoid 归一化 0-1）；None=未启用重排
+    rerank_score: float | None = None
     source: str
     format: str
     page: int | None
@@ -899,7 +920,7 @@ def _unsubscribe_job(job_id: str, loop: asyncio.AbstractEventLoop, q: asyncio.Qu
                 _JOB_QUEUES.pop(job_id, None)
 
 
-class _JobCancelled(Exception):
+class _JobCancelledError(Exception):
     """后台任务收到取消请求后用于中止工作线程的内部异常。"""
 
 
@@ -937,6 +958,73 @@ class _AppState:
             return self.store
 
 
+# ============================================================
+# HTTP 访问鉴权（本地服务令牌）
+# ============================================================
+# 本服务监听的 API 可以读写知识库、触发安装/重索引等敏感操作，且默认只绑
+# 定 127.0.0.1。任何本机进程（含浏览器网页 JS，受 DNS rebinding 影响）都能
+# 直接调用，所以默认启用 Bearer 令牌鉴权：
+#   - 令牌文件：%LOCALAPPDATA%/doc2mind/server.token（与 server.port 同目录），
+#     服务启动时幂等生成（存在则复用）；WPF 客户端启动后读取并注入请求头。
+#   - 头格式：`Authorization: Bearer <token>` 或 `X-DocMind-Token: <token>`。
+#   - `/v1/health` 保持匿名（健康探测/端口发现机制，不泄露敏感数据）。
+# 开发/测试可用环境变量 `DOC2MIND_DISABLE_AUTH=1` 显式关闭（会打印警告）。
+_TOKEN_FILE_NAME = "server.token"
+_PUBLIC_PATHS = frozenset({"/v1/health"})
+
+
+def _should_disable_auth() -> bool:
+    """环境变量显式关闭鉴权（仅限开发/测试；生产不设置）。"""
+    return os.environ.get("DOC2MIND_DISABLE_AUTH", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _load_or_create_auth_token(data_dir: Path) -> str | None:
+    """读取或生成服务令牌；令牌文件不可写时返回 None（降级为无鉴权 + 明确告警）。
+
+    幂等：令牌文件已存在且长度合法时复用（WPF 客户端 / server.port 跟随同目录）。
+    """
+    token_file = data_dir / _TOKEN_FILE_NAME
+    try:
+        if token_file.is_file():
+            tok = token_file.read_text(encoding="utf-8").strip()
+            if tok and len(tok) >= 16:
+                return tok
+        tok = secrets.token_hex(32)
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(tok + "\n", encoding="utf-8")
+        with contextlib.suppress(OSError):
+            token_file.chmod(0o600)  # POSIX 下收紧权限；Windows 由用户目录 ACL 保障
+        return tok
+    except OSError as e:
+        logger.error(
+            "无法创建/读取服务端令牌文件 %s（%s）：HTTP 鉴权降级为关闭。",
+            token_file, e,
+        )
+        return None
+
+
+def _build_auth_middleware(token: str):
+    """构造校验 Bearer 令牌的 ASGI 中间件；token 为 None 时放行全部请求。"""
+    async def _auth_middleware(request: Request, call_next: Any) -> Any:
+        if request.url.path in _PUBLIC_PATHS:
+            return await call_next(request)
+        provided = request.headers.get("Authorization", "")
+        given = provided[7:].strip() if provided.startswith("Bearer ") else ""
+        if not given:
+            given = request.headers.get("X-DocMind-Token", "").strip()
+        if not given or not secrets.compare_digest(given, token):
+            return JSONResponse(
+                status_code=401,
+                content=ApiError(
+                    code="UNAUTHORIZED",
+                    message="缺少或无效的访问令牌（需携带 Authorization: Bearer <token>，令牌见 %LOCALAPPDATA%/doc2mind/server.token）",
+                ).model_dump(),
+            )
+        return await call_next(request)
+
+    return _auth_middleware
+
+
 def create_app(settings: Settings | None = None) -> Any:
     """创建 FastAPI app 实例。
 
@@ -961,6 +1049,35 @@ def create_app(settings: Settings | None = None) -> Any:
     if settings is not None:
         state.settings = settings
     app.state.doc2mind = state
+
+    # --- 访问鉴权：Bearer 令牌（默认启用；DOC2MIND_DISABLE_AUTH=1 供测试/开发显式关闭） ---
+    if _should_disable_auth():
+        logger.warning("HTTP 鉴权已通过 DOC2MIND_DISABLE_AUTH 显式关闭（仅推荐开发/测试环境使用）")
+    else:
+        token = _load_or_create_auth_token(_user_data_dir())
+        if token is not None:
+            app.middleware("http")(_build_auth_middleware(token))
+            logger.info("HTTP 鉴权已启用（Bearer 令牌文件：%s）", _user_data_dir() / _TOKEN_FILE_NAME)
+        else:
+            logger.warning("HTTP 鉴权降级为关闭：无法读写令牌文件 %s", _user_data_dir() / _TOKEN_FILE_NAME)
+
+    # --- 请求体大小上限：防止超大 JSON/附件路径载荷拖垮本地服务（默认 10MB） ---
+    _MAX_BODY_BYTES = 10 * 1024 * 1024
+
+    @app.middleware("http")
+    async def _limit_body_size(request: Request, call_next: Any) -> Any:
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > _MAX_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": {
+                        "code": "PAYLOAD_TOO_LARGE",
+                        "message": f"请求体超过上限（{_MAX_BODY_BYTES // (1024 * 1024)}MB）",
+                    }
+                },
+            )
+        return await call_next(request)
 
     # --- GET /v1/health ---
     @app.get("/v1/health", response_model=HealthResponse)
@@ -1050,7 +1167,17 @@ def create_app(settings: Settings | None = None) -> Any:
                 )
             yield "data: [DONE]\n\n"
 
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        # no-cache / X-Accel-Buffering：防止中间代理缓冲 SSE 分块（流式变"伪流式"）；
+        # 空闲超时由各端点的心跳帧兜底，此处再从响应头层面声明不缓存
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     # --- GET /v1/system/dependencies（设置页「环境自检」面板）---
     @app.get("/v1/system/dependencies")
@@ -1088,7 +1215,17 @@ def create_app(settings: Settings | None = None) -> Any:
                 )
             yield "data: [DONE]\n\n"
 
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        # no-cache / X-Accel-Buffering：防止中间代理缓冲 SSE 分块（流式变"伪流式"）；
+        # 空闲超时由各端点的心跳帧兜底，此处再从响应头层面声明不缓存
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     # --- POST /v1/system/download-model（嵌入模型下载，SSE 流式进度）---
     @app.post("/v1/system/download-model")
@@ -1156,7 +1293,17 @@ def create_app(settings: Settings | None = None) -> Any:
                 pass
             yield "data: [DONE]\n\n"
 
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        # no-cache / X-Accel-Buffering：防止中间代理缓冲 SSE 分块（流式变"伪流式"）；
+        # 空闲超时由各端点的心跳帧兜底，此处再从响应头层面声明不缓存
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     # --- GET /v1/jobs/{id}/events（job 进度 SSE 实时流）---
     @app.get("/v1/jobs/{job_id}/events")
@@ -1233,6 +1380,10 @@ def create_app(settings: Settings | None = None) -> Any:
             rag_min_score=s.rag_min_score,
             rag_mode=getattr(s, "rag_mode", "hybrid"),
             rag_system_prompt=s.rag_system_prompt,
+            rag_max_history_tokens=getattr(s, 'rag_max_history_tokens', 4096),
+            rerank_enabled=bool(s.rerank_enabled),
+            rerank_model=s.rerank_model,
+            rerank_recall=int(s.rerank_recall),
             llm_timeout=s.llm_timeout,
             watch_paths=list(s.watch_paths),
             watch_debounce_seconds=s.watch_debounce_seconds,
@@ -1317,6 +1468,10 @@ def create_app(settings: Settings | None = None) -> Any:
             rag_min_score=s.rag_min_score,
             rag_mode=getattr(s, "rag_mode", "hybrid"),
             rag_system_prompt=s.rag_system_prompt,
+            rag_max_history_tokens=getattr(s, 'rag_max_history_tokens', 4096),
+            rerank_enabled=bool(s.rerank_enabled),
+            rerank_model=s.rerank_model,
+            rerank_recall=int(s.rerank_recall),
             llm_timeout=s.llm_timeout,
             watch_paths=list(s.watch_paths),
             watch_debounce_seconds=s.watch_debounce_seconds,
@@ -1482,7 +1637,7 @@ def create_app(settings: Settings | None = None) -> Any:
 
         # 复用 _AppState 的单例 store，避免每次请求新建 sqlite 连接
         # 触发 WAL 锁冲突。嵌入是 CPU 密集，用线程避免阻塞事件循环。
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
 
         def _do_ingest():
             # 写互斥：与 delete / reindex 串行，避免并发写冲突
@@ -1518,7 +1673,7 @@ def create_app(settings: Settings | None = None) -> Any:
             raise _api_error("BAD_REQUEST", "text 不能为空", 400)
 
         # collection=None 透传：落默认集合并允许 AI 自动归类（显式传值则尊重选择）
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
         result = await asyncio.to_thread(
             ingest_text,
             text=req.text,
@@ -1553,7 +1708,7 @@ def create_app(settings: Settings | None = None) -> Any:
             )
         name = name.replace(" ", "_")
 
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
         await asyncio.to_thread(store.ensure_collection, name)
         stats = await asyncio.to_thread(store.get_stats)
         return StatsResponse(
@@ -1573,7 +1728,7 @@ def create_app(settings: Settings | None = None) -> Any:
         if not collection:
             collection = "default"
 
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
         job_id = _new_id()
         job = JobStatus(
             job_id=job_id,
@@ -1592,10 +1747,10 @@ def create_app(settings: Settings | None = None) -> Any:
 
         def _check_and_update_progress(done: int, total: int) -> None:
             if cancel_event.is_set():
-                raise _JobCancelled("任务已被取消")
+                raise _JobCancelledError("任务已被取消")
             with state._jobs_lock:
                 if job.status == "cancelled":
-                    raise _JobCancelled("任务已被取消")
+                    raise _JobCancelledError("任务已被取消")
             _update_ingest_job(state, job, done, total)
 
         def _run_ingest_job() -> None:
@@ -1630,7 +1785,7 @@ def create_app(settings: Settings | None = None) -> Any:
                         logger.info("任务已取消并终止后台线程: %s", job_id)
                         _broadcast_job_event(job_id, {"type": "cancelled", "ts": _now_iso()})
                         return
-                    if isinstance(e, _JobCancelled) or "已被取消" in str(e):
+                    if isinstance(e, _JobCancelledError) or "已被取消" in str(e):
                         job.status = "cancelled"
                         _broadcast_job_event(job_id, {"type": "cancelled", "ts": _now_iso()})
                     else:
@@ -1645,10 +1800,15 @@ def create_app(settings: Settings | None = None) -> Any:
     # --- POST /v1/search ---
     @app.post("/v1/search", response_model=SearchResponse)
     async def search(req: SearchRequest) -> SearchResponse:
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
         assert state.embedder is not None
         try:
-            retriever = Retriever(store=store, embedder=state.embedder)
+            retriever = Retriever(
+                store=store,
+                embedder=state.embedder,
+                reranker=get_reranker(get_settings()),
+                rerank_recall=get_settings().rerank_recall,
+            )
             hits, stats = await asyncio.to_thread(
                 retriever.search,
                 req.query,
@@ -1692,6 +1852,7 @@ def create_app(settings: Settings | None = None) -> Any:
                     match_type=h.match_type,
                     vector_score=round(h.vector_score, 4),
                     bm25_score=round(h.bm25_score, 4),
+                    rerank_score=round(h.rerank_score, 4) if h.rerank_score is not None else None,
                     source=h.chunk.source,
                     format=h.chunk.format,
                     page=h.chunk.page,
@@ -1710,7 +1871,7 @@ def create_app(settings: Settings | None = None) -> Any:
         若请求携带 providerConfig（对话页点选模型即切服务商），则用其构造
         临时 LLM 客户端按请求生效，不修改后端全局配置；未携带则用全局配置。
         """
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
         try:
             # 按请求携带的服务商配置构造临时 LLM 客户端（复用 /v1/llm/test 模式）
             llm_client = _build_llm_client_from_provider(req, state.settings)
@@ -1755,6 +1916,7 @@ def create_app(settings: Settings | None = None) -> Any:
                     page=s.page,
                     heading=s.heading,
                     score=s.score,
+                    score_type=getattr(s, "score_type", ""),
                     source_type=getattr(s, "source_type", "local"),
                     url=getattr(s, "url", None),
                     title=getattr(s, "title", None),
@@ -1771,6 +1933,14 @@ def create_app(settings: Settings | None = None) -> Any:
         )
 
     # --- POST /v1/chat/stream (SSE) ---
+    # SSE 收敛护栏（AUD-005 / AUD-006）：
+    # - 队列 maxsize 提供背压；put 带超时，事件循环关闭时工作线程不永久阻塞
+    # - 流式总时长与连续空闲心跳都有上限，后端卡死时前端不会永久等待
+    _SSE_QUEUE_MAXSIZE = 64
+    _SSE_PUT_TIMEOUT = 5.0
+    _SSE_MAX_STREAM_SECONDS = 600.0  # 单次流式总时长上限（10 分钟）
+    _SSE_MAX_IDLE_HEARTBEATS = 20  # 连续空闲心跳上限（20×15s ≈ 5 分钟无 token）
+
     @app.post("/v1/chat/stream")
     async def chat_stream(req: ChatRequest) -> Any:
         """RAG 流式对话：先检索，再 SSE 逐 token 输出 LLM 回答。
@@ -1782,8 +1952,10 @@ def create_app(settings: Settings | None = None) -> Any:
         """
         async def event_generator() -> Any:
             loop = asyncio.get_event_loop()
-            queue: asyncio.Queue[str | None] = asyncio.Queue()
-            store = state.ensure_open()
+            # maxsize 提供背压：LLM 输出远快于网络时限制内存占用；
+            # put 超时兜底：事件循环关闭/故障时工作线程不永久阻塞（AUD-005）
+            queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=_SSE_QUEUE_MAXSIZE)
+            store = await asyncio.to_thread(state.ensure_open)
             stop_event = threading.Event()
             # 按请求携带的服务商配置构造临时 LLM 客户端（点选模型即切服务商）；
             # 未携带时返回 None，用后端全局配置
@@ -1809,39 +1981,61 @@ def create_app(settings: Settings | None = None) -> Any:
                 rag_mode=req.rag_mode,
             )
 
+            def _push(chunk: str | None) -> None:
+                """跨线程推送到 asyncio 队列；失败时置位 stop_event 防止挂死。"""
+                if stop_event.is_set():
+                    return
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        queue.put(chunk), loop
+                    ).result(timeout=_SSE_PUT_TIMEOUT)
+                except Exception as e:  # noqa: BLE001
+                    # 事件循环已关闭 / put 超时：再等只会永久阻塞，放弃并通知消费者
+                    logger.warning("SSE 推送失败（事件循环不可用?）: %s", e)
+                    stop_event.set()
+
             def _pump() -> None:
                 try:
                     for chunk_json in gen:
                         if stop_event.is_set():
                             break
-                        asyncio.run_coroutine_threadsafe(
-                            queue.put(chunk_json), loop
-                        ).result()
+                        _push(chunk_json)
                 except RagError as e:
-                    if not stop_event.is_set():
-                        asyncio.run_coroutine_threadsafe(
-                            queue.put(f"__ERROR__:{e}"), loop
-                        ).result()
+                    _push(f"__ERROR__:{e}")
                 except Exception as e:  # noqa: BLE001
-                    if not stop_event.is_set():
-                        asyncio.run_coroutine_threadsafe(
-                            queue.put(f"__ERROR__:对话失败: {e}"), loop
-                        ).result()
+                    _push(f"__ERROR__:对话失败: {e}")
                 finally:
+                    # 主动关闭 RAG 生成器：停止/断连时让它走 GeneratorExit 清理
+                    # 路径（释放可能打开的向量库等资源），而不是等 GC
                     with contextlib.suppress(Exception):
-                        asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
+                        gen.close()
+                    _push(None)
 
             fut = loop.run_in_executor(None, _pump)
+            started_at = time.monotonic()
+            idle_heartbeats = 0
             try:
                 while True:
+                    # 全局时长上限：后端卡死/LLM 异常时流也必须收敛（AUD-006）
+                    if time.monotonic() - started_at > _SSE_MAX_STREAM_SECONDS:
+                        yield f"data: {json.dumps({'error': f'对话流超时（超过 {_SSE_MAX_STREAM_SECONDS:.0f}s），已自动终止'}, ensure_ascii=False)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
                     try:
                         chunk = await asyncio.wait_for(queue.get(), timeout=15.0)
                     except asyncio.TimeoutError:
+                        idle_heartbeats += 1
+                        # 连续空闲心跳上限：长时间无任何 token，判定后端已无响应
+                        if idle_heartbeats >= _SSE_MAX_IDLE_HEARTBEATS:
+                            yield f"data: {json.dumps({'error': '模型生成超时（长时间无输出），已自动终止'}, ensure_ascii=False)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
                         # 心跳帧：LLM 首 token 前的检索/思考期可能远超 15s，
                         # 长时间无数据会被代理/防火墙静默掐断 SSE 连接。
                         # 注释帧（冒号开头）是 SSE 标准的忽略语法，前端解析器会跳过。
                         yield ": heartbeat\n\n"
                         continue
+                    idle_heartbeats = 0
                     if chunk is None:
                         break
                     if chunk.startswith("__ERROR__:"):
@@ -1853,7 +2047,17 @@ def create_app(settings: Settings | None = None) -> Any:
                 stop_event.set()
                 await fut  # 确保后台线程已退出
 
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        # no-cache / X-Accel-Buffering：防止中间代理缓冲 SSE 分块（流式变"伪流式"）；
+        # 空闲超时由各端点的心跳帧兜底，此处再从响应头层面声明不缓存
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     # --- GET /v1/chats（会话列表，按更新时间倒序） ---
     @app.get("/v1/chats", response_model=ChatListResponse)
@@ -1863,7 +2067,9 @@ def create_app(settings: Settings | None = None) -> Any:
     ) -> ChatListResponse:
         store = ChatStore(state.settings.db_path)
         try:
-            sessions = await asyncio.to_thread(store.list_sessions, limit, offset)
+            sessions, total = await asyncio.to_thread(
+                lambda: (store.list_sessions(limit, offset), store.count_sessions())
+            )
         except ChatStoreError as e:
             raise _api_error("INTERNAL", f"列出会话失败: {e}", 500) from e
         return ChatListResponse(
@@ -1877,7 +2083,8 @@ def create_app(settings: Settings | None = None) -> Any:
                 )
                 for s in sessions
             ],
-            total=len(sessions),
+            # AUD-013：total 是会话总数而非本页条数（分页正确性）
+            total=total,
         )
 
     # --- GET /v1/chats/{chat_id}（会话全部消息，回看/续聊） ---
@@ -1912,6 +2119,7 @@ def create_app(settings: Settings | None = None) -> Any:
                                 page=s.get("page"),
                                 heading=s.get("heading"),
                                 score=s.get("score", 0.0),
+                                score_type=s.get("score_type", ""),
                                 source_type=s.get("source_type", "local"),
                                 url=s.get("url"),
                                 title=s.get("title"),
@@ -1965,7 +2173,7 @@ def create_app(settings: Settings | None = None) -> Any:
         q: str | None = Query(None, min_length=1, description="按文件名/标题/摘要模糊搜索"),
         sort: str = Query("created_at_desc"),
     ) -> ListDocumentsResponse:
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
         offset = (page - 1) * page_size
         docs = store.list_documents(
             collection=collection,
@@ -2000,7 +2208,7 @@ def create_app(settings: Settings | None = None) -> Any:
         chunk_content_length: int = Query(200, ge=0, le=2000, alias="chunkContentLength"),
         collection: str | None = Query(None),
     ) -> dict:
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
         match = store.get_document_by_id(doc_id)
         if match is None:
             raise _api_error("NOT_FOUND", f"文档不存在: {doc_id}", 404)
@@ -2033,7 +2241,7 @@ def create_app(settings: Settings | None = None) -> Any:
     # --- DELETE /v1/documents/{id} ---
     @app.delete("/v1/documents/{doc_id}", response_model=DeleteResponse)
     async def delete_document(doc_id: str) -> DeleteResponse:
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
 
         def _do_delete() -> int:
             # 写互斥：与 ingest / reindex 串行
@@ -2049,7 +2257,7 @@ def create_app(settings: Settings | None = None) -> Any:
     @app.put("/v1/chunks/{chunk_id}/annotation")
     async def upsert_chunk_annotation(chunk_id: int, body: dict = Body(...)) -> dict:
         """更新分块批注(合并到 extra JSON)。body 示例: {"text": "这是一个重要结论"}"""
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
         annotation = body.get("text", "")
         ok = store.update_chunk_extra(chunk_id, {"annotation": annotation})
         if not ok:
@@ -2059,7 +2267,7 @@ def create_app(settings: Settings | None = None) -> Any:
     # --- GET /v1/stats ---
     @app.get("/v1/stats", response_model=StatsResponse)
     async def stats(collection: str | None = Query(None)) -> StatsResponse:
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
         # collection 过滤：只统计该集合；None 为全部
         if collection:
             docs = store.list_documents(collection=collection, limit=100000)
@@ -2083,7 +2291,7 @@ def create_app(settings: Settings | None = None) -> Any:
     # --- GET /v1/quality ---
     @app.get("/v1/quality", response_model=QualityResponse)
     async def quality(collection: str | None = Query(None)) -> QualityResponse:
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
         docs = store.list_documents(collection=collection, limit=10000)
         fmt_dist: dict[str, int] = {}
         total_chunks = 0
@@ -2165,12 +2373,20 @@ def create_app(settings: Settings | None = None) -> Any:
         return await asyncio.to_thread(_fetch)
 
     @app.get("/v1/graph/entities/{entity_id}/details", response_model=GraphEntityDetailDTO)
-    @app.get("/v1/graph/entity/{entity_id}", response_model=GraphEntityDetailDTO)
+    @app.get(
+        "/v1/graph/entity/{entity_id}",
+        response_model=GraphEntityDetailDTO,
+        deprecated=True,  # AUD-023：同一处理函数的冗余别名，保留兼容旧客户端，新代码一律用 /v1/graph/entities/{id}/details
+    )
     async def graph_entity_details(
         entity_id: str,
         limit: int = Query(8, ge=1, le=50),
     ) -> GraphEntityDetailDTO:
-        """获取指定实体的完整知识全景：基本信息、关联关系、来源文档和上下文内容切片。"""
+        """获取指定实体的完整知识全景：基本信息、关联关系、来源文档和上下文内容切片。
+
+        注意：`/v1/graph/entity/{id}` 是冗余别名（AUD-023），已标记 deprecated，
+        仅保留给旧客户端；新客户端请使用 `/v1/graph/entities/{id}/details`。
+        """
         def _fetch() -> GraphEntityDetailDTO:
             graph_store = GraphStore(state.settings.db_path)
             try:
@@ -2184,16 +2400,15 @@ def create_app(settings: Settings | None = None) -> Any:
     @app.post("/v1/graph/entities/distill", response_model=EntityDistillResponse)
     async def graph_entity_distill(req: EntityDistillRequest) -> EntityDistillResponse:
         """知识蒸馏：将实体探讨过程、本地切片与联网资料萃取提炼为高密度结构化知识卡片。"""
-        from doc2mind.core.llm.factory import get_llm_client
-
-        s = state.settings
-        if req.model:
-            from dataclasses import replace as dc_replace
-            s = dc_replace(s, llm_model=req.model.strip())
-
-        llm = get_llm_client(s)
+        llm = _build_llm_client_from_provider_config(
+            req.provider_config, state.settings, req.model
+        )
         if llm is None:
-            raise _api_error("LLM_NOT_CONFIGURED", "未配置 LLM，无法生成知识精炼卡片", 400)
+            raise _api_error(
+                "LLM_NOT_CONFIGURED",
+                "未配置 LLM，无法生成知识精炼卡片。请先在「设置」中配置大模型 API Key。",
+                400,
+            )
 
         # 组装蒸馏 Prompt
         snippets_text = "\n\n".join(req.local_snippets) if req.local_snippets else "（无本地切片）"
@@ -2226,7 +2441,11 @@ def create_app(settings: Settings | None = None) -> Any:
                 ]
             )
         except Exception as e:
+            logger.error("知识卡片蒸馏失败: %s", e)
             raise _api_error("LLM_ERROR", f"知识卡片蒸馏失败: {e}", 500) from e
+
+        if not markdown_card or not markdown_card.strip():
+            markdown_card = f"# 📚【知识档案】{req.entity_name}\n\n> ⚠️ 大模型未返回有效内容，请检查大模型配置或重试。"
 
         # 提取推荐标签
         import re
@@ -2235,7 +2454,8 @@ def create_app(settings: Settings | None = None) -> Any:
         if tag_match:
             tags = [t.strip("#").strip() for t in tag_match.group(1).split() if t.strip()]
         if not tags:
-            tags = [req.entity_type, req.entity_name]
+            all_tags = re.findall(r"#([\w\u4e00-\u9fa5\-_]+)", markdown_card)
+            tags = all_tags[:5] if all_tags else [req.entity_type, req.entity_name]
 
         return EntityDistillResponse(
             entity_id=req.entity_id,
@@ -2277,7 +2497,7 @@ def create_app(settings: Settings | None = None) -> Any:
                 400,
             )
 
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
         embedder = state.embedder
         try:
             report = await asyncio.to_thread(
@@ -2423,7 +2643,7 @@ def create_app(settings: Settings | None = None) -> Any:
         #   由 _run_reindex 重建向量表（drop + 按新维度建表 + 回填全部向量）。
         # 注意：store 可能是跨线程共享单例，embedder 在 ensure_open 中创建，
         # 因此这里只持有引用，不关闭。
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
         collection = req.collection.strip() if req.collection and req.collection.strip() else None
         job_id = _new_id()
 
@@ -2490,7 +2710,7 @@ def create_app(settings: Settings | None = None) -> Any:
                         # 空集合也要完成模型切换：即使没有分块，后续新导入/搜索
                         # 仍必须使用用户刚配置的 embedder，而不能继续持有旧单例。
                         if cancel_event.is_set():
-                            raise _JobCancelled("任务已被取消")
+                            raise _JobCancelledError("任务已被取消")
 
                     embedder = target_embedder
                     if embedder is None:
@@ -2503,7 +2723,7 @@ def create_app(settings: Settings | None = None) -> Any:
                     rebuild_pairs: list[tuple[int, object]] = []
                     for i in range(0, total, batch_size):
                         if cancel_event.is_set():
-                            raise _JobCancelled("任务已被取消")
+                            raise _JobCancelledError("任务已被取消")
                         batch = pairs[i : i + batch_size]
                         texts = [content for _, content in batch]
                         embeddings = list(embedder.embed_texts(texts))
@@ -2524,7 +2744,7 @@ def create_app(settings: Settings | None = None) -> Any:
                             job.progress = round(processed / total, 4)
 
                     if cancel_event.is_set():
-                        raise _JobCancelled("任务已被取消")
+                        raise _JobCancelledError("任务已被取消")
 
                     if need_rebuild:
                         # 维度变化：重建向量表（drop + 按新维度建表）并回填全部向量。
@@ -2533,7 +2753,7 @@ def create_app(settings: Settings | None = None) -> Any:
 
                     with state._jobs_lock:
                         if job.status == "cancelled" or cancel_event.is_set():
-                            raise _JobCancelled("任务已被取消")
+                            raise _JobCancelledError("任务已被取消")
                         job.status = "completed"
                         job.progress = 1.0
                         job.finished_at = _now_iso()
@@ -2557,7 +2777,7 @@ def create_app(settings: Settings | None = None) -> Any:
                                 )
                         except Exception as e:  # noqa: BLE001
                             logger.warning("reindex 后同步配置失败：%s", e)
-                except _JobCancelled:
+                except _JobCancelledError:
                     with state._jobs_lock:
                         job.status = "cancelled"
                         job.finished_at = _now_iso()
@@ -2580,7 +2800,7 @@ def create_app(settings: Settings | None = None) -> Any:
         dry_run 默认 True（只读预览，零写入）；dedup/consolidate 涉及删除与
         合并，确认预览无误后用 dry_run=False 执行。
         """
-        store = state.ensure_open()
+        store = await asyncio.to_thread(state.ensure_open)
 
         # LLM 前置检查：未配置直接 400（否则任务跑一半才发现，浪费一轮轮询）
         try:
@@ -2613,14 +2833,15 @@ def create_app(settings: Settings | None = None) -> Any:
 
         def _update_curate_job(done: int, total: int) -> None:
             if cancel_event.is_set():
-                raise _JobCancelled("任务已被取消")
+                raise _JobCancelledError("任务已被取消")
             with state._jobs_lock:
                 job.processed = done
                 job.total = total
                 job.progress = round(done / total, 4) if total > 0 else 0.0
 
         def _run_curate() -> None:
-            from doc2mind.core.curator import CurateCancelled, curate as run_curate
+            from doc2mind.core.curator import CurateCancelledError
+            from doc2mind.core.curator import curate as run_curate
 
             try:
                 # 写互斥：与 ingest / delete / reindex 串行（dry_run 虽只读，
@@ -2639,15 +2860,15 @@ def create_app(settings: Settings | None = None) -> Any:
                         cancel_check=cancel_event.is_set,
                     )
                 if cancel_event.is_set():
-                    raise _JobCancelled("任务已被取消")
+                    raise _JobCancelledError("任务已被取消")
                 with state._jobs_lock:
                     if job.status == "cancelled":
-                        raise _JobCancelled("任务已被取消")
+                        raise _JobCancelledError("任务已被取消")
                     job.status = "completed"
                     job.progress = 1.0
                     job.finished_at = _now_iso()
                     job.report = report.to_dict()
-            except (_JobCancelled, CurateCancelled):
+            except (_JobCancelledError, CurateCancelledError):
                 with state._jobs_lock:
                     job.status = "cancelled"
                     job.finished_at = _now_iso()

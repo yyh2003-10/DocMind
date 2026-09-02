@@ -1,11 +1,15 @@
 @echo off
 chcp 65001 >nul
-echo ============================================================
-echo   DocMind Release 一键发布与打包工具 (v1.0.1)
-echo ============================================================
+
+REM 版本号唯一来源：改版本只改这一处（打包文件名 / 安装包参数 / 提示文案统一使用）
+set APP_VERSION=1.0.1
 
 set ROOT_DIR=%~dp0..
 cd /d "%ROOT_DIR%"
+
+echo ============================================================
+echo   DocMind Release 一键发布与打包工具 (v%APP_VERSION%)
+echo ============================================================
 
 echo [*] 正在执行 dotnet publish 发布 Release win-x64 单文件版本...
 dotnet publish DocMind/DocMind.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true
@@ -66,7 +70,7 @@ echo [✓] 后端虚拟环境构建完成
 
 echo.
 echo ============================================================
-echo   [*] 打包绿色便携版 ZIP (DocMind-v1.0.1-win-x64.zip)
+echo   [*] 打包绿色便携版 ZIP (DocMind-v%APP_VERSION%-win-x64.zip)
 echo ============================================================
 
 if not exist "installer\Output" mkdir "installer\Output"
@@ -82,14 +86,15 @@ copy "LICENSE" "installer\Output\staging\" >nul
 copy "NOTICE" "installer\Output\staging\" >nul
 copy "THIRD_PARTY_LICENSES.md" "installer\Output\staging\" >nul
 copy "scripts\setup.ps1" "installer\Output\staging\scripts\" >nul
+copy "scripts\install_optional.py" "installer\Output\staging\scripts\" >nul
 xcopy "DocMind\Assets" "installer\Output\staging\Assets\" /s /e /y /q >nul
 xcopy ".venv-slim-new" "installer\Output\staging\.venv\" /s /e /y /q >nul
 
-echo [*] 正在压缩为 DocMind-v1.0.1-win-x64.zip ...
-if exist "installer\Output\DocMind-v1.0.1-win-x64.zip" del /f /q "installer\Output\DocMind-v1.0.1-win-x64.zip"
-powershell.exe -NoProfile -Command "Compress-Archive -Path 'installer\Output\staging\*' -DestinationPath 'installer\Output\DocMind-v1.0.1-win-x64.zip' -Force"
+echo [*] 正在压缩为 DocMind-v%APP_VERSION%-win-x64.zip ...
+if exist "installer\Output\DocMind-v%APP_VERSION%-win-x64.zip" del /f /q "installer\Output\DocMind-v%APP_VERSION%-win-x64.zip"
+powershell.exe -NoProfile -Command "Compress-Archive -Path 'installer\Output\staging\*' -DestinationPath 'installer\Output\DocMind-v%APP_VERSION%-win-x64.zip' -Force"
 rmdir /s /q "installer\Output\staging"
-echo [✓] 绿色版 ZIP 打包完成: installer\Output\DocMind-v1.0.1-win-x64.zip
+echo [✓] 绿色版 ZIP 打包完成: installer\Output\DocMind-v%APP_VERSION%-win-x64.zip
 
 echo.
 echo ============================================================
@@ -104,8 +109,8 @@ if exist "C:\Program Files\InnoSetup7\ISCC.exe" set ISCC_EXE="C:\Program Files\I
 
 if defined ISCC_EXE (
     echo [*] 找到 Inno Setup 编译器: %ISCC_EXE%
-    %ISCC_EXE% /DMyAppVersion=1.0.1 "installer\docmind-setup.iss"
-    echo [✓] 安装包编译成功: installer\Output\DocMind-Setup-1.0.1.exe
+    %ISCC_EXE% /DMyAppVersion=%APP_VERSION% "installer\docmind-setup.iss"
+    echo [✓] 安装包编译成功: installer\Output\DocMind-Setup-%APP_VERSION%.exe
 ) else (
     echo [!] 未检测到本地 Inno Setup 编译器，跳过安装包自动编译。
     echo [!] 如需编译安装包，请安装 Inno Setup 并在 installer\docmind-setup.iss 点击编译。

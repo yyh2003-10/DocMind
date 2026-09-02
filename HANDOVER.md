@@ -4,6 +4,14 @@
 > 上一会话：多集合 + SSE 流式 + 技术债修复 + WPF 设置页（已全部提交）
 > 本会话：完成新功能审查、补流式测试、全部代码入库
 
+> **⚡ 状态刷新（2026-08-29）**：下列「P1/P2 待办」在 08-19~08-29 间已全部实现，本节的待办描述已过期，以本块为准——
+> - ✅ 后端 SSE 真流式（`http.py` 已改 asyncio.Queue 桥接 + 15s 心跳 + 断连中断）
+> - ✅ WPF ChatViewModel 接 SSE（`Doc2kbApiService.ChatStreamAsync` 真流式逐帧解析）
+> - ✅ CLI chat 流式（`cli.py chat --stream`）
+> - ✅ 会话持久化（`core/store/chat_store.py` SQLite + `/v1/chats*` 三端点 + 历史会话列表 UI）
+> - ✅ 引用来源可点击 + Markdown 渲染（Markdig → FlowDocument，来源角标可交互）
+> - ✅ 2026-08-29 新增：对话页知识库勾选持久化（`AppSettings.LastChatCollections`）、当前会话消息数展示、LLM 未配置事前引导（动态空态文案 + 发送前拦截）、历史上限条数可配（`DOC2MIND_RAG_MAX_HISTORY_MESSAGES`，默认 20）
+
 ---
 
 ## 一、本会话完成事项
@@ -37,8 +45,11 @@ bd040ba feat: WPF 对话页与设置页完善（ChatView + PasswordBox + 测试�
 ### 4. 测试
 | 套件 | 数量 | 说明 |
 |---|---|---|
-| Python pytest | **129/129** | 新增 4 个 rag_answer_stream 测试 |
-| WPF dotnet test | **47/47** | 无变化 |
+| Python pytest | **442/1 skip** | 2 跳过：watchdog 未装 + SSE 无限流 |
+| WPF dotnet test | **250/0** | 含 SettingsViewModelTests 新增 9 项 |
+
+> **⚠️ 基线已过期（2026-09-02 实测更新）**：Python pytest 现为 **442 通过 / 1 跳过 / 0 失败**；WPF dotnet test 现为 **250 通过 / 0 失败**。
+> 1 处跳过（pytest）：`test_integration.py:836`（SSE 无限流 TestClient 挂起）。WPF dotnet test 更新为 **250 通过 / 0 失败**（含 SettingsViewModelTests 新增 9 项）。
 
 ---
 
@@ -80,8 +91,8 @@ bd040ba feat: WPF 对话页与设置页完善（ChatView + PasswordBox + 测试�
 ### 测试
 | 命令 | 说明 |
 |---|---|
-| `python -m pytest tests/` | Python 后端（129 测试） |
-| `dotnet test DocMind.Tests` | WPF 客户端（47 测试） |
+| `python -m pytest tests/` | Python 后端（442 测试） |
+| `dotnet test DocMind.Tests` | WPF 客户端（250 测试） |
 
 ---
 
@@ -89,8 +100,8 @@ bd040ba feat: WPF 对话页与设置页完善（ChatView + PasswordBox + 测试�
 
 | 项 | 说明 | 建议 |
 |---|---|---|
-| SSE 伪流式 | `/v1/chat/stream` 收集全部 token 后一次 SSE 输出 | P1 接 WPF 时改 `asyncio.Queue` 桥接 |
-| 会话不持久 | `_CHAT_SESSIONS` 进程内存，重启丢失 | P1 加 SQLite 表 |
+| ~~SSE 伪流式~~ | ✅ 已修复（2026-08-19：asyncio.Queue 桥接 + 心跳） | 已闭环 |
+| ~~会话不持久~~ | ✅ 已修复（`chat_store.py` SQLite + `/v1/chats*`） | 已闭环 |
 | ruff 46 个遗留 lint | 多为 N806/SIM105/F821 假阳性 | 不阻塞，可后续统一清理 |
 | LLM 未配置错误提示重复 | `rag_answer` 与 `rag_answer_stream` 各有一份 ~15 行提示文本 | 可提取 `_require_client(s)`，非必须 |
 
@@ -101,10 +112,10 @@ bd040ba feat: WPF 对话页与设置页完善（ChatView + PasswordBox + 测试�
 ```bash
 # Python 后端
 cd /e/DocMind
-python -m pytest tests/ -q    # 129 tests
+python -m pytest tests/ -q    # 442 tests（1 跳过：SSE 无限流集成）
 
 # WPF 客户端
-dotnet test DocMind.Tests -v q    # 47 tests
+dotnet test DocMind.Tests -v q    # 250 tests
 
 # ruff（可选）
 ruff check src tests

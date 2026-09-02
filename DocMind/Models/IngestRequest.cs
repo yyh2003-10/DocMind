@@ -21,5 +21,5 @@ public sealed record IngestTextRequest
     public string? Collection { get; init; }
 
     [System.Text.Json.Serialization.JsonPropertyName("force")]
-    public bool Force { get; init; } = true;
+    public bool Force { get; init; } = false;
 }

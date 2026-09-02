@@ -107,6 +107,9 @@ public sealed record EntityDistillRequest
 
     [JsonPropertyName("model")]
     public string? Model { get; init; }
+
+    [JsonPropertyName("providerConfig")]
+    public ProviderConfig? ProviderConfig { get; init; }
 }
 
 public sealed record EntityDistillResponse

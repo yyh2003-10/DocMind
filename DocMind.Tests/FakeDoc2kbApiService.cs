@@ -38,6 +38,9 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
 
     // ── Reindex / Job ──
     public Func<ReindexRequest, CancellationToken, Task<JobStatus>>? OnReindex { get; set; }
+
+    // ── AI 整理（curate）──
+    public Func<CurateRequest, CancellationToken, Task<JobStatus>>? OnCurate { get; set; }
     public Func<string, CancellationToken, Task<JobStatus>>? OnGetJob { get; set; }
 
     // ── Chunk Annotation ──
@@ -58,6 +61,11 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Func<string, CancellationToken, Task>? OnDeleteChat { get; set; }
 
     public void UpdateBaseAddress(string baseUrl) { /* no-op */ }
+
+    public Task InstallOcrAsync(string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default)
+        => OnInstallOcr?.Invoke(path, onLog, onDone, ct) ?? Task.CompletedTask;
+
+    public Func<string, Action<string>, Action<bool>, CancellationToken, Task>? OnInstallOcr { get; set; }
 
     public Task<HealthStatus> GetHealthAsync(CancellationToken ct = default)
         => OnGetHealth?.Invoke(ct) ?? Task.FromResult(new HealthStatus { Status = "ok" });
@@ -106,7 +114,7 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default)
         => OnChat?.Invoke(req, ct) ?? throw new NotImplementedException();
 
-    public async Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, CancellationToken ct = default)
+    public async Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, Action? onRestart = null, CancellationToken ct = default)
     {
         if (OnChatStreamWithStatus is not null)
         {
@@ -160,6 +168,9 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Task<JobStatus> ReindexAsync(ReindexRequest req, CancellationToken ct = default)
         => OnReindex?.Invoke(req, ct) ?? throw new NotImplementedException();
 
+    public Task<JobStatus> CurateAsync(CurateRequest req, CancellationToken ct = default)
+        => OnCurate?.Invoke(req, ct) ?? throw new NotImplementedException();
+
     public Func<string, CancellationToken, Task<JobStatus>>? OnCancelJob { get; set; }
 
     public Task<JobStatus> GetJobAsync(string jobId, CancellationToken ct = default)
@@ -189,8 +200,35 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
         }
     }
 
+    // ── Job SSE 实时进度：Fake 中与轮询同义（OnGetJob 驱动），VM 侧行为一致 ──
+    public Func<string, IProgress<JobStatus>?, CancellationToken, Task<JobStatus>>? OnWatchJobUntilDone { get; set; }
+
+    public async Task<JobStatus> WatchJobUntilDoneAsync(string jobId, IProgress<JobStatus>? progress = null, CancellationToken ct = default)
+    {
+        if (OnWatchJobUntilDone is not null)
+        {
+            return await OnWatchJobUntilDone(jobId, progress, ct);
+        }
+        // 默认与轮询路径一致（OnGetJob 驱动），保证既有测试不感知切换
+        return await PollJobUntilDoneAsync(jobId, progress, ct: ct);
+    }
+
     private static bool IsTerminal(string? status)
         => status is "completed" or "done" or "failed" or "succeeded" or "canceled" or "cancelled";
+
+    // ── 系统环境依赖 / 模型下载 ──
+    public Func<CancellationToken, Task<DependenciesStatus>>? OnGetDependencies { get; set; }
+    public Func<string?, IProgress<DownloadProgressFrame>?, CancellationToken, Task<string?>>? OnDownloadModel { get; set; }
+
+    public Task<DependenciesStatus> GetDependenciesAsync(CancellationToken ct = default)
+        => OnGetDependencies is not null
+            ? OnGetDependencies(ct)
+            : Task.FromResult(new DependenciesStatus());
+
+    public Task<string?> DownloadModelAsync(string? modelName = null, IProgress<DownloadProgressFrame>? progress = null, CancellationToken ct = default)
+        => OnDownloadModel is not null
+            ? OnDownloadModel(modelName, progress, ct)
+            : Task.FromResult<string?>(null);
 
     // ── GPU 加速 ──
     public Func<CancellationToken, Task<GpuDiagnosis>>? OnGetGpuDiagnosis { get; set; }
@@ -212,6 +250,20 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
 
     // ── 知识图谱 ──
     public Func<string?, int, CancellationToken, Task<GraphResponse>>? OnGetGraph { get; set; }
+
+    public Func<string?, CancellationToken, Task<GraphStats>>? OnGetGraphStats { get; set; }
+    public Func<string?, int, CancellationToken, Task<List<GraphNode>>>? OnGetGraphEntities { get; set; }
+
+    // 默认返回 null：VM 走「统计不可用→回退可视化计数」路径，与旧测试行为一致
+    public Task<GraphStats> GetGraphStatsAsync(string? collection = null, CancellationToken ct = default)
+        => OnGetGraphStats is not null
+            ? OnGetGraphStats(collection, ct)
+            : Task.FromResult<GraphStats>(null!);
+
+    public Task<List<GraphNode>> GetGraphEntitiesAsync(string? collection = null, int limit = 200, CancellationToken ct = default)
+        => OnGetGraphEntities is not null
+            ? OnGetGraphEntities(collection, limit, ct)
+            : Task.FromResult(new List<GraphNode>());
     public Func<string, int, CancellationToken, Task<List<GraphEntityRelation>>>? OnGetEntityRelations { get; set; }
 
     public Task<GraphResponse> GetGraphAsync(string? collection = null, int limit = 200, CancellationToken ct = default)

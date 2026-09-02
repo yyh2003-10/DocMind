@@ -8,7 +8,8 @@
 
 | 工具 | 用途 | 关键参数 |
 |---|---|---|
-| `mcp__doc2mind__search` | 混合检索（BM25+向量），查询历史经验/文档 | `query`（必填）、`collection`、`top_k` |
+| `mcp__doc2mind__search` | 混合检索（BM25+向量），查询历史经验/文档 | `query`（必填）、`collection`、`top_k`、`min_score`；`score` 是 RRF 融合分（仅代表排名），判断相关性看 `vector_score`/`bm25_score` |
+| `mcp__doc2mind__chat` | RAG 对话：检索知识库 + LLM 生成回答，带来源引用，支持多轮 | `query`（必填）、`collection`/`collections`、`chat_id`、`model` |
 | `mcp__doc2mind__ingest_text` | 把一段经验/结论/要点直接写入知识库（不依赖文件） | `text`（必填）、`title`、`collection`（可不传，AI 自动归类） |
 | `mcp__doc2mind__ingest` | 同步摄入文件或目录（小目录够用） | `path`（必填，绝对路径）、`collection`、`recursive` |
 | `mcp__doc2mind__ingest_job` | 异步摄入目录，返回 `job_id` 轮询进度（中大型项目用） | 同 `ingest` |
@@ -19,6 +20,11 @@
 | `mcp__doc2mind__convert_file` | 文档格式互转 | `input_path`、`output_format` |
 | `mcp__doc2mind__reindex` | 重建向量索引 | `collection`、`model` |
 | `mcp__doc2mind__curate` | AI 整理知识库：打标签/摘要/自动归类/语义去重/归纳合并 | `collection`、`actions`、`dry_run`（默认 true 只读预览）、`top_k` |
+| `mcp__doc2mind__graph_get` | 知识图谱查询：实体与关系（需先经 `extract`/curate 抽取入库） | `collection`、`limit` |
+| `mcp__doc2mind__create_artifact` | 创作导出：大纲/内容编译为 PPTX/DOCX/XLSX/HTML 物理文件 | `content`、`format`、`output_path` |
+| `mcp__doc2mind__inspect_artifact` | PPT 大纲体检：0-100 评分 + 排版/密度/版式多样性诊断 | `content` |
+
+> 共 **15 个** MCP 工具（与 `docs/mcp.md` 工具清单一致）。
 
 ### 用法约定
 

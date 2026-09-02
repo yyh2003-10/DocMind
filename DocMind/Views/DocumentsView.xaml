@@ -29,7 +29,7 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <!-- 第一行：集合过滤 + 文件名模糊搜索 + 格式过滤 + 刷新按钮 -->
+                <!-- 第一行：分组过滤 + 文件名模糊搜索 + 格式过滤 + 刷新按钮 -->
                 <Grid Grid.Row="0" Margin="0,0,0,10">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -40,14 +40,14 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
-                    <TextBlock Grid.Column="0" Text="集合:"
+                    <TextBlock Grid.Column="0" Text="分组:"
                                Style="{StaticResource CaptionText}"
                                VerticalAlignment="Center"
                                Margin="0,0,8,0"/>
                     <ComboBox Grid.Column="1"
                               ItemsSource="{Binding AvailableCollections}"
                               SelectedItem="{Binding Collection, Mode=TwoWay}"
-                              ToolTip="选择要查看与管理的知识库集合"
+                              ToolTip="选择要查看与管理的知识库分组"
                               Margin="0,0,12,0"/>
 
                     <TextBox Grid.Column="2"
@@ -210,7 +210,7 @@
                                         <StackPanel Grid.Row="1" Orientation="Horizontal"
                                                     Margin="0,4,0,0">
                                             <TextBlock Style="{StaticResource SmallText}">
-                                                <Run Text="集合 " FontWeight="SemiBold"/>
+                                                <Run Text="分组 " FontWeight="SemiBold"/>
                                                 <Run Text="{Binding Collection, Mode=OneWay}"/>
                                             </TextBlock>
                                             <TextBlock Style="{StaticResource SmallText}" Margin="16,0,0,0">
@@ -285,7 +285,7 @@
                                            FontWeight="SemiBold"
                                            Style="{StaticResource BodyText}"
                                            TextWrapping="Wrap"/>
-                                <TextBlock Text="{Binding Detail.Document.Collection, Mode=OneWay, StringFormat=集合: {0}}"
+                                <TextBlock Text="{Binding Detail.Document.Collection, Mode=OneWay, StringFormat=分组: {0}}"
                                            Style="{StaticResource SmallText}"
                                            Margin="0,4,0,0"/>
                                 <TextBlock Text="{Binding Detail.Document.CreatedAt, Mode=OneWay, StringFormat=创建于 {0}}"

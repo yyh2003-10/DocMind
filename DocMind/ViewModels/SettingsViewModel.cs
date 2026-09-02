@@ -59,6 +59,11 @@ public partial class SettingsViewModel : ViewModelBase
         if (Enum.TryParse<SettingsCategory>(categoryName, true, out var cat))
         {
             SelectedCategory = cat;
+            // 首次进入「算力与体检」时静默拉取运行依赖状态（二次进入跳过，手动刷新按钮兜底）
+            if (cat == SettingsCategory.Hardware && Dependencies is null && !IsDependenciesLoading)
+            {
+                _ = RefreshDependenciesAsync();
+            }
         }
     }
 
@@ -89,6 +94,9 @@ public partial class SettingsViewModel : ViewModelBase
     private string? _ragSystemPrompt;
     private int _ragMaxHistoryTokens = 4096;
     private string _ragMode = "hybrid";
+    private bool _rerankEnabled = true;
+    private string _rerankModel = "Xenova/bge-reranker-v2-m3";
+    private int _rerankRecall = 20;
     private bool _showRestartBanner;
     private string _restartBannerText = "";
     private string _statusMessage = "就绪";
@@ -107,6 +115,14 @@ public partial class SettingsViewModel : ViewModelBase
     // 用户点了「清除 Key」按钮：保存时本地置空 + 后端显式清除。
     // key 输入框留空 ≠ 清除（留空 = 保留原值，与 UI ToolTip 承诺一致）
     private bool _clearApiKeyRequested;
+
+    // ── 批次 2：配置状态透明化 ──
+    // 后端 /v1/config 返回的实际生效配置（状态卡展示用）
+    private string? _activeBackendEmbedModel;
+    private string? _activeBackendLlmProvider;
+    private string? _activeBackendLlmModel;
+    private bool _isBackendConfigLoaded;
+    private bool _showApiKeyClearConfirm;
 
     // GitHub Token（可选）：联网搜索 GitHub 通道按请求携带（每用户自己的 Token）。
     // 与 LLM API Key 同语义：留空保存 = 保留原值，点「清除」才删除。
@@ -181,6 +197,9 @@ public partial class SettingsViewModel : ViewModelBase
         _ragSystemPrompt = _appSettings.RagSystemPrompt;
         _ragMaxHistoryTokens = _appSettings.RagMaxHistoryTokens;
         _ragMode = _appSettings.RagMode;
+        _rerankEnabled = _appSettings.RerankEnabled;
+        _rerankModel = _appSettings.RerankModel;
+        _rerankRecall = _appSettings.RerankRecall;
         _watchDebounceSeconds = _appSettings.WatchDebounceSeconds;
 
         WatchPaths.Clear();
@@ -198,6 +217,10 @@ public partial class SettingsViewModel : ViewModelBase
         _savedBaseUrlAtLoad = _llmBaseUrl;
         _savedModelAtLoad = _llmModel;
         _savedRagSystemPromptAtLoad = _ragSystemPrompt;
+        // 批次 2：保存重启类字段快照（用于变更检测）
+        _savedBackendUrlAtLoad = _backendUrl;
+        _savedStartupTimeoutSecAtLoad = _startupTimeoutSec;
+        _savedBackendCommandAtLoad = _backendCommand;
 
         // 载入 AI 提供商档案（ApiKey 已在 App.LoadSettings 解密为明文；解密失败项带 KeyDecryptFailed 标记）
         SavedProfiles.Clear();
@@ -342,7 +365,8 @@ public partial class SettingsViewModel : ViewModelBase
     }
 
     /// <summary>拉取后端 /v1/config 回填运行时真相：API Key 是否已配置（可能由环境变量/
-    /// 后端注入，本地 appsettings 未必有）、config.toml 是否损坏。不覆盖用户正在编辑的字段。
+    /// 后端注入，本地 appsettings 未必有）、config.toml 是否损坏、实际生效的嵌入模型/LLM 配置。
+    /// 不覆盖用户正在编辑的字段。
     /// internal：测试可直接 await 验证回填行为（构造函数中 fire-and-forget 调用）。</summary>
     internal async Task LoadBackendConfigAsync()
     {
@@ -355,6 +379,13 @@ public partial class SettingsViewModel : ViewModelBase
             }
             _backendApiKeyConfigured = cfg.LlmApiKeyConfigured;
             OnPropertyChanged(nameof(HasSavedApiKey));
+            OnPropertyChanged(nameof(ApiKeyStatusText));
+
+            // 批次 2：回填后端实际生效配置到状态卡
+            ActiveBackendEmbedModel = cfg.EmbedModel;
+            ActiveBackendLlmProvider = cfg.LlmProvider;
+            ActiveBackendLlmModel = cfg.LlmModel;
+            IsBackendConfigLoaded = true;
 
             if (!string.IsNullOrWhiteSpace(cfg.ConfigError))
             {
@@ -530,6 +561,50 @@ public partial class SettingsViewModel : ViewModelBase
     /// 保证「后端有 key 但本地快照没有」时用户仍能清除。</summary>
     public bool HasSavedApiKey => !string.IsNullOrWhiteSpace(_savedApiKeyAtLoad) || _backendApiKeyConfigured;
 
+    // ── 批次 2：配置状态透明化属性 ──
+    /// <summary>后端实际生效的嵌入模型名（来自 GET /v1/config，状态卡展示）。</summary>
+    public string? ActiveBackendEmbedModel
+    {
+        get => _activeBackendEmbedModel;
+        private set => SetProperty(ref _activeBackendEmbedModel, value);
+    }
+
+    /// <summary>后端实际生效的 LLM 提供商（来自 GET /v1/config，状态卡展示）。</summary>
+    public string? ActiveBackendLlmProvider
+    {
+        get => _activeBackendLlmProvider;
+        private set => SetProperty(ref _activeBackendLlmProvider, value);
+    }
+
+    /// <summary>后端实际生效的 LLM 模型名（来自 GET /v1/config，状态卡展示）。</summary>
+    public string? ActiveBackendLlmModel
+    {
+        get => _activeBackendLlmModel;
+        private set => SetProperty(ref _activeBackendLlmModel, value);
+    }
+
+    /// <summary>是否已成功从后端加载配置（状态卡可见性）。</summary>
+    public bool IsBackendConfigLoaded
+    {
+        get => _isBackendConfigLoaded;
+        private set => SetProperty(ref _isBackendConfigLoaded, value);
+    }
+
+    /// <summary>API Key 状态徽章文案（"已配置 ✓" / "未配置"）。</summary>
+    public string ApiKeyStatusText => HasSavedApiKey ? "已配置 ✓" : "未配置";
+
+    /// <summary>是否显示 API Key 清除确认对话框。</summary>
+    public bool ShowApiKeyClearConfirm
+    {
+        get => _showApiKeyClearConfirm;
+        set => SetProperty(ref _showApiKeyClearConfirm, value);
+    }
+
+    /// <summary>上次保存前的后端连接与启动超时快照（用于重启类字段变更检测）。</summary>
+    private string? _savedBackendUrlAtLoad;
+    private int _savedStartupTimeoutSecAtLoad;
+    private string? _savedBackendCommandAtLoad;
+
     /// <summary>GitHub Token（联网搜索 GitHub 通道用；可选，内存持明文，落盘 DPAPI 加密）。
     /// 每个用户填自己的 Token，随对话请求携带，后端不写全局配置。</summary>
     public string? GithubToken
@@ -602,6 +677,27 @@ public partial class SettingsViewModel : ViewModelBase
     {
         get => _ragMode;
         set => SetDirty(ref _ragMode, value);
+    }
+
+    /// <summary>是否启用检索后重排（Reranker / cross-encoder 精排），显著提升知识检索相关性。</summary>
+    public bool RerankEnabled
+    {
+        get => _rerankEnabled;
+        set => SetDirty(ref _rerankEnabled, value);
+    }
+
+    /// <summary>重排模型名（fastembed TextRanking 支持列表中的模型）。</summary>
+    public string RerankModel
+    {
+        get => _rerankModel;
+        set => SetDirty(ref _rerankModel, value);
+    }
+
+    /// <summary>送入重排器的候选数上限（默认 20）。</summary>
+    public int RerankRecall
+    {
+        get => _rerankRecall;
+        set => SetDirty(ref _rerankRecall, value);
     }
 
     /// <summary>是否显示提示用户平滑重启后端的 Banner。</summary>
@@ -846,6 +942,206 @@ public partial class SettingsViewModel : ViewModelBase
         }
     }
 
+    // ===================== 运行依赖就绪状态（/v1/system/dependencies）=====================
+
+    private DependenciesStatus? _dependencies;
+    private bool _isDependenciesLoading;
+
+    /// <summary>运行依赖就绪状态聚合（GPU/OCR/嵌入模型缓存/Poppler）。</summary>
+    public DependenciesStatus? Dependencies
+    {
+        get => _dependencies;
+        private set
+        {
+            if (SetProperty(ref _dependencies, value))
+            {
+                OnPropertyChanged(nameof(HasDependencies));
+                OnPropertyChanged(nameof(DependenciesSummaryText));
+                OnPropertyChanged(nameof(DependencyCheckSummary));
+            }
+        }
+    }
+
+    public bool HasDependencies => Dependencies is not null;
+
+    /// <summary>按依赖项逐行渲染的检查项（GPU/OCR/模型缓存/PDF）。</summary>
+    public IReadOnlyList<DependencyCheckItem> DependencyCheckSummary => BuildDependencyChecks();
+
+    public bool IsDependenciesLoading
+    {
+        get => _isDependenciesLoading;
+        private set => SetProperty(ref _isDependenciesLoading, value);
+    }
+
+    /// <summary>一行摘要（全绿/警告），供通知与状态栏复用。</summary>
+    public string DependenciesSummaryText
+    {
+        get
+        {
+            if (Dependencies is null)
+                return "";
+            var checks = BuildDependencyChecks();
+            var ok = checks.Count(c => c.Ok);
+            return $"{ok}/{checks.Count} 项依赖就绪";
+        }
+    }
+
+    private IReadOnlyList<DependencyCheckItem> BuildDependencyChecks()
+    {
+        var d = Dependencies;
+        if (d is null)
+            return [];
+
+        return
+        [
+            new DependencyCheckItem("GPU 加速", d.GpuAvailable,
+                d.GpuAvailable ? $"{d.GpuProvider ?? "GPU"}（{d.GpuName ?? "-"}）" : "未启用（CPU 推理可用）"),
+            new DependencyCheckItem("OCR 文字识别", d.OcrAvailable,
+                d.OcrAvailable ? "已安装（PaddleOCR）" : "未安装（导入扫描件/图片文档时可用）"),
+            new DependencyCheckItem("嵌入模型缓存", d.ModelCached,
+                d.ModelCached ? $"已缓存（{d.ModelName}）" : $"未缓存（{d.ModelName}，首次使用自动下载）"),
+            new DependencyCheckItem("PDF 转换 (Poppler)", d.PopplerAvailable,
+                d.PopplerAvailable ? "已就绪" : "缺失（部分 PDF 渲染/转换受限）"),
+        ];
+    }
+
+    /// <summary>拉取运行依赖就绪状态（设置页「算力与体检」首次进入/手动刷新）。</summary>
+    [RelayCommand]
+    public async Task RefreshDependenciesAsync()
+    {
+        if (IsDependenciesLoading)
+            return;
+
+        IsDependenciesLoading = true;
+        try
+        {
+            Dependencies = await _apiService.GetDependenciesAsync();
+            DebugLog.Info($"依赖状态拉取完成: {DependenciesSummaryText}", "Settings");
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"依赖状态拉取失败: {ex.GetType().Name}: {ex.Message}", "Settings");
+        }
+        finally
+        {
+            IsDependenciesLoading = false;
+        }
+    }
+
+    // ===================== 嵌入模型下载（/v1/system/download-model）=====================
+
+    private bool _isDownloadingModel;
+    private double _modelDownloadProgress;
+    private string _modelDownloadStatus = "";
+    private string? _modelDownloadResult;
+
+    public bool IsDownloadingModel
+    {
+        get => _isDownloadingModel;
+        private set
+        {
+            if (SetProperty(ref _isDownloadingModel, value))
+            {
+                DownloadModelCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>模型下载进度 0.0 ~ 1.0（SSE 字节进度）。</summary>
+    public double ModelDownloadProgress
+    {
+        get => _modelDownloadProgress;
+        private set => SetProperty(ref _modelDownloadProgress, value);
+    }
+
+    /// <summary>模型下载百分比文本（进度条 ToolTip）。</summary>
+    public string ModelDownloadProgressText => $"{(int)(ModelDownloadProgress * 100)}%";
+
+    /// <summary>模型下载状态文本（进行中/完成/失败）。</summary>
+    public string ModelDownloadStatus
+    {
+        get => _modelDownloadStatus;
+        private set
+        {
+            if (SetProperty(ref _modelDownloadStatus, value))
+            {
+                OnPropertyChanged(nameof(ModelDownloadStatusDisplay));
+            }
+        }
+    }
+
+    /// <summary>下载状态显示文本（未开始时给引导文案）。</summary>
+    public string ModelDownloadStatusDisplay
+        => string.IsNullOrWhiteSpace(ModelDownloadStatus)
+            ? "尚未下载过（首次使用嵌入时会自动下载）"
+            : ModelDownloadStatus;
+
+    /// <summary>已下载模型快照目录（用于提示重启后端生效）。</summary>
+    public string? ModelDownloadResult
+    {
+        get => _modelDownloadResult;
+        private set => SetProperty(ref _modelDownloadResult, value);
+    }
+
+    public bool CanDownloadModel => !IsDownloadingModel;
+
+    /// <summary>下载当前选择的嵌入模型（离线包/手动补缓存场景）。</summary>
+    [RelayCommand(CanExecute = nameof(CanDownloadModel))]
+    public async Task DownloadModelAsync()
+    {
+        if (IsDownloadingModel)
+            return;
+
+        IsDownloadingModel = true;
+        ModelDownloadProgress = 0;
+        ModelDownloadStatus = "正在连接后端…";
+        ModelDownloadResult = null;
+        OnPropertyChanged(nameof(ModelDownloadProgressText));
+        try
+        {
+            var progress = new Progress<DownloadProgressFrame>(f =>
+            {
+                // 字节优先，退化到文件进度；避免回跳
+                var p = f.Progress;
+                ModelDownloadProgress = Math.Max(ModelDownloadProgress, Math.Min(1.0, p));
+                OnPropertyChanged(nameof(ModelDownloadProgressText));
+                ModelDownloadStatus = f.TotalBytes > 0
+                    ? $"下载中… {FormatBytes(f.DownloadedBytes)} / {FormatBytes(f.TotalBytes)}"
+                    : $"下载中… 文件 {f.DownloadedFiles}/{f.TotalFiles}";
+            });
+
+            var snapPath = await _apiService.DownloadModelAsync(
+                modelName: null, progress: progress);
+
+            ModelDownloadProgress = 1.0;
+            OnPropertyChanged(nameof(ModelDownloadProgressText));
+            ModelDownloadResult = snapPath;
+            ModelDownloadStatus = "✅ 模型下载完成（重启后端后加载新模型）";
+            _notifications.Success($"嵌入模型下载完成！重启后端后生效。", "模型下载");
+            DebugLog.Info($"嵌入模型下载完成: snapshot={snapPath}", "Settings");
+        }
+        catch (OperationCanceledException)
+        {
+            ModelDownloadStatus = "下载已取消";
+        }
+        catch (Exception ex)
+        {
+            ModelDownloadStatus = $"❌ 模型下载失败: {ex.Message}";
+            DebugLog.Error($"模型下载失败: {ex}", "Settings", ex);
+            _notifications.Error($"模型下载失败：{ex.Message}");
+        }
+        finally
+        {
+            IsDownloadingModel = false;
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        const double mb = 1024.0 * 1024.0;
+        return bytes >= mb ? $"{bytes / mb:F1} MB" : $"{bytes / 1024.0 / 1024.0:F2} MB";
+    }
+
     /// <summary>底部状态栏消息。</summary>
     public string StatusMessage
     {
@@ -962,6 +1258,9 @@ public partial class SettingsViewModel : ViewModelBase
             _appSettings.RagSystemPrompt = string.IsNullOrWhiteSpace(RagSystemPrompt) ? null : RagSystemPrompt;
             _appSettings.RagMaxHistoryTokens = RagMaxHistoryTokens;
             _appSettings.RagMode = RagMode;
+            _appSettings.RerankEnabled = RerankEnabled;
+            _appSettings.RerankModel = RerankModel;
+            _appSettings.RerankRecall = RerankRecall;
             _appSettings.WatchPaths = WatchPaths.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToList();
             _appSettings.WatchDebounceSeconds = WatchDebounceSeconds;
             _appSettings.DismissGpuWarning = _gpuWarning.Dismissed;
@@ -1028,6 +1327,9 @@ public partial class SettingsViewModel : ViewModelBase
                     LlmMaxTokens = LlmMaxTokens,
                     RagTopK = RagTopK,
                     RagMode = RagMode,
+                    RerankEnabled = RerankEnabled,
+                    RerankModel = string.IsNullOrWhiteSpace(RerankModel) ? null : RerankModel.Trim(),
+                    RerankRecall = RerankRecall,
                     RagSystemPrompt = string.IsNullOrWhiteSpace(RagSystemPrompt)
                         ? (string.IsNullOrWhiteSpace(_savedRagSystemPromptAtLoad) ? null : "")
                         : RagSystemPrompt.Trim(),
@@ -1077,6 +1379,11 @@ public partial class SettingsViewModel : ViewModelBase
             var keyNote = !hasApiKeyInput && !_clearApiKeyRequested && !string.IsNullOrWhiteSpace(_savedApiKeyAtLoad)
                 ? "；API Key 保留原值"
                 : "";
+            // 批次 2：重启类字段变更检测（后端连接/启动超时/后端命令 → 弹重启确认）
+            var restartRequired = BackendUrl != _savedBackendUrlAtLoad
+                || StartupTimeoutSec != _savedStartupTimeoutSecAtLoad
+                || BackendCommand != _savedBackendCommandAtLoad;
+
             StatusMessage = pushFailed
                 ? $"已保存（后端推送失败，重启后端后生效）{keyNote}"
                 : $"已保存（模型/分块参数已实时生效；其余变更重启后端生效）{keyNote}";
@@ -1085,6 +1392,25 @@ public partial class SettingsViewModel : ViewModelBase
                 _notifications.Success("设置已保存");
             }
             DebugLog.Info($"设置保存成功: {settingsPath}", "Settings");
+
+            // 批次 2：重启类字段变更后弹出「立即重启 / 稍后」确认对话框
+            if (restartRequired)
+            {
+                var result = System.Windows.MessageBox.Show(
+                    "检测到后端连接或启动参数已变更，需要重启后端才能生效。\n\n是否立即重启后端？",
+                    "重启确认",
+                    System.Windows.MessageBoxButton.YesNo,
+                    System.Windows.MessageBoxImage.Question);
+                if (result == System.Windows.MessageBoxResult.Yes)
+                {
+                    await RestartBackendAsync();
+                }
+                else
+                {
+                    ShowRestartBanner = true;
+                    RestartBannerText = "💡 后端连接/启动参数已变更，需要重启后端才能生效。您可以稍后手动重启。";
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -1123,6 +1449,9 @@ public partial class SettingsViewModel : ViewModelBase
         RagTopK = _appSettings.RagTopK;
         RagSystemPrompt = _appSettings.RagSystemPrompt;
         RagMaxHistoryTokens = _appSettings.RagMaxHistoryTokens;
+        RerankEnabled = _appSettings.RerankEnabled;
+        RerankModel = _appSettings.RerankModel;
+        RerankRecall = _appSettings.RerankRecall;
         
         WatchPaths.Clear();
         foreach (var p in _appSettings.WatchPaths)
@@ -1140,14 +1469,112 @@ public partial class SettingsViewModel : ViewModelBase
         _clearApiKeyRequested = false; // 恢复未保存的改动，包括未保存的「清除」请求
         _githubToken = _appSettings.GithubToken;
         _clearGithubTokenRequested = false;
+        // 批次 2：恢复重启类字段快照
+        _savedBackendUrlAtLoad = _appSettings.BackendUrl;
+        _savedStartupTimeoutSecAtLoad = _appSettings.StartupTimeoutSec;
+        _savedBackendCommandAtLoad = _appSettings.BackendCommand;
         IsDirty = false;
         StatusMessage = "已恢复";
     }
 
+    /// <summary>重置所有设置项为出厂默认值（new AppSettings() 的初始值）。
+    /// 与 Revert 不同：Revert 恢复到上次保存的值，Reset 恢复到全新安装时的值。
+    /// 不自动保存，用户需手动点「保存」生效。</summary>
+    [RelayCommand]
+    private void ResetToDefaults()
+    {
+        var defaults = new AppSettings();
+        BackendUrl = defaults.BackendUrl;
+        PollIntervalMs = defaults.PollIntervalMs;
+        StartupTimeoutSec = defaults.StartupTimeoutSec;
+        BackendCommand = defaults.BackendCommand;
+        AutoStartBackend = defaults.AutoStartBackend;
+        StopBackendOnExit = defaults.StopBackendOnExit;
+        AutoIngestPath = defaults.AutoIngestPath;
+        AutoIngestCollection = defaults.AutoIngestCollection;
+        AutoIngestRecursive = defaults.AutoIngestRecursive;
+        EmbedModel = defaults.EmbedModel;
+        EmbedModelPath = defaults.EmbedModelPath;
+        HfEndpoint = defaults.HfEndpoint;
+        ChunkMaxTokens = defaults.ChunkMaxTokens;
+        ChunkMinChars = defaults.ChunkMinChars;
+        ChunkOverlapChars = defaults.ChunkOverlapChars;
+        ChunkMaxChars = defaults.ChunkMaxChars;
+        LlmProvider = defaults.LlmProvider;
+        LlmApiKey = defaults.LlmApiKey;
+        GithubToken = defaults.GithubToken;
+        LlmBaseUrl = defaults.LlmBaseUrl;
+        LlmModel = defaults.LlmModel;
+        LlmTemperature = defaults.LlmTemperature;
+        LlmMaxTokens = defaults.LlmMaxTokens;
+        RagTopK = defaults.RagTopK;
+        RagSystemPrompt = defaults.RagSystemPrompt;
+        RagMaxHistoryTokens = defaults.RagMaxHistoryTokens;
+        RagMode = defaults.RagMode;
+        RerankEnabled = defaults.RerankEnabled;
+        RerankModel = defaults.RerankModel;
+        RerankRecall = defaults.RerankRecall;
+
+        WatchPaths.Clear();
+        WatchDebounceSeconds = defaults.WatchDebounceSeconds;
+
+        if (SelectedTheme != ThemeMode.Light)
+        {
+            SelectedTheme = ThemeMode.Light;
+        }
+
+        _clearApiKeyRequested = false;
+        _clearGithubTokenRequested = false;
+        _savedApiKeyAtLoad = null;
+        _savedBaseUrlAtLoad = null;
+        _savedModelAtLoad = "";
+        _savedRagSystemPromptAtLoad = null;
+        _savedGithubTokenAtLoad = null;
+        _backendApiKeyConfigured = false;
+        // 批次 2：重置重启类字段快照
+        _savedBackendUrlAtLoad = defaults.BackendUrl;
+        _savedStartupTimeoutSecAtLoad = defaults.StartupTimeoutSec;
+        _savedBackendCommandAtLoad = defaults.BackendCommand;
+
+        IsDirty = true; // 需要手动保存才生效
+        StatusMessage = "已重置为默认值（请点「保存」生效）";
+        _notifications.Info("已将所有设置重置为出厂默认值，请检查后点击「保存」", "重置默认");
+        DebugLog.Info("设置已重置为出厂默认值", "Settings");
+    }
+
     /// <summary>显式清除已配置的 API Key（保存时本地置空并向后端推送清除）。
-    /// key 输入框留空保存只会保留原值，不会清除——清除必须走此按钮。</summary>
+    /// key 输入框留空保存只会保留原值，不会清除——清除必须走此按钮。
+    /// 批次 2：点击后先弹确认对话框（ShowApiKeyClearConfirm），确认后才执行。</summary>
     [RelayCommand]
     private void ClearApiKey()
+    {
+        // 有已配置的 key 时弹确认对话框；无 key 时直接清除
+        if (HasSavedApiKey)
+        {
+            ShowApiKeyClearConfirm = true;
+        }
+        else
+        {
+            DoClearApiKey();
+        }
+    }
+
+    /// <summary>确认清除 API Key（对话框确认后执行）。</summary>
+    [RelayCommand]
+    private void ConfirmClearApiKey()
+    {
+        ShowApiKeyClearConfirm = false;
+        DoClearApiKey();
+    }
+
+    /// <summary>取消清除 API Key。</summary>
+    [RelayCommand]
+    private void CancelClearApiKey()
+    {
+        ShowApiKeyClearConfirm = false;
+    }
+
+    private void DoClearApiKey()
     {
         _clearApiKeyRequested = true;
         LlmApiKey = null;
@@ -1306,7 +1733,8 @@ public partial class SettingsViewModel : ViewModelBase
     /// <summary>当前选中服务商是否已启用（停用后不出现在对话页点选列表）。</summary>
     public bool IsSelectedProviderEnabled => SelectedProfile?.IsEnabled != false;
 
-    /// <summary>把当前选中服务商设为默认（写 ActiveProfileId 并落盘；对话页「默认（设置页配置）」项使用它）。</summary>
+    /// <summary>把当前选中服务商设为默认（写 ActiveProfileId 并落盘；仅用于设置页默认高亮，
+    /// 对话页「默认」项实际用设置页 LlmProvider/LlmModel（应用档案时推送后端生效）。</summary>
     [RelayCommand]
     private void SetDefaultProvider()
     {
@@ -1319,9 +1747,11 @@ public partial class SettingsViewModel : ViewModelBase
         _appSettings.ActiveProfileId = profile.Id;
         _appSettings.Save();
         OnPropertyChanged(nameof(IsSelectedProviderDefault));
-        StatusMessage = $"已将「{profile.Name}」设为默认服务商（对话页默认使用）";
-        _notifications.Success($"已将「{profile.Name}」设为默认服务商", "设为默认");
-        DebugLog.Info($"设为默认服务商: {profile.Name} ({profile.Id})", "Settings");
+        // 注意：对话页「默认」项实际用设置页 LlmProvider/LlmModel（应用档案时推送），
+        // 此处的默认标记仅用于设置页高亮；如需对话页默认走该档案，请点「应用该服务商」
+        StatusMessage = $"已将「{profile.Name}」标记为默认服务商（高亮）。若要让对话页默认使用它，请点「应用该服务商」";
+        _notifications.Success($"已将「{profile.Name}」标记为默认服务商（高亮）", "设为默认");
+        DebugLog.Info($"设默认服务商标记: {profile.Name} ({profile.Id})", "Settings");
         RaiseProviderConfigChanged();
     }
 

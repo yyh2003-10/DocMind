@@ -462,17 +462,25 @@ rrf_score = sum(1 / (60 + rank) for rank in [vec_rank, bm25_rank])
 
 **库：** `mcp` v1.x (MIT) — 生产稳定版
 
-### 暴露的工具 (7个)
+### 暴露的工具 (15个)
 
 | Tool 名 | 参数 | 说明 |
 |---------|------|------|
-| `ingest` | path, collection="default", recursive=False | 摄入文档 |
-| `search` | query, collection="default", top_k=10 | 搜索知识库 |
-| `list_docs` | collection="default" | 列出文档 |
-| `remove_doc` | doc_id, collection="default" | 删除文档 |
-| `quality_check` | collection="default" | 质量检查报告 |
-| `convert_file` | input_path, output_format="md" | 格式转换 |
-| `reindex` | collection="default" | 重建索引 |
+| `ingest` | path, collection, recursive, force | 同步摄入文件/目录 |
+| `ingest_job` | 同 `ingest` | 异步摄入（返回 job_id 轮询） |
+| `get_job` | job_id | 查询异步任务进度 |
+| `ingest_text` | text, title, collection（可不传） | 文本直入（经验/笔记） |
+| `search` | query, collection, top_k | 混合检索（BM25+向量 RRF） |
+| `chat` | query, collection, chat_id | RAG 对话（带引用） |
+| `list_docs` | collection, limit | 列出文档 |
+| `remove_doc` | target（ID 或路径） | 删除文档及向量 |
+| `quality_check` | collection | 质量报告 |
+| `convert_file` | input_path, output_format | 格式转换 |
+| `reindex` | collection, model | 重建索引 |
+| `curate` | collection, actions, dry_run（默认 true） | AI 整理知识库 |
+| `graph_get` | collection, limit | 知识图谱查询 |
+| `create_artifact` | content, format, output_path | 创作导出（PPTX/DOCX/XLSX/HTML） |
+| `inspect_artifact` | content | PPT 大纲体检评分 |
 
 ### 启动方式
 

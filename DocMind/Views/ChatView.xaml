@@ -273,10 +273,52 @@
                                             <DataTrigger Binding="{Binding IsUser}" Value="False">
                                                 <Setter Property="Visibility" Value="Visible"/>
                                             </DataTrigger>
+                                            <!-- 后置覆盖：解析失败（Document 为 null）时让位给纯文本兜底 TextBox -->
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding IsUser}" Value="False"/>
+                                                    <Condition Binding="{Binding RenderedDocument}"
+                                                               Value="{x:Null}"/>
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                            </MultiDataTrigger>
                                         </Style.Triggers>
                                     </Style>
                                 </FlowDocumentScrollViewer.Style>
                             </FlowDocumentScrollViewer>
+                            <!-- 助手消息兜底：Markdig 解析失败时 RenderedDocument 为 null，
+                                 此处保证完整原文（含 Markdown 围栏符号）仍可读可复制，
+                                 否则气泡正文会整块空白、内容看起来"凭空消失" -->
+                            <TextBox Text="{Binding Content, Mode=OneWay}"
+                                     IsReadOnly="True"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     Padding="0"
+                                     TextWrapping="Wrap"
+                                     Cursor="IBeam"
+                                     FontSize="14"
+                                     FontWeight="Medium"
+                                     FontFamily="Consolas, 'Cascadia Code', 'Segoe UI', sans-serif"
+                                     MinHeight="0"
+                                     Foreground="{StaticResource TextPrimaryBrush}"
+                                     SelectionBrush="{StaticResource PrimaryBrush}"
+                                     SelectionOpacity="0.35">
+                                <TextBox.Style>
+                                    <Style TargetType="TextBox">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding IsUser}" Value="False"/>
+                                                    <Condition Binding="{Binding RenderedDocument}"
+                                                               Value="{x:Null}"/>
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </MultiDataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBox.Style>
+                            </TextBox>
                         </Grid>
 
                         <!-- 4. 加载动画与思考状态胶囊（等待首字 / 非流式大包期间） -->
@@ -657,7 +699,7 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <!-- ===== 工具条：知识库集合（复选）+ 添加 + 清空 ===== -->
+            <!-- ===== 工具条：知识库分组（复选）+ 添加 + 清空 ===== -->
             <Border Grid.Row="0"
                 Background="{StaticResource CardBrush}"
                 BorderBrush="{StaticResource BorderBrush}"
@@ -672,11 +714,12 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <!-- 第一行：集合标签 + 添加按钮 + 清空 -->
+                <!-- 第一行：分组标签 + 添加按钮 + 消息数 + 清空 -->
                 <Grid Grid.Row="0" Margin="0,0,0,8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
@@ -710,11 +753,19 @@
                                 Padding="10,4"/>
                     </Grid>
 
-                    <Button Grid.Column="2"
+                    <!-- 当前会话消息数（本地统计，随消息增减刷新） -->
+                    <TextBlock Grid.Column="2"
+                               Text="{Binding MessagesCountText}"
+                               Style="{StaticResource SmallText}"
+                               Foreground="{StaticResource TextTertiaryBrush}"
+                               VerticalAlignment="Center"
+                               Margin="0,0,10,0"/>
+
+                    <Button Grid.Column="3"
                             Content="清空对话"
                             Command="{Binding ClearCommand}"
                             Style="{StaticResource SecondaryButtonStyle}"
-                            Margin="8,0,0,0"
+                            Margin="0,0,8,0"
                             Visibility="{Binding HasMessages, Converter={StaticResource BoolToVis}}"/>
                 </Grid>
 
@@ -809,14 +860,14 @@
                                   ItemsSource="{Binding ModelChoices}"
                                   SelectedItem="{Binding SelectedModelChoice, Mode=TwoWay}"
                                   DisplayMemberPath="DisplayName"
-                                  ToolTip="点选模型即切换到对应服务商（下条消息生效）；「默认（设置页配置）」= 用设置页填写的服务商配置"
+                                  ToolTip="首项「默认 · 模型名」= 用设置页配置的默认服务商与模型（请求不携带 model）；下方为默认提供商的可选模型（按请求覆盖，不改全局）；各服务商条目 = 点选即用该服务商（下条消息生效）。选择会持久化，新建对话/重启后自动还原"
                                   VerticalAlignment="Center"
                                   Margin="0,0,6,0"/>
                         <TextBlock Grid.Row="1" Grid.Column="1"
                                    Text="{Binding EffectiveModelSummary}"
                                    Style="{StaticResource SmallText}"
                                    Foreground="{StaticResource TextTertiaryBrush}"
-                                   Margin="2,30,6,0"
+                                   Margin="2,4,6,0"
                                    TextTrimming="CharacterEllipsis"/>
                         <Button Grid.Column="2"
                                 Content="🔄"
@@ -1110,7 +1161,8 @@
                     <Grid Grid.Column="1" Margin="0,0,8,0">
                         <TextBox x:Name="ChatInputBox"
                                  Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="输入问题或直接拖入文档/图片，Enter 发送，Shift+Enter 换行"
+                                 MaxLength="8000"
+                                 ToolTip="输入问题或直接拖入文档/图片，Enter 发送，Shift+Enter 换行（最长 8000 字）"
                                  VerticalContentAlignment="Top"
                                  AcceptsReturn="True"
                                  TextWrapping="Wrap"
@@ -1289,6 +1341,30 @@
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
+                            <!-- 空状态提示：无幻灯片内容时显示（避免整页空白无反馈） -->
+                            <Border Grid.Row="0"
+                                    Background="{StaticResource SurfaceBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="10"
+                                    Padding="14"
+                                    Visibility="{Binding HasSelectedSlide, Converter={StaticResource BoolInvertConverter}}">
+                                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                                    <TextBlock Text="🖼 暂无幻灯片内容可预览"
+                                               FontSize="14"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               HorizontalAlignment="Center"
+                                               Margin="0,0,0,6"/>
+                                    <TextBlock Text="模型可能未输出结构化 PPT（缺少 :::artifact type=&quot;pptx&quot; 包裹或 --- 分页），可点「🌐 网页放映」查看 HTML 版，或在对话中要求重新生成。"
+                                               FontSize="12"
+                                               Foreground="{StaticResource TextTertiaryBrush}"
+                                               TextWrapping="Wrap"
+                                               TextAlignment="Center"
+                                               MaxWidth="300"/>
+                                </StackPanel>
+                            </Border>
+
                             <!-- 幻灯片模拟卡片 (16:9 质感卡片) -->
                             <Border Grid.Row="0"
                                     Background="{StaticResource SurfaceBrush}"
@@ -1331,7 +1407,7 @@
 
                                         <!-- 板式 A: 多列卡片网格 (Cards) -->
                                         <ItemsControl ItemsSource="{Binding SelectedSlide.Cards}"
-                                                      Visibility="{Binding SelectedSlide.IsCards, Converter={StaticResource B2V}}"
+                                                      Visibility="{Binding SelectedSlide.ShowCards, Converter={StaticResource B2V}}"
                                                       Margin="0,4,0,4">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
@@ -1359,7 +1435,7 @@
 
                                         <!-- 板式 B: 大数字 KPI 看板 (Metrics) -->
                                         <ItemsControl ItemsSource="{Binding SelectedSlide.Metrics}"
-                                                      Visibility="{Binding SelectedSlide.IsMetrics, Converter={StaticResource B2V}}"
+                                                      Visibility="{Binding SelectedSlide.ShowMetrics, Converter={StaticResource B2V}}"
                                                       Margin="0,4,0,4">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
@@ -1385,7 +1461,7 @@
 
                                         <!-- 板式 C: 横向时间线 (Timeline) -->
                                         <ItemsControl ItemsSource="{Binding SelectedSlide.TimelineNodes}"
-                                                      Visibility="{Binding SelectedSlide.IsTimeline, Converter={StaticResource B2V}}"
+                                                      Visibility="{Binding SelectedSlide.ShowTimeline, Converter={StaticResource B2V}}"
                                                       Margin="0,4,0,4">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
@@ -1404,7 +1480,7 @@
                                                 CornerRadius="6"
                                                 Padding="12"
                                                 Margin="0,4,0,4"
-                                                Visibility="{Binding SelectedSlide.IsQuote, Converter={StaticResource B2V}}">
+                                                Visibility="{Binding SelectedSlide.ShowQuote, Converter={StaticResource B2V}}">
                                             <TextBlock Text="{Binding SelectedSlide.QuoteText, StringFormat=“ {0} ”}"
                                                        FontSize="14"
                                                        FontWeight="Bold"
@@ -1413,9 +1489,37 @@
                                                        TextWrapping="Wrap"/>
                                         </Border>
 
-                                        <!-- 板式 E: 普通要点列表 (General / 默认) -->
+                                        <!-- 板式 F: 商务对比矩阵 (Table) -->
+                                        <Border Background="{StaticResource CardBrush}"
+                                                BorderBrush="{StaticResource BorderBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="6"
+                                                Padding="8,6"
+                                                Margin="0,4,0,4"
+                                                Visibility="{Binding SelectedSlide.HasTable, Converter={StaticResource B2V}}">
+                                            <StackPanel>
+                                                <TextBlock Text="📋 对比矩阵"
+                                                           FontSize="11"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{StaticResource PrimaryBrush}"
+                                                           Margin="0,0,0,4"/>
+                                                <ItemsControl ItemsSource="{Binding SelectedSlide.TableLines}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding}"
+                                                                       FontSize="12"
+                                                                       TextWrapping="Wrap"
+                                                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                                                       Margin="0,2,0,2"/>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </StackPanel>
+                                        </Border>
+
+                                        <!-- 板式 E: 普通要点列表 (General / 默认，与其它板式叠加共存) -->
                                         <ItemsControl ItemsSource="{Binding SelectedSlide.BulletPoints}"
-                                                      Visibility="{Binding SelectedSlide.IsGeneral, Converter={StaticResource B2V}}">
+                                                      Visibility="{Binding SelectedSlide.HasBullets, Converter={StaticResource B2V}}">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <StackPanel Orientation="Horizontal" Margin="0,4,0,4">
@@ -1659,7 +1763,7 @@
                                        VerticalAlignment="Center"/>
                         </StackPanel>
 
-                        <!-- 相似度评分（仅本地来源显示） -->
+                        <!-- 引用评分徽标（仅本地来源显示，按量纲标注：相似度/相关度/关键词匹配/排名分） -->
                         <Border Grid.Column="1"
                                 Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}"
                                 Background="{StaticResource PrimaryLightBrush}"
@@ -1667,7 +1771,7 @@
                                 Padding="6,2"
                                 Margin="0,0,8,0"
                                 VerticalAlignment="Center">
-                            <TextBlock Text="{Binding SelectedSource.Score, StringFormat=匹配度 {0:F2}}"
+                            <TextBlock Text="{Binding SelectedSource.ScoreBadgeText}"
                                        FontSize="11"
                                        FontWeight="SemiBold"
                                        Foreground="{StaticResource PrimaryBrush}"/>
@@ -1846,7 +1950,7 @@
         </Border>
 
         <!-- =====================================================================
-             沉淀入库微调弹窗（方案 A + B：支持用户自选范围、修改标题、切换目标集合与标签）
+             沉淀入库微调弹窗（方案 A + B：支持用户自选范围、修改标题、切换目标分组与标签）
              ===================================================================== -->
         <Border Grid.Row="0" Grid.RowSpan="2" Grid.Column="0" Grid.ColumnSpan="3"
                 Background="#66000000"
@@ -1896,7 +2000,7 @@
                                      FontSize="13" FontWeight="SemiBold"
                                      Margin="0,0,0,14" Padding="8,6"/>
 
-                            <!-- 目标集合与标签 -->
+                            <!-- 目标分组与标签 -->
                             <Grid Margin="0,0,0,14">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -1905,9 +2009,9 @@
                                 </Grid.ColumnDefinitions>
 
                                 <StackPanel Grid.Column="0">
-                                    <TextBlock Text="目标知识库集合" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                                    <TextBlock Text="目标知识库分组" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
                                     <TextBox Text="{Binding IngestDialogCollection, UpdateSourceTrigger=PropertyChanged}"
-                                             ToolTip="输入或选择要存入的知识库集合名（默认 default）"
+                                             ToolTip="输入或选择要存入的知识库分组名（默认 default）"
                                              Padding="8,6"/>
                                 </StackPanel>
 
@@ -1964,8 +2068,8 @@
         </Border>
 
         <!-- ==================== 🎬 大屏沉浸式幻灯片放映室 (SlideShow Modal) ==================== -->
-        <Border Grid.Row="0" Grid.RowSpan="2"
-                Background="#D8000000"
+        <Border Grid.Row="0" Grid.RowSpan="2" Grid.Column="0" Grid.ColumnSpan="2"
+                Background="#FF0B1120"
                 Visibility="{Binding IsSlideShowOpen, Converter={StaticResource B2V}}"
                 d:Visibility="Collapsed"
                 Panel.ZIndex="2000">

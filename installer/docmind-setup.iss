@@ -79,8 +79,11 @@ Source: "{#AssetsDir}\*"; DestDir: "{app}\Assets"; Flags: ignoreversion recurses
 ; ===== Python 虚拟环境（CPU 核心，已排除 GPU/OCR 大型包） =====
 Source: "{#VenvDir}\*"; DestDir: "{app}\.venv"; Flags: ignoreversion recursesubdirs
 
-; ===== 部署脚本（供 WPF 启动时检测/运行） =====
+; ===== 部署脚本（开发者用；WPF 运行时使用打包自带的 .venv，不依赖此脚本） =====
 Source: "{#ScriptsDir}\setup.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+
+; ===== 可选扩展安装助手（GPU/OCR，多镜像回退 + 实时进度） =====
+Source: "{#ScriptsDir}\install_optional.py"; DestDir: "{app}\scripts"; Flags: ignoreversion
 
 ; ===== 许可证 =====
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
@@ -98,17 +101,33 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 ; 安装完成后可选启动
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
-; GPU 安装（当用户勾选时执行）
-Filename: "{app}\.venv\Scripts\python.exe"; Parameters: "-m pip install onnxruntime-gpu fastembed[gpu] -i https://pypi.tuna.tsinghua.edu.cn/simple"; StatusMsg: "正在安装 GPU 加速包（约 2GB，需联网等待）…"; Flags: runhidden skipifdoesntexist; Tasks: install_gpu
+; GPU 安装（当用户勾选时执行）：走 install_optional.py，多镜像自动回退 + 实时进度
+Filename: "{app}\.venv\Scripts\python.exe"; Parameters: """{app}\scripts\install_optional.py"" gpu"; StatusMsg: "正在安装 GPU 加速包（约 2GB，需联网等待）…"; Flags: skipifdoesntexist; Tasks: install_gpu
 
 ; OCR 安装（当用户勾选时执行）
-Filename: "{app}\.venv\Scripts\python.exe"; Parameters: "-m pip install paddlepaddle paddleocr pillow -i https://pypi.tuna.tsinghua.edu.cn/simple"; StatusMsg: "正在安装 OCR 识别包（约 1.5GB，需联网等待）…"; Flags: runhidden skipifdoesntexist; Tasks: install_ocr
+Filename: "{app}\.venv\Scripts\python.exe"; Parameters: """{app}\scripts\install_optional.py"" ocr"; StatusMsg: "正在安装 OCR 识别包（约 1.5GB，需联网等待）…"; Flags: skipifdoesntexist; Tasks: install_ocr
 
-[UninstallDelete]
-; 卸载时清理用户数据（可选，需用户确认）
-Type: filesandordirs; Name: "{localappdata}\DocMind"
+; 用户数据（知识库/聊天记录/设置/日志）默认保留在 %LOCALAPPDATA% 与 %APPDATA% 下，
+; 卸载时由下方 [Code] 弹窗询问是否清理，绝不静默删除。
 
 [Code]
+// 卸载完成后询问是否删除本地用户数据（知识库、聊天记录、设置、日志；默认保留）
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    if MsgBox('是否同时删除本地用户数据？' + #13#10 +
+              '（知识库、聊天记录、设置与日志，删除后不可恢复）' + #13#10 + #13#10 +
+              '选择“否”可保留数据，重新安装后继续使用。',
+              mbConfirmation, MB_YESNO) = IDYES then
+    begin
+      DelTree(ExpandConstant('{localappdata}\DocMind'), True, True, True);
+      DelTree(ExpandConstant('{localappdata}\doc2mind'), True, True, True);
+      DelTree(ExpandConstant('{userappdata}\doc2mind'), True, True, True);
+    end;
+  end;
+end;
+
 // 检查是否已有 DocMind 实例运行
 function InitializeSetup(): Boolean;
 var

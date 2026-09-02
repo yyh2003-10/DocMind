@@ -140,6 +140,12 @@ class SemanticChunker(Chunker):
             "heading": heading_text,
             "heading_path": " > ".join(heading_stack) if heading_stack else "",
             "level": heading_level,
+            # 从源元素继承页码（PDF/PPTX 有）；取章节首个有页码的元素，
+            # 确保语义块（含被 OCR 成文本的参数表格）也带定位信息。
+            "page": next(
+                (e.metadata.get("page") for e in elements if e.metadata.get("page") is not None),
+                None,
+            ),
         }
 
         # 合并所有段落文本（保留段落分隔）

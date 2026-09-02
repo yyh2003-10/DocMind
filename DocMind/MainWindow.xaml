@@ -82,6 +82,7 @@
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="44"/>   <!-- 自定义标题栏 -->
+                <RowDefinition Height="Auto"/> <!-- 批次 4：全局离线恢复横幅 -->
                 <RowDefinition Height="*"/>    <!-- 主体区域 -->
                 <RowDefinition Height="28"/>   <!-- 状态栏 -->
             </Grid.RowDefinitions>
@@ -217,10 +218,41 @@
                 </Grid>
             </Border>
 
+            <!-- ═══════════════════════════════════════════════════════════════
+                 批次 4：全局离线恢复横幅
+                 ═══════════════════════════════════════════════════════════════ -->
+            <Border Grid.Row="1"
+                    Background="{DynamicResource DangerLightBrush}"
+                    BorderBrush="{DynamicResource DangerBrush}"
+                    BorderThickness="0,0,0,1"
+                    Padding="16,8"
+                    Visibility="{Binding ShowOfflineBanner, Converter={StaticResource BoolToVis}}">
+                <DockPanel LastChildFill="True">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Content="🔄 重新检测"
+                                Command="{Binding RefreshBackendCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="10,4" Margin="0,0,8,0"/>
+                        <Button Content="🚀 一键重启后端"
+                                Command="{Binding StartBackendCommand}"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                Padding="10,4" Margin="0,0,8,0"/>
+                        <Button Content="📋 查看日志"
+                                Command="{Binding OpenDebugLogCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="10,4"/>
+                    </StackPanel>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="⚠️ 后端服务离线" FontWeight="Bold" FontSize="13" Foreground="{DynamicResource DangerBrush}"/>
+                        <TextBlock Text="无法连接到后端服务，部分功能暂不可用。请检查后重启。" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
             <!-- =====================================================================
-                 主体区域 (Row 1) — 侧栏 | 内容 | 详情
+                 主体区域 (Row 2) — 侧栏 | 内容 | 详情
                  ===================================================================== -->
-            <Grid Grid.Row="1">
+            <Grid Grid.Row="2">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="{Binding SidebarWidth, Mode=OneWay}"/>
                     <ColumnDefinition Width="Auto"/>
@@ -355,9 +387,9 @@
             </Grid>
 
             <!-- =====================================================================
-                 状态栏 (Row 2)
+                 状态栏 (Row 3)
                  ===================================================================== -->
-            <Border Grid.Row="2"
+            <Border Grid.Row="3"
                     Background="{StaticResource SidebarBackgroundBrush}"
                     BorderBrush="{StaticResource BorderBrush}"
                     BorderThickness="0,1,0,0">

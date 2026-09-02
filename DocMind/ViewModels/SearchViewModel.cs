@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text;
 using System.Windows;
 using CommunityToolkit.Mvvm.Input;
 using DocMind.Models;
@@ -9,6 +10,7 @@ namespace DocMind.ViewModels;
 public partial class SearchViewModel : ViewModelBase
 {
     private readonly IDoc2kbApiService _apiService;
+    private readonly AppSettings? _appSettings;
 
     /// <summary>用户点击「在文档库中查看」事件（参数为文档来源路径/名称）。</summary>
     public event Action<string>? OpenDocumentRequested;
@@ -24,15 +26,19 @@ public partial class SearchViewModel : ViewModelBase
     private string _statusMessage = "就绪";
     private SearchResponse? _lastResponse;
     private SearchHit? _selectedHit;
+    private bool _showHistory;
 
     public const string AllCollectionsLabel = "(全部集合)";
+    private const int MaxSearchHistory = 20;
 
-    public SearchViewModel(IDoc2kbApiService apiService)
+    public SearchViewModel(IDoc2kbApiService apiService, AppSettings? appSettings = null)
     {
         _apiService = apiService;
+        _appSettings = appSettings;
         Title = "搜索";
         Hits = new ObservableCollection<SearchHit>();
         AvailableCollections = new ObservableCollection<string> { AllCollectionsLabel, "default" };
+        SearchHistory = new ObservableCollection<string>(_appSettings?.SearchHistory ?? new List<string>());
 
         // 结果列表变化 → 刷新空态引导与结果状态可见性
         Hits.CollectionChanged += (_, _) =>
@@ -100,6 +106,119 @@ public partial class SearchViewModel : ViewModelBase
 
     /// <summary>是否有返回命中结果。</summary>
     public bool HasHits => Hits.Count > 0;
+
+    // ===== 搜索历史 =====
+
+    /// <summary>历史搜索词列表（最新在前，上限 20 条）。</summary>
+    public ObservableCollection<string> SearchHistory { get; }
+
+    /// <summary>是否有搜索历史。</summary>
+    public bool HasSearchHistory => SearchHistory.Count > 0;
+
+    /// <summary>是否显示搜索历史下拉面板。</summary>
+    public bool ShowHistory
+    {
+        get => _showHistory;
+        set => SetProperty(ref _showHistory, value);
+    }
+
+    /// <summary>把搜索词加入历史（去重 + 最新在前 + 上限 20）。</summary>
+    private void AddToHistory(string query)
+    {
+        var trimmed = query.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed)) return;
+
+        // 去重（不区分大小写）
+        var existing = SearchHistory.FirstOrDefault(h =>
+            string.Equals(h, trimmed, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+            SearchHistory.Remove(existing);
+
+        SearchHistory.Insert(0, trimmed);
+
+        // 超限移除末尾
+        while (SearchHistory.Count > MaxSearchHistory)
+            SearchHistory.RemoveAt(SearchHistory.Count - 1);
+
+        OnPropertyChanged(nameof(HasSearchHistory));
+        PersistHistory();
+    }
+
+    /// <summary>删除单条历史记录。</summary>
+    [RelayCommand]
+    private void RemoveHistoryItem(string? item)
+    {
+        if (string.IsNullOrWhiteSpace(item)) return;
+        SearchHistory.Remove(item);
+        OnPropertyChanged(nameof(HasSearchHistory));
+        PersistHistory();
+    }
+
+    /// <summary>清空全部搜索历史。</summary>
+    [RelayCommand]
+    private void ClearHistory()
+    {
+        SearchHistory.Clear();
+        OnPropertyChanged(nameof(HasSearchHistory));
+        PersistHistory();
+    }
+
+    /// <summary>选中历史记录项 → 填入搜索框并执行搜索。</summary>
+    [RelayCommand]
+    private void SelectHistoryItem(string? item)
+    {
+        if (string.IsNullOrWhiteSpace(item)) return;
+        Query = item;
+        ShowHistory = false;
+        _ = SearchAsync();
+    }
+
+    /// <summary>切换历史面板显示。</summary>
+    [RelayCommand]
+    private void ToggleHistory() => ShowHistory = !ShowHistory;
+
+    private void PersistHistory()
+    {
+        if (_appSettings == null) return;
+        _appSettings.SearchHistory = SearchHistory.ToList();
+        try { _appSettings.Save(); } catch { /* 落盘失败不阻断搜索 */ }
+    }
+
+    // ===== 高亮辅助 =====
+
+    /// <summary>把文本中的搜索关键词用 ⌜⌟ 标记包裹（纯文本高亮标记，供 UI 层解析渲染）。</summary>
+    public static string HighlightTerms(string text, string? query)
+    {
+        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(query))
+            return text;
+
+        var terms = query.Split(new[] { ' ', '\t', '，', ',' }, StringSplitOptions.RemoveEmptyEntries);
+        if (terms.Length == 0) return text;
+
+        var result = text;
+        foreach (var term in terms.Where(t => t.Length >= 2))
+        {
+            // 大小写不敏感替换，用标记包裹
+            var idx = 0;
+            var sb = new System.Text.StringBuilder();
+            while (idx < result.Length)
+            {
+                var found = result.IndexOf(term, idx, StringComparison.OrdinalIgnoreCase);
+                if (found < 0)
+                {
+                    sb.Append(result.AsSpan(idx));
+                    break;
+                }
+                sb.Append(result.AsSpan(idx, found - idx));
+                sb.Append('\u231c'); // ⌜
+                sb.Append(result.AsSpan(found, term.Length));
+                sb.Append('\u231d'); // ⌝
+                idx = found + term.Length;
+            }
+            result = sb.ToString();
+        }
+        return result;
+    }
 
     /// <summary>结果区空态是否可见（非忙碌且无结果）。</summary>
     public bool ShowEmptyGuide => !IsBusy && Hits.Count == 0;
@@ -235,6 +354,9 @@ public partial class SearchViewModel : ViewModelBase
             {
                 SelectedHit = Hits[0];
             }
+
+            // 搜索成功后记录历史
+            AddToHistory(Query.Trim());
 
             StatusMessage = !string.IsNullOrWhiteSpace(resp.Message)
                 ? resp.Message + (resp.Degraded ? "（嵌入不可用，仅关键词检索）" : "")

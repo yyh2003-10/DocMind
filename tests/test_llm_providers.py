@@ -12,7 +12,7 @@ import pytest
 
 from doc2mind.core.config import Settings
 from doc2mind.core.llm.anthropic_impl import AnthropicClient, _split_system
-from doc2mind.core.llm.base import LLMClient, LLMError
+from doc2mind.core.llm.base import LLMClient, LLMError, LLMTimeoutError
 from doc2mind.core.llm.gemini_impl import GeminiClient, _to_contents
 from doc2mind.core.llm.ollama_impl import OllamaClient
 
@@ -104,6 +104,35 @@ class TestAnthropicClient:
         tokens = list(client.stream_chat([{"role": "user", "content": "hi"}], timeout=5))
         assert tokens == ["你", "好"]
 
+    def test_stream_thinking_delta_tagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """extended thinking：thinking_delta 透出为 thinking 帧，正文不受影响。"""
+        lines = [
+            "data: " + json.dumps({"type": "content_block_start", "content_block": {"type": "thinking"}}),
+            "data: " + json.dumps({"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "先分析需求"}}),
+            "data: " + json.dumps({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "答案A"}}),
+            "data: " + json.dumps({"type": "message_stop"}),
+        ]
+        fake = _RecordingStreamClient(_FakeStreamResponse(lines))
+        monkeypatch.setattr(httpx, "Client", lambda timeout=None: fake)
+        client = AnthropicClient(api_key="k", model="claude-3-7-sonnet")
+        tagged = list(client.stream_chat_tagged([{"role": "user", "content": "hi"}], timeout=5))
+        assert tagged == [("thinking", "先分析需求"), ("content", "答案A")]
+        # 推理模型请求应启用 extended thinking 且不带 temperature
+        payload = fake.stream_kwargs["json"]
+        assert payload["thinking"]["type"] == "enabled"
+        assert 1024 <= payload["thinking"]["budget_tokens"] < payload["max_tokens"]
+        assert "temperature" not in payload
+
+    def test_stream_plain_model_payload_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """非推理型号不带 thinking 参数，保持旧行为（兼容不支持该特性的网关）。"""
+        lines = ["data: " + json.dumps({"type": "message_stop"})]
+        fake = _RecordingStreamClient(_FakeStreamResponse(lines))
+        monkeypatch.setattr(httpx, "Client", lambda timeout=None: fake)
+        client = AnthropicClient(api_key="k", model="claude-sonnet-4-5")
+        list(client.stream_chat([{"role": "user", "content": "hi"}], timeout=5))
+        assert "thinking" not in fake.stream_kwargs["json"]
+        assert fake.stream_kwargs["json"]["temperature"] == 0.7
+
 
 # --- Gemini ---
 class TestGeminiClient:
@@ -160,6 +189,69 @@ class TestGeminiClient:
         tokens = list(client.stream_chat([{"role": "user", "content": "hi"}], timeout=5))
         assert tokens == ["你", "好"]
 
+    def test_stream_thought_parts_tagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """思考摘要：thought part 透出为 thinking 帧，正文走 content 帧。"""
+        lines = [
+            "data: " + json.dumps({"candidates": [{"content": {"parts": [
+                {"text": "先检索知识库", "thought": True},
+            ]}}]}),
+            "data: " + json.dumps({"candidates": [{"content": {"parts": [
+                {"text": "答案B"},
+            ]}}]}),
+        ]
+        fake = _RecordingStreamClient(_FakeStreamResponse(lines))
+        monkeypatch.setattr(httpx, "Client", lambda timeout=None: fake)
+        client = GeminiClient(api_key="k", model="gemini-2.5-flash")
+        tagged = list(client.stream_chat_tagged([{"role": "user", "content": "hi"}], timeout=5))
+        assert tagged == [("thinking", "先检索知识库"), ("content", "答案B")]
+        # 2.5 系列应请求 includeThoughts 才能收到 thought part
+        gen_cfg = fake.stream_kwargs["json"]["generationConfig"]
+        assert gen_cfg["thinkingConfig"] == {"includeThoughts": True}
+        # 非流式正文不混入思考链（thought part 被 _extract_text 排除）
+        non_stream = _resp(200, {"candidates": [{"content": {"parts": [
+            {"text": "思考中", "thought": True}, {"text": "正文C"},
+        ]}}]})
+        monkeypatch.setattr(
+            httpx, "post", lambda *a, **kw: non_stream,  # noqa: ARG005
+        )
+        assert client.chat([{"role": "user", "content": "hi"}]) == "正文C"
+
+    def test_stream_old_model_no_thinking_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """不支持思考的旧系列（1.5/2.0）不带 thinkingConfig，避免 API 400。"""
+        lines = ["data: " + json.dumps({"candidates": [{"content": {"parts": [{"text": "ok"}]}}]})]
+        fake = _RecordingStreamClient(_FakeStreamResponse(lines))
+        monkeypatch.setattr(httpx, "Client", lambda timeout=None: fake)
+        client = GeminiClient(api_key="k", model="gemini-1.5-flash")
+        list(client.stream_chat([{"role": "user", "content": "hi"}], timeout=5))
+        assert "thinkingConfig" not in fake.stream_kwargs["json"]["generationConfig"]
+
+
+# --- Ollama 思考链 ---
+class TestOllamaThinkingStream:
+    def test_r1_think_param_and_frames(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """推理模型：请求带 think=true，思考链走 thinking 帧、正文走 content 帧。"""
+        lines = [
+            json.dumps({"message": {"thinking": "拆解问题"}, "done": False}),
+            json.dumps({"message": {"content": "答案D"}, "done": False}),
+            json.dumps({"message": {}, "done": True}),
+        ]
+        fake = _RecordingStreamClient(_FakeStreamResponse(lines))
+        monkeypatch.setattr(httpx, "Client", lambda timeout=None: fake)
+        client = OllamaClient(model="deepseek-r1:7b")
+        tagged = list(client.stream_chat_tagged([{"role": "user", "content": "hi"}], timeout=5))
+        assert tagged == [("thinking", "拆解问题"), ("content", "答案D")]
+        assert fake.stream_kwargs["json"]["think"] is True
+
+    def test_plain_model_no_think_param(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """非推理模型不带 think 参数（Ollama 会拒绝），行为与旧实现一致。"""
+        lines = [json.dumps({"message": {"content": "ok"}, "done": True})]
+        fake = _RecordingStreamClient(_FakeStreamResponse(lines))
+        monkeypatch.setattr(httpx, "Client", lambda timeout=None: fake)
+        client = OllamaClient(model="llama3.2")
+        tokens = list(client.stream_chat([{"role": "user", "content": "hi"}], timeout=5))
+        assert tokens == ["ok"]
+        assert "think" not in fake.stream_kwargs["json"]
+
 
 # --- save_settings 不落盘 API Key ---
 class TestApiKeyNotPersisted:
@@ -175,18 +267,29 @@ class TestApiKeyNotPersisted:
         assert "llm_api_key" not in content
         assert 'llm_model = "deepseek-chat"' in content
 
-    def test_manual_toml_api_key_still_loadable(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """CLI 用户手动写 config.toml 的 key 仍可读取（只是不再写回）。"""
+    def test_manual_toml_api_key_ignored_by_design(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """安全设计：手写 config.toml 的 llm_api_key 一律忽略（不再回读明文密钥）。
+
+        1.1 起为消除 API Key 明文落盘的泄漏面，config.toml 只承载非敏感字段，
+        密钥仅由环境变量 DOC2MIND_LLM_API_KEY / POST /v1/config 运行时注入。
+        本用例锁定该行为：敏感字段被丢弃，其余字段照常读取且解析无错。
+        """
         from doc2mind.core import config as config_mod
 
         toml = tmp_path / "config.toml"
         monkeypatch.setattr(config_mod, "config_file_path", lambda: toml)
         toml.write_text(
-            "[doc2mind]\nllm_provider = \"openai\"\nllm_api_key = \"sk-manual\"\n",
+            '[doc2mind]\nllm_provider = "openai"\n'
+            'llm_api_key = "sk-manual"\nllm_model = "deepseek-chat"\n',
             encoding="utf-8",
         )
         data = config_mod.load_config_file()
-        assert data.get("llm_api_key") == "sk-manual"
+        # 敏感字段被丢弃（不回读）
+        assert "llm_api_key" not in data
+        # 非敏感字段照常读取
+        assert data.get("llm_provider") == "openai"
+        assert data.get("llm_model") == "deepseek-chat"
+        assert config_mod.get_config_load_error() is None
 
 
 # --- POST /v1/llm/test 端点 ---
@@ -533,6 +636,48 @@ class TestListModels:
             _Bare().list_models()
 
 
+class TestStreamIdleTimeout:
+    """stream_chat_tagged 空闲超时：持续出帧的长回答不被整体时限误杀。"""
+
+    class _SlowStreamClient(LLMClient):
+        """按给定帧间隔慢速出帧的裸客户端（gap 秒/帧）。"""
+
+        def __init__(self, gaps: list[float]) -> None:
+            self._gaps = gaps  # 第 i 帧产出前等待的秒数
+
+        @property
+        def model_name(self) -> str:
+            return "m"
+
+        @property
+        def provider(self) -> str:
+            return "mock"
+
+        def _do_chat(self, messages, temperature=None, max_tokens=None) -> str:  # noqa: ANN001
+            return ""
+
+        def _do_stream_chat_tagged(self, messages, temperature=None, max_tokens=None):  # noqa: ANN001
+            import time as _t
+
+            for i, gap in enumerate(self._gaps):
+                if gap:
+                    _t.sleep(gap)
+                yield ("content", f"帧{i}")
+
+    def test_long_stream_with_steady_frames_not_killed(self) -> None:
+        """总耗时超过 timeout（~1.8s），但每帧间隔都在时限内（0.6s）
+        → 正常完成不抛超时；旧的整体时限实现会在第 2 帧前误杀。"""
+        client = self._SlowStreamClient(gaps=[0.6, 0.6, 0.6])
+        tagged = list(client.stream_chat_tagged([{"role": "user", "content": "q"}], timeout=1))
+        assert tagged == [("content", "帧0"), ("content", "帧1"), ("content", "帧2")]
+
+    def test_stalled_stream_raises_idle_timeout(self) -> None:
+        """中途停更且间隔超过 timeout → 抛空闲超时错误（文案可行动）。"""
+        client = self._SlowStreamClient(gaps=[0.05, 3.0])
+        with pytest.raises(LLMTimeoutError, match="空闲超时"):
+            list(client.stream_chat_tagged([{"role": "user", "content": "q"}], timeout=0.5))
+
+
 # --- POST /v1/llm/models 端点 ---
 class _ModelsClient(_OkClient):
     def list_models(self, timeout: float | None = None) -> list[str]:
@@ -630,6 +775,14 @@ class _FakeStreamResponse:
     def is_success(self) -> bool:
         return self.status_code < 400
 
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}",
+                request=httpx.Request("POST", "http://test"),
+                response=httpx.Response(self.status_code),
+            )
+
     def iter_lines(self):
         return iter(self._lines)
 
@@ -659,9 +812,22 @@ class _FakeHttpClient:
         return _FakeClientCM(self._r)
 
 
+class _RecordingStreamClient(_FakeHttpClient):
+    """记录 stream() 调用参数的假 httpx.Client（验证请求体门控逻辑用）。"""
+
+    def __init__(self, response: _FakeStreamResponse) -> None:
+        super().__init__(response)
+        self.stream_kwargs: dict = {}
+
+    def stream(self, method: str, url: str, **kw):  # noqa: ANN003, ARG002
+        self.stream_kwargs.update(kw)
+        return _FakeClientCM(self._r)
+
+
 class TestOpenAIClientStreamResilience:
     def test_smooth_finish_on_peer_closed_connection_without_name_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import httpx
+
         from doc2mind.core.llm.openai_impl import OpenAIClient
 
         class FakeChunk:
@@ -706,3 +872,65 @@ class TestOpenAIClientStreamResilience:
         assert len(full_text) >= 30
         assert "工业动平衡" in full_text
 
+
+# ---------- model_registry 启发式识别 ----------
+
+
+def test_model_registry_heuristic_detects_qwen3_reasoning() -> None:
+    """qwen3 / qwen3-vl 等 Qwen3 系模型应被启发式识别为推理模型（发送 think: true）。"""
+    from doc2mind.core.llm.model_registry import get_model_spec
+
+    reasoning_models = ["qwen3-vl:4b", "qwen3:8b", "qwen3:latest"]
+    for m in reasoning_models:
+        assert get_model_spec(m, "ollama").is_reasoning_model, f"{m} should be reasoning"
+
+    non_reasoning = ["gemma3:1b", "qwen2.5:7b", "llama3.2:latest"]
+    for m in non_reasoning:
+        assert not get_model_spec(m, "ollama").is_reasoning_model, f"{m} should NOT be reasoning"
+
+
+def test_model_registry_heuristic_covers_o4_and_gemini_25() -> None:
+    """o4-mini 等 OpenAI o4 系 + Gemini 2.5 系应被正确识别为推理模型。"""
+    from doc2mind.core.llm.model_registry import get_model_spec
+
+    reasoning = ["o4-mini", "o3-pro", "gemini-2.5-flash", "gemini-2.5-pro"]
+    for m in reasoning:
+        spec = get_model_spec(m, "")
+        assert spec.is_reasoning_model, f"{m} should be reasoning"
+
+    non_reasoning = ["gemini-2.0-flash", "gemini-1.5-pro", "gpt-4o"]
+    for m in non_reasoning:
+        spec = get_model_spec(m, "")
+        assert not spec.is_reasoning_model, f"{m} should NOT be reasoning"
+
+
+
+# ---------- _wrap_api_error 404 提示区分 ----------
+
+
+class TestWrapApiError404Hint:
+    """404 提示需区分「模型已下架（NVIDIA NIM 表现）」与「地址/模型名写错」。"""
+
+    class _ApiErr(Exception):
+        status_code = 404
+
+    def test_nvidia_function_gone_hints_model_deprecated(self) -> None:
+        """NVIDIA NIM 下架模型：/models 仍列出，调用即 404 Function Not found for account。"""
+        pytest.importorskip("openai")
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        e = self._ApiErr(
+            "Error code: 404 - {'detail': \"Function '23bd454d': "
+            "Not found for account 'acct'\"}"
+        )
+        msg = str(OpenAIClient._wrap_api_error(e, "流式调用"))
+        assert "模型已下架或当前账号无权调用" in msg
+        assert "更换模型" in msg
+
+    def test_generic_404_keeps_base_url_hint(self) -> None:
+        pytest.importorskip("openai")
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        msg = str(OpenAIClient._wrap_api_error(self._ApiErr("not found"), "流式调用"))
+        assert "模型名或 API 地址不存在" in msg
+        assert "base_url 需含 /v1" in msg

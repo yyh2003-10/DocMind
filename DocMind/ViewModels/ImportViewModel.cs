@@ -292,10 +292,14 @@ public partial class ImportViewModel : ViewModelBase
             DebugLog.Info($"导入任务已创建: jobId={job.JobId} status={job.Status}", "Import");
 
             // 轮询直到完成：progress 0.0-1.0 → 百分比
+            // Progress<T> 的回调是异步投递的，可能在轮询返回之后才执行；
+            // 若不设闸，落后的进度回调会把下面的失败/完成终态文案覆盖成中间状态文案（如「任务状态：failed」盖掉真正的失败原因）。
+            var pollingCompleted = false;
             var final = await _apiService.PollJobUntilDoneAsync(
                 job.JobId,
                 progress: new Progress<JobStatus>(j =>
                 {
+                    if (pollingCompleted) return;
                     ProgressPercent = (int)Math.Round(j.Progress * 100);
                     StatusMessage = j.Status.Equals("running", StringComparison.OrdinalIgnoreCase)
                         ? $"导入中 {j.Processed}/{j.Total} 个文件"
@@ -303,6 +307,7 @@ public partial class ImportViewModel : ViewModelBase
                 }),
                 pollInterval: TimeSpan.FromSeconds(1),
                 ct: _importCts.Token);
+            pollingCompleted = true;
 
             sw.Stop();
 
