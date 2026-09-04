@@ -5,6 +5,26 @@ using DocMind.Services;
 
 namespace DocMind;
 
+/// <summary>用户自定义角色条目。</summary>
+public sealed class CustomPersonaEntry
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N")[..8];
+    public string Name { get; set; } = string.Empty;
+    public string Icon { get; set; } = "🤖";
+    public string Description { get; set; } = string.Empty;
+}
+
+/// <summary>用户自定义主题条目。</summary>
+public sealed class CustomThemeEntry
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N")[..8];
+    public string DisplayName { get; set; } = string.Empty;
+    public string Icon { get; set; } = "🎨";
+    public string Description { get; set; } = string.Empty;
+    public string PrimaryHex { get; set; } = "#3B82F6";
+    public string BgHex { get; set; } = "#F8FAFC";
+}
+
 public class AppSettings
 {
     public string BackendUrl { get; set; } = "http://127.0.0.1:8765";
@@ -89,6 +109,11 @@ public class AppSettings
     /// <summary>对话页「🌐 联网搜索」开关是否开启（持久化，重启后保持勾选状态）。</summary>
     public bool EnableWebSearch { get; set; } = false;
 
+    /// <summary>对话页右侧协同抽屉（出处 / 创作物工作台）的宽度（像素，持久化）。
+    /// 用户拖动分隔条改变宽度后落盘，下次启动自动还原；有效区间 240~720，
+    /// 越界值（手改配置文件）由 ChatViewModel 读取时钳制。</summary>
+    public double ChatDrawerWidth { get; set; } = 380;
+
     /// <summary>对话页勾选的知识库集合名（持久化，重启后恢复勾选）。
     /// 空 = 未记录过，首次加载维持原行为（默认勾选 default）。</summary>
     public List<string> LastChatCollections { get; set; } = new();
@@ -111,6 +136,14 @@ public class AppSettings
     /// <summary>监控防抖秒数（对应 DOC2MIND_WATCH_DEBOUNCE_SECONDS）。</summary>
     public double WatchDebounceSeconds { get; set; } = 5.0;
 
+    // ===== 仅前端配置 — 用户记忆 =====
+    /// <summary>是否启用跨会话用户记忆（MEMORY.md 模式）。</summary>
+    public bool MemoryEnabled { get; set; } = true;
+    /// <summary>是否启用自动记忆提取（对话结束后异步提取关键事实）。</summary>
+    public bool MemoryAutoExtract { get; set; } = true;
+    /// <summary>用户记忆容量上限（字符数），与 Hermes Agent 的 MEMORY.md 对齐。</summary>
+    public int MemoryMaxChars { get; set; } = 2200;
+
     // ===== 仅前端配置 — 启动选项 =====
     /// <summary>启动 WPF 时自动拉起后端子进程（false = 仅轮询外部已运行的后端）。</summary>
     public bool AutoStartBackend { get; set; } = true;
@@ -125,6 +158,13 @@ public class AppSettings
 
     /// <summary>用户是否已选择"不再提示 GPU 加速"（持久化，避免每次启动都弹）。</summary>
     public bool DismissGpuWarning { get; set; } = false;
+
+    // ===== 用户自定义角色与主题 =====
+    /// <summary>用户自定义的 Persona 列表（JSON 序列化字符串，运行时反序列化后合并到 AvailablePersonas）。</summary>
+    public List<CustomPersonaEntry> CustomPersonas { get; set; } = new();
+
+    /// <summary>用户自定义的 PPT 主题列表。</summary>
+    public List<CustomThemeEntry> CustomThemes { get; set; } = new();
 
     /// <summary>启动时 LlmApiKey 密文解密失败（换 Windows 用户/文件损坏）。
     /// 仅运行时标志：提醒用户重新输入，不落盘。加载入口（App.LoadSettings）负责置位。</summary>

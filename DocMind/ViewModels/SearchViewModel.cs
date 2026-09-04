@@ -334,14 +334,21 @@ public partial class SearchViewModel : ViewModelBase
 
         try
         {
-            var resp = await _apiService.SearchAsync(
-                new SearchRequest
-                {
-                    Query = Query.Trim(),
-                    Collection = targetCollection,
-                    TopK = TopK,
-                    MinScore = MinScore,
-                });
+            // 使用 ToolCallResilience：搜索空结果时自动放宽阈值、扩大范围重试
+            var query = Query.Trim();
+            var resp = await ToolCallResilience.SearchWithHealingAsync<SearchResponse>(
+                searchFn: (topK, minScore) => _apiService.SearchAsync(
+                    new SearchRequest
+                    {
+                        Query = query,
+                        Collection = targetCollection,
+                        TopK = topK,
+                        MinScore = minScore,
+                    }),
+                query: query,
+                topK: TopK,
+                minScore: MinScore,
+                maxRetries: 2);
 
             sw.Stop();
             LastResponse = resp;

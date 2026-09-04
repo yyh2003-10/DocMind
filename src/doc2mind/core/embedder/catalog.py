@@ -80,11 +80,48 @@ EMBED_MODEL_CATALOG: tuple[EmbedModelInfo, ...] = (
 
 
 def get_model_info(name: str) -> EmbedModelInfo | None:
-    """按模型名查清单；不在清单内返回 None（用户自定义模型也允许）。"""
+    """按模型名查清单；不在清单内返回 None（用户自定义模型也允许）。
+
+    自动先解析预设别名（如 `bge-small-zh` → `BAAI/bge-small-zh-v1.5`）。
+    """
     for info in EMBED_MODEL_CATALOG:
-        if info.name == name:
+        if info.name == resolve_embed_model(name):
             return info
     return None
+
+
+# 预设别名 → 完整模型名。
+# 原则：别名只能指向 `EMBED_MODEL_CATALOG` 里 fastembed 实际支持的模型
+#（BGE-M3 / bge-base-zh-v1.5 在 fastembed 0.8 不受支持，故不提供别名，避免
+# 用户选了却加载失败 —— 保持"新安装零风险"）。模块末尾有断言兜底防漂移。
+EMBED_MODEL_PRESETS: dict[str, str] = {
+    # 窄快（默认）
+    "bge-small-zh": "BAAI/bge-small-zh-v1.5",
+    "bge-en-small": "BAAI/bge-small-en-v1.5",
+    # 均衡
+    "bge-en-base": "BAAI/bge-base-en-v1.5",
+    # 重效果
+    "bge-en-large": "BAAI/bge-large-en-v1.5",
+    # 多语言
+    "mllm-mini": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "jina-zh": "jinaai/jina-embeddings-v2-base-zh",
+}
+
+
+def resolve_embed_model(value: str) -> str:
+    """把预设别名解析为完整模型名；非别名（完整名/自定义模型）原样返回。
+
+    大小写不敏感匹配别名；`config.embed_model`、CLI、环境变量与 API 均可直接用
+    友好别名，如 `doc2mind model use bge-en-large`。
+    """
+    if not value:
+        return value
+    return EMBED_MODEL_PRESETS.get(value.strip().lower(), value)
+
+
+def list_preset_aliases() -> list[tuple[str, str]]:
+    """列出 (别名, 完整模型名) 元组，供 CLI/设置页展示友好预设。"""
+    return sorted(EMBED_MODEL_PRESETS.items(), key=lambda kv: kv[1])
 
 
 def default_model() -> str:
@@ -203,4 +240,25 @@ def render_catalog_table() -> str:
         "DOC2MIND_EMBED_MODEL=<模型名>。\n"
         "切换模型后请用 `doc2mind reindex --collection default --model <模型名>` 重建索引。"
     )
+    # 预设别名速查
+    lines.append("\n预设别名（可代替完整模型名，如 `--model bge-en-large`）：")
+    for alias, canonical in list_preset_aliases():
+        info = get_model_info(canonical)
+        dim = f"{info.dim}" if info else "?"
+        lines.append(f"  {alias:<14} -> {canonical}  ({dim} 维)")
     return "\n".join(lines)
+
+
+# 防漂移断言：预设别名只能指向清单里的受支持模型（fastembed 实际可加载）。
+# 若未来往 EMBED_MODEL_CATALOG 移除某模型而 preset 仍引用，导入即报错，
+# 避免在配置/CLI/设置页广告"选了却加载失败"的模型。
+_UNSUPPORTED_PRESETS = [
+    alias
+    for alias, canonical in EMBED_MODEL_PRESETS.items()
+    if get_model_info(canonical) is None
+]
+if _UNSUPPORTED_PRESETS:  # pragma: no cover —— 防漂移断言，正常不触发
+    raise RuntimeError(
+        "嵌入预设引用了不在受支持清单中的模型，请修正 catalog.EMBED_MODEL_PRESETS: "
+        + ", ".join(_UNSUPPORTED_PRESETS)
+    )

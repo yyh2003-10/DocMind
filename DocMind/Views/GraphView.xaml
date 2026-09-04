@@ -13,7 +13,6 @@
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisConverter" />
         <h:BoolInvertConverter x:Key="BoolInvertConverter" />
-        <h:BoolToVisibilityInvertConverter x:Key="BoolToVisInvertConverter" />
     </UserControl.Resources>
 
     <Grid>
@@ -668,7 +667,7 @@
                                                                             <TextBlock Text="▸" FontSize="11" DockPanel.Dock="Right"
                                                                                        Foreground="{DynamicResource TextTertiaryBrush}"
                                                                                        HorizontalAlignment="Right" VerticalAlignment="Center"
-                                                                                       Visibility="{Binding IsThinkingExpanded, Converter={StaticResource BoolInvertConverter}}"/>
+                                                                                       Visibility="{Binding IsThinkingExpanded, Converter={StaticResource InvertBoolVis}}"/>
                                                                         </DockPanel>
                                                                     </Button>
 
@@ -715,7 +714,7 @@
                                                                                                Foreground="{DynamicResource TextSecondaryBrush}"
                                                                                                TextWrapping="Wrap"
                                                                                                FontFamily="Consolas, 'Cascadia Code', 'Segoe UI', sans-serif"
-                                                                                               Visibility="{Binding RenderedThinkingDocument, Converter={StaticResource BoolToVisInvertConverter}}"/>
+                                                                                               Visibility="{Binding RenderedThinkingDocument, Converter={StaticResource InvertBoolVis}}"/>
                                                                                 </Grid>
                                                                             </Border>
                                                                         </StackPanel>
@@ -756,7 +755,7 @@
                                                                        LineHeight="19"
                                                                        Foreground="{DynamicResource TextPrimaryBrush}"
                                                                        TextWrapping="Wrap"
-                                                                       Visibility="{Binding RenderedDocument, Converter={StaticResource BoolToVisInvertConverter}}" />
+                                                                       Visibility="{Binding RenderedDocument, Converter={StaticResource InvertBoolVis}}" />
 
                                                             <!-- 4. 引用来源卡片列表 (本地切片 + 联网网页) -->
                                                             <ItemsControl ItemsSource="{Binding Sources}" Margin="0,8,0,0">
@@ -784,7 +783,7 @@
                                                             </ItemsControl>
 
                                                             <!-- 5. 底部操作工具栏 (复制反馈 + 点赞点踩 + 沉淀入库) -->
-                                                            <DockPanel Margin="0,8,0,0" Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisInvertConverter}}">
+                                                            <DockPanel Margin="0,8,0,0" Visibility="{Binding IsLoading, Converter={StaticResource InvertBoolVis}}">
                                                                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
                                                                     <!-- 复制按钮（带绿色「已复制 ✓」反馈） -->
                                                                     <Button Command="{Binding CopyCommand}"
@@ -892,7 +891,7 @@
                                     <TextBlock Text="暂无对话，点击上方气泡或在下方输入开始探讨..."
                                                FontSize="11"
                                                Foreground="{DynamicResource TextTertiaryBrush}"
-                                               Visibility="{Binding HasEntityChatMessages, Converter={StaticResource BoolToVisInvertConverter}}"
+                                               Visibility="{Binding HasEntityChatMessages, Converter={StaticResource InvertBoolVis}}"
                                                Margin="2,4,0,4" />
                                 </StackPanel>
                             </Border>

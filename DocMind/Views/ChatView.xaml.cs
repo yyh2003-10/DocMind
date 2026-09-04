@@ -41,6 +41,23 @@ public partial class ChatView : UserControl
         }
     }
 
+    /// <summary>拖动抽屉左边缘的把手：向左拖变宽、向右拖变窄。
+    /// 只改 ViewModel 属性（内部钳制到 240~720 并落盘），再由双向绑定回传更新抽屉实际宽度；
+    /// 不直接改写布局容器的 Width，因此抽屉关闭时列宽仍能正常塌陷为 0。</summary>
+    private void DrawerThumb_DragDelta(object sender, System.Windows.Controls.Primitives.DragDeltaEventArgs e)
+    {
+        if (_vm != null)
+        {
+            _vm.SourceDrawerWidth = _vm.SourceDrawerWidth - e.HorizontalChange;
+        }
+    }
+
+    /// <summary>松手时落盘一次（拖动过程只改内存，避免逐帧执行含 DPAPI 加密的 Save 造成卡顿）。</summary>
+    private void DrawerThumb_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+    {
+        _vm?.PersistSourceDrawerWidth();
+    }
+
     private void Messages_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
         if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add)
@@ -188,6 +205,15 @@ public partial class ChatView : UserControl
                 {
                     UseShellExecute = true,
                 });
+        }
+    }
+
+    /// <summary>点击自定义管理面板的半透明遮罩时关闭面板。</summary>
+    private void CustomManagerOverlay_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is Border) // 只响应遮罩层本身的点击，不拦截子元素
+        {
+            _vm?.CloseCustomManagerCommand.Execute(null);
         }
     }
 }

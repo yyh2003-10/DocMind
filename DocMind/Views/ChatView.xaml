@@ -1,4 +1,4 @@
-<UserControl x:Class="DocMind.Views.ChatView"
+﻿<UserControl x:Class="DocMind.Views.ChatView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -13,7 +13,6 @@
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="B2V"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
-        <helpers:BoolInvertConverter x:Key="BoolInvertConverter"/>
         <helpers:NullToVisibilityConverter x:Key="NullToVis"/>
         <helpers:NullToVisibilityConverter x:Key="StringToVis"/>
         <helpers:ThinkingStepIconConverter x:Key="ThinkingStepIconConverter"/>
@@ -46,6 +45,47 @@
             <Setter Property="Height" Value="34"/>
             <Setter Property="CornerRadius" Value="17"/>
             <Setter Property="VerticalAlignment" Value="Top"/>
+        </Style>
+
+        <!-- 发送按钮：品牌渐变 + 柔和阴影，无输入/生成中自动降透明禁用 -->
+        <Style x:Key="ChatSendButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource UserBubbleBrush}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="22,8"/>
+            <Setter Property="MinHeight" Value="38"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="UseLayoutRounding" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Root" Background="{TemplateBinding Background}"
+                                CornerRadius="11" Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <Border.Effect>
+                                <DropShadowEffect BlurRadius="10" ShadowDepth="0"
+                                                  Direction="270" Opacity="0.18" Color="#007AFF"/>
+                            </Border.Effect>
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Opacity" Value="0.88"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Root" Property="Opacity" Value="0.72"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Root" Property="Opacity" Value="0.45"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <!-- 消息气泡模板（风格参考 chatboxai/chatbox 与 CherryHQ/cherry-studio：
@@ -145,7 +185,7 @@
                                         <TextBlock Text="▸" FontSize="11" DockPanel.Dock="Right"
                                                    Foreground="{StaticResource TextTertiaryBrush}"
                                                    HorizontalAlignment="Right" VerticalAlignment="Center"
-                                                   Visibility="{Binding IsThinkingExpanded, Converter={StaticResource BoolInvertConverter}}"/>
+                                                   Visibility="{Binding IsThinkingExpanded, Converter={StaticResource InvertBoolVis}}"/>
                                     </DockPanel>
                                 </Button>
 
@@ -396,15 +436,15 @@
                                                             <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolToVis}}"
                                                                        Text="{Binding EvidenceBadgeText}" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
                                                             <!-- 本地来源 -->
-                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource InvertBoolVis}}"
                                                                        Text="📖 本地原著知识切片 (Ground Truth)" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}" Margin="0,0,0,4"/>
-                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource InvertBoolVis}}"
                                                                        Text="{Binding Source, StringFormat=出处文档: {0}}" TextWrapping="Wrap"/>
-                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource InvertBoolVis}}"
                                                                        Text="{Binding Page, TargetNullValue=未知, StringFormat=原著页码: P{0}}" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
-                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource InvertBoolVis}}"
                                                                        Text="{Binding Heading, TargetNullValue=正文, StringFormat=章节: {0}}" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
-                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                            <TextBlock Visibility="{Binding IsWebSource, Converter={StaticResource InvertBoolVis}}"
                                                                        Text="💡 点击可在右侧抽屉展开原著切片或在【搜索】页全文查证" Foreground="{StaticResource TextMutedBrush}" FontSize="11" Margin="0,6,0,0"/>
                                                         </StackPanel>
                                                     </ToolTip>
@@ -418,7 +458,7 @@
                                                                Visibility="{Binding IsWebSource, Converter={StaticResource BoolToVis}}"
                                                                FontSize="11" Margin="4,0,0,0" VerticalAlignment="Center"/>
                                                     <TextBlock Text="📄"
-                                                               Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                               Visibility="{Binding IsWebSource, Converter={StaticResource InvertBoolVis}}"
                                                                FontSize="11" Margin="4,0,0,0" VerticalAlignment="Center"/>
                                                     <TextBlock Text="{Binding DisplayTitle, Mode=OneWay}"
                                                                Style="{StaticResource SourceLineText}"
@@ -434,7 +474,7 @@
                                                     <TextBlock Text="{Binding Page, Mode=OneWay, TargetNullValue='', StringFormat=(P{0})}"
                                                                Style="{StaticResource SourceLineText}"
                                                                Margin="4,0,0,0"
-                                                               Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"/>
+                                                               Visibility="{Binding IsWebSource, Converter={StaticResource InvertBoolVis}}"/>
                                                 </StackPanel>
                                             </Button>
 
@@ -451,7 +491,7 @@
                                                         <TextBlock Text="🌐 打开网页 ↗" Foreground="{StaticResource PrimaryBrush}" FontWeight="SemiBold"/>
                                                     </StackPanel>
                                                 </Button>
-                                                <Button Visibility="{Binding IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                                <Button Visibility="{Binding IsWebSource, Converter={StaticResource InvertBoolVis}}"
                                                         Command="{Binding DataContext.OpenSourceCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
                                                         CommandParameter="{Binding}"
                                                         Style="{StaticResource SecondaryButtonStyle}"
@@ -544,7 +584,7 @@
                                         ToolTip="复制消息内容到剪贴板">
                                     <Button.Content>
                                         <StackPanel Orientation="Horizontal">
-                                            <TextBlock Text="📋 复制" Visibility="{Binding IsCopied, Converter={StaticResource BoolInvertConverter}}"/>
+                                            <TextBlock Text="📋 复制" Visibility="{Binding IsCopied, Converter={StaticResource InvertBoolVis}}"/>
                                             <TextBlock Text="✅ 已复制" Foreground="{StaticResource SuccessBrush}" FontWeight="SemiBold" Visibility="{Binding IsCopied, Converter={StaticResource BoolToVis}}"/>
                                         </StackPanel>
                                     </Button.Content>
@@ -683,8 +723,8 @@
     <Grid>
         <Grid.ColumnDefinitions>
             <!-- 主对话区 (弹性占满) -->
-            <ColumnDefinition Width="*"/>
-            <!-- 协同出处抽屉 (展开时显示) -->
+            <ColumnDefinition Width="*" MinWidth="320"/>
+            <!-- 协同出处抽屉：Auto = 关闭时整块 Collapsed 不占空间，打开时宽度由抽屉自身决定 -->
             <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
 
@@ -693,252 +733,376 @@
             <Grid.RowDefinitions>
                 <!-- 工具条 -->
                 <RowDefinition Height="Auto"/>
+                <!-- 智能推荐提示条 -->
+                <RowDefinition Height="Auto"/>
                 <!-- 消息区 -->
                 <RowDefinition Height="*"/>
                 <!-- 输入区 -->
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <!-- ===== 工具条：知识库分组（复选）+ 添加 + 清空 ===== -->
+            <!-- ===== 顶部工具条：知识库分组 + 会话/模型/角色 控制条（轻量两行） ===== -->
             <Border Grid.Row="0"
-                Background="{StaticResource CardBrush}"
-                BorderBrush="{StaticResource BorderBrush}"
-                BorderThickness="1"
-                CornerRadius="14"
-                Padding="14,10"
-                Margin="0,0,0,12">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
+                    Background="{StaticResource CardBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="14"
+                    Padding="12,9"
+                    Margin="0,0,0,10"
+                    HorizontalAlignment="Center" MaxWidth="920">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
-                <!-- 第一行：分组标签 + 添加按钮 + 消息数 + 清空 -->
-                <Grid Grid.Row="0" Margin="0,0,0,8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-
-                    <TextBlock Grid.Column="0" Text="知识库"
-                               Style="{StaticResource SmallText}"
-                               VerticalAlignment="Center"
-                               Margin="0,0,8,0"/>
-
-                    <!-- 添加知识库：输入框 + 按钮 -->
-                    <Grid Grid.Column="1">
+                    <!-- ── 行 1：知识库多选 chips + 快速添加 ── -->
+                    <Grid Grid.Row="0">
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBox Grid.Column="0"
-                                 Text="{Binding NewCollectionName, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="输入新知识库名称后点击「添加」"
-                                 VerticalContentAlignment="Center"
-                                 Margin="0,0,8,0">
-                            <TextBox.InputBindings>
-                                <KeyBinding Key="Enter"
-                                            Command="{Binding AddCollectionCommand}"
-                                            CommandParameter="{Binding NewCollectionName}"/>
-                            </TextBox.InputBindings>
-                        </TextBox>
-                        <Button Grid.Column="1"
-                                Content="添加知识库"
-                                Command="{Binding AddCollectionCommand}"
-                                CommandParameter="{Binding NewCollectionName}"
-                                Style="{StaticResource SecondaryButtonStyle}"
-                                Padding="10,4"/>
+
+                        <StackPanel Grid.Column="0"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center"
+                                    Margin="2,0,10,0"
+                                    ToolTip="勾选要检索的知识库分组（可多选）">
+                            <TextBlock Text="📚" FontSize="12" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                            <TextBlock Text="知识库" FontSize="12.5" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <!-- 分组 chips（WrapPanel，超出行自动滚动） -->
+                        <ScrollViewer Grid.Column="1"
+                                      MaxHeight="54"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      Margin="0,1,2,1">
+                            <ItemsControl ItemsSource="{Binding Collections}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel Orientation="Horizontal"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type vm:CollectionItem}">
+                                        <CheckBox Content="{Binding Name}"
+                                                  IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                  Margin="0,2,10,2"
+                                                  VerticalContentAlignment="Center"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+
+                        <!-- 添加知识库（紧凑：短输入框 + ➕） -->
+                        <Grid Grid.Column="2" Margin="4,0,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox Grid.Column="0"
+                                     Width="150"
+                                     Text="{Binding NewCollectionName, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="输入新知识库名称后回车或点击 ➕ 添加"
+                                     VerticalContentAlignment="Center"
+                                     Margin="0,0,6,0">
+                                <TextBox.InputBindings>
+                                    <KeyBinding Key="Enter"
+                                                Command="{Binding AddCollectionCommand}"
+                                                CommandParameter="{Binding NewCollectionName}"/>
+                                </TextBox.InputBindings>
+                            </TextBox>
+                            <Button Grid.Column="1"
+                                    Content="＋"
+                                    Command="{Binding AddCollectionCommand}"
+                                    CommandParameter="{Binding NewCollectionName}"
+                                    Style="{StaticResource SecondaryButtonStyle}"
+                                    MinWidth="30" MinHeight="30"
+                                    Padding="6,3"
+                                    FontSize="14"
+                                    ToolTip="添加知识库"/>
+                        </Grid>
                     </Grid>
 
-                    <!-- 当前会话消息数（本地统计，随消息增减刷新） -->
-                    <TextBlock Grid.Column="2"
-                               Text="{Binding MessagesCountText}"
-                               Style="{StaticResource SmallText}"
-                               Foreground="{StaticResource TextTertiaryBrush}"
-                               VerticalAlignment="Center"
-                               Margin="0,0,10,0"/>
+                    <!-- ── 行 2：会话 / 模型 / 角色 分组控制条 ── -->
+                    <Border Grid.Row="1"
+                            Background="{StaticResource SurfaceBrush}"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="9"
+                            Padding="7,4"
+                            Margin="0,9,0,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="1.35*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="1.05*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="1.05*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
 
-                    <Button Grid.Column="3"
-                            Content="清空对话"
-                            Command="{Binding ClearCommand}"
-                            Style="{StaticResource SecondaryButtonStyle}"
-                            Margin="0,0,8,0"
-                            Visibility="{Binding HasMessages, Converter={StaticResource BoolToVis}}"/>
+                            <!-- 💬 会话组 -->
+                            <TextBlock Grid.Column="0" Text="💬" FontSize="12"
+                                       VerticalAlignment="Center" Margin="2,0,5,0"
+                                       ToolTip="历史会话（保存在本地知识库中，重启不丢失）。选中即载入并可继续追问"/>
+                            <ComboBox Grid.Column="1"
+                                      ItemsSource="{Binding Sessions}"
+                                      SelectedItem="{Binding SelectedSession, Mode=TwoWay}"
+                                      DisplayMemberPath="Display"
+                                      VerticalContentAlignment="Center"
+                                      MinHeight="28"
+                                      FontSize="12"
+                                      Padding="8,2"
+                                      Margin="0,0,4,0"
+                                      ToolTip="历史会话（保存在本地知识库中，重启不丢失）。选中即载入并可继续追问"/>
+                            <Button Grid.Column="2"
+                                    Content="＋"
+                                    Command="{Binding NewChatCommand}"
+                                    Style="{StaticResource IconButtonStyle}"
+                                    Width="27" Height="27"
+                                    FontSize="13" FontWeight="Bold"
+                                    Margin="0,0,2,0"
+                                    ToolTip="开始新会话（不删除历史记录）"/>
+                            <Button Grid.Column="3"
+                                    Content="🗑"
+                                    Command="{Binding DeleteSessionCommand}"
+                                    CommandParameter="{Binding SelectedSession}"
+                                    Style="{StaticResource IconButtonStyle}"
+                                    Width="27" Height="27"
+                                    FontSize="11"
+                                    ToolTip="删除当前选中的历史会话（本地记录一并删除）"/>
+
+                            <!-- 分隔 -->
+                            <Border Grid.Column="4" Width="1" Height="16" Margin="6,0"
+                                    Background="{StaticResource BorderBrush}" VerticalAlignment="Center"/>
+
+                            <!-- 🤖 模型组 -->
+                            <TextBlock Grid.Column="5" Text="🤖" FontSize="12"
+                                       VerticalAlignment="Center" Margin="0,0,5,0"
+                                       ToolTip="模型选择：首项=设置页默认，其余=当前服务商可选模型"/>
+                            <ComboBox Grid.Column="6"
+                                      ItemsSource="{Binding ModelChoices}"
+                                      SelectedItem="{Binding SelectedModelChoice, Mode=TwoWay}"
+                                      DisplayMemberPath="DisplayName"
+                                      VerticalContentAlignment="Center"
+                                      MinHeight="28"
+                                      FontSize="12"
+                                      Padding="8,2"
+                                      Margin="0,0,4,0">
+                                <ComboBox.ToolTip>
+                                    <StackPanel MaxWidth="380">
+                                        <TextBlock Text="首项「默认 · 模型名」= 用设置页配置的默认服务商与模型（请求不携带 model）；下方为默认提供商的可选模型（按请求覆盖，不改全局）；各服务商条目 = 点选即用该服务商（下条消息生效）。选择会持久化，新建对话/重启后自动还原"
+                                                   TextWrapping="Wrap" FontSize="11"/>
+                                        <TextBlock Text="{Binding EffectiveModelSummary, StringFormat=当前生效：{0}}"
+                                                   TextWrapping="Wrap" FontSize="11" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource PrimaryBrush}" Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </ComboBox.ToolTip>
+                            </ComboBox>
+                            <Button Grid.Column="7"
+                                    Content="🔄"
+                                    Command="{Binding RefreshModelsCommand}"
+                                    Style="{StaticResource IconButtonStyle}"
+                                    Width="27" Height="27"
+                                    FontSize="10"
+                                    ToolTip="获取当前服务商的可用模型列表"/>
+
+                            <!-- 分隔 -->
+                            <Border Grid.Column="8" Width="1" Height="16" Margin="6,0"
+                                    Background="{StaticResource BorderBrush}" VerticalAlignment="Center"/>
+
+                            <!-- 🎭 角色组 -->
+                            <TextBlock Grid.Column="9" Text="🎭" FontSize="12"
+                                       VerticalAlignment="Center" Margin="0,0,5,0"
+                                       ToolTip="办公角色（人设）"/>
+                            <ComboBox Grid.Column="10"
+                                      ItemsSource="{Binding AllPersonas}"
+                                      SelectedItem="{Binding SelectedPersona, Mode=TwoWay}"
+                                      DisplayMemberPath="DisplayName"
+                                      VerticalContentAlignment="Center"
+                                      MinHeight="28"
+                                      FontSize="12"
+                                      Padding="8,2"
+                                      Margin="0,0,4,0"
+                                      ToolTip="{Binding SelectedPersona.Description}"/>
+                            <Button Grid.Column="11"
+                                    Content="⚙️"
+                                    Command="{Binding OpenCustomManagerCommand}"
+                                    Style="{StaticResource IconButtonStyle}"
+                                    Width="27" Height="27"
+                                    FontSize="11"
+                                    ToolTip="管理自定义角色与主题"/>
+
+                            <!-- 右侧操作组：消息数 / 导出 / 清空 -->
+                            <StackPanel Grid.Column="12" Orientation="Horizontal"
+                                        VerticalAlignment="Center" Margin="8,0,2,0">
+                                <TextBlock Text="{Binding MessagesCountText}"
+                                           FontSize="11"
+                                           Foreground="{StaticResource TextTertiaryBrush}"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,0"/>
+                                <Button Content="📤 导出对话"
+                                        Command="{Binding ExportChatCommand}"
+                                        Style="{StaticResource TextButtonStyle}"
+                                        FontSize="11"
+                                        Padding="6,3"
+                                        Margin="0,0,2,0"
+                                        ToolTip="将当前完整对话与引用资料导出为 Markdown 文档"/>
+                                <Button Content="🗑 清空对话"
+                                        Command="{Binding ClearCommand}"
+                                        Style="{StaticResource TextButtonStyle}"
+                                        FontSize="11"
+                                        Padding="6,3"
+                                        Foreground="{StaticResource DangerBrush}"
+                                        ToolTip="清空当前会话的全部消息"
+                                        Visibility="{Binding HasMessages, Converter={StaticResource BoolToVis}}"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
                 </Grid>
+            </Border>
 
-                <!-- 第二行：知识库复选框列表（带最大高度限制与滚动） -->
-                <ScrollViewer Grid.Row="1"
-                              MaxHeight="80"
-                              VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled"
-                              Margin="0,2,0,4">
-                    <ItemsControl ItemsSource="{Binding Collections}">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <WrapPanel Orientation="Horizontal"/>
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate DataType="{x:Type vm:CollectionItem}">
-                                <CheckBox Content="{Binding Name}"
-                                          IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                          Margin="0,2,14,2"
-                                          VerticalContentAlignment="Center"/>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                </ScrollViewer>
-
-                <!-- 第三行：历史会话 + 快速切换模型 + 办公角色（三列规整排布） -->
-                <Grid Grid.Row="2" Margin="0,8,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="1.2*"/>
-                        <ColumnDefinition Width="12"/>
-                        <ColumnDefinition Width="1*"/>
-                        <ColumnDefinition Width="12"/>
-                        <ColumnDefinition Width="1*"/>
-                    </Grid.ColumnDefinitions>
-
-                    <!-- 第1列：历史会话管理 -->
-                    <Grid Grid.Column="0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-
-                        <TextBlock Grid.Column="0" Text="会话:"
-                                   Style="{StaticResource CaptionText}"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,6,0"/>
-                        <ComboBox Grid.Column="1"
-                                  ItemsSource="{Binding Sessions}"
-                                  SelectedItem="{Binding SelectedSession, Mode=TwoWay}"
-                                  DisplayMemberPath="Display"
-                                  ToolTip="历史会话（保存在本地知识库中，重启不丢失）。选中即载入并可继续追问"
-                                  VerticalAlignment="Center"
-                                  Margin="0,0,6,0"/>
-                        <Button Grid.Column="2"
-                                Content="➕ 新会话"
-                                Command="{Binding NewChatCommand}"
-                                Style="{StaticResource SecondaryButtonStyle}"
-                                Padding="8,4"
-                                MinHeight="32"
-                                Margin="0,0,4,0"
-                                ToolTip="开始新会话（不删除历史记录）"/>
-                        <Button Grid.Column="3"
-                                Content="🗑 删除"
-                                Command="{Binding DeleteSessionCommand}"
-                                CommandParameter="{Binding SelectedSession}"
-                                Style="{StaticResource SecondaryButtonStyle}"
-                                Padding="8,4"
-                                MinHeight="32"
-                                ToolTip="删除当前选中的历史会话（本地记录一并删除）"/>
-                    </Grid>
-
-                    <!-- 第2列：模型选择器（点选模型即切换服务商，按请求生效） -->
-                    <Grid Grid.Column="2">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-
-                        <TextBlock Grid.Column="0" Text="模型:"
-                                   Style="{StaticResource CaptionText}"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,6,0"/>
-                        <ComboBox Grid.Column="1"
-                                  ItemsSource="{Binding ModelChoices}"
-                                  SelectedItem="{Binding SelectedModelChoice, Mode=TwoWay}"
-                                  DisplayMemberPath="DisplayName"
-                                  ToolTip="首项「默认 · 模型名」= 用设置页配置的默认服务商与模型（请求不携带 model）；下方为默认提供商的可选模型（按请求覆盖，不改全局）；各服务商条目 = 点选即用该服务商（下条消息生效）。选择会持久化，新建对话/重启后自动还原"
-                                  VerticalAlignment="Center"
-                                  Margin="0,0,6,0"/>
-                        <TextBlock Grid.Row="1" Grid.Column="1"
-                                   Text="{Binding EffectiveModelSummary}"
-                                   Style="{StaticResource SmallText}"
-                                   Foreground="{StaticResource TextTertiaryBrush}"
-                                   Margin="2,4,6,0"
-                                   TextTrimming="CharacterEllipsis"/>
-                        <Button Grid.Column="2"
-                                Content="🔄"
-                                Command="{Binding RefreshModelsCommand}"
-                                Style="{StaticResource SecondaryButtonStyle}"
-                                Padding="8,4"
-                                MinHeight="32"
-                                ToolTip="获取当前服务商的可用模型列表"/>
-                    </Grid>
-
-                    <!-- 第3列：办公角色人设切换 -->
-                    <Grid Grid.Column="4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-
-                        <TextBlock Grid.Column="0" Text="角色:"
-                                   Style="{StaticResource CaptionText}"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,6,0"/>
-                        <ComboBox Grid.Column="1"
-                                  ItemsSource="{Binding AvailablePersonas}"
-                                  SelectedItem="{Binding SelectedPersona, Mode=TwoWay}"
-                                  DisplayMemberPath="DisplayName"
-                                  ToolTip="{Binding SelectedPersona.Description}"
-                                  VerticalAlignment="Center"/>
-                        <Button Grid.Column="2"
-                                Content="📤 导出对话"
-                                Command="{Binding ExportChatCommand}"
-                                Style="{StaticResource TextButtonStyle}"
-                                FontSize="12"
-                                Padding="8,4"
-                                Margin="8,0,0,0"
-                                ToolTip="将当前完整对话与引用资料导出为 Markdown 文档"/>
-                    </Grid>
-                </Grid>
-            </Grid>
+        <!-- ===== 智能推荐提示条 ===== -->
+        <Border Grid.Row="1"
+                Background="{DynamicResource PrimaryLightBrush}"
+                BorderBrush="{DynamicResource PrimaryBrush}"
+                BorderThickness="0.5"
+                CornerRadius="10"
+                Padding="12,8"
+                Margin="0,6,0,0"
+                HorizontalAlignment="Center" MaxWidth="920"
+                Visibility="{Binding ShowRecommendation, Converter={StaticResource BoolToVis}}">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="✅ 应用全部"
+                            Command="{Binding ApplyAllRecommendationsCommand}"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            FontSize="11" Padding="10,4" Margin="4,0,0,0"/>
+                    <Button Content="忽略"
+                            Command="{Binding DismissRecommendationCommand}"
+                            Style="{StaticResource TextButtonStyle}"
+                            FontSize="11" Padding="8,4" Foreground="{DynamicResource TextTertiaryBrush}"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="💡 智能推荐：" FontSize="12" FontWeight="SemiBold"
+                               Foreground="{DynamicResource PrimaryBrush}" VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding RecommendationReason}" FontSize="12"
+                               Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center"/>
+                    <!-- 推荐角色 -->
+                    <Border Visibility="{Binding RecommendedPersona, Converter={StaticResource NullToVis}}"
+                            Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="6" Padding="6,2" Margin="8,0,0,0"
+                            VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="角色：" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            <TextBlock Text="{Binding RecommendedPersona.DisplayName}" FontSize="11" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource PrimaryBrush}"/>
+                            <Button Content="切换" Command="{Binding ApplyRecommendedPersonaCommand}"
+                                    Style="{StaticResource TextButtonStyle}" FontSize="10" Padding="4,0" Margin="4,0,0,0"/>
+                        </StackPanel>
+                    </Border>
+                    <!-- 推荐主题 -->
+                    <Border Visibility="{Binding RecommendedTheme, Converter={StaticResource NullToVis}}"
+                            Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="6" Padding="6,2" Margin="8,0,0,0"
+                            VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="主题：" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            <TextBlock Text="{Binding RecommendedTheme.DisplayName}" FontSize="11" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource PrimaryBrush}"/>
+                            <Button Content="切换" Command="{Binding ApplyRecommendedThemeCommand}"
+                                    Style="{StaticResource TextButtonStyle}" FontSize="10" Padding="4,0" Margin="4,0,0,0"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </DockPanel>
         </Border>
 
         <!-- ===== 消息列表 ===== -->
-        <Grid Grid.Row="1">
+        <Grid Grid.Row="2">
             <ScrollViewer x:Name="MessageScroll"
                           VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Auto"
                           ScrollChanged="MessageScroll_ScrollChanged">
-                <StackPanel Margin="0,4">
-                    <!-- 欢迎空态（带一键体验与快捷提问） -->
-                    <Border Background="{StaticResource SurfaceBrush}"
-                            BorderBrush="{StaticResource BorderBrush}"
-                            BorderThickness="1"
-                            CornerRadius="12"
-                            Padding="24"
-                            VerticalAlignment="Center"
-                            MaxWidth="520"
+                <!-- 限宽居中列：大窗口下对话聚焦在中间，贴近主流聊天软件观感 -->
+                <Border HorizontalAlignment="Center" MaxWidth="920">
+                    <StackPanel Margin="0,4">
+                    <!-- 角色专属快捷问题（有消息时显示） -->
+                    <Border Visibility="{Binding HasPersonaQuickQuestions, Converter={StaticResource BoolToVis}}"
+                            Background="{DynamicResource SurfaceBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="10"
+                            Padding="10,8" Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock FontSize="12" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,6">
+                                <Run Text="{Binding SelectedPersona.Icon, Mode=OneWay}"/>
+                                <Run Text=" "/>
+                                <Run Text="{Binding SelectedPersona.DisplayName, Mode=OneWay}"/>
+                                <Run Text=" 专属快捷提问："/>
+                            </TextBlock>
+                            <ItemsControl ItemsSource="{Binding PersonaQuickQuestions}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Content="{Binding}" Command="{Binding DataContext.QuickAskCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                                CommandParameter="{Binding}"
+                                                Style="{StaticResource SecondaryButtonStyle}"
+                                                FontSize="11" Padding="10,5" Margin="0,0,6,6"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 欢迎空态（带一键体验与快捷提问；无卡片，聚焦内容本身） -->
+                    <Border Background="Transparent"
+                            BorderThickness="0"
+                            Padding="0"
+                            MaxWidth="560"
                             HorizontalAlignment="Center"
                             Visibility="{Binding ShowEmptyGuide, Converter={StaticResource BoolToVis}}"
-                            Margin="0,20,0,20">
+                            Margin="0,36,0,24">
                         <StackPanel>
-                            <TextBlock Text="💬" FontSize="42" HorizontalAlignment="Center"/>
+                            <!-- 品牌徽标（软件自带图标） -->
+                            <Image Source="/Assets/DocMind.ico"
+                                   Width="68" Height="68"
+                                   Stretch="Uniform"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,4,0,12">
+                                <Image.Effect>
+                                    <DropShadowEffect BlurRadius="16" ShadowDepth="0"
+                                                      Direction="270" Opacity="0.22" Color="#2B7FFF"/>
+                                </Image.Effect>
+                            </Image>
                             <TextBlock Text="DocMind 智能知识库助手"
-                                       FontSize="16" FontWeight="Bold"
+                                       FontSize="17" FontWeight="SemiBold"
                                        HorizontalAlignment="Center"
-                                       Margin="0,8,0,4"/>
+                                       Margin="0,0,0,5"/>
                             <TextBlock Text="{Binding EmptyGuideText, Mode=OneWay}"
                                        Style="{StaticResource BodyText}"
                                        Foreground="{StaticResource TextMutedBrush}"
                                        TextWrapping="Wrap"
                                        TextAlignment="Center"
-                                       Margin="0,0,0,16"/>
+                                       MaxWidth="420"
+                                       Margin="0,0,0,18"/>
 
                             <!-- 操作按钮组：导入示例库 / 配置大模型 -->
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,16">
@@ -977,6 +1141,31 @@
                                         CommandParameter="如何在 DocMind 中配置 DeepSeek API 或本地 Ollama？"
                                         Style="{StaticResource SecondaryButtonStyle}"
                                         FontSize="11" Padding="8,4" Margin="3"/>
+                                <Button Content="📊 快速制作一份专业 PPT 大纲"
+                                        Command="{Binding QuickAskCommand}"
+                                        CommandParameter="请为我制作一份关于 AI 知识管理的专业演示 PPT 大纲，包含封面、目录、核心内容页与总结"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        FontSize="11" Padding="8,4" Margin="3"/>
+                                <Button Content="📝 写一份技术方案对比分析"
+                                        Command="{Binding QuickAskCommand}"
+                                        CommandParameter="请对上述资料中涉及的技术方案进行多维度对比分析，输出优缺点、适用场景与推荐建议"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        FontSize="11" Padding="8,4" Margin="3"/>
+                                <Button Content="🧠 用思维导图梳理核心知识"
+                                        Command="{Binding QuickAskCommand}"
+                                        CommandParameter="请对上述内容进行结构化梳理，输出层次分明的思维导图大纲（核心主题→子主题→关键要点）"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        FontSize="11" Padding="8,4" Margin="3"/>
+                                <Button Content="❓ 整理一份 FAQ 问答手册"
+                                        Command="{Binding QuickAskCommand}"
+                                        CommandParameter="请基于上述知识库内容，提炼整理一份高频 FAQ 问答手册"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        FontSize="11" Padding="8,4" Margin="3"/>
+                                <Button Content="📌 写一个成功案例分析报告"
+                                        Command="{Binding QuickAskCommand}"
+                                        CommandParameter="请从知识库中提取关键案例，撰写一份背景/挑战/方案/成效/可复制经验的结构化案例报告"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        FontSize="11" Padding="8,4" Margin="3"/>
                             </WrapPanel>
                         </StackPanel>
                     </Border>
@@ -987,18 +1176,20 @@
                             <StaticResource ResourceKey="MessageBubbleTemplate"/>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                </StackPanel>
+                    </StackPanel>
+                </Border>
             </ScrollViewer>
         </Grid>
 
         <!-- ===== 输入区 ===== -->
-        <Border Grid.Row="2"
+        <Border Grid.Row="3"
                 Background="{StaticResource CardBrush}"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="14"
+                CornerRadius="16"
                 Padding="14,10"
-                Margin="0,12,0,0">
+                Margin="0,10,0,2"
+                HorizontalAlignment="Center" MaxWidth="920">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -1014,13 +1205,12 @@
                                    VerticalAlignment="Center"
                                    Margin="0,0,8,0"/>
                         <Button Content="📊 制作PPT"
-                                Command="{Binding InsertPromptTemplateCommand}"
-                                CommandParameter="ppt"
+                                Command="{Binding OpenPptPrefsCommand}"
                                 Style="{StaticResource SecondaryButtonStyle}"
                                 FontSize="11"
                                 Padding="8,3"
                                 Margin="0,0,6,0"
-                                ToolTip="依托知识库生成分页 PPT 幻灯片大纲与演讲备注"/>
+                                ToolTip="先定制用途/篇幅/配色等要求，再让 AI 一次生成到位（免去事后返工）"/>
                         <Button Content="📄 撰写研报"
                                 Command="{Binding InsertPromptTemplateCommand}"
                                 CommandParameter="report"
@@ -1077,6 +1267,54 @@
                                 Padding="8,3"
                                 Margin="0,0,6,0"
                                 ToolTip="一键进行专家级把关，列出潜在风险与避坑建议"/>
+                        <Button Content="❓ FAQ 问答手册"
+                                Command="{Binding InsertPromptTemplateCommand}"
+                                CommandParameter="faq"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                FontSize="11"
+                                Padding="8,3"
+                                Margin="0,0,6,0"
+                                ToolTip="提炼高频问题与简洁可执行的回答"/>
+                        <Button Content="📊 SWOT 分析"
+                                Command="{Binding InsertPromptTemplateCommand}"
+                                CommandParameter="swot"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                FontSize="11"
+                                Padding="8,3"
+                                Margin="0,0,6,0"
+                                ToolTip="优势/劣势/机会/威胁全维度战略分析"/>
+                        <Button Content="🗺️ 路线图"
+                                Command="{Binding InsertPromptTemplateCommand}"
+                                CommandParameter="roadmap"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                FontSize="11"
+                                Padding="8,3"
+                                Margin="0,0,6,0"
+                                ToolTip="按阶段划分里程碑与关键产出物"/>
+                        <Button Content="📌 案例分析"
+                                Command="{Binding InsertPromptTemplateCommand}"
+                                CommandParameter="case"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                FontSize="11"
+                                Padding="8,3"
+                                Margin="0,0,6,0"
+                                ToolTip="背景/挑战/方案/成效/可复制经验"/>
+                        <Button Content="🧠 思维导图"
+                                Command="{Binding InsertPromptTemplateCommand}"
+                                CommandParameter="mindmap"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                FontSize="11"
+                                Padding="8,3"
+                                Margin="0,0,6,0"
+                                ToolTip="层次分明的结构化大纲梳理"/>
+                        <Button Content="🎙️ 访谈稿"
+                                Command="{Binding InsertPromptTemplateCommand}"
+                                CommandParameter="interview"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                FontSize="11"
+                                Padding="8,3"
+                                Margin="0,0,6,0"
+                                ToolTip="深度访谈提纲与核心问题链设计"/>
                     </StackPanel>
                 </ScrollViewer>
 
@@ -1174,14 +1412,25 @@
                                  MinHeight="38"
                                  MaxHeight="120"
                                  PreviewKeyDown="ChatInputBox_PreviewKeyDown"/>
+                        <!-- 占位提示：无输入时淡显 -->
+                        <TextBlock Text="输入问题，按 Enter 发送 · Shift+Enter 换行（可拖入文档 / 图片）"
+                                   IsHitTestVisible="False"
+                                   Foreground="{StaticResource TextMutedBrush}"
+                                   FontSize="12.5"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Center"
+                                   HorizontalAlignment="Left"
+                                   Margin="16,0,0,0"
+                                   Visibility="{Binding HasInput, Converter={StaticResource InvertBoolVis}}"/>
                         <Button Content="×"
                                 Style="{StaticResource TextButtonStyle}"
-                                Command="{Binding ClearCommand}"
+                                Command="{Binding ClearInputCommand}"
                                 HorizontalAlignment="Right"
                                 VerticalAlignment="Center"
                                 FontSize="16"
                                 Padding="6,2"
                                 Margin="0,0,6,0"
+                                ToolTip="清除本次输入内容"
                                 Visibility="{Binding HasInput, Converter={StaticResource BoolToVis}}"/>
                     </Grid>
 
@@ -1197,14 +1446,23 @@
                               ToolTip="开启后自动从互联网检索最新前沿资料补充回答"/>
 
                     <Button Grid.Column="3"
-                            Content="发送"
                             Command="{Binding SendCommand}"
-                            Style="{StaticResource PrimaryButtonStyle}"
-                            MinWidth="80"
-                            MinHeight="38"/>
+                            Style="{StaticResource ChatSendButtonStyle}"
+                            MinWidth="92"
+                            ToolTip="发送（Enter）">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="M12,19 L12,5 M5,12 L12,5 L19,12"
+                                  Stroke="White" StrokeThickness="1.8"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  StrokeLineJoin="Round"
+                                  Width="14" Height="14" Stretch="Uniform"
+                                  VerticalAlignment="Center" Margin="0,0,7,0"/>
+                            <TextBlock Text="发送" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
 
                     <Button Grid.Column="4"
-                            Content="停止"
+                            Content="⏹ 停止"
                             Command="{Binding StopCommand}"
                             Style="{StaticResource SecondaryButtonStyle}"
                             MinWidth="80"
@@ -1216,9 +1474,45 @@
         </Border>
         </Grid>
 
-        <!-- ===== 右侧协同抽屉 (双模：原著切片出处 / 创作工作台 Artifact Canvas) ===== -->
+        <!-- ===== 拖动把手：与抽屉同处 Column 1，浮在抽屉左边缘的 12px 留白间隙内 =====
+             用 Thumb 而非 GridSplitter：宽度改的是 ViewModel 属性（经双向绑定回传），
+             不会直接改写布局容器的 Width，因此抽屉关闭时列宽能正常塌陷为 0。 -->
+        <Thumb Grid.Column="1"
+               HorizontalAlignment="Left"
+               VerticalAlignment="Stretch"
+               Width="8"
+               Margin="2,0,0,0"
+               Cursor="SizeWE"
+               DragDelta="DrawerThumb_DragDelta"
+               DragCompleted="DrawerThumb_DragCompleted"
+               ToolTip="拖动调整宽度"
+               Visibility="{Binding IsSourceDrawerOpen, Converter={StaticResource BoolToVis}}">
+            <Thumb.Template>
+                <ControlTemplate TargetType="Thumb">
+                    <Border x:Name="Root" Background="Transparent">
+                        <Rectangle x:Name="VisualBar"
+                                   Width="1"
+                                   HorizontalAlignment="Center"
+                                   Fill="{StaticResource BorderBrush}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
+                            <Setter TargetName="VisualBar" Property="Width" Value="2"/>
+                            <Setter TargetName="VisualBar" Property="Fill" Value="{StaticResource PrimaryBrush}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Thumb.Template>
+        </Thumb>
+
+        <!-- ===== 右侧协同抽屉 (双模：原著切片出处 / 创作工作台 Artifact Canvas) =====
+             宽度双向绑定 ViewModel.SourceDrawerWidth：拖动把手改的是源属性，
+             经 ViewModel 钳制（240~720）后回传，并落盘持久化。 -->
         <Border Grid.Column="1"
-                Width="380"
+                Width="{Binding SourceDrawerWidth, Mode=TwoWay}"
+                MinWidth="240"
+                MaxWidth="720"
                 Margin="12,0,0,0"
                 Background="{StaticResource CardBrush}"
                 BorderBrush="{StaticResource BorderBrush}"
@@ -1231,6 +1525,8 @@
                 <Grid Visibility="{Binding IsArtifactMode, Converter={StaticResource B2V}}">
                     <Grid.RowDefinitions>
                         <!-- 头部 (标题 + 类型徽章 + 关闭) -->
+                        <RowDefinition Height="Auto"/>
+                        <!-- 本会话创作物清单 (横排切换，>1 个时显示) -->
                         <RowDefinition Height="Auto"/>
                         <!-- 主预览区 (PPT 卡片 / 文档内容) -->
                         <RowDefinition Height="*"/>
@@ -1329,7 +1625,55 @@
                     </Grid>
 
                     <!-- 2. 主预览区 -->
-                    <Grid Grid.Row="1">
+                    <!-- 2. 本会话创作物清单（一次会话常产出多个交付物，横排点选即可切换预览） -->
+                    <Grid Grid.Row="1" Margin="0,0,0,10"
+                          Visibility="{Binding HasMultipleArtifacts, Converter={StaticResource B2V}}">
+                        <ListBox ItemsSource="{Binding SessionArtifacts}"
+                                 SelectedItem="{Binding SelectedArtifact, Mode=TwoWay}"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 MaxHeight="86"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                 ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                 ToolTip="本会话已产出的全部创作物，点击卡片即可切换预览">
+                            <ListBox.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal"/>
+                                </ItemsPanelTemplate>
+                            </ListBox.ItemsPanel>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Padding="10,6" Margin="0,0,8,0" CornerRadius="8"
+                                            Background="{StaticResource SurfaceBrush}"
+                                            BorderBrush="{StaticResource BorderBrush}"
+                                            BorderThickness="1"
+                                            Width="150">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Type}" FontSize="10" FontWeight="Bold"
+                                                       Foreground="{StaticResource PrimaryBrush}"/>
+                                            <TextBlock Text="{Binding Title}" FontSize="12" Margin="0,2,0,2"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding Title}"/>
+                                            <TextBlock FontSize="10" Foreground="{StaticResource TextTertiaryBrush}">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Text" Value="{Binding SlideCount, StringFormat={}{0} 页}"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsPpt}" Value="False">
+                                                                <Setter Property="Text" Value="文档 / 网页"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+
+                    <Grid Grid.Row="2">
                         <!-- PPT 幻灯片预览卡片 -->
                         <Grid Visibility="{Binding IsPptArtifact, Converter={StaticResource B2V}}">
                             <Grid.RowDefinitions>
@@ -1348,7 +1692,7 @@
                                     BorderThickness="1"
                                     CornerRadius="10"
                                     Padding="14"
-                                    Visibility="{Binding HasSelectedSlide, Converter={StaticResource BoolInvertConverter}}">
+                                    Visibility="{Binding HasSelectedSlide, Converter={StaticResource InvertBoolVis}}">
                                 <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                                     <TextBlock Text="🖼 暂无幻灯片内容可预览"
                                                FontSize="14"
@@ -1367,8 +1711,8 @@
 
                             <!-- 幻灯片模拟卡片 (16:9 质感卡片) -->
                             <Border Grid.Row="0"
-                                    Background="{StaticResource SurfaceBrush}"
-                                    BorderBrush="{StaticResource PrimaryBrush}"
+                                    Background="{Binding SlideAccentSoftBrush}"
+                                    BorderBrush="{Binding SlideAccentBrush}"
                                     BorderThickness="1.5"
                                     CornerRadius="10"
                                     Padding="14"
@@ -1376,10 +1720,10 @@
                                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                                     <StackPanel>
                                         <!-- 顶部科技装饰条 -->
-                                        <Border Height="3" Background="{StaticResource PrimaryBrush}" CornerRadius="2" Margin="0,0,0,8"/>
+                                        <Border Height="3" Background="{Binding SlideAccentBrush}" CornerRadius="2" Margin="0,0,0,8"/>
                                         
                                         <!-- 板式类型指示标签 -->
-                                        <Border Background="{StaticResource PrimaryLightBrush}"
+                                        <Border Background="{Binding SlideAccentBrush}"
                                                 CornerRadius="3"
                                                 Padding="5,1"
                                                 HorizontalAlignment="Left"
@@ -1387,14 +1731,14 @@
                                             <TextBlock Text="{Binding SelectedSlide.Layout, StringFormat=板式: {0}}"
                                                        FontSize="10"
                                                        FontWeight="SemiBold"
-                                                       Foreground="{StaticResource PrimaryBrush}"/>
+                                                       Foreground="White"/>
                                         </Border>
 
                                         <!-- 幻灯片标题 -->
                                         <TextBlock Text="{Binding SelectedSlide.Title}"
                                                    FontSize="16"
                                                    FontWeight="Bold"
-                                                   Foreground="{StaticResource PrimaryBrush}"
+                                                   Foreground="{Binding SlideAccentBrush}"
                                                    TextWrapping="Wrap"
                                                    Margin="0,0,0,6"/>
                                         <!-- 封面副标题 (如果有) -->
@@ -1593,7 +1937,7 @@
                                 CornerRadius="8"
                                 Padding="10"
                                 Margin="0,0,0,8"
-                                Visibility="{Binding IsPptArtifact, Converter={StaticResource BoolInvertConverter}}">
+                                Visibility="{Binding IsPptArtifact, Converter={StaticResource InvertBoolVis}}">
                             <TextBox Text="{Binding SelectedArtifact.RawContent, Mode=OneWay}"
                                      IsReadOnly="True"
                                      TextWrapping="Wrap"
@@ -1707,8 +2051,8 @@
                         </Border>
                     </Grid>
 
-                    <!-- 3. 底部导出按钮栏 -->
-                    <StackPanel Grid.Row="2">
+                    <!-- 4. 底部导出按钮栏 -->
+                    <StackPanel Grid.Row="3">
                         <Button Content="📥 一键编译导出为本地物理文件"
                                 Command="{Binding ExportArtifactFileCommand}"
                                 CommandParameter="{Binding SelectedArtifact.Type}"
@@ -1722,7 +2066,7 @@
                 </Grid>
 
                 <!-- ==================== 模式 B：📖 原著知识切片 ==================== -->
-                <Grid Visibility="{Binding IsArtifactMode, Converter={StaticResource BoolInvertConverter}}">
+                <Grid Visibility="{Binding IsArtifactMode, Converter={StaticResource InvertBoolVis}}">
                     <Grid.RowDefinitions>
                         <!-- 抽屉头部 (标题 + 评分 + 关闭按钮) -->
                         <RowDefinition Height="Auto"/>
@@ -1754,7 +2098,7 @@
                                        Foreground="{StaticResource PrimaryBrush}"
                                        VerticalAlignment="Center"/>
                             <!-- 本地来源标题 -->
-                            <TextBlock Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                            <TextBlock Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource InvertBoolVis}}"
                                        Text="📖 原著知识切片"
                                        Style="{StaticResource SubtitleText}"
                                        FontSize="14"
@@ -1765,7 +2109,7 @@
 
                         <!-- 引用评分徽标（仅本地来源显示，按量纲标注：相似度/相关度/关键词匹配/排名分） -->
                         <Border Grid.Column="1"
-                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource InvertBoolVis}}"
                                 Background="{StaticResource PrimaryLightBrush}"
                                 CornerRadius="4"
                                 Padding="6,2"
@@ -1810,7 +2154,7 @@
                             Margin="0,0,0,12">
                         <StackPanel>
                             <!-- 本地来源：文档名 + 章节/页码 -->
-                            <StackPanel Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}">
+                            <StackPanel Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource InvertBoolVis}}">
                                 <Grid Margin="0,0,0,4">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto"/>
@@ -1906,7 +2250,7 @@
 
                         <!-- 本地来源：全文检索 -->
                         <Button Grid.Row="0" Grid.Column="1"
-                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource InvertBoolVis}}"
                                 Content="🔍 全文检索"
                                 Command="{Binding SearchSourceInSearchPageCommand}"
                                 Style="{StaticResource SecondaryButtonStyle}"
@@ -1926,7 +2270,7 @@
 
                         <!-- 本地来源：文件定位 + 打开文件 -->
                         <Button Grid.Row="1" Grid.Column="0"
-                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource InvertBoolVis}}"
                                 Content="📂 文件定位"
                                 Command="{Binding RevealSourceInExplorerCommand}"
                                 Style="{StaticResource TextButtonStyle}"
@@ -1936,7 +2280,7 @@
                                 ToolTip="在 Windows 文件资源管理器中选中并定位原文件"/>
 
                         <Button Grid.Row="1" Grid.Column="1"
-                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource BoolInvertConverter}}"
+                                Visibility="{Binding SelectedSource.IsWebSource, Converter={StaticResource InvertBoolVis}}"
                                 Content="📄 打开文件"
                                 Command="{Binding OpenSourceFileCommand}"
                                 Style="{StaticResource TextButtonStyle}"
@@ -1947,6 +2291,115 @@
                     </Grid>
                 </Grid>
             </Grid>
+        </Border>
+
+        <!-- =====================================================================
+             PPT 定制偏好弹窗（创作前置征询：用途 / 篇幅 / 配色 / 必含要点）
+             生成之前先问清用户意图，避免 LLM 自由发挥后用户只能在事后切主题补救
+             ===================================================================== -->
+        <Border Grid.Row="0" Grid.RowSpan="2" Grid.Column="0" Grid.ColumnSpan="3"
+                Background="#66000000"
+                Visibility="{Binding IsPptPrefsOpen, Converter={StaticResource B2V}}"
+                Panel.ZIndex="1500">
+            <Border Background="{StaticResource CardBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    MaxWidth="560"
+                    MaxHeight="660"
+                    Margin="24"
+                    Padding="22"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Effect="{StaticResource ShadowLg}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- 弹窗头部 -->
+                    <DockPanel Grid.Row="0" Margin="0,0,0,16">
+                        <Button DockPanel.Dock="Right"
+                                Content="✕"
+                                Command="{Binding CancelPptPrefsCommand}"
+                                Width="26" Height="26"
+                                Background="Transparent"
+                                Foreground="{StaticResource TextSecondaryBrush}"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                FontSize="13"
+                                ToolTip="放弃定制"/>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="📊" FontSize="18" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="定制你的 PPT" FontSize="16" FontWeight="Bold"
+                                       Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </DockPanel>
+
+                    <!-- 弹窗内容表单 -->
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,0,0,16">
+                        <StackPanel>
+                            <TextBlock Text="先说清用途、篇幅与风格，AI 才能一次生成到位。确认后会生成一份定制提示词填入输入框，你可再润色后发送。"
+                                       Style="{StaticResource SmallText}"
+                                       Foreground="{StaticResource TextTertiaryBrush}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,16"/>
+
+                            <!-- 用途场景 -->
+                            <TextBlock Text="用途场景" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                            <ComboBox ItemsSource="{Binding PptPurposeOptions}"
+                                      SelectedItem="{Binding PptPurpose}"
+                                      FontSize="13"
+                                      Padding="8,6"
+                                      Margin="0,0,0,14"/>
+
+                            <!-- 篇幅 -->
+                            <TextBlock Text="篇幅" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                            <ComboBox ItemsSource="{Binding PptLengthOptions}"
+                                      SelectedItem="{Binding PptLength}"
+                                      FontSize="13"
+                                      Padding="8,6"
+                                      Margin="0,0,0,14"/>
+
+                            <!-- 配色主题 -->
+                            <TextBlock Text="配色主题" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                            <ComboBox ItemsSource="{Binding AvailableThemes}"
+                                      SelectedItem="{Binding PptPrefTheme}"
+                                      DisplayMemberPath="DisplayName"
+                                      FontSize="13"
+                                      Padding="8,6"
+                                      Margin="0,0,0,14"/>
+
+                            <!-- 必含要点 -->
+                            <TextBlock Text="必须包含的内容要点（选填）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                            <TextBox Text="{Binding PptMustInclude, UpdateSourceTrigger=PropertyChanged}"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     MinHeight="80"
+                                     MaxHeight="160"
+                                     VerticalScrollBarVisibility="Auto"
+                                     Padding="10,8"
+                                     ToolTip="例如：必须有一页讲落地路径，一页讲风险与应对"/>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- 弹窗底部操作按钮 -->
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="取消"
+                                Command="{Binding CancelPptPrefsCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="16,7"
+                                Margin="0,0,8,0"/>
+                        <Button Content="✅ 生成定制提示词"
+                                Command="{Binding ConfirmPptPrefsCommand}"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                Padding="16,7"
+                                ToolTip="把上述偏好编译为结构化提示词填入输入框，确认后发送"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
         </Border>
 
         <!-- =====================================================================
@@ -2147,8 +2600,8 @@
 
                     <!-- 16:9 质感幻灯片主卡片 -->
                     <Border Grid.Column="1"
-                            Background="{DynamicResource CardBrush}"
-                            BorderBrush="{DynamicResource PrimaryBrush}"
+                            Background="{Binding SlideAccentSoftBrush}"
+                            BorderBrush="{Binding SlideAccentBrush}"
                             BorderThickness="1.5"
                             CornerRadius="16"
                             Padding="36"
@@ -2157,11 +2610,11 @@
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel>
                                 <!-- 顶部主题色装饰条 -->
-                                <Border Height="4" Background="{DynamicResource PrimaryBrush}" CornerRadius="2" Margin="0,0,0,18"/>
+                                <Border Height="4" Background="{Binding SlideAccentBrush}" CornerRadius="2" Margin="0,0,0,18"/>
 
                                 <!-- 标题与板式徽章 -->
                                 <DockPanel Margin="0,0,0,16">
-                                    <Border Background="{DynamicResource PrimaryLightBrush}"
+                                    <Border Background="{Binding SlideAccentBrush}"
                                             CornerRadius="4"
                                             Padding="8,2"
                                             DockPanel.Dock="Right"
@@ -2169,7 +2622,7 @@
                                         <TextBlock Text="{Binding SelectedSlide.Layout, StringFormat={}{0}}"
                                                    FontSize="11"
                                                    FontWeight="Bold"
-                                                   Foreground="{DynamicResource PrimaryBrush}"/>
+                                                   Foreground="White"/>
                                     </Border>
                                     <TextBlock Text="{Binding SelectedSlide.Title}"
                                                FontSize="24"
@@ -2378,6 +2831,160 @@
                     </StackPanel>
                 </Border>
             </Grid>
+        </Border>
+
+        <!-- ===== 自定义角色与主题管理面板（覆盖层） ===== -->
+        <Border Background="#80000000"
+                Visibility="{Binding IsCustomManagerOpen, Converter={StaticResource BoolToVis}}"
+                MouseLeftButtonDown="CustomManagerOverlay_Click">
+            <Border Background="{DynamicResource CardBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="14"
+                    Padding="24"
+                    MaxWidth="600"
+                    MaxHeight="640"
+                    VerticalAlignment="Center"
+                    HorizontalAlignment="Center">
+                <StackPanel>
+                    <DockPanel Margin="0,0,0,16">
+                        <TextBlock Text="⚙️ 自定义角色与主题"
+                                   FontSize="16" FontWeight="Bold"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                        <Button Content="✕" DockPanel.Dock="Right"
+                                Command="{Binding CloseCustomManagerCommand}"
+                                Style="{StaticResource TextButtonStyle}"
+                                FontSize="16" Padding="6,2"/>
+                    </DockPanel>
+                    <ScrollViewer MaxHeight="520" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <!-- ── 自定义角色区 ── -->
+                            <TextBlock Text="👤 自定义角色" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,8"/>
+                            <ItemsControl ItemsSource="{Binding AllPersonas}" Margin="0,0,0,8">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Visibility="{Binding IsCustom, Converter={StaticResource BoolToVis}}"
+                                                Background="{DynamicResource SurfaceBrush}"
+                                                BorderBrush="{DynamicResource BorderBrush}"
+                                                BorderThickness="1" CornerRadius="8"
+                                                Padding="10,6" Margin="0,0,0,4">
+                                            <DockPanel>
+                                                <TextBlock Text="{Binding DisplayName}" FontSize="12"
+                                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                                           VerticalAlignment="Center"/>
+                                                <Button Content="删除" DockPanel.Dock="Right"
+                                                        Command="{Binding DataContext.RemoveCustomPersonaCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                                        CommandParameter="{Binding Id}"
+                                                        Style="{StaticResource TextButtonStyle}"
+                                                        FontSize="11" Padding="6,2"
+                                                        Foreground="#EF4444"/>
+                                            </DockPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <Border Background="{DynamicResource SurfaceBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1" CornerRadius="8"
+                                    Padding="10,8" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="➕ 新增角色" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="50"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding NewPersonaIcon, UpdateSourceTrigger=PropertyChanged}"
+                                                 FontSize="18" TextAlignment="Center" Margin="0,0,8,0"
+                                                 ToolTip="图标（一个 emoji）" MaxLength="4"/>
+                                        <TextBox Grid.Column="1" Text="{Binding NewPersonaName, UpdateSourceTrigger=PropertyChanged}"
+                                                 FontSize="13" ToolTip="角色名称" Margin="0,0,0,8"/>
+                                    </Grid>
+                                    <TextBox Text="{Binding NewPersonaDescription, UpdateSourceTrigger=PropertyChanged}"
+                                             FontSize="12" ToolTip="角色描述" Margin="0,0,0,8"/>
+                                    <Button Content="✨ 添加角色" Command="{Binding AddCustomPersonaCommand}"
+                                            Style="{StaticResource PrimaryButtonStyle}"
+                                            Padding="12,6" HorizontalAlignment="Right"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- ── 自定义主题区 ── -->
+                            <TextBlock Text="🎨 自定义主题" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,8"/>
+                            <ItemsControl ItemsSource="{Binding AllThemes}" Margin="0,0,0,8">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Visibility="{Binding IsCustom, Converter={StaticResource BoolToVis}}"
+                                                Background="{DynamicResource SurfaceBrush}"
+                                                BorderBrush="{DynamicResource BorderBrush}"
+                                                BorderThickness="1" CornerRadius="8"
+                                                Padding="10,6" Margin="0,0,0,4">
+                                            <DockPanel>
+                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <Border Width="14" Height="14" CornerRadius="3"
+                                                            Background="{Binding PrimaryBrush}" Margin="0,0,8,0"/>
+                                                    <TextBlock Text="{Binding DisplayName}" FontSize="12"
+                                                               Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                                </StackPanel>
+                                                <Button Content="删除" DockPanel.Dock="Right"
+                                                        Command="{Binding DataContext.RemoveCustomThemeCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                                        CommandParameter="{Binding Id}"
+                                                        Style="{StaticResource TextButtonStyle}"
+                                                        FontSize="11" Padding="6,2"
+                                                        Foreground="#EF4444"/>
+                                            </DockPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <Border Background="{DynamicResource SurfaceBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1" CornerRadius="8"
+                                    Padding="10,8" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="➕ 新增主题" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="50"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding NewThemeIcon, UpdateSourceTrigger=PropertyChanged}"
+                                                 FontSize="18" TextAlignment="Center" Margin="0,0,8,0"
+                                                 ToolTip="图标（一个 emoji）" MaxLength="4"/>
+                                        <TextBox Grid.Column="1" Text="{Binding NewThemeDisplayName, UpdateSourceTrigger=PropertyChanged}"
+                                                 FontSize="13" ToolTip="主题名称" Margin="0,0,0,8"/>
+                                    </Grid>
+                                    <TextBox Text="{Binding NewThemeDescription, UpdateSourceTrigger=PropertyChanged}"
+                                             FontSize="12" ToolTip="主题描述" Margin="0,0,0,8"/>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="12"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="主色 (Hex)" FontSize="10" Foreground="{DynamicResource TextTertiaryBrush}"/>
+                                            <TextBox Text="{Binding NewThemePrimaryHex, UpdateSourceTrigger=PropertyChanged}"
+                                                     FontSize="12" ToolTip="主色，如 #3B82F6"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="背景色 (Hex)" FontSize="10" Foreground="{DynamicResource TextTertiaryBrush}"/>
+                                            <TextBox Text="{Binding NewThemeBgHex, UpdateSourceTrigger=PropertyChanged}"
+                                                     FontSize="12" ToolTip="背景色，如 #F8FAFC"/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <Button Content="✨ 添加主题" Command="{Binding AddCustomThemeCommand}"
+                                            Style="{StaticResource PrimaryButtonStyle}"
+                                            Padding="12,6" HorizontalAlignment="Right"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                </StackPanel>
+            </Border>
         </Border>
     </Grid>
 </UserControl>

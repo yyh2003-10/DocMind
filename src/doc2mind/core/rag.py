@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -33,7 +34,7 @@ from doc2mind.core.agent.planner import (
 from doc2mind.core.agent.planner import (
     TOOLS as AGENT_TOOLS,
 )
-from doc2mind.core.config import Settings, get_settings
+from doc2mind.core.config import Settings, get_settings, parse_rrf_weights
 from doc2mind.core.creator.prompts import CREATIVE_PERSONA_PROMPTS
 from doc2mind.core.embedder import get_embedder
 from doc2mind.core.llm import LLMClient, LLMError, get_llm_client
@@ -567,7 +568,7 @@ def rag_answer(
         collections=collections, history=history, t0=t0,
         enable_web_search=enable_web_search, entity_context=entity_context,
         persona=persona, store=store, embedder=embedder,
-        attachments=attachments, github_token=github_token,
+        attachments=attachments, github_token=github_token, llm_client=client,
     )
     try:
         while True:
@@ -738,7 +739,7 @@ def rag_answer_stream(
             entity_context=entity_context,
             persona=persona, store=store, embedder=embedder,
             attachments=attachments if "knowledge_base" in agent_plan.enabled_tools else None,
-            github_token=github_token,
+            github_token=github_token, llm_client=client,
         )
         stopped_early = False
         try:
@@ -973,8 +974,18 @@ def rag_answer_stream(
     return
 
 
-def _format_context(hits: list[SearchHit], start_idx: int = 1) -> tuple[str, list[SourceRef]]:
-    """将检索命中的 SearchHit 格式化为上下文文本与 SourceRef 引用列表。"""
+def _format_context(
+    hits: list[SearchHit],
+    start_idx: int = 1,
+    store: VectorStore | None = None,
+    neighbor_window: int = 0,
+) -> tuple[str, list[SourceRef]]:
+    """将检索命中的 SearchHit 格式化为上下文文本与 SourceRef 引用列表。
+
+    B2 邻块上下文（父子检索）：当 `store` 与 `neighbor_window>0` 时，为每个命中
+    追加同源相邻分块作为补充上下文（检索排序仍以命中为准，引用仍指向命中块）。
+    `neighbor_window` 默认 0 以便纯格式化测试不受影响；RAG 主链路按配置开启。
+    """
     blocks: list[str] = []
     sources: list[SourceRef] = []
     for i, h in enumerate(hits, start=start_idx):
@@ -999,7 +1010,24 @@ def _format_context(hits: list[SearchHit], start_idx: int = 1) -> tuple[str, lis
             "rrf": "排名分",
         }[score_type]
         source_label = f"[{i}] 《{meta.source}》{page_info}{heading_info} ({score_label}: {rel:.2f})"
-        blocks.append(f"{source_label}\n{meta.content}")
+        block = f"{source_label}\n{meta.content}"
+
+        # 邻块上下文（父子检索）：把命中周围的同源相邻分块并入文本，提升完整性。
+        if store is not None and neighbor_window > 0:
+            try:
+                neighbors = store.get_neighbor_chunks(meta.id, window=neighbor_window)
+            except Exception:  # noqa: BLE001 —— 邻块缺失绝不阻塞上下文组装
+                neighbors = []
+            if neighbors:
+                nb_lines = []
+                for nb in neighbors:
+                    nb_lines.append(f"- {nb.content}")
+                block += (
+                    "\n\n↳ 相邻上下文（同一来源，补充参考）:"
+                    f"\n{chr(10).join(nb_lines)}"
+                )
+
+        blocks.append(block)
         sources.append(
             SourceRef(
                 index=i,
@@ -1263,6 +1291,129 @@ def _truncate_messages_for_retry(
     return result
 
 
+# --- C1 查询扩展（可选，LLM 驱动）---
+def _hit_relevance(h: "SearchHit") -> float:
+    """相关度代理：优先重排分（已校准 0-1），否则取分量纲较大者。"""
+    if h.rerank_score is not None:
+        return h.rerank_score
+    return max(h.vector_score, h.bm25_score)
+
+
+def _merge_hits(*hit_lists: list[SearchHit]) -> list[SearchHit]:
+    """多路检索结果按 chunk.id 合并去重，保留相关度最优者并按相关度降序重排。"""
+    best: dict[int, SearchHit] = {}
+    for lst in hit_lists:
+        for h in lst:
+            cur = best.get(h.chunk.id)
+            if cur is None or _hit_relevance(h) > _hit_relevance(cur):
+                best[h.chunk.id] = h
+    ordered = sorted(best.values(), key=_hit_relevance, reverse=True)
+    return [dc_replace(h, rank=i) for i, h in enumerate(ordered)]
+
+
+_LIST_MARKER = re.compile(r"^\s*(?:[-*•>]|\d+[.)、:])+\s*(.*)$")
+# 明显是"标题/说明"而非变体的行前缀（仅当整体几乎只是该标题时丢弃）
+_HEADER_WORDS = ("变体", "查询变体", "原始查询", "原查询", "原始问题", "以下")
+
+
+def _expand_multi_queries(llm_client: "LLMClient", query: str, max_variants: int = 3) -> list[str]:
+    """LLM 生成查询的多个变体（C1 多查询扩展）。失败/空输出返回空列表。"""
+    prompt = (
+        "你是信息检索助手。根据用户的原始查询，生成 2 到 3 个不同角度/措辞的"
+        "检索查询变体，用于从知识库召回更多相关信息。要求：\n"
+        "1) 每行仅输出一个查询变体，不要编号、不要引言、不要解释。\n"
+        "2) 保留核心语义，但换用不同关键词、同义表达或补充可检索细节。\n"
+        "3) 与原文保持同一语言（中文问题用中文，英文用英文）。\n\n"
+        f"原始查询：{query}"
+    )
+    raw = llm_client.chat(
+        [
+            {"role": "system", "content": "只输出查询变体，每行一条，不要任何多余文字。"},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.7,
+        max_tokens=200,
+    )
+    variants: list[str] = []
+    for ln in (raw or "").splitlines():
+        m = _LIST_MARKER.match(ln)
+        line = (m.group(1) if m else ln).strip(" \t")
+        if not line:
+            continue
+        # 仅当整行基本是标题（后接中文/英文冒号，或本身即是标题词）时丢弃
+        core = line.rstrip("：:，,;； ")
+        is_header = any(
+            line.startswith(h + "：") or line.startswith(h + ":")
+            for h in _HEADER_WORDS
+        ) or core in _HEADER_WORDS
+        if is_header:
+            continue
+        if line.lower() == query.lower():
+            continue  # 跳过与原文相同的变体
+        variants.append(line.strip(" \t\"'「」『』“”"))
+        if len(variants) >= max_variants:
+            break
+    return variants
+
+
+def _expand_hyde(llm_client: "LLMClient", query: str) -> str | None:
+    """HyDE：LLM 生成一段假设的理想文档片段，其向量空间更接近目标答案。失败返回 None。"""
+    prompt = (
+        "给定下面的问题，请写一段简明、信息密集的假设答案文本（像一个知识库文档片段的开头），"
+        "要能覆盖问题可能的关键词与概念。只输出正文，不要引言，300 字以内，与问题同语言：\n\n"
+        f"问题：{query}"
+    )
+    text = llm_client.chat(
+        [
+            {"role": "system", "content": "你是文档检索助手，只输出假设文档正文，不要任何解释。"},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.5,
+        max_tokens=300,
+    )
+    text = (text or "").strip()
+    return text or None
+
+
+def _retrieve_with_expansion(
+    retriever: "Retriever",
+    query: str,
+    *,
+    collection,
+    top_k: int,
+    mode: str,
+    llm_client: "LLMClient",
+    base_hits: list[SearchHit],
+) -> tuple[list[SearchHit], list[str]]:
+    """跑多查询 / HyDE 扩展检索并与基础召回合并。
+
+    Returns:
+        (merged_hits, extra_query_list)。extra 为空列表表示无实际扩展可并入。
+    Raises:
+        Exception: LLM 或检索失败，交由调用方捕获降级为单查询。
+    """
+    extra: list[SearchHit] = []
+    used: list[str] = []
+    if mode in ("multi", "both"):
+        for v in _expand_multi_queries(llm_client, query):
+            used.append(v)
+            h, _ = retriever.search(
+                query=v, collection=collection, top_k=top_k, min_score=0.0
+            )
+            extra.extend(h)
+    if mode in ("hyde", "both"):
+        hyde = _expand_hyde(llm_client, query)
+        if hyde:
+            used.append(hyde)
+            h, _ = retriever.search(
+                query=hyde, collection=collection, top_k=top_k, min_score=0.0
+            )
+            extra.extend(h)
+    if not extra:
+        return base_hits, []
+    return _merge_hits(base_hits, extra), used
+
+
 def _build_context_and_messages(
     query: str,
     collection: str | None,
@@ -1278,8 +1429,12 @@ def _build_context_and_messages(
     embedder: Any | None = None,
     attachments: list[str] | None = None,
     github_token: str | None = None,
+    llm_client: LLMClient | None = None,
 ) -> Iterator[tuple[list[SearchHit], str, list[SourceRef], list[dict[str, str]]]]:
     """检索 + 构建多源上下文 + 组装消息。yield 状态字符串供调用方实时推送。
+
+    llm_client: 可选。配合 `s.query_expansion`（C1）做查询扩展；None 或 LLM 不可用
+        时静默降级为单查询。绝不影响检索可用性。
     """
     hits: list[SearchHit] = []
     sources: list[SourceRef] = []
@@ -1353,6 +1508,9 @@ def _build_context_and_messages(
                 embedder=active_embedder,
                 reranker=get_reranker(s),
                 rerank_recall=s.rerank_recall,
+                rrf_weights=parse_rrf_weights(s.rrf_weights),
+                fusion_mode=s.fusion_mode,
+                rerank_calibration_temperature=s.rerank_calibration_temperature,
             )
             hits, rstats = retriever.search(
                 query=query,
@@ -1360,6 +1518,26 @@ def _build_context_and_messages(
                 top_k=top_k or s.rag_top_k,
                 min_score=0.0,
             )
+
+            # 2.1 查询扩展（C1，可选）：LLM 生成多查询变体 / HyDE 假设文档，
+            #     分别检索后合并去重，提升长尾/多义查询召回。LLM 不可用或失败
+            #     时静默降级为单查询（不抛错、不影响可用性）。
+            expansion = getattr(s, "query_expansion", "off") or "off"
+            if expansion != "off" and llm_client is not None:
+                yield "正在做查询扩展..."
+                try:
+                    expanded_hits, extra_queries = _retrieve_with_expansion(
+                        retriever, query, collection=search_collection,
+                        top_k=top_k or s.rag_top_k, mode=expansion,
+                        llm_client=llm_client, base_hits=hits,
+                    )
+                    hits = expanded_hits
+                    if extra_queries:
+                        used = "、".join(f"「{q}」" for q in extra_queries[:3])
+                        yield f"✔ 查询扩展：⟨{used}⟩ 并入召回（±{len(hits)} 命中共计）"
+                except Exception as ex:  # noqa: BLE001 —— 扩展失败绝不阻断主检索
+                    logger.debug("查询扩展降级为单查询: %s", ex)
+                    yield "✔ 查询扩展：LLM 不可用，回退单查询"
 
             # 相关性下限：启用重排时优先用重排分（更能反映真实相关度），
             # 未重排时回退到分量纲 max(vector, bm25)。rerank 分已 sigmoid 归一化为
@@ -1374,7 +1552,12 @@ def _build_context_and_messages(
                 hits = [h for h in hits if _keep(h)]
 
             if hits:
-                local_ctx, local_sources = _format_context(hits, start_idx=len(sources) + 1)
+                local_ctx, local_sources = _format_context(
+                    hits,
+                    start_idx=len(sources) + 1,
+                    store=active_store,
+                    neighbor_window=(s.neighbor_context_window if active_store is not None else 0),
+                )
                 if local_ctx:
                     context_blocks.append(f"【本地知识库原著切片 (Local Knowledge)】\n{local_ctx}")
                     sources.extend(local_sources)
@@ -1411,7 +1594,7 @@ def _build_context_and_messages(
                     )
                     pitfall_hits = [
                         h for h in pitfall_hits
-                        if max(h.vector_score, h.bm25_score) >= 0.4
+                        if max(h.vector_score, h.bm25_score) >= s.pitfall_min_score
                     ][:2]
                     existing_ids = {h.chunk.id for h in hits}
                     distinct_pitfalls = [ph for ph in pitfall_hits if ph.chunk.id not in existing_ids]
@@ -1538,7 +1721,11 @@ def _build_context_and_messages(
 def _open_store(settings: Settings) -> tuple[VectorStore, Any]:
     """打开向量存储 + 嵌入引擎。"""
     embedder = get_embedder(settings)
-    store = VectorStore(settings.db_path, embedder.dimension)
+    store = VectorStore(
+        settings.db_path, embedder.dimension,
+        bm25_jieba_enabled=settings.bm25_jieba_enabled,
+        sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
+    )
     store.open()
     return store, embedder
 

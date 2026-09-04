@@ -20,6 +20,8 @@ from __future__ import annotations
 import contextlib
 import functools
 import json
+import logging
+import math
 import re as _re
 import sqlite3
 import threading
@@ -31,6 +33,17 @@ from pathlib import Path
 from typing import Any
 
 from doc2mind.core.chunker.base import Chunk
+from doc2mind.core.store.tokenizer import (
+    segment,
+    segment_query,
+    token_counts,
+)
+
+logger = logging.getLogger(__name__)
+
+# 探针缓存：本进程内当前 sqlite-vec 扩展是否支持 INT8 列写入。
+# None = 未探测；True/False = 缓存结果。避免每次 open() 都建表再删。
+_INT8_SUPPORTED: bool | None = None
 
 
 class StoreError(Exception):
@@ -127,6 +140,16 @@ def _build_fts5_match(query: str) -> str:
 
     # 各 split token 整体用 OR 连接（更宽松，任一命中即返回）
     return " OR ".join(tokens) if tokens else ""
+
+
+def _build_fts5_match_unicode(tokens: list[str]) -> str:
+    """unicode61（jieba 分词）模式：把 token 用 OR + 引号拼接为 MATCH 表达式。
+
+    unicode61 把连续 CJK 保留为单个 token（含多字词），故对 jieba 已按空格
+    切分的中文词/英文词/数字做精确匹配即可；空返回 ""。
+    """
+    quoted = [f'"{t}"' for t in tokens if t]
+    return " OR ".join(quoted) if quoted else ""
 
 
 # ---- 短词（<3 chars）LIKE 兜底参数 ----
@@ -256,12 +279,73 @@ CREATE VIRTUAL TABLE IF NOT EXISTS bm25_index USING fts5(
 );
 """
 
+_FTS_SQL_UNICODE61 = """
+-- FTS5 全文索引（BM25 用，jieba 中文分词模式）
+-- content 存储的是 jieba 分词后以空格拼接的文本；
+-- unicode61 按空白切分，从而对中文多字词做精确 BM25 匹配。
+CREATE VIRTUAL TABLE IF NOT EXISTS bm25_index USING fts5(
+    content,
+    collection UNINDEXED,
+    chunk_id UNINDEXED,
+    tokenize = 'unicode61'
+);
+"""
+
 _VEC_SQL_TEMPLATE = """
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
     id INTEGER PRIMARY KEY,
     embedding FLOAT[{dim}] distance_metric=cosine
 );
 """
+
+_VEC_SQL_TEMPLATE_INT8 = """
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
+    id INTEGER PRIMARY KEY,
+    embedding INT8[{dim}] distance_metric=cosine
+);
+"""
+
+# 稀疏向量倒排索引（D2）：每 (term, chunk_id) 存 L2 归一化词权重。
+# 拿查询归一化稀疏向量与命中 chunk 权重做内积 = 稀疏向量余弦相似度，
+# 作为第三条（词法稀疏）召回路，独立于 FTS5 BM25 的排名路径。
+_SPARSE_SQL = """
+CREATE TABLE IF NOT EXISTS sparse_terms (
+    term       TEXT    NOT NULL,
+    chunk_id   INTEGER NOT NULL,
+    weight     REAL    NOT NULL,
+    collection TEXT    NOT NULL,
+    PRIMARY KEY (term, chunk_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_sparse_chunk ON sparse_terms(chunk_id);
+"""
+
+
+def sparse_token_weights(
+    text: str, jieba_enabled: bool, max_terms: int = 256
+) -> list[tuple[str, float]]:
+    """文本 → L2 归一化稀疏词权重 [(term, weight), ...]。
+
+    词权重 = (1 + log(tf))，再做 L2 归一化，使"查询·文档"内积 = 稀疏向量余弦。
+    归一化后 `query · doc` 恰为两向量余弦 ∈ [0,1]，可直接与忠实余弦对齐，
+    不会重现"60+"量纲污染。过滤单字/单字母噪声（见 tokenize.token_counts）。
+
+    Args:
+        text: 文档内容或查询文本
+        jieba_enabled: 是否用 jieba 分词（与 BM25 中文路径一致）
+        max_terms: 参与检索的查询词数量上限（性能保护，仅对查询有意义）
+    """
+    counts = token_counts(text, jieba_enabled)
+    if not counts:
+        return []
+    norm = sum((1.0 + math.log(float(c))) ** 2 for c in counts.values()) ** 0.5
+    if norm <= 0:
+        return []
+    items: list[tuple[str, float]] = []
+    for term, count in counts.items():
+        w = (1.0 + math.log(float(count))) / norm
+        items.append((term, w))
+    items.sort(key=lambda kv: (-kv[1], kv[0]))  # 权重降序，词字典序 tie-break
+    return items[:max_terms]
 
 
 class VectorStore:
@@ -270,19 +354,174 @@ class VectorStore:
     线程安全：单个 connection 由 lock 保护；多线程建议每线程一个 VectorStore。
     """
 
-    def __init__(self, db_path: Path, embedding_dim: int) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        embedding_dim: int,
+        *,
+        bm25_jieba_enabled: bool = False,
+        vector_quantize: str = "none",
+        sparse_retrieval_enabled: bool = False,
+    ) -> None:
         self.db_path = Path(db_path)
         self.embedding_dim = int(embedding_dim)
+        self.bm25_jieba_enabled = bool(bm25_jieba_enabled)
+        self.vector_quantize = str(vector_quantize) if vector_quantize in ("int8", "none") else "none"
+        # 稀疏向量召回路（D2）：独立倒排索引（sparse_terms）+ sparse_search，
+        # 作为第三条词法稀疏召回路并入三路 RRF 融合。默认关闭（向后兼容，
+        # 旧库不受影响）；开启后对存量索引一次性回填稀疏词。
+        self.sparse_retrieval_enabled = bool(sparse_retrieval_enabled)
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
         # FTS5 查询独立 connection（避开 vec0 扩展与 trigram BM25 评估冲突）
         self._fts_conn: sqlite3.Connection | None = None
         self._fts_available = False
+        # 存储类型（在 open() 中设立）："FLOAT" 或 "INT8"
+        self._vec_storage_type: str = "FLOAT"
+        # INT8 列是否受本机 sqlite-vec 支持（open() 中由探针填充）
+        self._int8_supported: bool | None = None
+
+    def _to_bytes(self, vec) -> bytes:
+        """按当前存储类型序列化向量（FLOAT=float32 / INT8=量化）。"""
+        if self._vec_storage_type == "INT8":
+            return _vector_to_bytes_int8(vec)
+        return _vector_to_bytes(vec)
 
     @property
     def dimension(self) -> int:
         """向量维度别名（等价 embedding_dim）。"""
         return self.embedding_dim
+
+    # --- FTS5 tokenizer（jieba 中文模式）---
+    def _fts_create_sql(self) -> str:
+        """按当前配置返回 FTS5 建表 SQL。"""
+        return _FTS_SQL_UNICODE61 if self.bm25_jieba_enabled else _FTS_SQL
+
+    def _detect_fts_tokenizer(self, conn: sqlite3.Connection) -> str | None:
+        """读回磁盘上 bm25_index 的 tokenizer（trigram/unicode61）；不存在返回 None。"""
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master"
+            " WHERE type='table' AND name='bm25_index'"
+        ).fetchone()
+        if row and row[0]:
+            sql = str(row[0])
+            if "trigram" in sql:
+                return "trigram"
+            if "unicode61" in sql:
+                return "unicode61"
+        return None
+
+    def _sync_bm25_tokenizer(self, conn: sqlite3.Connection) -> None:
+        """确保磁盘 FTS tokenizer 与配置一致。
+
+        配置（bm25_jieba_enabled）与实际 FTS tokenizer 不符、且索引非空时，
+        一次性重建 bm25_index（DELETE + 按 jieba segment(content) 重灌）。
+        空库/新库直接由调用方 executescript 创建，此处为 no-op。
+        """
+        desired = "unicode61" if self.bm25_jieba_enabled else "trigram"
+        actual = self._detect_fts_tokenizer(conn)
+        if actual is None or actual == desired:
+            return
+        # tokenizer 不一致 → 校验是否已有数据需要重建
+        try:
+            (cnt,) = conn.execute(
+                "SELECT COUNT(*) FROM chunks_meta"
+            ).fetchone()
+        except Exception:  # noqa: BLE001
+            cnt = 0
+        if cnt == 0:
+            # 空库：仅需切换 tokenizer，无需回填
+            conn.execute("DROP TABLE IF EXISTS bm25_index")
+            return
+        conn.execute("BEGIN")
+        try:
+            conn.execute("DROP TABLE IF EXISTS bm25_index")
+            conn.execute(self._fts_create_sql())
+            rows = conn.execute(
+                "SELECT id, content, collection FROM chunks_meta"
+            ).fetchall()
+            conn.executemany(
+                "INSERT INTO bm25_index(content, collection, chunk_id) VALUES (?, ?, ?)",
+                [
+                    (
+                        segment(content, self.bm25_jieba_enabled),
+                        collection,
+                        chunk_id,
+                    )
+                    for chunk_id, content, collection in rows
+                ],
+            )
+            conn.execute("COMMIT")
+        except Exception:  # noqa: BLE001
+            conn.execute("ROLLBACK")
+            raise
+
+    # --- 稀疏向量倒排索引（D2）维护 ---
+    def _insert_sparse_terms_in_txn(
+        self,
+        conn: sqlite3.Connection,
+        chunk_id: int,
+        content: str,
+        collection: str,
+    ) -> None:
+        """在已开启事务内为单个 chunk 写入稀疏倒排项（首删后插，幂等）。"""
+        self._delete_sparse_in_txn(conn, [chunk_id])
+        items = sparse_token_weights(content, self.bm25_jieba_enabled)
+        if items:
+            conn.executemany(
+                "INSERT INTO sparse_terms(term, chunk_id, weight, collection)"
+                " VALUES (?, ?, ?, ?)",
+                [(t, chunk_id, w, collection) for t, w in items],
+            )
+
+    @staticmethod
+    def _delete_sparse_in_txn(
+        conn: sqlite3.Connection, chunk_ids: Sequence[int]
+    ) -> None:
+        """删除一批 chunk 的稀疏倒排项（幂等，空列表 no-op）。
+
+        稀疏关闭（sparse_terms 未建表）的库也应正常删除/替换 —— 不做表存在性
+        探测会抛 no such table，污染 delete/replace 事务路径。
+        """
+        ids = list(chunk_ids)
+        if not ids:
+            return
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sparse_terms'"
+        ).fetchone()
+        if has_table is None:
+            return
+        placeholders = ",".join("?" * len(ids))
+        conn.execute(
+            f"DELETE FROM sparse_terms WHERE chunk_id IN ({placeholders})",
+            ids,
+        )
+
+    def _sync_sparse_index(self, conn: sqlite3.Connection) -> None:
+        """稀疏索引建表后对存量分块一次性回填（D2，幂等）。
+
+        仅当 sparse_terms 为空、且库里已有分块时执行（新库/空库跳过，避免
+        每次 open() 全量重算开销）。开启 sparse_retrieval_enabled 的旧库升级
+        由此生效。
+        """
+        try:
+            (existing,) = conn.execute("SELECT COUNT(*) FROM sparse_terms").fetchone()
+            (chunks,) = conn.execute("SELECT COUNT(*) FROM chunks_meta").fetchone()
+        except Exception:  # noqa: BLE001 — 建表前的稀疏表不存在视为 0
+            return
+        if existing > 0 or chunks == 0:
+            return
+        rows = conn.execute(
+            "SELECT id, content, collection FROM chunks_meta"
+        ).fetchall()
+        conn.execute("BEGIN")
+        try:
+            for chunk_id, content, collection in rows:
+                self._insert_sparse_terms_in_txn(conn, chunk_id, content, collection)
+            conn.execute("COMMIT")
+        except Exception:  # noqa: BLE001
+            conn.execute("ROLLBACK")
+            raise
 
     # --- 生命周期 ---
     def open(self) -> None:
@@ -326,23 +565,43 @@ class VectorStore:
                     "INSERT OR IGNORE INTO collections(name, created_at) "
                     "SELECT collection, MIN(created_at) FROM documents GROUP BY collection"
                 )
-                conn.execute(_VEC_SQL_TEMPLATE.format(dim=self.embedding_dim))
+                # 向量存储类型（B4 量化）：默认 FLOAT（最高精度）。仅当配置
+                # vector_quantize=="int8" 且本机 sqlite-vec 探测支持 INT8 列写入时
+                # 才建 INT8 表；探测不支持则回退 FLOAT 并告警，绝不破坏建库。
+                self._int8_supported = _probe_vec_int8_supported(conn, self.embedding_dim)
+                if self.vector_quantize == "int8" and self._int8_supported:
+                    conn.execute(
+                        _VEC_SQL_TEMPLATE_INT8.format(dim=self.embedding_dim)
+                    )
+                    self._vec_storage_type = "INT8"
+                else:
+                    conn.execute(_VEC_SQL_TEMPLATE.format(dim=self.embedding_dim))
+                    if self.vector_quantize == "int8":
+                        logger.warning(
+                            "vector_quantize=int8 已请求但当前 sqlite-vec 不支持 "
+                            "INT8 列写入，已回退 float32 存储（零风险）。"
+                        )
+                    self._vec_storage_type = "FLOAT"
                 # 维度以磁盘上已有表的实际建表 SQL 为准：CREATE ... IF NOT
                 # EXISTS 在表已存在时静默跳过，而构造传入的维度可能仍是
                 # 模型加载前的预设值（如默认 512）。回读真实维度，让
-                # reindex 的维度判断、后续写入都以表为准。
+                # reindex 的维度判断、后续写入都以表为准。存储类型同样以
+                # 表实为准（老库恒为 FLOAT，回退除量化建表）。
                 row = conn.execute(
                     "SELECT sql FROM sqlite_master"
                     " WHERE type='table' AND name='vec_chunks'"
                 ).fetchone()
                 if row and row[0]:
-                    m = _re.search(r"FLOAT\[(\d+)\]", str(row[0]))
+                    m = _re.search(r"(INT8|FLOAT)\[(\d+)\]", str(row[0]))
                     if m:
-                        self.embedding_dim = int(m.group(1))
+                        self._vec_storage_type = m.group(1)
+                        self.embedding_dim = int(m.group(2))
 
-                # FTS5（可选）
+                # FTS5（可选）：先按配置兜底 tokenizer 一致性（老库切换 jieba 模式
+                # 时重建索引），再建表/回填。
                 try:
-                    conn.executescript(_FTS_SQL)
+                    self._sync_bm25_tokenizer(conn)
+                    conn.executescript(self._fts_create_sql())
                     self._fts_available = True
                     # 独立 connection 跑 BM25 查询：
                     # vec0 扩展与 trigram tokenizer 在同 connection 上
@@ -359,6 +618,11 @@ class VectorStore:
                 except sqlite3.OperationalError:
                     # FTS5 缺失，关闭 BM25
                     self._fts_available = False
+
+                # 稀疏向量倒排索引（D2）：开启时建表 + 对存量分块一次性回填
+                if self.sparse_retrieval_enabled:
+                    conn.executescript(_SPARSE_SQL)
+                    self._sync_sparse_index(conn)
 
                 self._conn = conn
             except StoreError:
@@ -669,7 +933,7 @@ class VectorStore:
         inserted = 0
         for chunk, emb in zip(chunks, embeddings, strict=False):
             # 序列化向量为 bytes（vec0 接受 BLOB）
-            emb_bytes = _vector_to_bytes(emb)
+            emb_bytes = self._to_bytes(emb)
             meta = chunk.metadata
 
             # 1. 插入向量，拿 id
@@ -709,12 +973,19 @@ class VectorStore:
                 ),
             )
 
-            # 3. 插入 FTS5 索引
+            # 3. 插入 FTS5 索引（jieba 模式下存分词后文本）
             if self._fts_available:
                 conn.execute(
                     "INSERT INTO bm25_index(content, collection, chunk_id) VALUES (?, ?, ?)",
-                    (chunk.content, collection, vec_id),
+                    (
+                        segment(chunk.content, self.bm25_jieba_enabled),
+                        collection,
+                        vec_id,
+                    ),
                 )
+            # 3.5 稀疏向量倒排索引（D2，开启时）
+            if self.sparse_retrieval_enabled:
+                self._insert_sparse_terms_in_txn(conn, vec_id, chunk.content, collection)
             inserted += 1
 
         # 4. 更新文档 chunk_count（绝对值写入，不累加）
@@ -746,6 +1017,7 @@ class VectorStore:
                     f"DELETE FROM bm25_index WHERE CAST(chunk_id AS INTEGER) IN ({placeholders})",
                     chunk_ids,
                 )
+            self._delete_sparse_in_txn(conn, chunk_ids)
             conn.execute(
                 f"DELETE FROM chunks_meta WHERE id IN ({placeholders})",
                 chunk_ids,
@@ -792,6 +1064,8 @@ class VectorStore:
                             f"DELETE FROM bm25_index WHERE CAST(chunk_id AS INTEGER) IN ({placeholders})",
                             chunk_ids,
                         )
+                    # 删稀疏向量倒排项（D2）
+                    self._delete_sparse_in_txn(conn, chunk_ids)
                     # 删 meta
                     conn.execute(
                         f"DELETE FROM chunks_meta WHERE id IN ({placeholders})",
@@ -988,6 +1262,14 @@ class VectorStore:
                             f"WHERE CAST(chunk_id AS INTEGER) IN ({placeholders})",
                             [new_collection, *chunk_ids],
                         )
+                    # 稀疏向量倒排项同步集合名（D2）
+                    if self.sparse_retrieval_enabled:
+                        placeholders = ",".join("?" * len(chunk_ids))
+                        conn.execute(
+                            f"UPDATE sparse_terms SET collection = ? "
+                            f"WHERE chunk_id IN ({placeholders})",
+                            [new_collection, *chunk_ids],
+                        )
                 conn.execute("COMMIT")
                 return True
             except StoreError:
@@ -1027,7 +1309,7 @@ class VectorStore:
                     WHERE embedding MATCH ? AND k = ?
                     ORDER BY distance
                     """,
-                    (_vector_to_bytes(query_vec), fetch_n),
+                    (self._to_bytes(query_vec), fetch_n),
                 )
                 rows = cur.fetchall()
                 if not cols:
@@ -1067,12 +1349,11 @@ class VectorStore:
         """
         if not self._fts_available:
             return []
-        tokens = [t.strip() for t in query.split() if t.strip()]
+        # 分词模式对查询做统一预处理：jieba → 空格拼接；否则原样空格切分。
+        normalized_query = segment_query(query, self.bm25_jieba_enabled)
+        tokens = [t.strip() for t in normalized_query.split() if t.strip()]
         if not tokens:
             return []
-        # trigram 只能匹配 ≥3 字符连续子串；短词拆分出来走 LIKE，长词仍走 FTS5
-        fts_tokens = [t for t in tokens if len(t) >= 3]
-        short_tokens = [t for t in tokens if len(t) < 3][:_MAX_SHORT_TOKENS]
         with self._lock:
             self._require_open()
             if self._fts_conn is None:
@@ -1088,15 +1369,13 @@ class VectorStore:
 
                 merged: dict[int, float] = {}
 
-                # 1) FTS5：≥3 chars 的 token（trigram 可子串匹配）
-                if fts_tokens:
-                    match_expr = _build_fts5_match(" ".join(fts_tokens))
+                if self.bm25_jieba_enabled:
+                    # unicode61（jieba 分词）：全部 token 走 FTS5，含 2 字中文词，
+                    # 无需 LIKE 兜底。
+                    match_expr = _build_fts5_match_unicode(tokens)
                     if match_expr:
-                        # LIMIT 用字符串拼接（int 已强类型校验，无注入风险）：
-                        # FTS5 trigram + LIMIT ? placeholder 触发
-                        # IntegrityError: datatype mismatch。
-                        # FTS5 的 bm25() 返回负分且越小越相关，取反为正分后
-                        # "越大越相关" 才与 docstring 及上游归一化假设一致
+                        # LIMIT 用字符串拼接（int 已强类型校验）；FTS5 的 bm25()
+                        # 返回负分且越小越相关，取反为正分后"越大越相关"。
                         cur = self._fts_conn.execute(
                             f"""
                             SELECT chunk_id, -bm25(bm25_index) AS score
@@ -1108,26 +1387,96 @@ class VectorStore:
                             [match_expr, *params],
                         )
                         for cid, score in cur.fetchall():
-                            # chunk_id 在 FTS5 UNINDEXED 列中存为 TEXT，需 cast
                             merged[int(str(cid))] = float(score)
+                else:
+                    # trigram 模式：只能匹配 ≥3 字符连续子串；短词拆出去走 LIKE
+                    fts_tokens = [t for t in tokens if len(t) >= 3]
+                    short_tokens = [t for t in tokens if len(t) < 3][:_MAX_SHORT_TOKENS]
+                    # 1) FTS5：≥3 chars 的 token（trigram 可子串匹配）
+                    if fts_tokens:
+                        match_expr = _build_fts5_match(" ".join(fts_tokens))
+                        if match_expr:
+                            cur = self._fts_conn.execute(
+                                f"""
+                                SELECT chunk_id, -bm25(bm25_index) AS score
+                                FROM bm25_index
+                                WHERE bm25_index MATCH ? {col_filter}
+                                ORDER BY score DESC
+                                LIMIT {int(top_k * 4)}
+                                """,
+                                [match_expr, *params],
+                            )
+                            for cid, score in cur.fetchall():
+                                # chunk_id 在 FTS5 UNINDEXED 列中存为 TEXT，需 cast
+                                merged[int(str(cid))] = float(score)
 
-                # 2) LIKE 兜底：<3 chars 短词（trigram 无法命中）
-                for tok in short_tokens:
-                    cur = self._conn.execute(
-                        f"""
-                        SELECT id FROM chunks_meta
-                        WHERE content LIKE ? {col_filter}
-                        LIMIT {int(top_k * 4)}
-                        """,
-                        [f"%{tok}%", *params],
-                    )
-                    for (cid,) in cur.fetchall():
-                        merged[cid] = merged.get(cid, 0.0) + _SHORT_TOKEN_SCORE
+                    # 2) LIKE 兜底：<3 chars 短词（trigram 无法命中）
+                    for tok in short_tokens:
+                        cur = self._conn.execute(
+                            f"""
+                            SELECT id FROM chunks_meta
+                            WHERE content LIKE ? {col_filter}
+                            LIMIT {int(top_k * 4)}
+                            """,
+                            [f"%{tok}%", *params],
+                        )
+                        for (cid,) in cur.fetchall():
+                            merged[cid] = merged.get(cid, 0.0) + _SHORT_TOKEN_SCORE
 
                 ranked = sorted(merged.items(), key=lambda kv: kv[1], reverse=True)
                 return ranked[:top_k]
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"BM25 检索失败: {e}") from e
+
+    def sparse_search(
+        self,
+        query: str,
+        top_k: int = 10,
+        collection: str | Sequence[str] | None = None,
+    ) -> list[tuple[int, float]]:
+        """稀疏向量检索（D2），返回 [(chunk_id, cosine_score), ...]。
+
+        第三条召回路：文本 → jieba + log-TF/L2 归一化稀疏向量，经倒排索引求
+        「查询·文档」内积 = 稀疏向量余弦 ∈ [0,1]（与忠实余弦同量纲）。是与 FTS5
+        BM25（IDF 排名）独立的词法稀疏路；换真实稀疏嵌入器（如 BGE-M3 sparse）
+        时仅需替换 `sparse_token_weights` 喂入的查询/文档表示。
+
+        collection 支持单集合名或集合名列表（多选知识库）。
+        """
+        if not self.sparse_retrieval_enabled:
+            return []
+        q_weights = sparse_token_weights(query, self.bm25_jieba_enabled)
+        if not q_weights:
+            return []
+        cols = _normalize_collections(collection)
+        with self._lock:
+            self._require_open()
+            conn = self._conn
+            try:
+                col_sql = ""
+                params: list[Any] = []
+                if cols:
+                    placeholders = ",".join("?" for _ in sorted(cols))
+                    col_sql = f" AND collection IN ({placeholders})"
+                    params = list(sorted(cols))
+                scores: dict[int, float] = {}
+                for term, qw in q_weights:
+                    cur = conn.execute(
+                        f"SELECT chunk_id, weight FROM sparse_terms"
+                        f" WHERE term = ?{col_sql}",
+                        [term, *params],
+                    )
+                    for cid, w in cur.fetchall():
+                        scores[int(cid)] = scores.get(int(cid), 0.0) + qw * w
+                ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+                return ranked[:top_k]
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"稀疏向量检索失败: {e}") from e
+
+    @property
+    def sparse_available(self) -> bool:
+        """稀疏向量召回路（D2）是否启用。"""
+        return self.sparse_retrieval_enabled
 
     def get_chunks(self, chunk_ids: Sequence[int]) -> list[StoredChunk]:
         """按 chunk_id 批量取元数据。"""
@@ -1168,6 +1517,62 @@ class VectorStore:
                 return result
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"获取分块失败: {e}") from e
+
+    def get_neighbor_chunks(
+        self, chunk_id: int, window: int = 1
+    ) -> list[StoredChunk]:
+        """按命中 chunk 取出同源相邻分块（父子/邻块上下文）。
+
+        规则：定位命中 chunk 的 (source, chunk_index)，取同 source 且
+        chunk_index 落在 [idx-window, idx+window] 除命中自身外的分块，
+        按 chunk_index 升序返回。
+
+        Args:
+            chunk_id: 命中分块 ID
+            window: 前后各取几块，>=0；0 原样返回空（不做合并）。
+
+        Returns:
+            邻块 StoredChunk 列表（升序，不含命中自身）。
+        """
+        window = max(0, int(window))
+        if window == 0:
+            return []
+        with self._lock:
+            self._require_open()
+            try:
+                anchor = self._conn.execute(
+                    "SELECT source, chunk_index FROM chunks_meta WHERE id = ?",
+                    (chunk_id,),
+                ).fetchone()
+                if anchor is None:
+                    return []
+                source, idx = anchor
+                lo, hi = idx - window, idx + window + 1  # 半开区间 → 含 idx+window
+                cur = self._conn.execute(
+                    """
+                    SELECT cm.id, cm.content, cm.source, cm.format, cm.doc_type, cm.page,
+                           cm.heading, d.file_hash, cm.collection, d.created_at,
+                           cm.tokens, cm.chunk_index, cm.extra, cm.sheet, cm.slide, cm.language
+                    FROM chunks_meta cm
+                    LEFT JOIN documents d ON d.id = cm.document_id
+                    WHERE cm.source = ? AND cm.chunk_index >= ? AND cm.chunk_index < ?
+                    ORDER BY cm.chunk_index ASC
+                    """,
+                    (source, lo, hi),
+                )
+                return [
+                    StoredChunk(
+                        id=r[0], content=r[1], source=r[2], format=r[3],
+                        doc_type=r[4], page=r[5], heading=r[6],
+                        file_hash=r[7] or "", collection=r[8], created_at=r[9],
+                        tokens=r[10], chunk_index=r[11],
+                        extra_metadata=json.loads(r[12]) if r[12] else {},
+                    )
+                    for r in cur.fetchall()
+                    if r[0] != chunk_id
+                ]
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"获取邻块上下文失败: {e}") from e
 
     def list_chunks_by_document(
         self, document_id: str, limit: int = 100
@@ -1222,6 +1627,31 @@ class VectorStore:
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"列出分块内容失败: {e}") from e
 
+    def list_chunk_contexts(
+        self, collection: str | None = None
+    ) -> list[tuple[int, str, str | None]]:
+        """按集合列出 (chunk_id, content, doc_summary)，上下文检索重新嵌入用。
+
+        与 `list_chunk_contents` 等价，但额外 JOIN 出每个 chunk 所属文档的
+        AI 摘要（`documents.summary`，enrich 生成）。供 `contextual_retrieval`
+        在嵌入前拼接 `[文档摘要]...` 前缀用；无摘要时返回 None。
+        """
+        with self._lock:
+            self._require_open()
+            try:
+                sql = (
+                    "SELECT cm.id, cm.content, d.summary FROM chunks_meta cm "
+                    "LEFT JOIN documents d ON d.id = cm.document_id"
+                )
+                params: list[Any] = []
+                if collection:
+                    sql += " WHERE cm.collection = ?"
+                    params.append(collection)
+                rows = self._conn.execute(sql, params).fetchall()
+                return [(int(r[0]), str(r[1]), r[2]) for r in rows]
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"列出分块上下文失败: {e}") from e
+
     @_retry_on_locked
     def update_embeddings(
         self, chunk_id_emb_pairs: Sequence[tuple[int, object]]
@@ -1243,7 +1673,7 @@ class VectorStore:
                 conn.execute("BEGIN")
                 updated = 0
                 for cid, emb in chunk_id_emb_pairs:
-                    emb_bytes = _vector_to_bytes(emb)
+                    emb_bytes = self._to_bytes(emb)
                     cur = conn.execute(
                         "UPDATE vec_chunks SET embedding = ? WHERE id = ?",
                         (emb_bytes, int(cid)),
@@ -1278,10 +1708,15 @@ class VectorStore:
             try:
                 conn.execute("BEGIN")
                 conn.execute("DROP TABLE IF EXISTS vec_chunks")
-                conn.execute(_VEC_SQL_TEMPLATE.format(dim=int(new_dim)))
+                if self.vector_quantize == "int8" and self._int8_supported:
+                    conn.execute(_VEC_SQL_TEMPLATE_INT8.format(dim=int(new_dim)))
+                    self._vec_storage_type = "INT8"
+                else:
+                    conn.execute(_VEC_SQL_TEMPLATE.format(dim=int(new_dim)))
+                    self._vec_storage_type = "FLOAT"
                 inserted = 0
                 for cid, emb in chunk_id_emb_pairs:
-                    emb_bytes = _vector_to_bytes(emb)
+                    emb_bytes = self._to_bytes(emb)
                     conn.execute(
                         "INSERT INTO vec_chunks(id, embedding) VALUES (?, ?)",
                         (int(cid), emb_bytes),
@@ -1488,6 +1923,46 @@ def _vector_to_bytes(vec) -> bytes:
 
     arr = np.asarray(vec, dtype=np.float32)
     return struct.pack(f"{arr.size}f", *arr.flatten())
+
+
+def _vector_to_bytes_int8(vec) -> bytes:
+    """把向量量化为 int8 并序列化为 vec0 INT8 列接受的 BLOB。
+
+    输入 float 向量先做 [-1,1] 钳制后缩放到 int8 满量程（round(x*127)），
+    近零值量化为 0，保号向下映射。仅当 `open()` 探针确认本机 sqlite-vec
+    支持 INT8 列时才会被使用。
+    """
+    import numpy as np  # 局部导入，减少冷启动
+
+    arr = np.clip(np.asarray(vec, dtype=np.float32), -1.0, 1.0)
+    q = np.rint(arr * 127.0).astype(np.int8)
+    return q.tobytes()
+
+
+def _probe_vec_int8_supported(conn: sqlite3.Connection, dim: int) -> bool:
+    """探测当前 sqlite-vec 扩展能否写入/检索 INT8 向量列。
+
+    实测：sqlite-vec 0.1.9 的 PyPI wheel 把 INT8 列插入的 blob 一律按
+    float32 解释（无类型头），抛 `expected int8, but float32 vector was
+    provided`，即 int8 量化存储在该构建不可用。本函数用一个临时表
+    往返一次来判定，结果按进程缓存。
+    """
+    global _INT8_SUPPORTED
+    if _INT8_SUPPORTED is not None:
+        return _INT8_SUPPORTED
+    _INT8_SUPPORTED = False  # 默认视为不支持，避免探测异常时误开
+    try:
+        conn.execute(f"CREATE VIRTUAL TABLE _quant_probe USING vec0(embedding INT8[{dim}])")
+        conn.execute(
+            "INSERT INTO _quant_probe(embedding) VALUES (?)",
+            (_vector_to_bytes_int8([1.0, -1.0][:dim] + [0.0] * max(0, dim - 2)),),
+        )
+        conn.execute("DROP TABLE IF EXISTS _quant_probe")
+        _INT8_SUPPORTED = True
+    except Exception:  # noqa: BLE001 —— 不支持时回退 float32，不阻断建库
+        conn.execute("DROP TABLE IF EXISTS _quant_probe")
+        _INT8_SUPPORTED = False
+    return _INT8_SUPPORTED
 
 
 def _now_iso() -> str:
