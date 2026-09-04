@@ -110,7 +110,11 @@ def ingest_path(
     embedder = get_embedder(settings)
     owns_store = store is None
     if store is None:
-        store = VectorStore(settings.db_path, embedder.dimension)
+        store = VectorStore(
+            settings.db_path, embedder.dimension,
+            bm25_jieba_enabled=settings.bm25_jieba_enabled,
+            sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
+        )
         store.open()
 
     total = len(files)
@@ -220,7 +224,11 @@ def ingest_text(
     embedder = get_embedder(settings)
     owns_store = store is None
     if store is None:
-        store = VectorStore(settings.db_path, embedder.dimension)
+        store = VectorStore(
+            settings.db_path, embedder.dimension,
+            bm25_jieba_enabled=settings.bm25_jieba_enabled,
+            sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
+        )
         store.open()
 
     try:
@@ -528,13 +536,25 @@ def reindex_store(
     else:
         embedder = get_embedder(settings)
 
-    store = VectorStore(settings.db_path, embedder.dimension)
+    store = VectorStore(
+            settings.db_path, embedder.dimension,
+            bm25_jieba_enabled=settings.bm25_jieba_enabled,
+            sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
+        )
     store.open()
     try:
         current_dim = store.dimension
         need_rebuild = current_dim != embedder.dimension
 
-        pairs = store.list_chunk_contents(collection)
+        # 上下文检索（C2）：启用且文档已含摘要（enrich 生成）时，嵌入文本前拼接
+        # [文档摘要]... 前缀，改善长文档/跨章节召回。清单库需在开启后手动 reindex
+        # 才生效；无摘要的文档退化为原文（不拼前缀）。
+        contextual = bool(getattr(settings, "contextual_retrieval", False))
+        pairs = (
+            store.list_chunk_contexts(collection)
+            if contextual
+            else store.list_chunk_contents(collection)
+        )
         total = len(pairs)
         if total == 0:
             return {
@@ -544,6 +564,7 @@ def reindex_store(
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
                 "model": embedder.model_name,
                 "dimension": embedder.dimension,
+                "contextual": contextual,
             }
 
         batch_size = settings.embed_batch_size or 32
@@ -552,13 +573,16 @@ def reindex_store(
 
         for i in range(0, total, batch_size):
             batch = pairs[i : i + batch_size]
-            texts = [content for _, content in batch]
+            if contextual:
+                texts = [_contextual_chunk_text(c, summary) for _, c, summary in batch]
+            else:
+                texts = [content for _, content in batch]
             embeddings = list(embedder.embed_texts(texts))
             if len(embeddings) != len(batch):
                 raise RuntimeError(f"嵌入数量 ({len(embeddings)}) 与批次 ({len(batch)}) 不一致")
 
             new_pairs = [
-                (cid, emb) for (cid, _), emb in zip(batch, embeddings, strict=False)
+                (cid, emb) for (cid, *_), emb in zip(batch, embeddings, strict=False)
             ]
             if need_rebuild:
                 rebuild_pairs.extend(new_pairs)
@@ -581,9 +605,23 @@ def reindex_store(
             "model": embedder.model_name,
             "dimension": embedder.dimension,
             "rebuilt_table": need_rebuild,
+            "contextual": contextual,
         }
     finally:
         store.close()
+
+
+def _contextual_chunk_text(content: str, doc_summary: str | None) -> str:
+    """上下文检索（C2）嵌入文本：在 chunk 正文前拼接文档摘要前缀。
+
+    仅当文档已含摘要（enrich 生成）时拼接 `[文档摘要]<summary>`；无摘要退化
+    为原文，绝不改变 chunk 语义或破坏检索/写入。返回的文本仅用于嵌入，
+    不落库、不进入 chunks_meta（正文仍存原文）。
+    """
+    summary = (doc_summary or "").strip()
+    if not summary:
+        return content
+    return f"[文档摘要]{summary}\n{content}"
 
 
 def _now_iso() -> str:

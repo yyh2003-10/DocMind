@@ -1941,6 +1941,59 @@ public class ChatViewModelTests
         Assert.Equal("01-ai/yi-large", vm.SelectedModelChoice?.Model);
     }
 
+    // ======================================================================
+    // PPT 定制偏好（创作前置征询 → 编译为结构化提示词）
+    // ======================================================================
+
+    [Fact]
+    public void ConfirmPptPrefs_CompilesAllPreferencesIntoPrompt()
+    {
+        var vm = CreateVm(CreateFake());
+
+        vm.PptPurpose = "客户提案 / 商务推介";
+        vm.PptLength = "精简 6-8 页";
+        vm.PptPrefTheme = vm.AvailableThemes.First(t => t.Id == "emerald_green");
+        vm.PptMustInclude = "必须有一页讲落地路径";
+
+        vm.ConfirmPptPrefsCommand.Execute(null);
+
+        var prompt = vm.InputText;
+        // 用户填的每一项创作意图都必须落到提示词里，否则等于白征询
+        Assert.Contains("客户提案 / 商务推介", prompt);
+        Assert.Contains("精简 6-8 页", prompt);
+        Assert.Contains("必须有一页讲落地路径", prompt);
+        // 主题 id 要原样带进 artifact 头，前端才能同步配色
+        Assert.Contains("emerald_green", prompt);
+        // 格式约定必须与前端 ArtifactRegex / 幻灯片切片解析规则对齐
+        Assert.Contains(":::artifact type=\"pptx\"", prompt);
+
+        Assert.False(vm.IsPptPrefsOpen);
+    }
+
+    [Fact]
+    public void ConfirmPptPrefs_BlankMustInclude_OmitsThatRequirement()
+    {
+        var vm = CreateVm(CreateFake());
+        vm.PptMustInclude = "   ";
+
+        vm.ConfirmPptPrefsCommand.Execute(null);
+
+        Assert.DoesNotContain("必须包含以下内容要点", vm.InputText);
+    }
+
+    [Fact]
+    public void CancelPptPrefs_ClosesDialogWithoutTouchingInput()
+    {
+        var vm = CreateVm(CreateFake());
+        vm.InputText = "原有输入";
+        vm.IsPptPrefsOpen = true;
+
+        vm.CancelPptPrefsCommand.Execute(null);
+
+        Assert.False(vm.IsPptPrefsOpen);
+        Assert.Equal("原有输入", vm.InputText);
+    }
+
     [Fact]
     public void SelectedModelChoice_DefaultItem_PersistedAndRestored()
     {

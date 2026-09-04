@@ -26,6 +26,7 @@ For the full list of components, see [NOTICE](NOTICE).
 - markdown-it-py
 - mcp (Python SDK)
 - Microsoft.Extensions.* (.NET libraries)
+- jieba
 - openpyxl
 - pdfminer.six
 - pydantic

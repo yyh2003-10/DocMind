@@ -36,7 +36,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from doc2mind.core.config import get_settings
+from doc2mind.core.config import get_settings, parse_rrf_weights
 from doc2mind.core.converter import (
     SUPPORTED_FORMATS,
     ConversionError,
@@ -95,7 +95,11 @@ def _get_job(job_id: str) -> dict[str, Any] | None:
 def _open_store() -> tuple[VectorStore, Any]:
     settings = get_settings()
     embedder = get_embedder(settings)
-    store = VectorStore(settings.db_path, embedder.dimension)
+    store = VectorStore(
+        settings.db_path, embedder.dimension,
+        bm25_jieba_enabled=settings.bm25_jieba_enabled,
+        sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
+    )
     store.open()
     return store, embedder
 
@@ -154,7 +158,11 @@ def _tool_ingest_job(
     # 任务需要独立打开的 store（后台线程不共享主循环的 store 连接）
     settings = get_settings()
     embedder = get_embedder(settings)
-    store = VectorStore(settings.db_path, embedder.dimension)
+    store = VectorStore(
+        settings.db_path, embedder.dimension,
+        bm25_jieba_enabled=settings.bm25_jieba_enabled,
+        sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
+    )
     store.open()
 
     def _run() -> None:
@@ -244,6 +252,11 @@ def _tool_search(
             embedder=embedder,
             reranker=get_reranker(get_settings()),
             rerank_recall=get_settings().rerank_recall,
+            rrf_weights=parse_rrf_weights(get_settings().rrf_weights),
+            fusion_mode=get_settings().fusion_mode,
+            rerank_calibration_temperature=(
+                get_settings().rerank_calibration_temperature
+            ),
         )
         hits, stats = retriever.search(
             query=query, collection=collection, top_k=top_k, min_score=min_score
@@ -415,7 +428,11 @@ def _tool_reindex(
 
     settings = get_settings()
     embedder = get_embedder(settings)
-    store = VectorStore(settings.db_path, embedder.dimension)
+    store = VectorStore(
+        settings.db_path, embedder.dimension,
+        bm25_jieba_enabled=settings.bm25_jieba_enabled,
+        sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
+    )
     store.open()
 
     # 目标嵌入器：默认复用当前；指定 model 时探测维度，维度变化需重建向量表

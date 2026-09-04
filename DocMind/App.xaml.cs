@@ -106,6 +106,19 @@ namespace DocMind
             // 主题服务
             services.AddSingleton<ThemeService>();
 
+            // Phase 1: 跨会话记忆
+            services.AddSingleton<UserMemoryService>();
+            services.AddSingleton<SessionSearchService>();
+
+            // Phase 2: 可靠性
+            services.AddSingleton<CheckpointService>();
+
+            // Phase 3: 成本追踪
+            services.AddSingleton<CostTracker>();
+
+            // Phase 4: 反馈循环
+            services.AddSingleton<FeedbackService>();
+
             // ViewModels
             services.AddSingleton<MainViewModel>();
             services.AddTransient<SearchViewModel>();

@@ -66,6 +66,17 @@ doc2mind convert input.docx output.md
 doc2mind convert ./batch/ --format md --out ./out/
 ```
 
+### 🔎 检索根基升级要点
+
+- **相关度标尺已纠正为真实余弦相似度**：`vector_score = 1 - distance`（0~1，1 完全一致，正交为 0）。旧失真公式（“相关度 60+”的根因）已移除。
+- **中文 BM25 用 jieba 分词**（`bm25_jieba_enabled=true` 默认开）：2 字中文词可精确召回，切换 tokenizer 自动一次性重建 FTS5 索引。
+- **可选语义下限** `semantic_floor`：低于相关度门槛的弱命中被诚实丢弃（`top_k` 是上限不硬填），建议值可用
+  `python tools/eval_retrieval.py` 在本机数据上标定后配置。
+- **可选 BGE 查询指令** `query_instruction`：检索时先拼官方检索指令前缀再嵌入查询，提升 bge 系列召回；
+  文档嵌入不受影响，其余功能（去重/聚类）保持纯净。
+- **邻块上下文** `neighbor_context_window=1`（0 关闭）：问答时把命中 chunk 同源的相邻分块并入上下文，
+  提升跨块回答完整性；检索排序与引用仍以命中为准。
+
 ## ✅ 验证核心链路
 
 改动链路或接手新环境时，先跑一遍接口冒烟，确认主链（摄入 → 检索 → 问答 → 流式 → 会话）没坏：

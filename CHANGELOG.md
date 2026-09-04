@@ -2,6 +2,20 @@
 
 本文件记录 DocMind 每个版本的主要变更。格式基于 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [Unreleased]
+
+### 🎯 向量知识库检索根基升级（召回质量核心）
+
+- **🐛 修复相关度虚高（根因）**：`distance→score` 由失真公式 `1/(1+d)` 改为忠实余弦相似度 `1 - distance`。修复前「正交内容（真实相似度 0）」显示 0.50、「真实余弦 0.33」显示 0.60（界面「相关度 60+」）；修复后如实反映真实余弦，杜绝数据污染。
+  - 可用 `python tools/eval_retrieval.py` 复核：受控负样本（真实余弦 0.33）现显示 `vector_score=0.33` 且 `==1-distance`。
+- **🇨🇳 中文 BM25 升级（jieba + unicode61）**：开启 `bm25_jieba_enabled=true` 后 FTS5 改用 jieba 分词（unicode61 tokenizer），2 字中文词（气缸/IP/5A 等）可精确 BM25 召回，不再依赖 trigram 的 LIKE 兜底；切换 tokenizer 时自动一次性重建 FTS5 索引。jieba 为 MIT 许可，商用安全。
+- **🔤 BGE 查询指令前缀**：新增 `query_instruction` 配置，检索时先拼前缀再 `embed_query`（不动文档嵌入，curator 去重/聚类保持纯净），对 bge 系列可显著提升检索。
+- **📉 语义下限过滤**：新增 `semantic_floor` 配置，命中的相关度代理（重排启用用 `rerank_score`，否则 `max(vector,bm25)`）低于下限则丢弃——`top_k` 是上限不硬填，诚实过滤而非虚高硬凑。
+- **⚖️ 加权 RRF 融合**：融合支持 `rrf_weights="vec,bm25"` 权重（默认 `1,1` 中性），为后续稀疏召回路铺路。
+- **🎯 阈值重标**：专家把关/避坑检索硬编码 `0.4` 改为配置化 `pitfall_min_score=0.30`（忠实余弦标尺）。
+- **🧪 检索评估件**：新增 `tools/eval_retrieval.py`（确定性假嵌入器，免联网），输出 MRR / Recall@k(1,3,5) / 标定(负样本显示均分) / 建议 `semantic_floor`，并做「60+」虚高回归；新增 `tests/test_retrieval_eval.py` 锁定回归。
+- **🧩 邻块上下文（父子检索，B2）**：新增 `neighbor_context_window=1`（0 关闭）与 `store.get_neighbor_chunks`，RAG 组装上下文时并入命中 chunk 同源相邻分块，提升跨块回答完整性；检索排序仍以命中为准、引用仍指向命中块，邻块缺失绝不阻塞组装（已加异常兜底与单测）。
+
 ## [v1.0.1] - 2026-08-19
 
 ### 🌟 全新特性与架构升级

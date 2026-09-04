@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Text.Json.Serialization;
+using System.Windows.Media;
 
 namespace DocMind.Models;
 
@@ -21,6 +22,26 @@ public sealed class PptThemeOption
         Description = description;
         PrimaryHex = primaryHex;
         BgHex = bgHex;
+    }
+
+    /// <summary>是否为用户自定义主题（ID 以 custom_ 开头）。</summary>
+    public bool IsCustom => Id.StartsWith("custom_", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>主色画笔（用于列表色块预览）。</summary>
+    public Brush PrimaryBrush
+    {
+        get
+        {
+            try
+            {
+                var color = (Color)ColorConverter.ConvertFromString(PrimaryHex);
+                return new SolidColorBrush(color);
+            }
+            catch
+            {
+                return new SolidColorBrush(Colors.Gray);
+            }
+        }
     }
 }
 

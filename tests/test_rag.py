@@ -16,9 +16,13 @@ from doc2mind.core.rag import (
     SourceRef,
     _build_context,
     _cap_history,
+    _expand_hyde,
+    _expand_multi_queries,
     _format_source_ref,
     _load_history,
     _max_history,
+    _merge_hits,
+    _retrieve_with_expansion,
     _save_history,
     _truncate_history_by_token_budget,
     clear_session,
@@ -1102,3 +1106,117 @@ class TestStreamStopSemantics:
         assert done["partial"] is False
         assert "warning" not in done
         assert ChatStore(s.db_path).get_history(done["chat_id"], 10) != []
+
+
+# --- C1 查询扩展（可选，LLM 驱动）---
+def _hit(id_, content="内容", vec=0.8, bm=0.7, rerank=None):
+    chunk = StoredChunkMeta(
+        id=id_, content=content, source=f"s{id_}.md", format="md",
+        doc_type=None, page=None, heading=None, tokens=50,
+        chunk_index=0, collection="t",
+    )
+    return SearchHit(
+        chunk=chunk, score=max(vec, bm), match_type="hybrid",
+        vector_score=vec, bm25_score=bm, rank=0, rerank_score=rerank,
+    )
+
+
+class TestC1QueryExpansion:
+    def test_merge_hits_dedups_and_ranks(self) -> None:
+        """_merge_hits 按 chunk.id 去重，保留相关度最优者，并按相关度降序重排。"""
+        a = _hit(1, vec=0.9, bm=0.5)
+        a_dup = _hit(1, vec=0.4, bm=0.3)  # 同 id，更差 → 应被丢弃
+        b = _hit(2, vec=0.6, bm=0.7)
+        c = _hit(3, vec=0.2, bm=0.2)
+        merged = _merge_hits([a, a_dup], [b], [c])
+        ids = [h.chunk.id for h in merged]
+        assert ids == [1, 2, 3]
+        assert merged[0].chunk.id == 1 and merged[0].vector_score == 0.9
+        assert [h.rank for h in merged] == [0, 1, 2]
+
+    def test_merge_prefers_rerank_score(self) -> None:
+        """rerank_score 存在时作为相关度代理参与排序。"""
+        no_rerank = _hit(5, vec=0.95, bm=0.9)  # 高分量纲但无重排
+        has_rerank = _hit(6, vec=0.5, bm=0.5, rerank=0.99)  # 重排分高
+        merged = _merge_hits([no_rerank, has_rerank])
+        # 有重排分者优先（0.99 > 0.95）
+        assert merged[0].chunk.id == 6
+        assert merged[1].chunk.id == 5
+
+    def test_expand_multi_queries(self) -> None:
+        llm = MockLLMClient("气缸故障排查步骤\n气缸报警复位方法\n设备气动系统排查")
+        variants = _expand_multi_queries(llm, "气缸报警")
+        assert len(variants) == 3
+        assert "气缸故障排查步骤" in variants
+        # 原查询不应被当成变体
+        assert "气缸报警" not in variants
+
+    def test_expand_multi_queries_ignores_noise_lines(self) -> None:
+        llm = MockLLMClient("变体：\n1. 方案A\n2. 方案B\n原始查询")
+        variants = _expand_multi_queries(llm, "q")
+        assert variants == ["方案A", "方案B"]
+
+    def test_expand_hyde(self) -> None:
+        llm = MockLLMClient("设备气缸系统由气源、电磁阀与传感器组成，报警即排查该链路。")
+        hyde = _expand_hyde(llm, "气缸报警")
+        assert hyde is not None and "电磁阀" in hyde
+
+    def test_expand_hyde_empty_returns_none(self) -> None:
+        assert _expand_hyde(MockLLMClient("   \n "), "q") is None
+
+    def test_retrieve_with_expansion_multi_merges(self) -> None:
+        """multi：对每个变体再检索并并入基础召回，去重、按 id 保最优。"""
+        llm = MockLLMClient("变体A\n变体B")
+        stats = SearchStats(query="q", total_hits=1, elapsed_ms=5,
+                            vector_candidates=1, bm25_candidates=1)
+        hits_by_query = {
+            "q": ([_hit(1, vec=0.9)], stats),
+            "变体A": ([_hit(1, vec=0.8), _hit(2, vec=0.7)], stats),
+            "变体B": ([_hit(3, vec=0.6)], stats),
+        }
+        retriever = MagicMock()
+        retriever.search.side_effect = lambda query, **kw: hits_by_query.get(query, ([], stats))
+
+        merged, used = _retrieve_with_expansion(
+            retriever, "q", collection="t", top_k=3, mode="multi", llm_client=llm,
+            base_hits=[_hit(1, vec=0.9)],
+        )
+        assert sorted(h.chunk.id for h in merged) == [1, 2, 3]
+        # chunk 1 保留首次（更强的向量分 0.9）
+        assert next(h for h in merged if h.chunk.id == 1).vector_score == 0.9
+        assert used == ["变体A", "变体B"]
+
+    def test_retrieve_with_expansion_hyde(self) -> None:
+        """hyde：用假设文档检索并合并。"""
+        llm = MockLLMClient("假设文档正文描述器件故障")
+        stats = SearchStats(query="q", total_hits=1, elapsed_ms=5,
+                            vector_candidates=1, bm25_candidates=1)
+        retriever = MagicMock()
+        retriever.search.return_value = ([_hit(9, vec=0.5)], stats)
+
+        merged, used = _retrieve_with_expansion(
+            retriever, "q", collection="t", top_k=3, mode="hyde",
+            llm_client=llm, base_hits=[_hit(1, vec=0.9)],
+        )
+        assert sorted(h.chunk.id for h in merged) == [1, 9]
+        assert len(used) == 1 and "假设文档" in used[0]
+
+    def test_expansion_propagates_llm_error(self) -> None:
+        """LLM 调用失败时：扩展辅助函数抛错，由调用方 try/except 降级为单查询。"""
+        from doc2mind.core.llm.base import LLMError
+
+        class BoomClient(MockLLMClient):
+            def _do_chat(self, messages, temperature=None, max_tokens=None):
+                raise LLMError("LLM 不可用")
+
+        with pytest.raises(Exception):
+            _retrieve_with_expansion(
+                MagicMock(), "q", collection="t", top_k=3, mode="multi",
+                llm_client=BoomClient(), base_hits=[],
+            )
+
+    def test_expansion_default_off(self) -> None:
+        """默认 query_expansion="off"，不触发扩展调用。"""
+        s = Settings()
+        assert s.query_expansion == "off"
+        assert Settings(query_expansion="both").query_expansion == "both"

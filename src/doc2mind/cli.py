@@ -89,7 +89,11 @@ def _open_store() -> tuple[VectorStore, Embedder]:
 
     settings = get_settings()
     embedder = get_embedder(settings)
-    store = VectorStore(settings.db_path, embedder.dimension)
+    store = VectorStore(
+        settings.db_path, embedder.dimension,
+        bm25_jieba_enabled=settings.bm25_jieba_enabled,
+        sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
+    )
     store.open()
     return store, embedder
 
@@ -162,7 +166,7 @@ def search(
     from doc2mind.core.embedder.fastembed_impl import first_run_hint
     from doc2mind.core.retriever.search import RetrievalError
     from doc2mind.core.reranker import get_reranker
-    from doc2mind.core.config import get_settings
+    from doc2mind.core.config import get_settings, parse_rrf_weights
 
     store, embedder = _open_store()
     try:
@@ -171,6 +175,11 @@ def search(
             embedder=embedder,
             reranker=get_reranker(get_settings()),
             rerank_recall=get_settings().rerank_recall,
+            rrf_weights=parse_rrf_weights(get_settings().rrf_weights),
+            fusion_mode=get_settings().fusion_mode,
+            rerank_calibration_temperature=(
+                get_settings().rerank_calibration_temperature
+            ),
         )
         hits, stats = retriever.search(
             query=query, collection=collection, top_k=top_k
@@ -621,27 +630,32 @@ def reindex(
 ) -> None:
     """重建向量索引：用指定或当前嵌入模型重新计算向量（支持跨模型与跨维度迁移）。"""
     from doc2mind.core.config import save_settings
+    from doc2mind.core.embedder.catalog import resolve_embed_model
     from doc2mind.core.pipeline import reindex_store
 
     settings = get_settings()
-    target_model = model or settings.embed_model
+    # B1：支持预设别名（如 --model bge-en-large），解析为完整模型名。
+    target_model = resolve_embed_model(model or settings.embed_model)
 
     with console.status(f"[bold green]正在使用模型 [{target_model}] 重建向量索引...[/bold green]"):
         try:
             res = reindex_store(
                 collection=collection,
-                model=model,
+                model=target_model if model else None,
                 settings=settings,
             )
         except Exception as e:  # noqa: BLE001
             rprint(f"[red][失败] 重建索引失败:[/red] {e}")
             raise typer.Exit(code=1) from e
 
-    if model and model != settings.embed_model:
-        settings.embed_model = model
+    if model and target_model != settings.embed_model:
+        settings.embed_model = target_model
         settings.embed_dim = res["dimension"]
         save_settings(settings)
-        rprint(f"[green]已同步默认嵌入模型为:[/green] {model} ({res['dimension']} 维)")
+        rprint(
+            f"[green]已同步默认嵌入模型为:[/green] {target_model} "
+            f"({res['dimension']} 维)"
+        )
 
     rprint(
         f"[green][成功] 索引重建完成！[/green] "
@@ -714,23 +728,28 @@ def model_download(
 
 @model_app.command("use")
 def model_use(
-    name: str = typer.Argument(..., help="要切换的模型名（推荐清单或 fastembed 支持的模型）。"),
+    name: str = typer.Argument(..., help="要切换的模型名（预设别名/推荐清单/fastembed 支持模型）。"),
 ) -> None:
     """切换嵌入模型并持久化（等价 `doc2mind config --set-model`）。"""
-    from doc2mind.core.embedder.catalog import get_model_info
+    from doc2mind.core.embedder.catalog import get_model_info, resolve_embed_model
 
-    info = get_model_info(name)
+    resolved = resolve_embed_model(name)
+    alias_note = f"（预设 {name} → {resolved}）" if resolved != name else ""
+    info = get_model_info(resolved)
     if info is None:
         rprint(
-            f"[yellow]注意:[/yellow] {name} 不在内置清单里，"
+            f"[yellow]注意:[/yellow] {resolved} 不在内置清单里，"
             "请确认该模型已被 fastembed 支持，否则加载会失败。"
         )
     settings = get_settings()
-    settings.embed_model = name
+    old_dim = settings.embed_dim
+    settings.embed_model = resolved
     settings.embed_model_path = None  # 切换网络模型时清除本地模型指向
+    if info is not None:
+        settings.embed_dim = info.dim  # 同步维度，probe 前即正确
     _save_settings_or_warn(settings)
-    rprint(f"[green]已切换嵌入模型:[/green] {name}")
-    if info and info.dim != settings.embed_dim:
+    rprint(f"[green]已切换嵌入模型:[/green] {resolved}{alias_note}")
+    if info is not None and info.dim != old_dim:
         rprint(
             "[yellow]提示:[/yellow] 新模型维度与旧模型不同，"
             "请对已有集合执行 `doc2mind reindex` 重建索引，否则检索会报错。"

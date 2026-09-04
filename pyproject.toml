@@ -50,6 +50,8 @@ dependencies = [
     "sqlite-vec==0.1.9",
     # 混合检索
     "rank-bm25==0.2.2",
+    # 中文分词（BM25/FTS5 中文底料，MIT 许可）
+    "jieba==0.42.1",
     # 工具
     "tiktoken==0.12.0",
     "httpx==0.28.1",

@@ -11,6 +11,7 @@ public partial class ImportViewModel : ViewModelBase
 {
     private readonly IDoc2kbApiService _apiService;
     private readonly NotificationService _notifications;
+    private readonly CheckpointService? _checkpoint;
 
     private string _selectedPath = string.Empty;
     private string? _collection;
@@ -24,10 +25,11 @@ public partial class ImportViewModel : ViewModelBase
     /// <summary>导入流程结束（成功/失败/取消）时触发，供其他页面联动刷新（如文档库）。</summary>
     public event Action? ImportCompleted;
 
-    public ImportViewModel(IDoc2kbApiService apiService, NotificationService notifications)
+    public ImportViewModel(IDoc2kbApiService apiService, NotificationService notifications, CheckpointService? checkpoint = null)
     {
         _apiService = apiService;
         _notifications = notifications;
+        _checkpoint = checkpoint;
         Title = "导入";
         Results = new ObservableCollection<IngestResult>();
         Skipped = new ObservableCollection<string>();
@@ -270,11 +272,30 @@ public partial class ImportViewModel : ViewModelBase
         Failed.Clear();
         ProgressPercent = 0;
 
-        DebugLog.Info($"开始导入: Path='{SelectedPath.Trim()}' Collection='{(string.IsNullOrWhiteSpace(Collection) ? "default" : Collection.Trim())}' Recursive={Recursive}", "Import");
+        var opId = $"ingest_{DateTime.Now:yyyyMMdd_HHmmss}_{Path.GetFileNameWithoutExtension(SelectedPath)}";
+        DebugLog.Info($"开始导入: Path='{SelectedPath.Trim()}' Collection='{(string.IsNullOrWhiteSpace(Collection) ? "default" : Collection.Trim())}' Recursive={Recursive} opId={opId}", "Import");
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         try
         {
+            // 保存检查点（崩溃后可恢复）
+            if (_checkpoint is { } cp)
+            {
+                await cp.SaveCheckpointAsync(new CheckpointState
+                {
+                    OperationId = opId,
+                    OperationType = "ingest",
+                    TotalItems = 0, // 后端返回前未知总数
+                    Metadata = new()
+                    {
+                        ["path"] = SelectedPath.Trim(),
+                        ["collection"] = string.IsNullOrWhiteSpace(Collection) ? "default" : Collection.Trim(),
+                        ["recursive"] = Recursive.ToString(),
+                        ["force"] = Force.ToString(),
+                    },
+                });
+            }
+
             // 提交异步摄入任务（POST /v1/ingest/job），后端后台线程逐文件处理，
             // 前端轮询 GET /v1/jobs/{id} 获取真实进度。
             var job = await _apiService.IngestJobAsync(
@@ -412,6 +433,11 @@ public partial class ImportViewModel : ViewModelBase
             _importCts?.Dispose();
             _importCts = null;
             DebugLog.Info($"导入流程结束，总耗时{sw.ElapsedMilliseconds}ms", "Import");
+            // 完成后清除检查点
+            if (_checkpoint is { } cp)
+            {
+                _ = cp.ClearCheckpointAsync(opId);
+            }
             // 无论成败都通知联动方（可能部分文件已成功写入库）
             ImportCompleted?.Invoke();
         }

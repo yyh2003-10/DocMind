@@ -1546,9 +1546,15 @@ public sealed class CollectionItem : System.ComponentModel.INotifyPropertyChange
 }
 
 /// <summary>办公角色人设选项。</summary>
-public sealed record PersonaOption(string Id, string DisplayName, string Icon, string Description)
+public sealed record PersonaOption(string Id, string DisplayName, string Icon, string Description, IReadOnlyList<string>? QuickQuestions = null)
 {
     public override string ToString() => DisplayName;
+
+    /// <summary>是否为用户自定义角色（ID 以 custom_ 开头）。</summary>
+    public bool IsCustom => Id.StartsWith("custom_", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>是否有专属快捷问题。</summary>
+    public bool HasQuickQuestions => QuickQuestions is { Count: > 0 };
 }
 
 /// <summary>历史会话列表项（ComboBox 显示用）。</summary>
@@ -1609,15 +1615,188 @@ public partial class ChatViewModel : ViewModelBase
     /// <summary>可选的办公与创作角色人设列表。</summary>
     public IReadOnlyList<PersonaOption> AvailablePersonas { get; } = new List<PersonaOption>
     {
-        new("office", "💼 知识办公助手", "💼", "提炼核心结论、梳理 Action Items 待办清单与标准公文润色"),
-        new("ppt", "📊 PPT 演示架构师", "📊", "依托知识库生成 Marp 语法幻灯片、提炼分页要点与演讲备注"),
-        new("doc", "📄 资深研报公文专家", "📄", "深度技术方案论证、公文撰写、行业研报与规范排版"),
-        new("lesson", "🎓 课程教案设计师", "🎓", "教学大纲设计、课时环节编排、重难点剖析与随堂测验"),
-        new("table", "📑 商业数据分析师", "📑", "多维对比矩阵抽取、指标打分表与甘特排期规划"),
-        new("web", "🌐 交互看板工程师", "🌐", "生成自包含 HTML5 响应式知识总结看板与卡片"),
-        new("architect", "🧠 资深系统架构师", "🧠", "系统设计模式选型、底层运行机制剖析、性能瓶颈评估与架构演进设计"),
-        new("engineer", "🛠️ 资深研发工匠", "🛠️", "工业级代码实现、重构优化、异常边界防御与单元测试建议"),
-        new("brainstorm", "💡 创新方案顾问", "💡", "头脑风暴、SWOT 矩阵分析、多方案多维度对比表格与排期落地规划"),
+        // ── 通用办公 ──
+        new("office", "💼 知识办公助手", "💼",
+            "提炼核心结论、梳理 Action Items 待办清单与标准公文润色",
+            new[] {
+                "请将上述内容提炼为核心结论与 Action Items 待办清单",
+                "请帮我把这份草稿按企业公文规范进行润色重构",
+                "请用 3-5 句话概括上述文档的核心要点",
+            }),
+        new("simplify", "🪶 极简表达翻译官", "🪶",
+            "把复杂专业内容转化为通俗易懂、老少皆宜的极简表达与可视化摘要",
+            new[] {
+                "请用小学生都能听懂的语言解释上述技术概念",
+                "请用一张类比图把复杂流程可视化为生活场景",
+                "请用 100 字以内精炼概括上述内容",
+            }),
+        new("brainstorm", "💡 创新方案顾问", "💡",
+            "头脑风暴、SWOT 矩阵分析、多方案多维度对比表格与排期落地规划",
+            new[] {
+                "请对上述主题进行头脑风暴，列出至少 10 个创新方案",
+                "请做一份 SWOT 分析并给出战略建议",
+                "请对比至少 3 种方案的优缺点并给出推荐",
+            }),
+        // ── 创作输出 ──
+        new("ppt", "📊 PPT 演示架构师", "📊",
+            "依托知识库生成 Marp 语法幻灯片、提炼分页要点与演讲备注",
+            new[] {
+                "请制作一份 10 页的专业汇报 PPT（含封面、目录、核心论点、演讲备注）",
+                "请为上述内容设计一份演示大纲，标注每页的视觉风格建议",
+                "请把上述方案转化为一份 8 页的客户提案 PPT",
+            }),
+        new("doc", "📄 资深研报公文专家", "📄",
+            "深度技术方案论证、公文撰写、行业研报与规范排版",
+            new[] {
+                "请撰写一份结构严谨的技术方案论证报告",
+                "请按照行业研报规范撰写一份深度分析报告",
+                "请帮我润色这份公文，确保格式与用语符合行政规范",
+            }),
+        new("lesson", "🎓 课程教案设计师", "🎓",
+            "教学大纲设计、课时环节编排、重难点剖析与随堂测验",
+            new[] {
+                "请设计一份 2 课时的教学大纲（含教学目标、重难点、教学过程）",
+                "请为上述知识点设计 5 道随堂测验题",
+                "请把上述内容拆解为 4 个教学环节并标注时间分配",
+            }),
+        new("web", "🌐 交互看板工程师", "🌐",
+            "生成自包含 HTML5 响应式知识总结看板与卡片",
+            new[] {
+                "请生成一个自包含的 HTML5 交互式知识总结看板",
+                "请用卡片式布局设计一个数据可视化看板",
+                "请生成一个带动态图表的项目进度看板页面",
+            }),
+        new("writer", "✍️ 创意文案大师", "✍️",
+            "品牌故事撰写、营销文案创作、社媒内容策划与多平台适配",
+            new[] {
+                "请为上述产品撰写 3 版不同风格的营销文案",
+                "请撰写一个品牌故事脚本（300 字以内）",
+                "请为上述内容设计 5 个吸睛标题",
+            }),
+        new("content", "📱 社媒运营策划师", "📱",
+            "小红书/抖音/微信公众号内容策划、爆款标题设计与多平台分发策略",
+            new[] {
+                "请为上述主题策划 5 条小红书笔记（含标题、正文、标签）",
+                "请设计一个抖音短视频脚本（15-60 秒）",
+                "请制定一份多平台内容分发策略表",
+            }),
+        // ── 数据与分析 ──
+        new("table", "📑 商业数据分析师", "📑",
+            "多维对比矩阵抽取、指标打分表与甘特排期规划",
+            new[] {
+                "请提取上述方案的关键指标并输出对比矩阵表格",
+                "请设计一份多维度评分表并对各方案打分",
+                "请用甘特图格式规划项目排期",
+            }),
+        new("analyst", "📈 数据洞察专家", "📈",
+            "数据趋势解读、可视化图表建议、KPI 分析框架与业务洞察提炼",
+            new[] {
+                "请对上述数据进行趋势分析并给出可视化图表建议",
+                "请设计一套 KPI 分析框架并标注关键指标",
+                "请从数据中提炼 5 条可执行的业务洞察",
+            }),
+        new("finance", "💰 财务分析师", "💰",
+            "财务报表解读、预算编制建议、投资回报分析与现金流预测",
+            new[] {
+                "请解读上述财务数据并给出投资建议",
+                "请编制一份年度预算建议方案",
+                "请做一份投资回报率(ROI)分析",
+            }),
+        // ── 技术与工程 ──
+        new("architect", "🧠 资深系统架构师", "🧠",
+            "系统设计模式选型、底层运行机制剖析、性能瓶颈评估与架构演进设计",
+            new[] {
+                "请对上述系统进行架构评审并给出优化建议",
+                "请设计一套微服务架构方案并说明选型理由",
+                "请评估上述架构的性能瓶颈并给出改进路线图",
+            }),
+        new("engineer", "🛠️ 资深研发工匠", "🛠️",
+            "工业级代码实现、重构优化、异常边界防御与单元测试建议",
+            new[] {
+                "请帮我重构这段代码并附上重构理由",
+                "请为上述函数编写单元测试用例",
+                "请分析这段代码的边界异常并补充防御性代码",
+            }),
+        new("devops", "🔧 DevOps 运维专家", "🔧",
+            "CI/CD 流水线设计、容器化部署方案、监控告警体系与故障应急响应",
+            new[] {
+                "请设计一套 CI/CD 流水线方案",
+                "请制定容器化部署方案（Docker + K8s）",
+                "请设计一套监控告警体系并定义告警阈值",
+            }),
+        new("security", "🔐 网络安全顾问", "🔐",
+            "渗透测试报告、安全架构评审、漏洞分析与等保合规方案",
+            new[] {
+                "请对上述系统进行安全架构评审",
+                "请生成一份渗透测试报告模板",
+                "请分析潜在安全漏洞并给出修复建议",
+            }),
+        // ── 行业专家 ──
+        new("medical", "🩺 医疗健康顾问", "🩺",
+            "临床研究解读、药品/器械合规审查、医学文献综述与健康管理方案",
+            new[] {
+                "请解读上述临床研究数据并给出医学建议",
+                "请撰写一份药品/器械合规审查报告",
+                "请综述上述医学文献的核心发现",
+            }),
+        new("legal", "⚖️ 法务合规顾问", "⚖️",
+            "合同条款审阅、合规风险排查、知识产权保护与法律条文解读",
+            new[] {
+                "请审阅上述合同条款并标注风险点",
+                "请对上述业务进行合规风险排查",
+                "请解读相关法律条文并给出合规建议",
+            }),
+        new("hr", "👥 人力资源专家", "👥",
+            "招聘 JD 撰写、绩效考核方案设计、员工培训体系规划与劳动法合规",
+            new[] {
+                "请为上述岗位撰写一份招聘 JD",
+                "请设计一套绩效考核方案（KPI + OKR）",
+                "请规划一份员工培训体系",
+            }),
+        // ── 项目与管理 ──
+        new("scrum", "🏃 敏捷项目教练", "🏃",
+            "Sprint 规划、用户故事拆解、站会纪要生成与迭代复盘报告",
+            new[] {
+                "请为下一个 Sprint 制定规划并拆解用户故事",
+                "请生成一份站会纪要模板",
+                "请对本次迭代进行复盘并列出改进项",
+            }),
+        new("product", "🎯 产品经理", "🎯",
+            "需求文档撰写、用户故事拆解、竞品分析报告与产品路线图规划",
+            new[] {
+                "请撰写一份 PRD 需求文档",
+                "请对上述功能进行竞品分析",
+                "请制定一份季度产品路线图",
+            }),
+        new("cs", "🤝 客户成功经理", "🤝",
+            "客户健康度评估、续约方案设计、客户案例包装与满意度分析",
+            new[] {
+                "请评估客户健康度并给出挽留方案",
+                "请包装一个客户成功案例",
+                "请设计一份客户满意度调研问卷",
+            }),
+        // ── 研究与访谈 ──
+        new("interviewer", "🎙️ 深度访谈策划师", "🎙️",
+            "访谈提纲设计、追问链路规划、访谈稿整理与核心观点提炼",
+            new[] {
+                "请设计一份 30 分钟的深度访谈提纲",
+                "请根据上述回答设计追问链路",
+                "请从访谈稿中提炼核心观点与洞察",
+            }),
+        new("researcher", "🔬 学术研究员", "🔬",
+            "文献综述撰写、研究方法论设计、实验数据分析与论文结构优化",
+            new[] {
+                "请撰写一份文献综述",
+                "请设计一套研究方法论并论证可行性",
+                "请优化论文的结构并给出修改建议",
+            }),
+        new("ux", "🎨 UX 设计师", "🎨",
+            "用户调研报告、交互原型评审、可用性测试分析与设计系统规范",
+            new[] {
+                "请撰写一份用户调研分析报告",
+                "请评审上述交互原型并给出改进建议",
+                "请设计一份设计系统规范（色彩、字体、间距）",
+            }),
     };
 
     private PersonaOption _selectedPersona;
@@ -1633,11 +1812,648 @@ public partial class ChatViewModel : ViewModelBase
         get => _selectedPersona;
         set
         {
-            if (SetProperty(ref _selectedPersona, value ?? AvailablePersonas[0]))
+            if (SetProperty(ref _selectedPersona, value ?? AllPersonas.FirstOrDefault() ?? AvailablePersonas[0]))
             {
                 StatusMessage = $"角色: {_selectedPersona.DisplayName}";
+                OnPropertyChanged(nameof(PersonaQuickQuestions));
+                OnPropertyChanged(nameof(HasPersonaQuickQuestions));
             }
         }
+    }
+
+    /// <summary>当前选中角色的专属快捷问题列表。</summary>
+    public IReadOnlyList<string> PersonaQuickQuestions =>
+        SelectedPersona?.QuickQuestions ?? Array.Empty<string>();
+
+    /// <summary>当前角色是否有专属快捷问题。</summary>
+    public bool HasPersonaQuickQuestions =>
+        SelectedPersona?.HasQuickQuestions == true && !ShowEmptyGuide;
+
+    // ==================== 自定义角色与主题管理 ====================
+
+    private bool _isCustomManagerOpen;
+
+    /// <summary>自定义角色/主题管理面板是否展开。</summary>
+    public bool IsCustomManagerOpen
+    {
+        get => _isCustomManagerOpen;
+        set => SetProperty(ref _isCustomManagerOpen, value);
+    }
+
+    private string _newPersonaName = string.Empty;
+    public string NewPersonaName { get => _newPersonaName; set => SetProperty(ref _newPersonaName, value); }
+
+    private string _newPersonaIcon = "🤖";
+    public string NewPersonaIcon { get => _newPersonaIcon; set => SetProperty(ref _newPersonaIcon, value); }
+
+    private string _newPersonaDescription = string.Empty;
+    public string NewPersonaDescription { get => _newPersonaDescription; set => SetProperty(ref _newPersonaDescription, value); }
+
+    private string _newThemeDisplayName = string.Empty;
+    public string NewThemeDisplayName { get => _newThemeDisplayName; set => SetProperty(ref _newThemeDisplayName, value); }
+
+    private string _newThemeIcon = "🎨";
+    public string NewThemeIcon { get => _newThemeIcon; set => SetProperty(ref _newThemeIcon, value); }
+
+    private string _newThemeDescription = string.Empty;
+    public string NewThemeDescription { get => _newThemeDescription; set => SetProperty(ref _newThemeDescription, value); }
+
+    private string _newThemePrimaryHex = "#3B82F6";
+    public string NewThemePrimaryHex { get => _newThemePrimaryHex; set => SetProperty(ref _newThemePrimaryHex, value); }
+
+    private string _newThemeBgHex = "#F8FAFC";
+    public string NewThemeBgHex { get => _newThemeBgHex; set => SetProperty(ref _newThemeBgHex, value); }
+
+    /// <summary>当前展示的角色列表（内置 + 自定义）。</summary>
+    public ObservableCollection<PersonaOption> AllPersonas { get; } = new();
+
+    /// <summary>当前展示的主题列表（内置 + 自定义）。</summary>
+    public ObservableCollection<PptThemeOption> AllThemes { get; } = new();
+
+    [RelayCommand]
+    private void OpenCustomManager() => IsCustomManagerOpen = true;
+
+    [RelayCommand]
+    private void CloseCustomManager() => IsCustomManagerOpen = false;
+
+    /// <summary>添加自定义角色。</summary>
+    [RelayCommand]
+    private void AddCustomPersona()
+    {
+        if (string.IsNullOrWhiteSpace(NewPersonaName)) return;
+        var entry = new CustomPersonaEntry
+        {
+            Name = NewPersonaName.Trim(),
+            Icon = string.IsNullOrWhiteSpace(NewPersonaIcon) ? "🤖" : NewPersonaIcon.Trim(),
+            Description = NewPersonaDescription.Trim(),
+        };
+        _appSettings.CustomPersonas.Add(entry);
+        try { _appSettings.Save(); } catch { }
+        AllPersonas.Add(new PersonaOption($"custom_{entry.Id}", $"{entry.Icon} {entry.Name}", entry.Icon, entry.Description));
+        NewPersonaName = string.Empty;
+        NewPersonaIcon = "🤖";
+        NewPersonaDescription = string.Empty;
+        StatusMessage = $"已添加自定义角色: {entry.Name}";
+    }
+
+    /// <summary>删除自定义角色。</summary>
+    [RelayCommand]
+    private void RemoveCustomPersona(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return;
+        var entry = _appSettings.CustomPersonas.FirstOrDefault(p => $"custom_{p.Id}" == id);
+        if (entry == null) return;
+        _appSettings.CustomPersonas.Remove(entry);
+        try { _appSettings.Save(); } catch { }
+        var item = AllPersonas.FirstOrDefault(p => p.Id == id);
+        if (item != null) AllPersonas.Remove(item);
+        StatusMessage = $"已删除自定义角色: {entry.Name}";
+    }
+
+    /// <summary>添加自定义主题。</summary>
+    [RelayCommand]
+    private void AddCustomTheme()
+    {
+        if (string.IsNullOrWhiteSpace(NewThemeDisplayName)) return;
+        var entry = new CustomThemeEntry
+        {
+            DisplayName = NewThemeDisplayName.Trim(),
+            Icon = string.IsNullOrWhiteSpace(NewThemeIcon) ? "🎨" : NewThemeIcon.Trim(),
+            Description = NewThemeDescription.Trim(),
+            PrimaryHex = string.IsNullOrWhiteSpace(NewThemePrimaryHex) ? "#3B82F6" : NewThemePrimaryHex.Trim(),
+            BgHex = string.IsNullOrWhiteSpace(NewThemeBgHex) ? "#F8FAFC" : NewThemeBgHex.Trim(),
+        };
+        _appSettings.CustomThemes.Add(entry);
+        try { _appSettings.Save(); } catch { }
+        AllThemes.Add(new PptThemeOption($"custom_{entry.Id}", $"{entry.Icon} {entry.DisplayName}", entry.Icon, entry.Description, entry.PrimaryHex, entry.BgHex));
+        NewThemeDisplayName = string.Empty;
+        NewThemeIcon = "🎨";
+        NewThemeDescription = string.Empty;
+        NewThemePrimaryHex = "#3B82F6";
+        NewThemeBgHex = "#F8FAFC";
+        StatusMessage = $"已添加自定义主题: {entry.DisplayName}";
+    }
+
+    /// <summary>删除自定义主题。</summary>
+    [RelayCommand]
+    private void RemoveCustomTheme(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return;
+        var entry = _appSettings.CustomThemes.FirstOrDefault(t => $"custom_{t.Id}" == id);
+        if (entry == null) return;
+        _appSettings.CustomThemes.Remove(entry);
+        try { _appSettings.Save(); } catch { }
+        var item = AllThemes.FirstOrDefault(t => t.Id == id);
+        if (item != null) AllThemes.Remove(item);
+        StatusMessage = $"已删除自定义主题: {entry.DisplayName}";
+    }
+
+    /// <summary>合并内置 + 自定义角色/主题到展示列表，并确保下拉框数据同步。</summary>
+    private void MergeCustomItems()
+    {
+        AllPersonas.Clear();
+        foreach (var p in AvailablePersonas) AllPersonas.Add(p);
+        foreach (var c in _appSettings.CustomPersonas)
+            AllPersonas.Add(new PersonaOption($"custom_{c.Id}", $"{c.Icon} {c.Name}", c.Icon, c.Description));
+
+        AllThemes.Clear();
+        foreach (var t in AvailableThemes) AllThemes.Add(t);
+        foreach (var c in _appSettings.CustomThemes)
+            AllThemes.Add(new PptThemeOption($"custom_{c.Id}", $"{c.Icon} {c.DisplayName}", c.Icon, c.Description, c.PrimaryHex, c.BgHex));
+    }
+
+    // ==================== 智能推荐：根据对话内容匹配最佳角色与主题 ====================
+
+    private PersonaOption? _recommendedPersona;
+    private PptThemeOption? _recommendedTheme;
+    private string _recommendationReason = string.Empty;
+    private bool _showRecommendation;
+    private bool _isAnalyzingRecommendation;
+
+    /// <summary>推荐的最佳角色。</summary>
+    public PersonaOption? RecommendedPersona
+    {
+        get => _recommendedPersona;
+        set => SetProperty(ref _recommendedPersona, value);
+    }
+
+    /// <summary>推荐的最佳主题。</summary>
+    public PptThemeOption? RecommendedTheme
+    {
+        get => _recommendedTheme;
+        set => SetProperty(ref _recommendedTheme, value);
+    }
+
+    /// <summary>推荐理由（用于提示文案）。</summary>
+    public string RecommendationReason
+    {
+        get => _recommendationReason;
+        set => SetProperty(ref _recommendationReason, value);
+    }
+
+    /// <summary>是否显示推荐提示条。</summary>
+    public bool ShowRecommendation
+    {
+        get => _showRecommendation;
+        set => SetProperty(ref _showRecommendation, value);
+    }
+
+    /// <summary>是否正在分析推荐中。</summary>
+    public bool IsAnalyzingRecommendation
+    {
+        get => _isAnalyzingRecommendation;
+        set => SetProperty(ref _isAnalyzingRecommendation, value);
+    }
+
+    /// <summary>应用推荐的角色。</summary>
+    [RelayCommand]
+    private void ApplyRecommendedPersona()
+    {
+        if (RecommendedPersona != null)
+        {
+            SelectedPersona = RecommendedPersona;
+            StatusMessage = $"✅ 已切换到推荐角色: {RecommendedPersona.DisplayName}";
+        }
+    }
+
+    /// <summary>应用推荐的主题。</summary>
+    [RelayCommand]
+    private void ApplyRecommendedTheme()
+    {
+        if (RecommendedTheme != null)
+        {
+            SelectedTheme = RecommendedTheme;
+            StatusMessage = $"✅ 已切换到推荐主题: {RecommendedTheme.DisplayName}";
+        }
+    }
+
+    /// <summary>一键应用全部推荐（角色 + 主题）。</summary>
+    [RelayCommand]
+    private void ApplyAllRecommendations()
+    {
+        ApplyRecommendedPersona();
+        ApplyRecommendedTheme();
+        ShowRecommendation = false;
+    }
+
+    /// <summary>忽略推荐。</summary>
+    [RelayCommand]
+    private void DismissRecommendation() => ShowRecommendation = false;
+
+    /// <summary>根据最近的用户消息内容，智能匹配最佳 Persona 和主题。</summary>
+    private void AnalyzeAndRecommend()
+    {
+        // 只在有消息且不在忙碌时分析
+        if (IsBusy || Messages.Count == 0) return;
+
+        // 收集最近 3 条用户消息的文本
+        var recentUserText = string.Join(" ", Messages
+            .Where(m => m.Role == "user")
+            .TakeLast(3)
+            .Select(m => m.Content));
+
+        if (string.IsNullOrWhiteSpace(recentUserText)) return;
+
+        IsAnalyzingRecommendation = true;
+
+        try
+        {
+            var lowerText = recentUserText.ToLowerInvariant();
+
+            // ── Persona 关键词匹配 ──
+            var personaMatches = new List<(PersonaOption persona, int score, string reason)>();
+
+            foreach (var p in AllPersonas)
+            {
+                var score = 0;
+                var reason = "";
+                var desc = (p.Description ?? "").ToLowerInvariant();
+                var name = (p.DisplayName ?? "").ToLowerInvariant();
+
+                // PPT / 演示文稿
+                if (MatchesAny(lowerText, "ppt", "演示文稿", "幻灯片", "slide", "放映", "演示", "演讲"))
+                {
+                    if (p.Id == "ppt") { score += 10; reason = "检测到 PPT 演示文稿需求"; }
+                }
+                // 研报 / 公文
+                else if (MatchesAny(lowerText, "研报", "报告", "公文", "方案", "论文", "论证", "分析报告", "调研报告"))
+                {
+                    if (p.Id == "doc") { score += 10; reason = "检测到研报/公文撰写需求"; }
+                }
+                // 教案 / 教学
+                else if (MatchesAny(lowerText, "教案", "教学", "课程", "课时", "教育", "培训课", "备课", "教学大纲"))
+                {
+                    if (p.Id == "lesson") { score += 10; reason = "检测到教学/教案设计需求"; }
+                }
+                // 数据 / 表格
+                else if (MatchesAny(lowerText, "表格", "数据", "对比", "指标", "矩阵", "排序", "对比表", "评分"))
+                {
+                    if (p.Id == "table") { score += 10; reason = "检测到数据对比分析需求"; }
+                }
+                // 看板 / HTML
+                else if (MatchesAny(lowerText, "看板", "html", "网页", "交互", "dashboard", "可视化看板"))
+                {
+                    if (p.Id == "web") { score += 10; reason = "检测到交互式看板生成需求"; }
+                }
+                // 架构 / 系统设计
+                else if (MatchesAny(lowerText, "架构", "系统设计", "设计模式", "微服务", "分布式", "性能优化", "高并发"))
+                {
+                    if (p.Id == "architect") { score += 10; reason = "检测到系统架构设计需求"; }
+                }
+                // 代码 / 编程
+                else if (MatchesAny(lowerText, "代码", "编程", "bug", "重构", "单元测试", "调试", "实现", "函数", "api"))
+                {
+                    if (p.Id == "engineer") { score += 10; reason = "检测到代码开发/调试需求"; }
+                }
+                // 头脑风暴
+                else if (MatchesAny(lowerText, "头脑风暴", "创意", "swot", "方案对比", "brainstorm"))
+                {
+                    if (p.Id == "brainstorm") { score += 10; reason = "检测到头脑风暴/方案对比需求"; }
+                }
+                // 文案 / 营销
+                else if (MatchesAny(lowerText, "文案", "营销", "推广", "广告", "品牌", "社交媒体", "公众号"))
+                {
+                    if (p.Id == "writer" || p.Id == "content") { score += 10; reason = "检测到营销文案/内容创作需求"; }
+                }
+                // 数据分析
+                else if (MatchesAny(lowerText, "数据分析", "趋势", "kpi", "图表", "可视化", "统计"))
+                {
+                    if (p.Id == "analyst") { score += 10; reason = "检测到数据分析/洞察需求"; }
+                }
+                // 财务
+                else if (MatchesAny(lowerText, "财务", "预算", "投资", "回报率", "现金流", "报表分析"))
+                {
+                    if (p.Id == "finance") { score += 10; reason = "检测到财务分析需求"; }
+                }
+                // DevOps / 运维
+                else if (MatchesAny(lowerText, "运维", "部署", "ci/cd", "docker", "kubernetes", "监控", "告警", "devops"))
+                {
+                    if (p.Id == "devops") { score += 10; reason = "检测到 DevOps/运维需求"; }
+                }
+                // 安全
+                else if (MatchesAny(lowerText, "安全", "渗透", "漏洞", "等保", "合规审查", "网络安全"))
+                {
+                    if (p.Id == "security") { score += 10; reason = "检测到网络安全需求"; }
+                }
+                // 医疗
+                else if (MatchesAny(lowerText, "医疗", "临床", "药品", "医学", "患者", "诊断", "治疗方案"))
+                {
+                    if (p.Id == "medical") { score += 10; reason = "检测到医疗健康需求"; }
+                }
+                // 法务
+                else if (MatchesAny(lowerText, "合同", "法律", "法务", "知识产权", "专利", "侵权", "合规"))
+                {
+                    if (p.Id == "legal") { score += 10; reason = "检测到法务合规需求"; }
+                }
+                // HR
+                else if (MatchesAny(lowerText, "招聘", "绩效", "培训体系", "人力资源", "员工", "岗位"))
+                {
+                    if (p.Id == "hr") { score += 10; reason = "检测到人力资源需求"; }
+                }
+                // 产品经理
+                else if (MatchesAny(lowerText, "需求文档", "用户故事", "竞品", "产品路线", "prd", "产品设计"))
+                {
+                    if (p.Id == "product") { score += 10; reason = "检测到产品管理需求"; }
+                }
+                // 客户成功
+                else if (MatchesAny(lowerText, "客户", "续约", "满意度", "nps", "客户成功"))
+                {
+                    if (p.Id == "cs") { score += 10; reason = "检测到客户成功管理需求"; }
+                }
+                // 访谈
+                else if (MatchesAny(lowerText, "访谈", "调研", "采访", "问答", "访谈提纲"))
+                {
+                    if (p.Id == "interviewer") { score += 10; reason = "检测到访谈策划需求"; }
+                }
+                // 学术
+                else if (MatchesAny(lowerText, "文献综述", "研究方法", "实验", "论文", "学术", "期刊"))
+                {
+                    if (p.Id == "researcher") { score += 10; reason = "检测到学术研究需求"; }
+                }
+                // UX
+                else if (MatchesAny(lowerText, "ux", "ui", "交互设计", "可用性", "用户体验", "原型", "设计系统"))
+                {
+                    if (p.Id == "ux") { score += 10; reason = "检测到 UX 设计需求"; }
+                }
+                // 极简
+                else if (MatchesAny(lowerText, "简单", "通俗", "简洁", "简述", "概括", "精简", "通俗易懂"))
+                {
+                    if (p.Id == "simplify") { score += 10; reason = "检测到简洁表达需求"; }
+                }
+                // 敏捷
+                else if (MatchesAny(lowerText, "sprint", "站会", "迭代", "敏捷", "用户故事", "回顾"))
+                {
+                    if (p.Id == "scrum") { score += 10; reason = "检测到敏捷项目管理需求"; }
+                }
+
+                if (score > 0)
+                    personaMatches.Add((p, score, reason));
+            }
+
+            var bestPersona = personaMatches.OrderByDescending(x => x.score).FirstOrDefault();
+            RecommendedPersona = bestPersona.score > 0 ? bestPersona.persona : null;
+
+            // ── 主题关键词匹配 ──
+            var themeMatches = new List<(PptThemeOption theme, int score, string reason)>();
+
+            foreach (var t in AllThemes)
+            {
+                var score = 0;
+                var reason = "";
+                var desc = (t.Description ?? "").ToLowerInvariant();
+                var name = (t.DisplayName ?? "").ToLowerInvariant();
+
+                if (MatchesAny(lowerText, "科技", "技术", "架构", "系统", "ai", "人工智能", "数字化"))
+                {
+                    if (t.Id == "tech_blue" || t.Id == "modern_purple" || t.Id == "cyber_neon")
+                    { score += 8; reason = "科技/技术主题匹配"; }
+                }
+                else if (MatchesAny(lowerText, "教育", "课程", "教学", "培训", "学习"))
+                {
+                    if (t.Id == "emerald_green" || t.Id == "scholar_cream")
+                    { score += 8; reason = "教育/学术主题匹配"; }
+                }
+                else if (MatchesAny(lowerText, "金融", "投资", "财务", "银行", "证券"))
+                {
+                    if (t.Id == "golden_luxury" || t.Id == "deep_wine")
+                    { score += 8; reason = "金融/高端主题匹配"; }
+                }
+                else if (MatchesAny(lowerText, "医疗", "健康", "临床", "医学", "生命科学"))
+                {
+                    if (t.Id == "medical_calm")
+                    { score += 8; reason = "医疗健康主题匹配"; }
+                }
+                else if (MatchesAny(lowerText, "政府", "党建", "公文", "公共服务", "政策"))
+                {
+                    if (t.Id == "gov_red")
+                    { score += 8; reason = "政府/公共主题匹配"; }
+                }
+                else if (MatchesAny(lowerText, "营销", "品牌", "推广", "活动", "产品发布"))
+                {
+                    if (t.Id == "warm_orange" || t.Id == "rose_pink")
+                    { score += 8; reason = "营销/品牌主题匹配"; }
+                }
+                else if (MatchesAny(lowerText, "环保", "自然", "可持续", "农业", "生态"))
+                {
+                    if (t.Id == "forest_deep" || t.Id == "ocean_turquoise")
+                    { score += 8; reason = "自然/环保主题匹配"; }
+                }
+                else if (MatchesAny(lowerText, "极简", "简洁", "简约", "冷淡风", "学术"))
+                {
+                    if (t.Id == "nordic_ice" || t.Id == "dark_elegant")
+                    { score += 8; reason = "极简/冷淡主题匹配"; }
+                }
+                else if (MatchesAny(lowerText, "游戏", "电竞", "元宇宙", "赛博", "科幻"))
+                {
+                    if (t.Id == "cyber_neon")
+                    { score += 8; reason = "科技前沿主题匹配"; }
+                }
+                else if (MatchesAny(lowerText, "汇报", "总结", "年终", "述职", "评审"))
+                {
+                    if (t.Id == "tech_blue" || t.Id == "sunset_gradient")
+                    { score += 8; reason = "商务汇报主题匹配"; }
+                }
+
+                if (score > 0)
+                    themeMatches.Add((t, score, reason));
+            }
+
+            var bestTheme = themeMatches.OrderByDescending(x => x.score).FirstOrDefault();
+            RecommendedTheme = bestTheme.score > 0 ? bestTheme.theme : null;
+
+            // ── 生成推荐理由 ──
+            if (RecommendedPersona != null || RecommendedTheme != null)
+            {
+                var reasons = new List<string>();
+                if (bestPersona.score > 0) reasons.Add(bestPersona.reason);
+                if (bestTheme.score > 0) reasons.Add(bestTheme.reason);
+                RecommendationReason = string.Join("，", reasons);
+                ShowRecommendation = true;
+            }
+            else
+            {
+                ShowRecommendation = false;
+            }
+        }
+        finally
+        {
+            IsAnalyzingRecommendation = false;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    //  Phase 1: 跨会话记忆 — 自动提取
+    // ═══════════════════════════════════════════════════════
+
+    /// <summary>
+    /// 对话结束后异步提取关键事实存入用户记忆。
+    /// 灵感：Hermes Agent 的后台自我审查循环 + Mem0 的事实提取管线。
+    /// 采用纯规则提取（零 LLM 成本），覆盖最常见的记忆场景。
+    /// </summary>
+    private async Task ExtractAndStoreMemoryAsync(string userMessage, string assistantResponse)
+    {
+        if (_userMemory is null || !_appSettings.MemoryEnabled || !_appSettings.MemoryAutoExtract)
+            return;
+
+        try
+        {
+            var entries = new List<(string content, string category, string source)>();
+            var userLower = userMessage.ToLowerInvariant();
+
+            // ── 规则 1: 用户纠正（"不要"、"别用"、"以后用"、"改为"） ──
+            if (MatchesAny(userLower, "不要", "别用", "别再", "以后用", "改为", "换成", "请用", "记住"))
+            {
+                // 提取纠正内容：取用户消息的前 200 字符作为记忆
+                var memContent = userMessage.Length > 200 ? userMessage[..200] + "…" : userMessage;
+                entries.Add((memContent, "memory", "manual"));
+            }
+
+            // ── 规则 2: 用户偏好表达（"我更喜欢"、"我希望"、"请总是"） ──
+            if (MatchesAny(userLower, "我更喜欢", "我喜欢", "我希望", "请总是", "每次都", "默认用"))
+            {
+                var memContent = userMessage.Length > 200 ? userMessage[..200] + "…" : userMessage;
+                entries.Add((memContent, "user", "manual"));
+            }
+
+            // ── 规则 3: 环境/项目信息（"我的项目在"、"这台机器"、"使用的是"） ──
+            if (MatchesAny(userLower, "我的项目", "这台机器", "使用的是", "操作系统", "电脑是"))
+            {
+                var memContent = userMessage.Length > 200 ? userMessage[..200] + "…" : userMessage;
+                entries.Add((memContent, "memory", "auto"));
+            }
+
+            // ── 规则 4: 人名/组织信息（"我是"、"我在"、"我们公司"） ──
+            if (MatchesAny(userLower, "我是", "我在", "我们公司", "我们团队", "我叫"))
+            {
+                var memContent = userMessage.Length > 150 ? userMessage[..150] + "…" : userMessage;
+                entries.Add((memContent, "user", "auto"));
+            }
+
+            // ── 规则 5: 助手回答中的关键结论（以"总结"、"结论"、"建议"开头的段落） ──
+            if (!string.IsNullOrWhiteSpace(assistantResponse))
+            {
+                var lines = assistantResponse.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                foreach (var line in lines)
+                {
+                    var trimmed = line.TrimStart('#', ' ', '-', '*');
+                    if (trimmed.Length > 20 && trimmed.Length < 200 &&
+                        MatchesAny(trimmed.ToLowerInvariant(), "总结", "结论", "建议", "关键", "核心"))
+                    {
+                        entries.Add((trimmed, "memory", "auto"));
+                    }
+                }
+            }
+
+            // 去重并存储（每轮最多存 3 条，避免记忆膨胀）
+            int stored = 0;
+            foreach (var (content, category, source) in entries.DistinctBy(e => e.content))
+            {
+                if (stored >= 3) break;
+                if (await _userMemory.AddAsync(content, category, source))
+                {
+                    stored++;
+                }
+            }
+
+            if (stored > 0)
+            {
+                DebugLog.Info($"记忆自动提取: 新增 {stored} 条（来源: {string.Join(",", entries.Take(stored).Select(e => e.source))}）", "Memory");
+            }
+        }
+        catch (Exception ex)
+        {
+            // 记忆提取失败不阻断对话
+            DebugLog.Warn($"记忆提取异常（不阻断对话）: {ex.Message}", "Memory");
+        }
+    }
+
+    /// <summary>手动将一条消息保存为记忆（供 UI "记住这个" 菜单调用）。</summary>
+    public async Task RememberMessageAsync(ChatMessage message)
+    {
+        if (_userMemory is null || message.Content.Length < 5) return;
+        var content = message.Content.Length > 300 ? message.Content[..300] + "…" : message.Content;
+        var category = message.IsUser ? "user" : "memory";
+        if (await _userMemory.AddAsync(content, category, "manual"))
+        {
+            _notifications?.Success("已记住这条内容", "记忆");
+            StatusMessage = "已保存到用户记忆";
+        }
+        else
+        {
+            _notifications?.Info("该内容已在记忆中或容量已满", "记忆");
+        }
+    }
+
+    /// <summary>获取记忆统计信息（供 UI 展示）。</summary>
+    public async Task<Models.MemoryStats?> GetMemoryStatsAsync()
+    {
+        if (_userMemory is null) return null;
+        try { return await _userMemory.GetStatsAsync(); }
+        catch { return null; }
+    }
+
+    // ── 反馈循环（Phase 4） ──
+
+    /// <summary>用户对助手回答点赞。</summary>
+    public async Task ThumbsUpAsync(ChatMessage message)
+    {
+        if (_feedback is null || message.Role != "assistant") return;
+        var msgId = GetStableMessageId(message);
+        var query = Messages.LastOrDefault(m => m.Role == "user")?.Content;
+        await _feedback.SubmitFeedbackAsync(msgId, "up",
+            chatId: _chatId, querySnapshot: query, responseSnapshot: message.Content);
+        _notifications?.Success("感谢您的反馈！", "反馈");
+        StatusMessage = "已记录好评 👍";
+    }
+
+    /// <summary>用户对助手回答点踩，并可附带纠正文本。</summary>
+    public async Task ThumbsDownAsync(ChatMessage message, string? correction = null)
+    {
+        if (_feedback is null || message.Role != "assistant") return;
+        var msgId = GetStableMessageId(message);
+        var query = Messages.LastOrDefault(m => m.Role == "user")?.Content;
+        await _feedback.SubmitFeedbackAsync(msgId, "down",
+            correction: correction, chatId: _chatId,
+            querySnapshot: query, responseSnapshot: message.Content);
+        _notifications?.Info("已记录反馈，我们会持续改进", "反馈");
+        StatusMessage = "已记录差评 👎";
+        // 达到阈值时触发自动分析，提取经验教训存入记忆
+        try
+        {
+            if (_userMemory is not null && await _feedback.ShouldAnalyzeAsync())
+            {
+                var added = await _feedback.AnalyzeAndStoreInsightsAsync(_userMemory);
+                if (added > 0)
+                {
+                    DebugLog.Info($"反馈自动分析：新增 {added} 条经验到记忆", "Feedback");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"反馈分析异常（不阻断对话）: {ex.Message}", "Feedback");
+        }
+    }
+
+    /// <summary>获取反馈统计（供 UI 展示）。</summary>
+    public async Task<FeedbackStats?> GetFeedbackStatsAsync()
+    {
+        if (_feedback is null) return null;
+        try { return await _feedback.GetStatsAsync(); }
+        catch { return null; }
+    }
+
+    /// <summary>生成消息的稳定 ID（用于反馈关联）。</summary>
+    private static string GetStableMessageId(ChatMessage msg)
+    {
+        // 用内容哈希 + 时间戳作为稳定 ID
+        var contentHash = msg.Content.GetHashCode().ToString("X8");
+        return $"msg_{contentHash}_{msg.Content.Length}";
+    }
+
+    private static bool MatchesAny(string text, params string[] keywords)
+    {
+        return keywords.Any(k => text.Contains(k, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>是否开启实时联网搜索（持久化：勾选状态重启后保持）。</summary>
@@ -1715,13 +2531,30 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
-    public ChatViewModel(IDoc2kbApiService apiService, NotificationService? notifications = null, AppSettings? appSettings = null)
+    // ── 跨会话记忆（Phase 1） ──
+    private readonly UserMemoryService? _userMemory;
+    private readonly SessionSearchService? _sessionSearch;
+    // ── 成本追踪（Phase 3） ──
+    private readonly CostTracker? _costTracker;
+    // ── 反馈循环（Phase 4） ──
+    private readonly FeedbackService? _feedback;
+
+    public ChatViewModel(IDoc2kbApiService apiService, NotificationService? notifications = null, AppSettings? appSettings = null,
+        UserMemoryService? userMemory = null, SessionSearchService? sessionSearch = null,
+        CostTracker? costTracker = null, FeedbackService? feedback = null)
     {
         _apiService = apiService;
         _notifications = notifications;
         _appSettings = appSettings ?? new AppSettings();
+        _userMemory = userMemory;
+        _sessionSearch = sessionSearch;
+        _costTracker = costTracker;
+        _feedback = feedback;
         Title = "对话";
         _selectedPersona = AvailablePersonas[0];
+
+        // 合并内置 + 用户自定义的角色与主题
+        MergeCustomItems();
 
         Collections = new ObservableCollection<CollectionItem>();
         Collections.CollectionChanged += (_, e) =>
@@ -1788,6 +2621,12 @@ public partial class ChatViewModel : ViewModelBase
 
         // 恢复上次勾选的「联网搜索」状态（持久化字段，避免每次启动重新勾选）
         _isWebSearchEnabled = _appSettings.EnableWebSearch;
+
+        // 恢复上次拖动的右侧抽屉宽度（直接读字段、不走 setter，避免构造期触发落盘）
+        // 配置文件被手改成越界值时钳制回合法区间；默认 380。
+        _sourceDrawerWidth = System.Math.Clamp(
+            _appSettings.ChatDrawerWidth > 0 ? _appSettings.ChatDrawerWidth : DefaultSourceDrawerWidth,
+            MinSourceDrawerWidth, MaxSourceDrawerWidth);
 
         Messages.CollectionChanged += (_, _) =>
         {
@@ -2052,6 +2891,20 @@ public partial class ChatViewModel : ViewModelBase
     {
         PendingAttachments.Clear();
         OnPropertyChanged(nameof(HasPendingAttachments));
+        OnPropertyChanged(nameof(HasInput));
+        SendCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>清除输入框内容与待发附件（仅作用于本次输入，不影响对话历史）。</summary>
+    [RelayCommand]
+    private void ClearInput()
+    {
+        InputText = string.Empty;
+        if (PendingAttachments.Count > 0)
+        {
+            PendingAttachments.Clear();
+            OnPropertyChanged(nameof(HasPendingAttachments));
+        }
         OnPropertyChanged(nameof(HasInput));
         SendCommand.NotifyCanExecuteChanged();
     }
@@ -2549,6 +3402,12 @@ public partial class ChatViewModel : ViewModelBase
             "table" => "请以结构化 Markdown 表格形式，全方位对比各方案的优缺点、适用场景与成本效益：\n",
             "polish" => "请将以下草稿按严谨专业的企业公文与技术汇报规范进行润色重构：\n",
             "pitfall" => "请对以下方案进行专家级把关评审，列出潜在风险点、性能隐患与避坑防范建议：\n",
+            "faq" => "请基于上述知识库资料，提炼整理一份高频 FAQ 常见问题解答手册（每个问题附带清晰、简洁、可直接执行的回答）：\n",
+            "swot" => "请对上述主题或方案进行深入的 SWOT 分析（优势、劣势、机会、威胁），并据此给出战略建议与落地行动项：\n",
+            "roadmap" => "请基于上述知识库资料，设计一份清晰的项目/产品发展路线图（按阶段划分里程碑、关键产出物、负责人与时间节点）：\n",
+            "case" => "请从知识库中提取关键案例，撰写一份结构化的成功案例分析报告（背景、挑战、方案、成效、可复制经验）：\n",
+            "mindmap" => "请对上述内容进行结构化梳理，输出一份层次分明的思维导图大纲（核心主题→子主题→关键要点，用 Markdown 缩进表示层级）：\n",
+            "interview" => "请基于上述资料，生成一份深度访谈/专家问答稿（含背景介绍、核心问题链、追问逻辑与总结要点）：\n",
             _ => string.Empty
         };
 
@@ -2576,6 +3435,118 @@ public partial class ChatViewModel : ViewModelBase
         {
             InputText = prefix + InputText;
         }
+    }
+
+    // ==================== PPT 定制偏好（创作前置征询） ====================
+    // 设计意图：把「用途 / 篇幅 / 配色 / 必含要点」等创作决策前移到生成之前，
+    // 避免 LLM 先自由发挥、用户只能在事后用主题下拉补救（事后微调成本高且难救回内容结构）。
+    private bool _isPptPrefsOpen;
+    private string _pptPurpose = "工作汇报评审";
+    private string _pptLength = "标准 10-14 页";
+    private string _pptMustInclude = string.Empty;
+    private PptThemeOption? _pptPrefTheme;
+
+    /// <summary>PPT 定制偏好弹窗是否展开。</summary>
+    public bool IsPptPrefsOpen
+    {
+        get => _isPptPrefsOpen;
+        set => SetProperty(ref _isPptPrefsOpen, value);
+    }
+
+    /// <summary>可选用途场景。</summary>
+    public IReadOnlyList<string> PptPurposeOptions { get; } = new[]
+    {
+        "工作汇报评审", "客户提案 / 商务推介", "课程教学 / 培训", "项目技术方案", "通用知识分享"
+    };
+
+    /// <summary>选中的用途场景。</summary>
+    public string PptPurpose
+    {
+        get => _pptPurpose;
+        set => SetProperty(ref _pptPurpose, value);
+    }
+
+    /// <summary>可选篇幅档位。</summary>
+    public IReadOnlyList<string> PptLengthOptions { get; } = new[]
+    {
+        "精简 6-8 页", "标准 10-14 页", "详尽 16-22 页"
+    };
+
+    /// <summary>选中的篇幅档位。</summary>
+    public string PptLength
+    {
+        get => _pptLength;
+        set => SetProperty(ref _pptLength, value);
+    }
+
+    /// <summary>必须包含的内容要点（选填）。</summary>
+    public string PptMustInclude
+    {
+        get => _pptMustInclude;
+        set => SetProperty(ref _pptMustInclude, value);
+    }
+
+    /// <summary>偏好的主题配色（会写进 artifact 的 theme 属性，决定前端预览配色）。</summary>
+    public PptThemeOption? PptPrefTheme
+    {
+        get => _pptPrefTheme;
+        set => SetProperty(ref _pptPrefTheme, value);
+    }
+
+    /// <summary>打开 PPT 定制偏好弹窗（只征询，不立即发送）。</summary>
+    [RelayCommand]
+    private void OpenPptPrefs()
+    {
+        PptPrefTheme ??= SelectedTheme;
+        PptMustInclude = string.Empty;
+        IsPptPrefsOpen = true;
+    }
+
+    /// <summary>放弃定制。</summary>
+    [RelayCommand]
+    private void CancelPptPrefs()
+    {
+        IsPptPrefsOpen = false;
+    }
+
+    /// <summary>确认定制：把偏好编译成强约束提示词填入输入框，由用户审阅后再自行发送。</summary>
+    [RelayCommand]
+    private void ConfirmPptPrefs()
+    {
+        var theme = PptPrefTheme ?? SelectedTheme;
+        var prompt = BuildPptPrompt(theme);
+        InputText = string.IsNullOrWhiteSpace(InputText)
+            ? prompt
+            : InputText.TrimEnd() + "\n\n" + prompt;
+        IsPptPrefsOpen = false;
+        StatusMessage = "已生成 PPT 定制提示词，确认无误后发送即可";
+    }
+
+    /// <summary>把定制偏好编译为一份结构化提示词。其中的格式约定与前端
+    /// ArtifactRegex 及幻灯片切片解析规则严格对应，确保产出可被工作台正确渲染成幻灯片。</summary>
+    private string BuildPptPrompt(PptThemeOption theme)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("请依托上述知识库资料，为我制作一份专业汇报 PPT 演示文稿。");
+        sb.AppendLine();
+        sb.AppendLine("【创作要求】");
+        sb.AppendLine($"- 用途场景：{PptPurpose}");
+        sb.AppendLine($"- 篇幅要求：{PptLength}（须含封面页与目录页）");
+        sb.AppendLine($"- 配色主题：{theme.DisplayName}（theme id 固定为 {theme.Id}）");
+        if (!string.IsNullOrWhiteSpace(PptMustInclude))
+        {
+            sb.AppendLine($"- 必须包含以下内容要点：{PptMustInclude.Trim()}");
+        }
+        sb.AppendLine();
+        sb.AppendLine("【输出格式硬性要求】");
+        sb.AppendLine($"1. 整份内容必须用 :::artifact type=\"pptx\" title=\"...\" theme=\"{theme.Id}\" 包裹，结尾用 ::: 收束；theme 必须原样写 {theme.Id}，不要替换成其他主题。");
+        sb.AppendLine("2. 每一页之间用单独一行的 --- 分隔。");
+        sb.AppendLine("3. 每页第一行用 `# 页面标题`；封面页可再补一行 `## 副标题`。");
+        sb.AppendLine("4. 正文要点每行以 `- ` 开头，单页 3-6 条，避免文字过密。");
+        sb.AppendLine("5. 每页末尾用 `<!-- note: 本页演讲备注 -->` 给出演讲者要说的话。");
+        sb.AppendLine("6. 并列模块用 `### 卡片标题` 生成卡片板式；数据指标页用 `<!-- layout: metrics -->`。");
+        sb.AppendLine("7. 除备注外不要输出额外解释文字，全部内容放进 artifact 块内。");
+        return sb.ToString();
     }
 
     /// <summary>重新生成最后一条回答：移除末尾 assistant 消息后重发最后一条用户问题（保留 chatId 多轮上下文）。</summary>
@@ -2690,6 +3661,25 @@ public partial class ChatViewModel : ViewModelBase
                 $"collections=[{string.Join(",", selected)}] chatId='{_chatId ?? "-"}' model='{(SelectedModel == DefaultModelLabel ? "-" : SelectedModel)}' persona='{SelectedPersona?.Id ?? "-"}' msgCount={Messages.Count} attachCount={attachments.Count}",
                 "Chat");
             ChatStreamResult? final = null;
+
+            // ── Phase 1: 记忆注入 ──
+            // 在发送前搜索相关记忆，注入到用户消息中（不修改原始 query，仅构建增强消息）
+            var memoryContext = string.Empty;
+            if (_userMemory is { } mem && _appSettings.MemoryEnabled)
+            {
+                try
+                {
+                    memoryContext = await mem.BuildSystemPromptInjectionAsync(query);
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Warn($"记忆搜索失败（不阻断对话）: {ex.Message}", "Memory");
+                }
+            }
+            // 构建增强后的查询（记忆上下文追加到原始查询末尾）
+            var enhancedQuery = string.IsNullOrEmpty(memoryContext)
+                ? query
+                : $"{query}\n{memoryContext}";
             // 正文引用角标 [n] 点击 → 打开对应来源抽屉
             assistantMsg.SourceMarkerRequested += index =>
             {
@@ -2717,7 +3707,7 @@ public partial class ChatViewModel : ViewModelBase
             await _apiService.ChatStreamAsync(
                 new ChatRequest
                 {
-                    Query = query,
+                    Query = enhancedQuery,
                     Collections = selected.Count > 0 ? selected : null,
                     // TopK 不传（null）：由后端按设置页的 rag_top_k 决定，
                     // 避免对话页硬编码 5 覆盖用户配置（此前设置页改引用数无效）
@@ -2901,6 +3891,30 @@ public partial class ChatViewModel : ViewModelBase
                 }
 
                 StatusMessage = $"模型: {final.Model} ({final.Provider}) · 引用 {final.TotalChunks} 块 · 耗时 {final.ElapsedMs}ms";
+
+                // ── Phase 1: 异步提取记忆（不阻断 UI） ──
+                _ = Task.Run(async () => await ExtractAndStoreMemoryAsync(query, assistantMsg.Content));
+
+                // ── Phase 3: 异步记录费用（不阻断 UI） ──
+                if (_costTracker is { } tracker && !string.IsNullOrEmpty(final.Model))
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            // 后端未返回 token 数时用帧计数估算
+                            var promptEstimate = query.Length / 4; // 粗估 prompt tokens
+                            await tracker.LogCallAsync(
+                                final.Model, final.Provider ?? "",
+                                promptEstimate, tokenCount,
+                                chatId: final.ChatId);
+                        }
+                        catch (Exception ex)
+                        {
+                            DebugLog.Warn($"费用记录失败（不阻断对话）: {ex.Message}", "Cost");
+                        }
+                    });
+                }
                 DebugLog.Info($"对话完成(流式): elapsed={final.ElapsedMs}ms model={final.Model} chunks={final.TotalChunks} sources={final.Sources.Count} chatId='{final.ChatId}' partial={final.Partial}", "Chat");
 
                 // 新会话首条回答完成 → 刷新会话列表（标题/条数已生成），选中当前会话
@@ -3018,6 +4032,8 @@ public partial class ChatViewModel : ViewModelBase
             IsBusy = false;
             ShowStopChanged();
             OnPropertyChanged(nameof(HasMessages));
+            // 对话完成后智能推荐最佳角色与主题
+            AnalyzeAndRecommend();
         }
     }
 
@@ -3258,6 +4274,7 @@ public partial class ChatViewModel : ViewModelBase
 
     private SourceRef? _selectedSource;
     private bool _isSourceDrawerOpen;
+    private double _sourceDrawerWidth;
     private ArtifactItem? _selectedArtifact;
     private int _currentSlideIndex;
     private bool _isArtifactMode;
@@ -3273,6 +4290,7 @@ public partial class ChatViewModel : ViewModelBase
                 OnPropertyChanged(nameof(HasSelectedArtifact));
                 OnPropertyChanged(nameof(SelectedArtifactTitle));
                 OnPropertyChanged(nameof(SelectedSlide));
+                OnPropertyChanged(nameof(HasSelectedSlide));
                 OnPropertyChanged(nameof(SlideCountText));
                 OnPropertyChanged(nameof(CanPrevSlide));
                 OnPropertyChanged(nameof(CanNextSlide));
@@ -3280,11 +4298,43 @@ public partial class ChatViewModel : ViewModelBase
                 OnPropertyChanged(nameof(IsDocArtifact));
                 OnPropertyChanged(nameof(IsExcelArtifact));
                 OnPropertyChanged(nameof(IsHtmlArtifact));
+
+                // 统一同步入口：无论从消息卡片还是横排清单切换创作物，
+                // 都保证页码归位、配色主题与该 artifact 自带的 theme 对齐。
+                CurrentSlideIndex = 0;
+                if (value != null && !string.IsNullOrWhiteSpace(value.Theme))
+                {
+                    var matchedTheme = AvailableThemes.FirstOrDefault(t => string.Equals(t.Id, value.Theme, StringComparison.OrdinalIgnoreCase));
+                    if (matchedTheme != null) SelectedTheme = matchedTheme;
+                }
             }
         }
     }
 
     public bool HasSelectedArtifact => SelectedArtifact != null;
+
+    // ==================== 本会话创作物清单（工作台横排管理台） ====================
+    // 一次会话常产出多个交付物（PPT + 研报 + 看板），只预览单个 artifact 会让用户在
+    // 消息流里来回翻找。这里把本会话全部 artifact 聚合成清单，支持在工作台内直接切换。
+    /// <summary>本会话已产出的全部创作物。</summary>
+    public ObservableCollection<ArtifactItem> SessionArtifacts { get; } = new();
+
+    /// <summary>本会话是否存在多个创作物（决定横排清单是否显示）。</summary>
+    public bool HasMultipleArtifacts => SessionArtifacts.Count > 1;
+
+    /// <summary>扫描全部消息，重建本会话创作物清单。</summary>
+    private void RefreshSessionArtifacts()
+    {
+        SessionArtifacts.Clear();
+        foreach (var m in Messages)
+        {
+            if (m.Artifact != null && !SessionArtifacts.Contains(m.Artifact))
+            {
+                SessionArtifacts.Add(m.Artifact);
+            }
+        }
+        OnPropertyChanged(nameof(HasMultipleArtifacts));
+    }
     public string SelectedArtifactTitle => SelectedArtifact?.Title ?? "创作交付物";
     public bool IsPptArtifact => SelectedArtifact?.IsPpt == true;
     public bool IsDocArtifact => SelectedArtifact?.IsDoc == true;
@@ -3300,6 +4350,7 @@ public partial class ChatViewModel : ViewModelBase
             if (SetProperty(ref _currentSlideIndex, value))
             {
                 OnPropertyChanged(nameof(SelectedSlide));
+                OnPropertyChanged(nameof(HasSelectedSlide));
                 OnPropertyChanged(nameof(SlideCountText));
                 OnPropertyChanged(nameof(CanPrevSlide));
                 OnPropertyChanged(nameof(CanNextSlide));
@@ -3313,8 +4364,8 @@ public partial class ChatViewModel : ViewModelBase
             ? slides[CurrentSlideIndex]
             : null;
 
-            /// <summary>是否存在可预览的当前幻灯片页（无则预览卡显示空状态提示）。</summary>
-            public bool HasSelectedSlide => SelectedSlide != null;
+    /// <summary>是否存在可预览的当前幻灯片页（无则预览卡显示空状态提示）。</summary>
+    public bool HasSelectedSlide => SelectedSlide != null;
 
             /// <summary>幻灯片页码文案（如 "1 / 8"）。</summary>
     public string SlideCountText => SelectedArtifact?.Slides is { Count: > 0 } slides
@@ -3376,14 +4427,73 @@ public partial class ChatViewModel : ViewModelBase
         set => SetProperty(ref _isSourceDrawerOpen, value);
     }
 
-    /// <summary>5 套企业级演示文稿主题配色。</summary>
+    /// <summary>右侧协同抽屉允许的最小/最大宽度（像素），与 ChatView 抽屉 Border 的
+    /// MinWidth/MaxWidth 约束保持一致（双重保险，避免两处区间漂移）。</summary>
+    public const double MinSourceDrawerWidth = 240;
+    public const double MaxSourceDrawerWidth = 720;
+    public const double DefaultSourceDrawerWidth = 380;
+
+    /// <summary>右侧协同抽屉的宽度（像素）。用户拖动左边缘把手后由 ChatView 回写此处，
+    /// 立即钳制到 240~720 并落盘到 AppSettings.ChatDrawerWidth，下次启动自动还原。</summary>
+    public double SourceDrawerWidth
+    {
+        get => _sourceDrawerWidth;
+        set
+        {
+            var clamped = System.Math.Clamp(value, MinSourceDrawerWidth, MaxSourceDrawerWidth);
+            if (SetProperty(ref _sourceDrawerWidth, clamped))
+            {
+                // 仅更新内存快照：拖动过程中每帧都会走到这里，而 Save() 内含
+                // DPAPI 加密（SecretProtector.Protect），逐帧调用会造成明显卡顿，
+                // 故落盘交由 PersistSourceDrawerWidth 在拖动结束时执行一次。
+                _appSettings.ChatDrawerWidth = clamped;
+            }
+        }
+    }
+
+    /// <summary>把当前抽屉宽度落盘到 appsettings.json。
+    /// 由 ChatView 在拖动结束（Thumb.DragCompleted）时调用一次，避免拖动过程逐帧写盘。</summary>
+    public void PersistSourceDrawerWidth()
+    {
+        _appSettings.ChatDrawerWidth = _sourceDrawerWidth;
+        try
+        {
+            _appSettings.Save();
+        }
+        catch
+        {
+            // 落盘失败不阻断对话（与联网搜索开关一致：UI 状态优先）
+        }
+    }
+
+    /// <summary>18 套企业级演示文稿主题配色，覆盖主流与细分场景。</summary>
     public IReadOnlyList<PptThemeOption> AvailableThemes { get; } = new List<PptThemeOption>
     {
+        // ── 通用商务 ──
         new("tech_blue", "🔷 科技商务蓝", "🔷", "深邃稳健，架构汇报首选", "#0F4C81", "#F6F8FC"),
         new("emerald_green", "🌿 清新自然绿", "🌿", "战略规划、ESG 与教育", "#1B4D3E", "#F4F7F5"),
         new("modern_purple", "🟣 AI 智能紫", "🟣", "前沿创新、未来科技", "#4A148C", "#F7F5FD"),
         new("warm_orange", "🔶 活力暖橙红", "🔶", "商业营销与成果战报", "#B73225", "#FEF8F6"),
         new("dark_elegant", "⬛ 极简暗黑风", "⬛", "沉浸发布会、极客科技", "#60A5FA", "#181A20"),
+        // ── 时尚 / 创意 ──
+        new("rose_pink", "🩷 浪漫玫瑰粉", "🩷", "时尚品牌、产品发布与活动策划", "#BE185D", "#FDF2F8"),
+        new("candy_bright", "🍬 糖果明快", "🍬", "活泼创意、团队协作与内部培训", "#C026D3", "#FDF4FF"),
+        // ── 自然 / 环保 ──
+        new("ocean_turquoise", "🐬 海洋碧蓝", "🐬", "清新通透、科技产品与海洋生态", "#0E7490", "#F0FDFA"),
+        new("forest_deep", "🌲 深林墨绿", "🌲", "自然环保、农业与可持续发展", "#065F46", "#ECFDF5"),
+        new("earth_warm", "🪨 大地暖岩", "🪨", "建筑材料、地质勘探与户外运动", "#78350F", "#FFFBEB"),
+        // ── 金融 / 奢华 ──
+        new("golden_luxury", "✨ 奢华金棕", "✨", "高端金融、奢侈品与年度盛典", "#92400E", "#FFFBEB"),
+        new("deep_wine", "🍷 醇酿酒红", "🍷", "高端商务晚宴、品牌联名与尊享活动", "#7F1D1D", "#FEF2F2"),
+        // ── 医疗 / 学术 ──
+        new("medical_calm", "🏥 医疗清蓝", "🏥", "医疗健康、临床研究与生命科学", "#1E40AF", "#EFF6FF"),
+        new("scholar_cream", "📚 学术象牙", "📚", "论文答辩、学术会议与期刊发表", "#78350F", "#FFFBEB"),
+        // ── 政府 / 公共 ──
+        new("gov_red", "🏛️ 庄重中国红", "🏛️", "政府公文、党建汇报与公共服务", "#991B1B", "#FEF2F2"),
+        // ── 科技 / 前沿 ──
+        new("cyber_neon", "🤖 赛博霓虹", "🤖", "游戏电竞、元宇宙与前沿科技发布会", "#06B6D4", "#0F172A"),
+        new("sunset_gradient", "🌅 日落渐变", "🌅", "温暖叙事、品牌故事与年终总结", "#DC2626", "#FFF7ED"),
+        new("nordic_ice", "🧊 北欧冰川", "🧊", "极简冷淡风、学术会议与研究报告", "#334155", "#F8FAFC"),
     };
 
     private PptThemeOption? _selectedTheme;
@@ -3392,7 +4502,51 @@ public partial class ChatViewModel : ViewModelBase
     public PptThemeOption SelectedTheme
     {
         get => _selectedTheme ?? AvailableThemes[0];
-        set => SetProperty(ref _selectedTheme, value ?? AvailableThemes[0]);
+        set
+        {
+            if (SetProperty(ref _selectedTheme, value ?? AvailableThemes[0]))
+            {
+                RefreshSlideThemeBrushes();
+            }
+        }
+    }
+
+    // ---- 前端预览 / 放映专用主题画笔 ----
+    // 导出与网页放映由后端按主题 id 渲染配色，而前端此前一直用应用全局主色，
+    // 导致切换「配色主题」下拉时预览纹丝不动、只有导出的文件变色（三个出口不同步）。
+    private Brush? _slideAccentBrush;
+    private Brush? _slideAccentSoftBrush;
+
+    /// <summary>当前 PPT 主题主色画笔（标题、装饰条、卡片边框）。</summary>
+    public Brush SlideAccentBrush => _slideAccentBrush ??= ParseThemeBrush(SelectedTheme.PrimaryHex, "#2563EB");
+
+    /// <summary>当前 PPT 主题浅色底画笔（板式徽章等强调块背景）。</summary>
+    public Brush SlideAccentSoftBrush => _slideAccentSoftBrush ??= ParseThemeBrush(SelectedTheme.BgHex, "#EFF6FF");
+
+    private static Brush ParseThemeBrush(string? hex, string fallbackHex)
+    {
+        if (!string.IsNullOrWhiteSpace(hex))
+        {
+            try
+            {
+                var c = (Color)ColorConverter.ConvertFromString(hex!);
+                return new SolidColorBrush(c);
+            }
+            catch
+            {
+                // 主题色非法时落回默认，不让整个预览崩掉
+            }
+        }
+        return new SolidColorBrush((Color)ColorConverter.ConvertFromString(fallbackHex));
+    }
+
+    /// <summary>主题变更后重建画笔并广播，令预览 / 放映 / 导出三处配色保持一致。</summary>
+    private void RefreshSlideThemeBrushes()
+    {
+        _slideAccentBrush = ParseThemeBrush(SelectedTheme.PrimaryHex, "#2563EB");
+        _slideAccentSoftBrush = ParseThemeBrush(SelectedTheme.BgHex, "#EFF6FF");
+        OnPropertyChanged(nameof(SlideAccentBrush));
+        OnPropertyChanged(nameof(SlideAccentSoftBrush));
     }
 
     /// <summary>打开创作物画布抽屉。</summary>
@@ -3405,6 +4559,9 @@ public partial class ChatViewModel : ViewModelBase
 
         if (item != null)
         {
+            // 打开工作台前先重建清单，确保本会话此前产出的其它交付物也能一并切换
+            RefreshSessionArtifacts();
+
             SelectedArtifact = item;
             CurrentSlideIndex = 0;
             IsArtifactMode = true;
@@ -3515,7 +4672,11 @@ public partial class ChatViewModel : ViewModelBase
                 Content = artifact.RawContent,
                 Format = fmt,
                 Title = artifact.Title,
-                Theme = artifact.Theme ?? "tech_blue",
+                // 若该创作物正在工作台中预览，则跟随用户当前选定的主题，
+                // 否则自动导出会停留在 artifact 自带的原始 theme，与随后手动导出/网页放映的配色对不上。
+                Theme = ReferenceEquals(artifact, SelectedArtifact)
+                    ? SelectedTheme.Id
+                    : (artifact.Theme ?? "tech_blue"),
             };
 
             var res = await _apiService.ExportCreativeArtifactAsync(req);

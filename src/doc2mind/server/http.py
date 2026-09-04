@@ -44,7 +44,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from doc2mind.core.config import Settings, _user_data_dir, get_config_load_error, get_settings
+from doc2mind.core.config import (
+    Settings,
+    _user_data_dir,
+    get_config_load_error,
+    get_settings,
+    parse_rrf_weights,
+)
 from doc2mind.core.converter import (
     SUPPORTED_FORMATS,
     ConversionError,
@@ -952,7 +958,9 @@ class _AppState:
                 self.embedder = get_embedder(self.settings)
             if self.store is None:
                 self.store = VectorStore(
-                    self.settings.db_path, self.embedder.dimension
+                    self.settings.db_path, self.embedder.dimension,
+                    bm25_jieba_enabled=self.settings.bm25_jieba_enabled,
+                    sparse_retrieval_enabled=self.settings.sparse_retrieval_enabled,
                 )
                 self.store.open()
             return self.store
@@ -1808,6 +1816,11 @@ def create_app(settings: Settings | None = None) -> Any:
                 embedder=state.embedder,
                 reranker=get_reranker(get_settings()),
                 rerank_recall=get_settings().rerank_recall,
+                rrf_weights=parse_rrf_weights(get_settings().rrf_weights),
+                fusion_mode=get_settings().fusion_mode,
+                rerank_calibration_temperature=(
+                    get_settings().rerank_calibration_temperature
+                ),
             )
             hits, stats = await asyncio.to_thread(
                 retriever.search,

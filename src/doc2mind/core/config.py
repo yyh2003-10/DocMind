@@ -120,6 +120,59 @@ class Settings:
     # 越大越准但越慢；20 对默认 top_k=5 已绰绰有余。
     rerank_recall: int = 20
 
+    # --- 检索升级（召回质量核心）---
+    # 非对称检索查询指令前缀：拼在用户查询前再 embed_query（不动文档嵌入）。
+    # 对 bge 系列（本地/API）可显著提升检索；空 = 不启用。已知 bge-zh 检索指令：
+    # "为这个句子生成表示以用于检索相关文章："
+    query_instruction: str = ""
+    # 检索相关度下限（语义下限）：命中的相关度代理（重排启用时用 rerank_score，
+    # 否则用 max(vector_score, bm25_score)）低于该值则丢弃，top_k 是上限不硬填。
+    # 默认 0.0 = 不启用（向后兼容），建议值由 tools/eval_retrieval.py 输出。
+    semantic_floor: float = 0.0
+    # 邻块上下文（父子检索）：RAG 组装上下文时，把命中 chunk 同源的相邻分块
+    # 一并并入（前后各 N 块），提升回答完整性；0 = 关闭（仅用命中块）。
+    # 检索排序仍以命中为准，邻块仅作补充上下文。
+    neighbor_context_window: int = 1
+    # 中文 BM25：开启后 FTS5 用 jieba 分词（unicode61 tokenizer），显著改善
+    # 2 字中文词召回；切换会触发一次性 FTS5 索引重建。false 保持原 trigram 路径。
+    bm25_jieba_enabled: bool = True
+    # 专家把关/避坑检索的相关度阈值（替代旧的硬编码 0.4；为忠实余弦标尺）。
+    pitfall_min_score: float = 0.30
+    # RRF 融合权重 "vec,bm25[,sparse]"（如 "1,1" 中性向量/BM25；"2,1,1" =
+    # 向量 2、BM25 1、稀疏 1）。第三位为稀疏向量路（D2），须同时开启
+    # sparse_retrieval_enabled 才生效。
+    rrf_weights: str = "1,1"
+    # 融合模式（B3）：
+    #   "rrf"   —— 加权倒数排名融合（默认，对分数尺度不敏感，稳健）
+    #   "score" —— 加权分数融合：score = w_v*vector + w_b*bm25（善用分数信息，
+    #              要求两路分数已校准：忠实余弦 + 归一化 BM25）
+    fusion_mode: str = "rrf"
+    # 重排分校准温度（B3）：展示前对 cross-encoder logits 做温度缩放后再 sigmoid
+    # 归一化，0<T<1 让重排分更陡（更自信的分辨），>1 更平缓（更保守）。
+    # 默认 1.0 = 原 plain sigmoid，向后兼容。用于让 rerank_score 不再被误读为
+    # 严格校准概率，交由评估集按需标定（见 tools/eval_retrieval.py）。
+    rerank_calibration_temperature: float = 1.0
+    # 大语料向量索引量化（B4，实验性）：
+    #   "none" —— float32 存储（默认，最高精度，向后兼容）
+    #   "int8" —— 8 位量化存储（降内存/加速检索），仅当语料规模受益且本机
+    #             sqlite-vec 支持 int8 写入时才实际启用；不支持时自动回退
+    #             float32 并告警，绝不破坏现有库。切到 int8 需重建索引生效。
+    vector_quantize: str = "none"
+    # 查询扩展（C1，LLM 可选）："off" 关闭（默认）| "multi" 多查询 | "hyde" 假设文档
+    # | "both" 二者都要。开启后录入 RAG 检索前用 LLM 生成查询变体/假设文档，分别
+    # 检索后合并去重，提升长尾/多义查询召回。LLM 不可用或调用失败时自动降级为
+    # 单查询（沿用既有容错模式），绝不影响检索可用性。成本由 LLM 计费，仅解锁启用。
+    query_expansion: str = "off"
+    # 上下文检索（C2，LLM 可选）：True 时在嵌入 chunk 前拼上文档级摘要前缀
+    # [文档摘要]...，改善长文档/跨章节召回（Anthropic Contextual Retrieval 本地化）。
+    # 需文档已含 summary（enrich 生成）且对存量库执行 reindex 重新嵌入生效。
+    contextual_retrieval: bool = False
+    # 稀疏向量召回路（D2）：开启后建独立稀疏倒排索引（sparse_terms），检索时作为
+    # 第三条词法稀疏召回路并入三路融合（RRF/score），提升词法召回冗余。默认关闭
+    # （向后兼容不含 sparse_terms 的旧库）；开启需与 rrf_weights 第三位>0 搭配。
+    # 首次开启会对存量索引一次性回填稀疏词，无需重建向量索引。
+    sparse_retrieval_enabled: bool = False
+
     # 自定义 RAG 系统提示词（人设/回答风格）；None/空 = 用内置默认提示词。
     # 环境变量 DOC2MIND_RAG_SYSTEM_PROMPT 可覆盖。
     rag_system_prompt: str | None = None
@@ -277,6 +330,18 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "curate_dedup_score_threshold",
     "curate_max_chars",
     "curate_auto_max_files",
+    # 检索升级（召回质量核心）
+    "query_instruction",
+    "semantic_floor",
+    "bm25_jieba_enabled",
+    "pitfall_min_score",
+    "rrf_weights",
+    "fusion_mode",
+    "rerank_calibration_temperature",
+    "vector_quantize",
+    "query_expansion",
+    "contextual_retrieval",
+    "sparse_retrieval_enabled",
     # 文件监控
     "watch_paths",
     "watch_debounce_seconds",
@@ -397,6 +462,28 @@ def save_settings(settings: Settings) -> bool:
     # 成功写入后，此前启动时的解析错误已不复存在
     _config_load_error = None
     return True
+
+
+# --- 融合权重解析 ---
+def parse_rrf_weights(value: str) -> tuple[float, float, float]:
+    """把 "vec,bm25[,sparse]" 字符串解析为权重元组，非法输入回退中性 1:1:0。
+
+    例：parse_rrf_weights("2,1") → (2.0, 1.0, 0.0)；
+        parse_rrf_weights("2,1,1") → (2.0, 1.0, 1.0)；
+        parse_rrf_weights("") → (1.0, 1.0, 0.0)。
+    ≤0 会被钳制为 0（完全忽略该路，等价融合模式只由其余路决定）。
+    第三位（稀疏路）未提供默认为 0（不启用，向后兼容）。
+    """
+    try:
+        parts = [p.strip() for p in str(value).split(",")]
+        if len(parts) < 2:
+            return (1.0, 1.0, 0.0)
+        ws = [max(0.0, float(p)) for p in parts[:3]]
+        while len(ws) < 3:
+            ws.append(0.0)
+        return (ws[0], ws[1], ws[2])
+    except (ValueError, TypeError):
+        return (1.0, 1.0, 0.0)
 
 
 # --- 全局单例（惰性）---

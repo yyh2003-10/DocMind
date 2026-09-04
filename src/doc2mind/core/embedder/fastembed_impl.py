@@ -23,6 +23,7 @@ from pathlib import Path
 from doc2mind.core.chunker.base import Chunk
 from doc2mind.core.config import Settings
 from doc2mind.core.embedder.base import Embedder, EmbedderError
+from doc2mind.core.embedder.catalog import get_model_info, resolve_embed_model
 
 logger = logging.getLogger("doc2mind.embedder.fastembed")
 
@@ -186,8 +187,12 @@ class FastEmbedEmbedder(Embedder):
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._impl = None  # 惰性初始化
-        self._model = settings.embed_model
-        self._dim = settings.embed_dim
+        # B1 预设别名解析：`embed_model` 可用友好别名（如 bge-en-large）或完整名。
+        self._model = resolve_embed_model(settings.embed_model)
+        # 初始维度：预设已明确时直接用清单维度（即使 embed_dim 尚未持久化），
+        # 避免积压库在 probe 前就开错维度的 vec 表；probe 后仍会二次校正。
+        _info = get_model_info(self._model)
+        self._dim = _info.dim if _info is not None else settings.embed_dim
         self._providers = _select_providers()
 
     # --- 惰性加载 ---
