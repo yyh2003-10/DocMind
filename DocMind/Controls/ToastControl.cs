@@ -46,12 +46,12 @@ namespace DocMind.Controls
 
         private FrameworkElement CreateToastItem(ToastNotification notification)
         {
-            var (bg, icon) = notification.Type switch
+            var (bg, iconKey) = notification.Type switch
             {
-                ToastType.Success => (new SolidColorBrush(Color.FromRgb(240, 255, 244)), "✓"),
-                ToastType.Warning => (new SolidColorBrush(Color.FromRgb(255, 251, 235)), "⚠"),
-                ToastType.Error => (new SolidColorBrush(Color.FromRgb(255, 245, 245)), "✗"),
-                _ => (new SolidColorBrush(Color.FromRgb(235, 248, 255)), "ℹ"),
+                ToastType.Success => (new SolidColorBrush(Color.FromRgb(240, 255, 244)), "IconCheck"),
+                ToastType.Warning => (new SolidColorBrush(Color.FromRgb(255, 251, 235)), "IconWarning"),
+                ToastType.Error => (new SolidColorBrush(Color.FromRgb(255, 245, 245)), "IconCross"),
+                _ => (new SolidColorBrush(Color.FromRgb(235, 248, 255)), "IconList"),
             };
 
             var accent = notification.Type switch
@@ -59,18 +59,26 @@ namespace DocMind.Controls
                 ToastType.Success => new SolidColorBrush(Color.FromRgb(56, 161, 105)),
                 ToastType.Warning => new SolidColorBrush(Color.FromRgb(214, 158, 46)),
                 ToastType.Error => new SolidColorBrush(Color.FromRgb(229, 62, 62)),
-                _ => new SolidColorBrush(Color.FromRgb(49, 130, 206)),
+                _ => new SolidColorBrush(Color.FromRgb(79, 70, 229)),
             };
 
             var textColor = new SolidColorBrush(Color.FromRgb(26, 32, 44));
 
+            var iconGeometry = (Geometry)Application.Current.FindResource(iconKey);
+
             var stack = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4, 0, 8, 0) };
-            stack.Children.Add(new TextBlock
+            stack.Children.Add(new System.Windows.Shapes.Path
             {
-                Text = icon,
-                FontSize = 15,
-                FontWeight = FontWeights.Bold,
-                Foreground = accent,
+                Data = iconGeometry,
+                Width = 16,
+                Height = 16,
+                Stroke = accent,
+                StrokeThickness = 1.5,
+                Stretch = Stretch.Uniform,
+                StrokeLineJoin = PenLineJoin.Round,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                Fill = Brushes.Transparent,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 8, 0),
             });
@@ -97,11 +105,19 @@ namespace DocMind.Controls
             });
             stack.Children.Add(textStack);
 
-            var closeBtn = new TextBlock
+            var closeIconGeometry = (Geometry)Application.Current.FindResource("IconClose");
+            var closeBtn = new System.Windows.Shapes.Path
             {
-                Text = "✕",
-                FontSize = 11,
-                Foreground = new SolidColorBrush(Color.FromRgb(160, 174, 192)),
+                Data = closeIconGeometry,
+                Width = 12,
+                Height = 12,
+                Stroke = new SolidColorBrush(Color.FromRgb(160, 174, 192)),
+                StrokeThickness = 1.5,
+                Stretch = Stretch.Uniform,
+                StrokeLineJoin = PenLineJoin.Round,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                Fill = Brushes.Transparent,
                 VerticalAlignment = VerticalAlignment.Top,
                 Cursor = System.Windows.Input.Cursors.Hand,
                 Margin = new Thickness(8, 2, 0, 0),

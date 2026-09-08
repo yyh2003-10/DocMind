@@ -1,21 +1,33 @@
-"""表格分块器 — 整表一块，跨页合并。
+"""表格分块器 — 整表一块（超长按行滑窗），跨页合并。
 
 策略：
 1. `type == table` 的元素直接作为一块（保留完整 markdown 表格）
 2. 连续的 `table_row` 元素合并为一块（Excel 加载器输出的逐行元素）
 3. 表格块 metadata 标记 `{type: "table", rows: n, cols: m}`
+4. 超过 `chunk_max_chars` 的超长表格按数据行滑窗切分（表头+分隔行随每个
+   子块保留），避免单个巨 Chunk 反复 join/copy 且被嵌入 512 token 截断丢内容
 
 入口：`TableChunker.chunk(elements) -> list[Chunk]`
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from doc2mind.core.chunker.base import Chunk, Chunker, ChunkerError
+from doc2mind.core.config import Settings
 from doc2mind.core.models import DocumentElement, ElementType
 
 
 class TableChunker(Chunker):
-    """表格分块器：保护整表完整，连续 table_row 合并。"""
+    """表格分块器：保护整表完整，连续 table_row 合并，超长按行滑窗。"""
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        if settings is None:
+            from doc2mind.core.config import get_settings
+
+            settings = get_settings()
+        self.settings = settings
 
     def chunk(self, elements: list[DocumentElement]) -> list[Chunk]:
         """提取表格元素，生成 Chunk。
@@ -34,22 +46,23 @@ class TableChunker(Chunker):
             while i < n:
                 el = elements[i]
 
-                # 完整 table 元素 → 直接一块
+                # 完整 table 元素 → 一块（超长按行滑窗）
                 if el.type is ElementType.TABLE:
                     rows = int(el.metadata.get("rows", 0)) or _count_table_rows(el.content)
                     cols = int(el.metadata.get("cols", 0)) or _count_table_cols(el.content)
-                    chunks.append(
-                        Chunk(
-                            content=el.content,
-                            tokens=_estimate_tokens(el.content),
-                            metadata={
-                                **el.metadata,
-                                "type": "table",
-                                "rows": rows,
-                                "cols": cols,
-                            },
+                    for md in _split_table(el.content, self.settings):
+                        chunks.append(
+                            Chunk(
+                                content=md,
+                                tokens=_estimate_tokens(md),
+                                metadata={
+                                    **el.metadata,
+                                    "type": "table",
+                                    "rows": rows,
+                                    "cols": cols,
+                                },
+                            )
                         )
-                    )
                     i += 1
                     continue
 
@@ -67,18 +80,19 @@ class TableChunker(Chunker):
                     if row_texts:
                         md = _rows_to_markdown(row_texts)
                         if md.strip():
-                            chunks.append(
-                                Chunk(
-                                    content=md,
-                                    tokens=_estimate_tokens(md),
-                                    metadata={
-                                        "type": "table",
-                                        "rows": len(row_texts),
-                                        "cols": _count_table_cols(md),
-                                        "sheet": sheet,
-                                    },
+                            for piece in _split_table(md, self.settings):
+                                chunks.append(
+                                    Chunk(
+                                        content=piece,
+                                        tokens=_estimate_tokens(piece),
+                                        metadata={
+                                            "type": "table",
+                                            "rows": len(row_texts),
+                                            "cols": _count_table_cols(md),
+                                            "sheet": sheet,
+                                        },
+                                    )
                                 )
-                            )
                     continue
 
                 # 其他元素跳过（由 SemanticChunker / CodeChunker 处理）
@@ -130,3 +144,48 @@ def _rows_to_markdown(rows: list[str]) -> str:
     sep = "|" + "---|" * col_count
     body = rows[1:] if len(rows) > 1 else []
     return "\n".join([header, sep, *body])
+
+
+def _split_table(md: str, settings: Any) -> list[str]:
+    """超长 markdown 表格按数据行滑窗切分（表头 + 分隔行随每个子块保留）。
+
+    与代码块的滑窗策略一致：`chunk_max_chars` 为单块上限，
+    `chunk_overlap_chars` 为相邻块重叠（行粒度取整）。
+    短表原样返回单块。
+    """
+    max_chars = settings.chunk_max_chars
+    overlap = settings.chunk_overlap_chars
+    if len(md) <= max_chars:
+        return [md]
+
+    lines = md.splitlines()
+    header = lines[0] if lines else ""
+    sep = lines[1] if len(lines) > 1 else ""
+    body = lines[2:] if len(lines) > 2 else []
+
+    pieces: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in body:
+        line_len = len(line) + 1  # +1 for \n
+        if current_len + line_len > max_chars and current:
+            pieces.append("\n".join([header, sep, *current]))
+            # overlap：保留尾部若干行
+            overlap_len = 0
+            keep_from = len(current)
+            for j in range(len(current) - 1, -1, -1):
+                overlap_len += len(current[j]) + 1
+                if overlap_len >= overlap:
+                    keep_from = j
+                    break
+            current = current[keep_from:]
+            current_len = sum(len(item) + 1 for item in current)
+        current.append(line)
+        current_len += line_len
+
+    if current:
+        pieces.append("\n".join([header, sep, *current]))
+
+    stripped = [p for p in pieces if p.strip()]
+    # 兜底：无法按行切（如只有表头）时保持原样，避免丢内容
+    return stripped or [md]

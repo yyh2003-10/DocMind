@@ -25,48 +25,29 @@ echo [✓] 发布产物路径: %ROOT_DIR%\DocMind\bin\Release\net8.0-windows\win
 
 echo.
 echo ============================================================
-echo   [*] 构建后端虚拟环境（core + server 依赖，非 editable）
+echo   [*] 构建便携 Python 运行时（python-runtime\，随包分发到 {app}\python）
+echo   说明：venv 绑定打包机 Python 绝对路径，用户机器上必然失效；
+echo         便携运行时基于 Python embeddable，无任何路径绑定。
 echo ============================================================
 
-echo [*] 检查 Python 3.11 是否可用...
-where python >nul 2>&1
-if %ERRORLEVEL% neq 0 (
-    echo [✗] 未找到 python，请先安装 Python 3.11 并加入 PATH
-    pause
-    exit /b 1
+if exist "python-runtime\python.exe" (
+    echo [✓] python-runtime 已存在，跳过构建（如需重建请先删除该目录）
+) else (
+    where python >nul 2>&1
+    if %ERRORLEVEL% neq 0 (
+        echo [✗] 未找到 python，请先安装 Python 3.11 并加入 PATH（仅打包机需要）
+        pause
+        exit /b 1
+    )
+    call powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup.ps1 -BuildPortableRuntime
+    if %ERRORLEVEL% neq 0 (
+        echo [✗] 便携运行时构建失败
+        pause
+        exit /b 1
+    )
 )
 
-echo [*] 删除旧 .venv-slim-new（若存在）...
-if exist ".venv-slim-new" (
-    rmdir /s /q ".venv-slim-new"
-)
-
-echo [*] 创建新 .venv...
-python -m venv .venv-slim-new
-
-echo [*] 安装 core + server 锁定依赖（清华镜像）...
-call .venv-slim-new\Scripts\python.exe -m pip install -r requirements-core.txt -r requirements-server.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-if %ERRORLEVEL% neq 0 (
-    echo [✗] 依赖安装失败
-    pause
-    exit /b 1
-)
-
-echo [*] 非 editable 模式安装 doc2mind 本身（--no-deps 保住锁定版本）...
-call .venv-slim-new\Scripts\python.exe -m pip install . --no-deps
-if %ERRORLEVEL% neq 0 (
-    echo [✗] doc2mind 安装失败
-    pause
-    exit /b 1
-)
-
-echo [*] 精简 venv（剔除缓存/测试产物）...
-if exist ".venv-slim-new\Lib\site-packages\__pycache__" rmdir /s /q ".venv-slim-new\Lib\site-packages\__pycache__"
-for /d /r ".venv-slim-new" %%d in (__pycache__) do @if exist "%%d" rmdir /s /q "%%d"
-del /s /q ".venv-slim-new\*.pyc" 2>nul
-for /d /r ".venv-slim-new" %%d in (tests) do @if exist "%%d" rmdir /s /q "%%d"
-
-echo [✓] 后端虚拟环境构建完成
+echo [✓] 便携运行时就绪
 
 echo.
 echo ============================================================
@@ -88,7 +69,8 @@ copy "THIRD_PARTY_LICENSES.md" "installer\Output\staging\" >nul
 copy "scripts\setup.ps1" "installer\Output\staging\scripts\" >nul
 copy "scripts\install_optional.py" "installer\Output\staging\scripts\" >nul
 xcopy "DocMind\Assets" "installer\Output\staging\Assets\" /s /e /y /q >nul
-xcopy ".venv-slim-new" "installer\Output\staging\.venv\" /s /e /y /q >nul
+xcopy "python-runtime" "installer\Output\staging\python\" /s /e /y /q >nul
+copy "start.bat" "installer\Output\staging\" >nul
 
 echo [*] 正在压缩为 DocMind-v%APP_VERSION%-win-x64.zip ...
 if exist "installer\Output\DocMind-v%APP_VERSION%-win-x64.zip" del /f /q "installer\Output\DocMind-v%APP_VERSION%-win-x64.zip"

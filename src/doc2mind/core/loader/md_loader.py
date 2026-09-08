@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
 
 from doc2mind.core.loader.base import Loader, LoaderError, make_source
@@ -32,7 +33,11 @@ class MarkdownLoader(Loader):
 
     supported_extensions = ("md", "markdown", "mdx")
 
-    def extract(self, path: Path) -> LoadedDocument:
+    def extract(
+        self,
+        path: Path,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> LoadedDocument:
         try:
             from markdown_it import MarkdownIt
         except ImportError as e:

@@ -42,7 +42,7 @@ def chunk_document(
 
     try:
         code_chunker = CodeChunker(settings)
-        table_chunker = TableChunker()
+        table_chunker = TableChunker(settings)
         semantic_chunker = SemanticChunker(settings)
 
         # 为每个元素分配原文档序号，便于最后重排

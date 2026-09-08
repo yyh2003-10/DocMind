@@ -51,7 +51,7 @@ public static class ToolCallResilience
                         // 第一次失败：放宽 min_score
                         minScore = Math.Max(0, (minScore ?? 0.5) - 0.15);
                         DebugLog.Warn(
-                            $"搜索第 {attempt + 1} 次失败，放宽阈值: min_score={minScore:F2}",
+                            $"搜索第 {attempt + 1} 次失败: {ex.Message}；放宽阈值: min_score={minScore:F2}",
                             "Resilience");
                         break;
                     case 1:
@@ -59,7 +59,7 @@ public static class ToolCallResilience
                         topK = Math.Min(20, topK * 2);
                         minScore = 0; // 完全移除阈值
                         DebugLog.Warn(
-                            $"搜索第 {attempt + 1} 次失败，扩大范围: top_k={topK}, min_score={minScore}",
+                            $"搜索第 {attempt + 1} 次失败: {ex.Message}；扩大范围: top_k={topK}, min_score={minScore}",
                             "Resilience");
                         break;
                 }

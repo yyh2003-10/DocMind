@@ -38,12 +38,14 @@
 
                 <!-- 左侧标题与集合下拉 -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="🕸️ 知识图谱"
-                               FontSize="17"
-                               FontWeight="Bold"
-                               Foreground="{DynamicResource TextPrimaryBrush}"
-                               VerticalAlignment="Center"
-                               Margin="0,0,20,0" />
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,20,0">
+                        <Path Data="{StaticResource IconGraph}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextPrimaryBrush}" Margin="0,0,6,0"/>
+                        <TextBlock Text="知识图谱"
+                                   FontSize="17"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
                     <TextBlock Text="分组过滤:"
                                VerticalAlignment="Center"
                                Foreground="{DynamicResource TextSecondaryBrush}"
@@ -73,13 +75,16 @@
                 <!-- 操作按钮组 -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="14,0,0,0">
                     <Button Command="{Binding LoadGraphCommand}"
-                            Content="🔄 刷新"
                             Width="Auto"
                             Padding="12,6"
                             Height="32"
-                            Margin="0,0,8,0" />
+                            Margin="0,0,8,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Data="{StaticResource IconRefresh}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                            <TextBlock Text="刷新"/>
+                        </StackPanel>
+                    </Button>
                     <Button Command="{Binding ExtractGraphCommand}"
-                            Content="⚡ 抽取图谱"
                             Width="Auto"
                             Padding="12,6"
                             Height="32"
@@ -87,7 +92,12 @@
                             Background="{DynamicResource PrimaryBrush}"
                             Foreground="{DynamicResource TextInverseBrush}"
                             BorderThickness="0"
-                            Cursor="Hand" />
+                            Cursor="Hand">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Data="{StaticResource IconBolt}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextInverseBrush}" Margin="0,0,6,0"/>
+                            <TextBlock Text="抽取图谱"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
 
                 <!-- 统计徽章 -->
@@ -157,24 +167,28 @@
                                 CornerRadius="30"
                                 HorizontalAlignment="Center"
                                 Margin="0,0,0,16">
-                            <TextBlock Text="🕸️" FontSize="28" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Path Data="{StaticResource IconGraph}" Style="{StaticResource IconLgStyle}" Stroke="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <TextBlock Text="知识图谱尚未构建"
                                    Style="{StaticResource TitleText}"
                                    HorizontalAlignment="Center"
                                    Margin="0,0,0,8"/>
-                        <TextBlock Text="当前知识库尚未生成实体与关系网络。&#x0a;请确认已在【设置】中配置 LLM 大模型，并导入文档后点击右上角「⚡ 抽取图谱」即可自动提取实体构建图谱。"
+                        <TextBlock Text="当前知识库尚未生成实体与关系网络。&#x0a;请确认已在【设置】中配置 LLM 大模型，并导入文档后点击右上角「抽取图谱」即可自动提取实体构建图谱。"
                                    Style="{StaticResource BodyText}"
                                    Foreground="{DynamicResource TextSecondaryBrush}"
                                    TextWrapping="Wrap"
                                    TextAlignment="Center"
                                    LineHeight="22"
                                    Margin="0,0,0,20"/>
-                        <Button Content="⚡ 立即抽取图谱"
-                                Command="{Binding ExtractGraphCommand}"
+                        <Button Command="{Binding ExtractGraphCommand}"
                                 Style="{StaticResource PrimaryButtonStyle}"
                                 HorizontalAlignment="Center"
-                                Padding="20,8"/>
+                                Padding="20,8">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconBolt}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextInverseBrush}" Margin="0,0,6,0"/>
+                                <TextBlock Text="立即抽取图谱"/>
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
                 </Border>
 
@@ -189,10 +203,11 @@
                         MaxWidth="520"
                         Visibility="{Binding ShowGraphError, Converter={StaticResource BoolToVisConverter}}">
                     <StackPanel HorizontalAlignment="Center">
-                        <TextBlock Text="⚠️ 图谱加载失败"
-                                   Style="{StaticResource TitleText}"
-                                   HorizontalAlignment="Center"
-                                   Margin="0,0,0,8"/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,8">
+                            <Path Data="{StaticResource IconWarning}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource DangerBrush}" Margin="0,0,6,0"/>
+                            <TextBlock Text="图谱加载失败"
+                                       Style="{StaticResource TitleText}"/>
+                        </StackPanel>
                         <TextBlock Text="{Binding StatusMessage}"
                                    Style="{StaticResource BodyText}"
                                    Foreground="{DynamicResource TextSecondaryBrush}"
@@ -213,12 +228,13 @@
                         Visibility="Collapsed"
                         Padding="40">
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="460">
-                        <TextBlock Text="⚠️ WebView2 运行时未安装"
-                                   FontSize="18"
-                                   FontWeight="Bold"
-                                   Foreground="{DynamicResource WarningBrush}"
-                                   HorizontalAlignment="Center"
-                                   Margin="0,0,0,12" />
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,12">
+                            <Path Data="{StaticResource IconWarning}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource WarningBrush}" Margin="0,0,6,0"/>
+                            <TextBlock Text="WebView2 运行时未安装"
+                                       FontSize="18"
+                                       FontWeight="Bold"
+                                       Foreground="{DynamicResource WarningBrush}" />
+                        </StackPanel>
                         <TextBlock Text="当前系统未检测到 Microsoft Edge WebView2 Runtime，知识图谱可视化暂时无法渲染。"
                                    Foreground="{DynamicResource TextSecondaryBrush}"
                                    FontSize="13"
@@ -244,8 +260,9 @@
                         ToolTip="展开/收起实体工作台"
                         Visibility="{Binding HasGraph, Converter={StaticResource BoolToVisConverter}}">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="📋 实体档案" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,4,0"/>
-                        <TextBlock Text="⇋" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                        <Path Data="{StaticResource IconList}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextPrimaryBrush}" Margin="0,0,4,0"/>
+                        <TextBlock Text="实体档案" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,4,0"/>
+                        <Path Data="{StaticResource IconSwap}" Style="{StaticResource IconSmStyle}"/>
                     </StackPanel>
                 </Button>
             </Grid>
@@ -280,19 +297,22 @@
                     <DockPanel Grid.Row="0" Margin="0,0,0,10">
                         <Button DockPanel.Dock="Right"
                                 Command="{Binding CloseDetailCommand}"
-                                Content="✕"
                                 Width="26"
                                 Height="26"
                                 Background="Transparent"
                                 Foreground="{DynamicResource TextSecondaryBrush}"
                                 BorderThickness="0"
-                                Cursor="Hand"
-                                FontSize="13" />
-                        <TextBlock Text="🕸️ 实体知识档案与 AI 工作台"
-                                   FontSize="15"
-                                   FontWeight="Bold"
-                                   Foreground="{DynamicResource TextPrimaryBrush}"
-                                   VerticalAlignment="Center" />
+                                Cursor="Hand">
+                            <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Button>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IconGraph}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextPrimaryBrush}" Margin="0,0,6,0"/>
+                            <TextBlock Text="实体知识档案与 AI 工作台"
+                                       FontSize="15"
+                                       FontWeight="Bold"
+                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
                     </DockPanel>
 
                     <!-- 主体可滚动区域 -->
@@ -355,18 +375,22 @@
                                     <!-- 快捷操作按钮组 -->
                                     <StackPanel Orientation="Horizontal">
                                         <Button Command="{Binding CopyEntityNameCommand}"
-                                                Content="📋 复制名称"
                                                 Style="{StaticResource SecondaryButtonStyle}"
                                                 FontSize="11"
                                                 Padding="8,3"
                                                 Height="24"
-                                                Margin="0,0,6,0" />
+                                                Margin="0,0,6,0">
+                                            <StackPanel Orientation="Horizontal">
+                                                <Path Data="{StaticResource IconCopy}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                                <TextBlock Text="复制名称"/>
+                                            </StackPanel>
+                                        </Button>
                                     </StackPanel>
                                 </StackPanel>
                             </Border>
 
                             <!-- 2. 本地原著切片速览 (可折叠展示) -->
-                            <Expander Header="📖 本地知识库切片 (Ground Truth)"
+                            <Expander Header="本地知识库切片 (Ground Truth)"
                                       IsExpanded="True"
                                       Margin="0,0,0,10"
                                       Background="Transparent"
@@ -386,14 +410,14 @@
                                                             <Button DockPanel.Dock="Right"
                                                                     Command="{Binding DataContext.CopySnippetContentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                                                     CommandParameter="{Binding}"
-                                                                    Content="📋"
                                                                     ToolTip="复制切片"
                                                                     Width="20"
                                                                     Height="20"
                                                                     Background="Transparent"
                                                                     BorderThickness="0"
-                                                                    Cursor="Hand"
-                                                                    FontSize="10" />
+                                                                    Cursor="Hand">
+                                                                <Path Data="{StaticResource IconCopy}" Style="{StaticResource IconSmStyle}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                            </Button>
                                                             <TextBlock Text="{Binding DisplayTitle}"
                                                                        FontWeight="SemiBold"
                                                                        FontSize="11"
@@ -421,7 +445,7 @@
                             </Expander>
 
                             <!-- 3. 关联网实体速览 (可下钻) -->
-                            <Expander Header="🕸️ 关联网实体 (点击下钻)"
+                            <Expander Header="关联网实体 (点击下钻)"
                                       IsExpanded="False"
                                       Margin="0,0,0,12"
                                       Background="Transparent"
@@ -459,7 +483,7 @@
                                                                        FontSize="12"
                                                                        TextTrimming="CharacterEllipsis" />
                                                         </StackPanel>
-                                                        <TextBlock Grid.Column="1" Text="➔" FontSize="11" Foreground="{DynamicResource TextTertiaryBrush}" />
+                                                        <Path Grid.Column="1" Data="{StaticResource IconArrowRight}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextTertiaryBrush}" />
                                                     </Grid>
                                                 </Button>
                                             </DataTemplate>
@@ -482,13 +506,17 @@
                                     <DockPanel Margin="0,0,0,8">
                                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                                             <Button Command="{Binding DistillEntityCardCommand}"
-                                                    Content="✨ 总结归纳为知识卡片"
                                                     Style="{StaticResource PrimaryButtonStyle}"
                                                     FontSize="11"
                                                     Padding="8,3"
                                                     Height="24"
                                                     Margin="0,0,4,0"
-                                                    ToolTip="将多轮探讨与参考资料提炼为结构化精炼知识卡片" />
+                                                    ToolTip="将多轮探讨与参考资料提炼为结构化精炼知识卡片">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Path Data="{StaticResource IconSparkles}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextInverseBrush}" Margin="0,0,6,0"/>
+                                                    <TextBlock Text="总结归纳为知识卡片"/>
+                                                </StackPanel>
+                                            </Button>
                                             <Button Command="{Binding ClearEntityChatCommand}"
                                                     Content="清空"
                                                     Style="{StaticResource SecondaryButtonStyle}"
@@ -497,15 +525,21 @@
                                                     Height="24"
                                                     ToolTip="清空当前实体的对话记录" />
                                         </StackPanel>
-                                        <TextBlock Text="🤖 AI 深度拓展与探讨"
-                                                   FontSize="13"
-                                                   FontWeight="Bold"
-                                                   Foreground="{DynamicResource TextPrimaryBrush}"
-                                                   VerticalAlignment="Center" />
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Path Data="{StaticResource IconAi}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                            <TextBlock Text="AI 深度拓展与探讨"
+                                                       FontSize="13"
+                                                       FontWeight="Bold"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
                                     </DockPanel>
 
                                     <!-- 自适应智能快捷气泡 (Prompt Quickchips) -->
-                                    <TextBlock Text="💡 点击快捷探索：" FontSize="11" Foreground="{DynamicResource TextTertiaryBrush}" Margin="0,0,0,4" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                        <Path Data="{StaticResource IconLightbulb}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextTertiaryBrush}" Margin="0,0,6,0"/>
+                                        <TextBlock Text="点击快捷探索：" FontSize="11" Foreground="{DynamicResource TextTertiaryBrush}" />
+                                    </StackPanel>
                                     <ItemsControl ItemsSource="{Binding AdaptiveQuickPrompts}">
                                         <ItemsControl.ItemsPanel>
                                             <ItemsPanelTemplate>
@@ -567,7 +601,7 @@
                                                             BorderThickness="1"
                                                             Effect="{DynamicResource ShadowSm}"
                                                             Visibility="{Binding IsAssistant, Converter={StaticResource BoolToVisConverter}}">
-                                                        <TextBlock Text="🤖" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                        <Path Data="{StaticResource IconAi}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                                     </Border>
 
                                                     <!-- 用户头像（右侧，品牌渐变圆） -->
@@ -611,11 +645,14 @@
                                                         <StackPanel>
                                                             <!-- 头部模型标记与实时状态 -->
                                                             <DockPanel Margin="0,0,0,6">
-                                                                <TextBlock Text="🤖 DocMind GraphCopilot"
-                                                                           FontSize="11.5"
-                                                                           FontWeight="Bold"
-                                                                           Foreground="{DynamicResource PrimaryBrush}"
-                                                                           VerticalAlignment="Center"/>
+                                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                                    <Path Data="{StaticResource IconAi}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                                                    <TextBlock Text="DocMind GraphCopilot"
+                                                                               FontSize="11.5"
+                                                                               FontWeight="Bold"
+                                                                               Foreground="{DynamicResource PrimaryBrush}"
+                                                                               VerticalAlignment="Center"/>
+                                                                </StackPanel>
                                                                 <TextBlock Text="{Binding StatusText}"
                                                                            FontSize="11"
                                                                            Foreground="{DynamicResource TextTertiaryBrush}"
@@ -731,7 +768,7 @@
                                                                     Margin="0,0,0,8"
                                                                     Visibility="{Binding HasWebSources, Converter={StaticResource BoolToVisConverter}}">
                                                                 <DockPanel>
-                                                                    <TextBlock Text="🌐 " FontSize="11" VerticalAlignment="Center"/>
+                                                                    <Path Data="{StaticResource IconGlobe}" Style="{StaticResource IconSmStyle}" VerticalAlignment="Center" Margin="0,0,4,0"/>
                                                                     <TextBlock Text="{Binding SearchSummaryText}"
                                                                                FontSize="11"
                                                                                FontWeight="SemiBold"
@@ -793,7 +830,7 @@
                                                                             ToolTip="复制回答全文到剪贴板">
                                                                         <Button.Style>
                                                                             <Style TargetType="Button" BasedOn="{StaticResource TextButtonStyle}">
-                                                                                <Setter Property="Content" Value="📋 复制"/>
+                                                                                <Setter Property="Content" Value="复制"/>
                                                                                 <Style.Triggers>
                                                                                     <DataTrigger Binding="{Binding IsCopied}" Value="True">
                                                                                         <Setter Property="Content" Value="✓ 已复制"/>
@@ -812,7 +849,7 @@
                                                                             ToolTip="点赞此回答">
                                                                         <Button.Style>
                                                                             <Style TargetType="Button" BasedOn="{StaticResource TextButtonStyle}">
-                                                                                <Setter Property="Content" Value="👍"/>
+                                                                                <Setter Property="Content" Value="赞"/>
                                                                                 <Style.Triggers>
                                                                                     <DataTrigger Binding="{Binding IsLiked}" Value="True">
                                                                                         <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}"/>
@@ -830,7 +867,7 @@
                                                                             ToolTip="点踩此回答">
                                                                         <Button.Style>
                                                                             <Style TargetType="Button" BasedOn="{StaticResource TextButtonStyle}">
-                                                                                <Setter Property="Content" Value="👎"/>
+                                                                                <Setter Property="Content" Value="踩"/>
                                                                                 <Style.Triggers>
                                                                                     <DataTrigger Binding="{Binding IsDisliked}" Value="True">
                                                                                         <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
@@ -848,14 +885,14 @@
                                                                             ToolTip="将此回答一键萃取并沉淀为知识库笔记（反哺知识库）">
                                                                         <Button.Style>
                                                                             <Style TargetType="Button" BasedOn="{StaticResource TextButtonStyle}">
-                                                                                <Setter Property="Content" Value="📥 沉淀入库"/>
+                                                                                <Setter Property="Content" Value="沉淀入库"/>
                                                                                 <Style.Triggers>
                                                                                     <DataTrigger Binding="{Binding IsIngesting}" Value="True">
                                                                                         <Setter Property="Content" Value="⏳ 正在沉淀..."/>
                                                                                         <Setter Property="IsEnabled" Value="False"/>
                                                                                     </DataTrigger>
                                                                                     <DataTrigger Binding="{Binding IsIngested}" Value="True">
-                                                                                        <Setter Property="Content" Value="✅ 已沉淀入库"/>
+                                                                                        <Setter Property="Content" Value="已沉淀入库"/>
                                                                                         <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
                                                                                         <Setter Property="IsEnabled" Value="False"/>
                                                                                     </DataTrigger>
@@ -953,12 +990,16 @@
                             <DockPanel Grid.Row="1">
                                 <!-- 联网搜索开关 -->
                                 <CheckBox IsChecked="{Binding IsWebSearchEnabled}"
-                                          Content="🌐 实时联网搜索"
                                           FontSize="11"
                                           Foreground="{DynamicResource TextSecondaryBrush}"
                                           VerticalAlignment="Center"
                                           Cursor="Hand"
-                                          ToolTip="开启后自动从互联网与官方技术文档中检索最新前沿资料补充" />
+                                          ToolTip="开启后自动从互联网与官方技术文档中检索最新前沿资料补充">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Data="{StaticResource IconGlobe}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                        <TextBlock Text="实时联网搜索"/>
+                                    </StackPanel>
+                                </CheckBox>
 
                                 <!-- 发送与停止按钮 -->
                                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
@@ -971,12 +1012,16 @@
                                             Margin="0,0,4,0"
                                             Visibility="{Binding IsEntityAiGenerating, Converter={StaticResource BoolToVisConverter}}" />
                                     <Button Command="{Binding SendEntityChatCommand}"
-                                            Content="🚀 发送 (Enter)"
                                             Style="{StaticResource PrimaryButtonStyle}"
                                             FontSize="11"
                                             Padding="10,3"
                                             Height="24"
-                                            IsEnabled="{Binding IsEntityAiGenerating, Converter={StaticResource BoolInvertConverter}}" />
+                                            IsEnabled="{Binding IsEntityAiGenerating, Converter={StaticResource BoolInvertConverter}}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Path Data="{StaticResource IconRocket}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextInverseBrush}" Margin="0,0,6,0"/>
+                                            <TextBlock Text="发送 (Enter)"/>
+                                        </StackPanel>
+                                    </Button>
                                 </StackPanel>
                             </DockPanel>
                         </Grid>
@@ -1004,16 +1049,20 @@
                                 <DockPanel Grid.Row="0" Margin="0,0,0,8">
                                     <Button DockPanel.Dock="Right"
                                             Command="{Binding CloseDistillDialogCommand}"
-                                            Content="✕"
                                             Width="22"
                                             Height="22"
                                             Background="Transparent"
                                             BorderThickness="0"
-                                            Cursor="Hand" />
-                                    <TextBlock Text="📚 实体知识精炼卡片 (已萃取)"
-                                               FontWeight="Bold"
-                                               FontSize="13"
-                                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                                            Cursor="Hand">
+                                        <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Button>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Data="{StaticResource IconBook}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextPrimaryBrush}" Margin="0,0,6,0"/>
+                                        <TextBlock Text="实体知识精炼卡片 (已萃取)"
+                                                   FontWeight="Bold"
+                                                   FontSize="13"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    </StackPanel>
                                 </DockPanel>
 
                                 <!-- 卡片 Markdown 正文滚动展示 -->
@@ -1058,12 +1107,16 @@
 
                                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
                                         <Button Command="{Binding IngestDistilledCardCommand}"
-                                                Content="📥 沉淀入库 (反哺知识图谱)"
                                                 Style="{StaticResource PrimaryButtonStyle}"
                                                 FontSize="11"
                                                 Padding="10,4"
                                                 Height="26"
-                                                Margin="0,0,6,0" />
+                                                Margin="0,0,6,0">
+                                            <StackPanel Orientation="Horizontal">
+                                                <Path Data="{StaticResource IconImport}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextInverseBrush}" Margin="0,0,6,0"/>
+                                                <TextBlock Text="沉淀入库 (反哺知识图谱)"/>
+                                            </StackPanel>
+                                        </Button>
                                         <Button Command="{Binding CloseDistillDialogCommand}"
                                                 Content="关闭"
                                                 Style="{StaticResource SecondaryButtonStyle}"
@@ -1098,15 +1151,19 @@
                                 <DockPanel Grid.Row="0" Margin="0,0,0,10">
                                     <Button DockPanel.Dock="Right"
                                             Command="{Binding CloseIngestDialogCommand}"
-                                            Content="✕"
                                             Width="22" Height="22"
                                             Background="Transparent"
                                             BorderThickness="0"
-                                            Cursor="Hand" />
-                                    <TextBlock Text="📥 实体知识笔记沉淀入库"
-                                               FontWeight="Bold"
-                                               FontSize="13"
-                                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                                            Cursor="Hand">
+                                        <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Button>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Data="{StaticResource IconImport}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextPrimaryBrush}" Margin="0,0,6,0"/>
+                                        <TextBlock Text="实体知识笔记沉淀入库"
+                                                   FontWeight="Bold"
+                                                   FontSize="13"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    </StackPanel>
                                 </DockPanel>
 
                                 <!-- 内容表单 -->
@@ -1145,10 +1202,12 @@
                                                  FontFamily="Consolas, Cascadia Code, Segoe UI, sans-serif"
                                                  FontSize="11"
                                                  Padding="8,6"/>
-                                        <TextBlock Text="💡 提示：您可以在上方自由编辑、挑选重点或补充批注，确认后即刻向量化存入本地知识库。"
-                                                   FontSize="10"
-                                                   Foreground="{DynamicResource TextTertiaryBrush}"
-                                                   Margin="0,4,0,0"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                            <Path Data="{StaticResource IconLightbulb}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextTertiaryBrush}" Margin="0,0,6,0"/>
+                                            <TextBlock Text="提示：您可以在上方自由编辑、挑选重点或补充批注，确认后即刻向量化存入本地知识库。"
+                                                       FontSize="10"
+                                                       Foreground="{DynamicResource TextTertiaryBrush}"/>
+                                        </StackPanel>
                                     </StackPanel>
                                 </ScrollViewer>
 
@@ -1168,12 +1227,16 @@
                                                 Height="26"
                                                 Margin="0,0,6,0" />
                                         <Button Command="{Binding ConfirmIngestDialogCommand}"
-                                                Content="🚀 确认沉淀入库"
                                                 IsEnabled="{Binding IsDialogIngesting, Converter={StaticResource BoolInvertConverter}}"
                                                 Style="{StaticResource PrimaryButtonStyle}"
                                                 FontSize="11"
                                                 Padding="12,4"
-                                                Height="26" />
+                                                Height="26">
+                                            <StackPanel Orientation="Horizontal">
+                                                <Path Data="{StaticResource IconRocket}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextInverseBrush}" Margin="0,0,6,0"/>
+                                                <TextBlock Text="确认沉淀入库"/>
+                                            </StackPanel>
+                                        </Button>
                                     </StackPanel>
                                 </DockPanel>
                             </Grid>

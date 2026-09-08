@@ -755,19 +755,33 @@ public partial class DocumentsViewModel : ViewModelBase
             // Progress<T> 的回调是异步投递的，可能在轮询返回之后才执行；
             // 若不设闸，落后的进度回调会把下面的失败/取消/完成终态文案覆盖成中间状态文案。
             var pollingCompleted = false;
-            var final = await _apiService.PollJobUntilDoneAsync(
-                job.JobId,
-                progress: new Progress<JobStatus>(j =>
+            void ApplyProgress(JobStatus j)
+            {
+                if (pollingCompleted) return;
+                _reindexProcessed = j.Processed;
+                _reindexTotal = j.Total;
+                OnPropertyChanged(nameof(ReindexProgressPercent));
+                ReindexStatus = j.Status.Equals("running", StringComparison.OrdinalIgnoreCase)
+                    ? $"重建中 {j.Processed}/{j.Total} 分块"
+                    : $"任务状态：{j.Status}";
+            }
+
+            var progress = new Progress<JobStatus>(j =>
+            {
+                var app = System.Windows.Application.Current;
+                if (app?.Dispatcher != null && !app.Dispatcher.CheckAccess())
                 {
-                    if (pollingCompleted) return;
-                    _reindexProcessed = j.Processed;
-                    _reindexTotal = j.Total;
-                    OnPropertyChanged(nameof(ReindexProgressPercent));
-                    ReindexStatus = j.Status.Equals("running", StringComparison.OrdinalIgnoreCase)
-                        ? $"重建中 {j.Processed}/{j.Total} 分块"
-                        : $"任务状态：{j.Status}";
-                }),
-                pollInterval: TimeSpan.FromSeconds(1),
+                    app.Dispatcher.InvokeAsync(() => ApplyProgress(j));
+                }
+                else
+                {
+                    ApplyProgress(j);
+                }
+            });
+
+            var final = await _apiService.WatchJobUntilDoneAsync(
+                job.JobId,
+                progress: progress,
                 ct: _reindexCts.Token);
             pollingCompleted = true;
 

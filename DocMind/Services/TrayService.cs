@@ -31,8 +31,26 @@ public sealed class TrayService : IDisposable
     /// <summary>状态变化通知。</summary>
     public event EventHandler<string>? StatusChanged;
 
-    /// <summary>窗口隐藏到托盘时触发，供 App 侧弹 Toast 提示用户（避免 TrayService 反向依赖 NotificationService）。</summary>
+    /// <summary>窗口隐藏到托盘时触发，供 App 侧弹托盘气泡提示用户（避免 TrayService 反向依赖 NotificationService）。</summary>
     public event EventHandler? HiddenToTray;
+
+    /// <summary>
+    /// 弹系统托盘气泡通知（Windows 10/11 为 Action Center 横幅）。
+    /// 窗口隐藏到托盘后，窗口内 Toast 层用户根本看不见，必须走系统级通知。
+    /// </summary>
+    public void ShowNotification(string title, string message)
+    {
+        try
+        {
+            _icon.ShowNotification(
+                title, message, H.NotifyIcon.Core.NotificationIcon.Info,
+                null, false, false, true, false, TimeSpan.FromSeconds(5));
+        }
+        catch
+        {
+            // 个别 Windows 版本/专注助手模式下气泡会抛异常，忽略——托盘功能本身不受影响
+        }
+    }
 
     public TrayService(Window mainWindow)
     {
@@ -111,6 +129,15 @@ public sealed class TrayService : IDisposable
 
     private static System.Windows.Media.ImageSource? LoadIconImage()
     {
+        // Assets\DocMind.ico 在 csproj 中是 <Resource>（嵌入程序集，且被 <None Remove> 后不会拷贝到输出目录），
+        // 必须走 pack URI 从程序集内加载；按磁盘路径找永远 File.Exists=false，
+        // 导致托盘 IconSource=null、最小化到托盘后图标消失。磁盘路径仅作兜底。
+        try
+        {
+            return new System.Windows.Media.Imaging.BitmapImage(
+                new Uri("pack://application:,,,/Assets/DocMind.ico"));
+        }
+        catch { }
         var icoPath = System.IO.Path.Combine(
             AppContext.BaseDirectory, "Assets/DocMind.ico");
         if (System.IO.File.Exists(icoPath))

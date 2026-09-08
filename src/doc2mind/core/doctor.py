@@ -221,6 +221,62 @@ def run_diagnostics(check_network: bool = True) -> DoctorReport:
             )
         )
 
+    # 5.1 Poppler（扫描 PDF OCR 渲染依赖）就绪状态与来源
+    try:
+        from doc2mind.core.system_env import _poppler_available
+
+        if _poppler_available():
+            configured = getattr(settings, "poppler_path", "") or ""
+            source = f"手动指定: {configured}" if configured else "系统 PATH / 自动探测"
+            report.checks.append(
+                DiagnosticCheck(
+                    name="Poppler（扫描 PDF 渲染）",
+                    category="extension",
+                    status="ok",
+                    message=f"已就绪（{source}）",
+                )
+            )
+        else:
+            report.checks.append(
+                DiagnosticCheck(
+                    name="Poppler（扫描 PDF 渲染）",
+                    category="extension",
+                    status="info",
+                    message="未检测到 poppler（扫描版 PDF 的 OCR 回退将不可用）",
+                    fix_suggestion=(
+                        "下载 poppler 解压后，到【设置 → 外部组件路径】手动指定 bin 目录，"
+                        "或点击「自动寻找可用配置」让应用搜索（支持 U 盘）。"
+                    ),
+                )
+            )
+    except Exception:  # noqa: BLE001 — 体检项自身故障不阻断其他检查
+        pass
+
+    # 5.2 上次插件安装是否中断（install_cli 写入的状态标记）
+    try:
+        from doc2mind.install_cli import read_install_state
+
+        last_install = read_install_state()
+        if last_install and last_install.get("status") == "running":
+            report.checks.append(
+                DiagnosticCheck(
+                    name="插件安装状态",
+                    category="extension",
+                    status="warning",
+                    message=(
+                        "上次扩展安装未正常收尾（状态标记停留在 running，"
+                        f"路径: {last_install.get('path', '?')}），"
+                        "环境可能处于半安装状态。"
+                    ),
+                    fix_suggestion=(
+                        "重新执行一次对应方案的安装即可覆盖修复"
+                        "（设置页选择方案 → 安装；CLI: python -m doc2mind.install_cli <路径> --force）。"
+                    ),
+                )
+            )
+    except Exception:  # noqa: BLE001 — 体检项自身故障不阻断其他检查
+        pass
+
     # 6. 大模型配置检测
     if settings.llm_provider and settings.llm_provider != "none":
         has_key = bool(settings.llm_api_key or os.getenv("DOC2MIND_LLM_API_KEY"))

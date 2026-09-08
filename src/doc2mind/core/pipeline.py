@@ -6,10 +6,13 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
+import threading
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,6 +20,7 @@ from typing import Any
 from doc2mind.core.chunker import chunk_document
 from doc2mind.core.config import Settings, get_settings
 from doc2mind.core.embedder import get_embedder
+from doc2mind.core.loader.base import make_source, stream_file_hash
 from doc2mind.core.loader.detect import get_loader
 from doc2mind.core.models import (
     DocFormat,
@@ -30,6 +34,14 @@ from doc2mind.core.store.sqlite_vec import (
 )
 
 logger = logging.getLogger("doc2mind.pipeline")
+
+
+class IngestCancelled(Exception):
+    """摄入任务取消信号。
+
+    由进度回调（http 层的取消检查）注入，pipeline 各阶段原样向上传播、
+    绝不吞掉转成 failed 结果；http/mcp 层捕获后把 job 标记为 cancelled。
+    """
 
 
 @dataclass(frozen=True)
@@ -59,6 +71,56 @@ class IngestSummary:
     total_chunks: int = 0
     skipped: int = 0
     failed: int = 0
+    # 本次摄入成功入库、且满足自动整理护栏的文档 id。auto-curate 已从
+    # 导入热路径剥离：调用方（http/mcp/file_watcher）拿这批 id 在导入
+    # 结束后交给 run_background_curate 后台执行，导入速度不再受 LLM
+    # 串行调用拖累。
+    curatable_document_ids: list[str] = field(default_factory=list)
+
+
+# --- 文件内阶段进度 ---
+
+# 单文件（尤其大 PDF）导入时 done 长时间不变，前端进度条会停在
+# done/total 上看起来像卡死。进度回调因此带上文件内阶段：
+# parsing → chunking → embedding → writing → curating。
+# embedding 阶段按 chunk 批次有真实 stage_progress（0~1），其余阶段
+# 不可测（时长占比因文件类型差异极大），只报阶段名。
+# 消费方用固定跨度把阶段折算成文件内整体进度（感知美化：让条动起来，
+# 不承诺真实耗时比例），跨度保持单调递增且 write 完成时恰为 1.0。
+STAGE_SPANS: dict[str, tuple[float, float]] = {
+    "parsing": (0.0, 0.5),
+    "chunking": (0.5, 0.6),
+    "embedding": (0.6, 0.9),
+    "writing": (0.9, 0.95),
+    "curating": (0.95, 1.0),
+}
+
+
+def stage_fraction(stage: str | None, stage_progress: float | None) -> float:
+    """把 (stage, stage_progress) 折算成文件内整体进度 0.0~1.0。"""
+    if stage is None:
+        return 0.0
+    start, end = STAGE_SPANS.get(stage, (0.0, 0.0))
+    frac = stage_progress if stage_progress is not None else 0.0
+    return start + (end - start) * min(max(frac, 0.0), 1.0)
+
+
+def _make_stage_reporter(
+    progress: Callable[..., None], done: int, total: int, current_file: str
+) -> Callable[[str, float | None], None]:
+    """把文件内阶段上报接到底层 progress 回调。
+
+    兼容只接受 (done, total) 的旧回调：带 stage 关键字调用抛
+    TypeError 时降级为两参调用。
+    """
+
+    def report(stage: str, stage_progress: float | None = None) -> None:
+        try:
+            progress(done, total, current_file, stage=stage, stage_progress=stage_progress)
+        except TypeError:
+            progress(done, total)
+
+    return report
 
 
 def ingest_path(
@@ -79,7 +141,9 @@ def ingest_path(
         recursive: 目录是否递归
         force: 即使 file_hash 已存在也重新摄入
         store: 已打开的 VectorStore；None 则内部创建并关闭
-        progress: 进度回调 (done, total)，每处理完一个文件调用一次；None 表示不回调
+        progress: 进度回调 (done, total[, current_file, stage, stage_progress])，
+            每处理完一个文件调用一次；文件处理中还会带 stage 上报文件内阶段。
+            None 表示不回调
 
     Returns:
         `IngestSummary`
@@ -107,6 +171,38 @@ def ingest_path(
             )
         ])
 
+    # --- 摄入护栏：单文件大小 / 单次数量（防病态输入整读打爆内存） ---
+    dropped_files: list[tuple[Path, str]] = []
+    size_limit_bytes = int(getattr(settings, "max_file_size_mb", 0) or 0) * 1024 * 1024
+    count_limit = int(getattr(settings, "max_files_per_import", 0) or 0)
+    if size_limit_bytes > 0:
+        kept: list[Path] = []
+        for f in files:
+            try:
+                too_big = f.stat().st_size > size_limit_bytes
+            except OSError:
+                too_big = False  # stat 失败（权限等）不拦截，交给 loader 报真实错误
+            if too_big:
+                dropped_files.append(
+                    (f, f"超过单文件大小上限 {settings.max_file_size_mb}MB，已跳过")
+                )
+            else:
+                kept.append(f)
+        files = kept
+    if count_limit > 0 and len(files) > count_limit:
+        for f in files[count_limit:]:
+            dropped_files.append((f, f"超过单次导入数量上限 {count_limit}，已丢弃"))
+        files = files[:count_limit]
+    if dropped_files:
+        logger.warning("导入护栏: 丢弃 %d 个超限文件", len(dropped_files))
+
+    if not files:
+        # 全部被护栏拦截：直接返回，避免白白加载嵌入模型
+        summary = IngestSummary()
+        _record_dropped(summary, dropped_files, collection)
+        logger.info("ingest 完成(无文件可处理): 路径=%s 超限丢弃=%d", path, len(dropped_files))
+        return summary
+
     embedder = get_embedder(settings)
     owns_store = store is None
     if store is None:
@@ -118,6 +214,10 @@ def ingest_path(
         store.open()
 
     total = len(files)
+    # 立即上报一次 (0, total)：让前端马上拿到文件总数，而不是等第一个文件
+    # 处理完才知道（单大文件导入时表现为长时间 0/0）。
+    if progress is not None:
+        progress(0, total)
     # 入库自动整理护栏：目录文件数超上限时跳过（一次目录摄入触发数百次
     # LLM 调用既慢又贵），此时应改用 curate 工具/接口批量整理。
     auto_curate = bool(
@@ -131,29 +231,140 @@ def ingest_path(
             total, getattr(settings, "curate_auto_max_files", 20),
         )
     summary = IngestSummary()
+    if dropped_files:
+        _record_dropped(summary, dropped_files, collection)
     try:
-        for idx, f in enumerate(files, start=1):
-            res = _ingest_one(f, settings, collection, force, store, embedder,
-                              auto_curate=auto_curate)
-            summary.results.append(res)
-            if res.status == "ingested":
-                summary.total_documents += 1
-                summary.total_chunks += res.chunk_count
-            elif res.status == "skipped":
-                summary.skipped += 1
-            elif res.status == "failed":
-                summary.failed += 1
-            if progress is not None:
-                progress(idx, total)
+        workers = max(1, int(getattr(settings, "ingest_workers", 1) or 1))
+        if workers > 1 and len(files) > 1:
+            _ingest_parallel(
+                files, settings, collection, force, store, embedder,
+                progress, summary, workers,
+            )
+        else:
+            for idx, f in enumerate(files, start=1):
+                res = _ingest_one(
+                    f, settings, collection, force, store, embedder,
+                    report_stage=(
+                        None if progress is None
+                        else _make_stage_reporter(progress, idx - 1, total, f.name)
+                    ),
+                )
+                _record_result(summary, res)
+                if progress is not None:
+                    try:
+                        progress(idx, total, f.name)
+                    except TypeError:
+                        progress(idx, total)
+        # auto-curate 已剥离出热路径：只收集待整理文档 id，由调用方在导入
+        # 结束后交给 run_background_curate 后台执行（含图谱抽取）。
+        if auto_curate:
+            summary.curatable_document_ids = [
+                r.document_id for r in summary.results
+                if r.status == "ingested" and r.document_id
+            ]
         logger.info(
-            "ingest 完成: 路径=%s collection=%s ingested=%d skipped=%d failed=%d 总文档=%d 总chunks=%d",
+            "ingest 完成: 路径=%s collection=%s ingested=%d skipped=%d failed=%d 总文档=%d 总chunks=%d 后台待整理=%d",
             path, collection, summary.total_documents, summary.skipped,
             summary.failed, summary.total_documents, summary.total_chunks,
+            len(summary.curatable_document_ids),
         )
         return summary
     finally:
         if owns_store:
             store.close()
+
+
+def _record_result(summary: IngestSummary, res: IngestResult) -> None:
+    """把单文件结果累计进批量汇总。"""
+    summary.results.append(res)
+    if res.status == "ingested":
+        summary.total_documents += 1
+        summary.total_chunks += res.chunk_count
+    elif res.status == "skipped":
+        summary.skipped += 1
+    elif res.status == "failed":
+        summary.failed += 1
+
+
+def _record_dropped(summary: IngestSummary, dropped: list[tuple[Path, str]], collection: str) -> None:
+    """把护栏拦截的超限文件记为 skipped 结果（source 可见原因）。"""
+    for f, why in dropped:
+        _record_result(summary, IngestResult(
+            source=str(f), collection=collection, format="unknown",
+            size_bytes=0, chunk_count=0, elapsed_ms=0, status="skipped",
+            error=why,
+        ))
+
+
+def _ingest_parallel(
+    files: list[Path],
+    settings: Settings,
+    collection: str,
+    force: bool,
+    store: VectorStore,
+    embedder,
+    progress: Callable[[int, int], None] | None,
+    summary: IngestSummary,
+    workers: int,
+) -> None:
+    """两段式文件级并行（ingest_workers>1 时启用）。
+
+    参考 LlamaIndex IngestionPipeline 的 num_workers 模式：
+    - 第一段：worker 池并发执行 解析 → 去重 → 分块 → 嵌入（OCR/ONNX
+      推理在 C 层释放 GIL，真正的并行收益在这里）；
+    - 第二段：主线程按提交顺序逐个写库，SQLite 单写者语义与
+      store 的事务边界完全不变。
+
+    取消：进度回调抛出的 IngestCancelled 会在主线程取 future 结果时
+    浮出，未启动的任务被撤销、在跑的自行收尾后整体向上传播。
+    """
+    total = len(files)
+    pool = ThreadPoolExecutor(max_workers=workers)
+    # 有界提交流水线：一批最多同时驻留 batch_size 份“文件+分块+向量”中间产物。
+    # 历史上一次 submit 全部文件，海量小文件时 N 份完整中间产物同时占内存；
+    # 改为按批提交、本批消费完再发下一批。
+    batch_size = max(4, workers * 4)
+    try:
+        start = 0
+        while start < total:
+            chunk = files[start:start + batch_size]
+            chunk_end = start + len(chunk)
+            futures = []
+            for idx, f in enumerate(chunk, start=start + 1):
+                reporter = (
+                    None if progress is None
+                    else _make_stage_reporter(progress, idx - 1, total, f.name)
+                )
+                futures.append(
+                    pool.submit(_prepare_one, f, settings, collection, force,
+                                store, embedder, reporter)
+                )
+            for idx, fut in zip(range(start + 1, chunk_end + 1), futures):
+                try:
+                    prep = fut.result()
+                except IngestCancelled:
+                    raise
+                res = (
+                    prep if isinstance(prep, IngestResult)
+                    else _write_prepared(
+                        store, prep,
+                        report_stage=(
+                            None if progress is None
+                            else _make_stage_reporter(
+                                progress, idx - 1, total, files[idx - 1].name
+                            )
+                        ),
+                    )
+                )
+                _record_result(summary, res)
+                if progress is not None:
+                    try:
+                        progress(idx, total, files[idx - 1].name)
+                    except TypeError:
+                        progress(idx, total)
+            start = chunk_end
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def ingest_text(
@@ -327,29 +538,116 @@ def ingest_text(
             store.close()
 
 
-def _ingest_one(
+# loader.extract 是否支持 progress 形参（按类型探测一次并缓存，避免
+# 每文件都 inspect，也避免靠 TypeError 探测引发二次解析）。
+_EXTRACT_SUPPORTS_PROGRESS: dict[type, bool] = {}
+
+
+def _extract_supports_progress(loader: object) -> bool:
+    t = type(loader)
+    flag = _EXTRACT_SUPPORTS_PROGRESS.get(t)
+    if flag is None:
+        try:
+            flag = "progress" in inspect.signature(t.extract).parameters
+        except (TypeError, ValueError):  # pragma: no cover — 内建/扩展类型
+            flag = False
+        _EXTRACT_SUPPORTS_PROGRESS[t] = flag
+    return flag
+
+
+@dataclass
+class _Prepared:
+    """单文件"准备完成待写库"的中间产物（解析+去重+分块+嵌入已就绪）。
+
+    两段式并行时由 worker 池产出、主线程串行消费写库；顺序摄入时
+    `_ingest_one` 内部串联两段，对外行为不变。
+    """
+
+    path: Path
+    doc: LoadedDocument
+    collection: str
+    chunks: list
+    embeddings: list
+    embedder: Any
+    document_id: str
+    created_at: str
+    t0: float
+
+
+def _prepare_one(
     path: Path,
     settings: Settings,
     collection: str,
     force: bool,
     store: VectorStore,
     embedder,
-    auto_curate: bool = False,
-) -> IngestResult:
-    """摄入单个文件。"""
+    report_stage: Callable[[str, float | None], None] | None = None,
+) -> "_Prepared | IngestResult":
+    """摄入单文件的准备段：解析 → 去重 → 分块 → 嵌入（不写库）。
+
+    返回 `_Prepared`（就绪待写库）或 `IngestResult`（skipped / failed 终态）。
+    线程安全：只读 store（去重查询）+ 共享 embedder（内部自带批次锁），
+    可在 ingest_workers>1 的 worker 池中并发执行。
+
+    report_stage: 文件内阶段上报 (stage, stage_progress)，供异步 job
+    展示解析/切片/嵌入等子进度；None 表示不上报。
+    """
     t0 = time.perf_counter()
+
+    def _emit(stage: str, stage_progress: float | None = None) -> None:
+        if report_stage is not None:
+            report_stage(stage, stage_progress)
+
+    _emit("parsing")
     try:
         loader = get_loader(path)
+    except IngestCancelled:
+        raise
     except Exception as e:  # noqa: BLE001
         return _fail(path, collection, str(e), t0)
 
+    # 去重前移：解析前先流式算 MD5 查重，命中直接跳过 —— 重复导入
+    # 不再支付解析/OCR/嵌入的全额成本（旧逻辑先解析再查重，扫描件
+    # 重导一遍要白跑完整 OCR）。流式 MD5 与 loader 全量 md5 结果一致，
+    # 入库仍写 doc.file_hash，与历史数据兼容。
+    pre_size = 0
+    if not force:
+        try:
+            pre_hash, pre_size = stream_file_hash(path)
+        except OSError as e:
+            return _fail(path, collection, f"读取文件失败: {e}", t0)
+        existing = store.find_document_id_by_hash(pre_hash, collection)
+        if existing is not None:
+            logger.info(
+                "ingest 跳过(已存在): source=%s collection=%s doc_id=%s",
+                str(path), collection, existing,
+            )
+            return IngestResult(
+                source=make_source(path), collection=collection,
+                format=path.suffix.lstrip(".").lower() or "unknown",
+                size_bytes=pre_size, chunk_count=0,
+                elapsed_ms=int((time.perf_counter() - t0) * 1000),
+                status="skipped", document_id=existing,
+            )
+
+    # 页级进度：PDF 逐页解析 / 扫描件逐页 OCR 时上报 (已完成页, 总页)，
+    # 折算成 parsing 阶段进度；total<=0 表示总页数未知（不定进度）。
+    def _page_cb(done: int, page_total: int) -> None:
+        _emit("parsing", (done / page_total) if page_total > 0 else None)
+
     try:
-        doc = loader.extract(path)
+        if _extract_supports_progress(loader):
+            doc = loader.extract(path, progress=_page_cb)
+        else:
+            doc = loader.extract(path)
+    except IngestCancelled:
+        raise
     except Exception as e:  # noqa: BLE001
         return _fail(path, collection, f"加载失败: {e}", t0)
 
-    # 增量去重：file_hash 已存在则跳过
-    if not force:
+    # 兜底去重（force=False 但文件在准备段被并发修改等极端场景：
+    # loader 计算的 hash 与预检查不一致时以 loader 结果为准再查一次）
+    if not force and doc.file_hash:
         existing = store.find_document_id_by_hash(doc.file_hash, collection)
         if existing is not None:
             logger.info(
@@ -367,17 +665,40 @@ def _ingest_one(
     # 分块
     from doc2mind.core.chunker.base import ChunkerError
 
+    _emit("chunking")
     try:
         chunks = chunk_document(doc, settings)
+    except IngestCancelled:
+        raise
     except ChunkerError as e:
         return _fail(path, collection, f"分块失败: {e}", t0)
 
     if not chunks:
         return _fail(path, collection, "无有效内容", t0)
 
-    # 嵌入
+    # 嵌入：逐批消费迭代器，每个批次完成即上报阶段进度（fastembed/API
+    # 均为惰性迭代，批次在内部按 embed_batch_size 计算）；同时让取消检查
+    # 能在批次间生效，而不必等整份文件嵌完。
+    # 嵌入器可能逐个 yield 向量，也可能按批 yield 向量列表；用"元素是否
+    # 带长度"区分（向量的元素是标量，批次的元素是向量）。
+    _emit("embedding", 0.0)
+    embeddings: list = []
+    embedded = 0
     try:
-        embeddings = list(embedder.embed(chunks))
+        for item in embedder.embed(chunks):
+            if (
+                isinstance(item, (list, tuple))
+                and item
+                and hasattr(item[0], "__len__")
+            ):
+                embeddings.extend(item)
+                embedded += len(item)
+            else:
+                embeddings.append(item)
+                embedded += 1
+            _emit("embedding", embedded / len(chunks))
+    except IngestCancelled:
+        raise
     except Exception as e:  # noqa: BLE001
         return _fail(path, collection, f"嵌入失败: {e}", t0)
 
@@ -388,57 +709,92 @@ def _ingest_one(
             t0,
         )
 
+    return _Prepared(
+        path=path,
+        doc=doc,
+        collection=collection,
+        chunks=chunks,
+        embeddings=embeddings,
+        embedder=embedder,
+        document_id=uuid.uuid4().hex,
+        created_at=_now_iso(),
+        t0=t0,
+    )
+
+
+def _write_prepared(
+    store: VectorStore,
+    prep: _Prepared,
+    report_stage: Callable[[str, float | None], None] | None = None,
+) -> IngestResult:
+    """把准备好的分块/向量写入向量库（写段，必须在单写者上下文执行）。
+
+    单事务原子替换（删旧 → 写文档 → 写分块），失败整体回滚。
+    UNIQUE(collection, source) 的"替换"语义由此实现；source 现为完整
+    路径，不同目录的同名文件互不覆盖。
+    """
+
+    def _emit(stage: str, stage_progress: float | None = None) -> None:
+        if report_stage is not None:
+            report_stage(stage, stage_progress)
+
     # 维度预检：换嵌入模型后未重建索引时，提前给出可操作的错误指引，
     # 而不是等写库时报一句没头没尾的"写库失败"。
     store_dim = getattr(store, "embedding_dim", None)
-    embed_dim = getattr(embedder, "dimension", None)
+    embed_dim = getattr(prep.embedder, "dimension", None)
     if store_dim is not None and embed_dim is not None and embed_dim != store_dim:
         return _fail(
-            path, collection,
+            prep.path, prep.collection,
             f"嵌入模型维度 ({embed_dim}) 与向量库维度 ({store_dim}) 不一致："
             "请先在设置页执行「重建索引」（reindex），或切回原嵌入模型后再导入",
-            t0,
+            prep.t0,
         )
 
-    # 写库：单事务原子替换（删旧 → 写文档 → 写分块），失败整体回滚。
-    # UNIQUE(collection, source) 的"替换"语义由此实现；source 现为完整路径，
-    # 不同目录的同名文件互不覆盖。
-    document_id = uuid.uuid4().hex
-    now = _now_iso()
+    _emit("writing")
     try:
         store.replace_document(
             StoredDocument(
-                id=document_id,
-                source=doc.source,
-                collection=collection,
-                format=doc.format.value,
-                file_hash=doc.file_hash,
-                size_bytes=doc.size_bytes,
-                page_count=doc.page_count,
-                chunk_count=len(chunks),
-                created_at=now,
-                updated_at=now,
+                id=prep.document_id,
+                source=prep.doc.source,
+                collection=prep.collection,
+                format=prep.doc.format.value,
+                file_hash=prep.doc.file_hash,
+                size_bytes=prep.doc.size_bytes,
+                page_count=prep.doc.page_count,
+                chunk_count=len(prep.chunks),
+                created_at=prep.created_at,
+                updated_at=prep.created_at,
             ),
-            chunks=chunks,
-            embeddings=embeddings,
+            chunks=prep.chunks,
+            embeddings=prep.embeddings,
         )
     except Exception as e:  # noqa: BLE001
-        return _fail(path, collection, f"写库失败: {e}", t0)
-
-    # 入库自动整理（文件摄入只打标签/摘要，不自动归类——集合由调用方指定）
-    curation = None
-    if auto_curate:
-        curation = _auto_curate_after_ingest(
-            store, settings, document_id, allow_categorize=False
-        )
+        return _fail(prep.path, prep.collection, f"写库失败: {e}", prep.t0)
 
     return IngestResult(
-        source=doc.source, collection=collection,
-        format=doc.format.value, size_bytes=doc.size_bytes,
-        chunk_count=len(chunks),
-        elapsed_ms=int((time.perf_counter() - t0) * 1000),
-        status="ingested", document_id=document_id, curation=curation,
+        source=prep.doc.source, collection=prep.collection,
+        format=prep.doc.format.value, size_bytes=prep.doc.size_bytes,
+        chunk_count=len(prep.chunks),
+        elapsed_ms=int((time.perf_counter() - prep.t0) * 1000),
+        status="ingested", document_id=prep.document_id,
     )
+
+
+def _ingest_one(
+    path: Path,
+    settings: Settings,
+    collection: str,
+    force: bool,
+    store: VectorStore,
+    embedder,
+    report_stage: Callable[[str, float | None], None] | None = None,
+) -> IngestResult:
+    """摄入单个文件（顺序路径）：准备段 + 写库段串联。"""
+    prep = _prepare_one(path, settings, collection, force, store, embedder,
+                        report_stage=report_stage)
+    if isinstance(prep, IngestResult):
+        return prep
+    return _write_prepared(store, prep, report_stage=report_stage)
 
 
 def _auto_curate_after_ingest(
@@ -502,6 +858,77 @@ def _auto_curate_after_ingest(
     except Exception as e:  # noqa: BLE001 — 整理失败绝不影响入库
         logger.warning("auto curate 失败（不影响入库）: %s", e)
         return None
+
+
+# 后台整理默认互斥锁：调用方（http / mcp / file_watcher）未提供写锁时，
+# 用它保证同一进程内后台整理不与其它写操作并发（SQLite 单写者）。
+_BG_CURATE_LOCK = threading.Lock()
+
+
+def run_background_curate(
+    settings: Settings,
+    document_ids: list[str],
+    collection: str,
+    store: VectorStore | None = None,
+    write_lock: threading.Lock | None = None,
+    progress: Callable[[int, int], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    """对一批已入库文档执行 AI 自动整理（enrich + 图谱抽取，不自动归类）。
+
+    导入热路径剥离 auto-curate 的执行端：http 层在导入 job 完成后用独立
+    线程调用本函数并包装成 type="curate" 的后台 job 广播进度；mcp /
+    file_watcher 直接后台调用。不传 store 时自开自关（避免与调用方的
+    store 生命周期纠缠）；不传 write_lock 时使用模块级默认锁。
+
+    Returns:
+        {"total", "processed", "failed", "cancelled"} 汇总
+    """
+    owns_store = store is None
+    if store is None:
+        embedder = get_embedder(settings)
+        store = VectorStore(
+            settings.db_path, embedder.dimension,
+            bm25_jieba_enabled=settings.bm25_jieba_enabled,
+            sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
+        )
+        store.open()
+
+    lock = write_lock or _BG_CURATE_LOCK
+    processed = 0
+    failed = 0
+    cancelled = False
+    total = len(document_ids)
+    try:
+        for doc_id in document_ids:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
+            try:
+                with lock:
+                    _auto_curate_after_ingest(
+                        store, settings, doc_id, allow_categorize=False
+                    )
+                processed += 1
+            except Exception as e:  # noqa: BLE001 — 单文档失败不拖垮整批
+                failed += 1
+                logger.warning("后台整理单文档失败 doc_id=%s: %s", doc_id, e)
+            if progress is not None:
+                try:
+                    progress(processed + failed, total)
+                except TypeError:
+                    progress(processed + failed, total)
+    finally:
+        if owns_store:
+            store.close()
+    logger.info(
+        "后台整理完成: collection=%s total=%d processed=%d failed=%d cancelled=%s",
+        collection, total, processed, failed, cancelled,
+    )
+    return {
+        "total": total, "processed": processed,
+        "failed": failed, "cancelled": cancelled,
+    }
 
 
 def _fail(path: Path, collection: str, err: str, t0: float) -> IngestResult:

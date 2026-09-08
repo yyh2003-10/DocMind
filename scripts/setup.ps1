@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # DocMind 一键部署脚本（Windows / PowerShell）
 #
 # 用法（普通用户即可，无需管理员）：
@@ -27,7 +27,9 @@ param(
     [switch]$Gpu,
     [switch]$Ocr,
     [switch]$SkipTests,
-    [string]$Python = "python"
+    [string]$Python = "python",
+    [switch]$BuildPortableRuntime,
+    [string]$PortablePythonVersion = "3.11.9"
 )
 
 $ErrorActionPreference = "Stop"
@@ -146,3 +148,104 @@ Write-Host "首次使用嵌入模型需联网下载（约 90MB，自动走 hf-mi
 Write-Host "模型缓存目录：%LOCALAPPDATA%\doc2mind\fastembed_cache"
 Write-Host "离线设备：从网络正常的机器把该目录整体拷贝过来即可（保留目录结构）。"
 Write-Host ""
+
+
+# ============================================================
+# 便携 Python 运行时构建（普通用户部署的根治方案）
+#
+# 背景：venv 的 pyvenv.cfg 绑定打包机的 base Python 绝对路径，拷贝到
+# 用户机器后 python.exe（引导器）找不到 base 解释器必然启动失败。
+# 便携运行时 = Python embeddable 发行版 + 直接装入其 site-packages，
+# 无任何绝对路径依赖，随安装包分发到 {app}\python 即可用。
+#
+# 用法：  .\scripts\setup.ps1 -BuildPortableRuntime
+# 产物：  .\python-runtime\  （docmind-setup.iss 把它打包为 {app}\python；
+#          BackendProcessService 解析后端命令时优先命中 {app}\python\python.exe）
+# ============================================================
+if ($BuildPortableRuntime) {
+    $rt = Join-Path $PSScriptRoot "..\python-runtime"
+    $rt = [System.IO.Path]::GetFullPath($rt)
+
+    if (Test-Path $rt) {
+        Write-Host "[便携运行时] 已存在 $rt，如需重建请先删除该目录。"
+        exit 0
+    }
+    New-Item -ItemType Directory -Path $rt -Force | Out-Null
+
+    # 1. 下载 Python embeddable（npmmirror 镜像优先，官方源回退）
+    $zipName = "python-$PortablePythonVersion-embed-amd64.zip"
+    $urls = @(
+        "https://registry.npmmirror.com/-/binary/python/$PortablePythonVersion/$zipName",
+        "https://mirrors.huaweicloud.com/python/$PortablePythonVersion/$zipName",
+        "https://www.python.org/ftp/python/$PortablePythonVersion/$zipName"
+    )
+    $zipPath = Join-Path $env:TEMP $zipName
+    $downloaded = $false
+    foreach ($u in $urls) {
+        Write-Step "下载 Python embeddable: $u"
+        try {
+            Invoke-WebRequest -Uri $u -OutFile $zipPath -UseBasicParsing -TimeoutSec 300
+            $downloaded = $true
+            break
+        } catch {
+            Write-Host "  镜像失败，切换下一个…"
+        }
+    }
+    if (-not $downloaded) { throw "所有镜像下载失败，请检查网络。" }
+
+    # 2. 解压到 python-runtime\
+    Write-Step "解压便携运行时…"
+    Expand-Archive -Path $zipPath -DestinationPath $rt -Force
+
+    # 3. 启用 site-packages：embeddable 默认 ._pth 屏蔽了 site，
+    #    取消 python311._pth 里 import site 的注释并追加 site-packages 搜索路径
+    Write-Step "启用 site-packages…"
+    $pth = Get-ChildItem $rt -Filter "python*._pth" | Select-Object -First 1
+    if (-not $pth) { throw "未找到 ._pth 配置文件。" }
+    $content = Get-Content $pth.FullName -Raw
+    $content = $content -replace "#import site", "import site"
+    $content = $content + "Lib\site-packages`r`n"
+    Set-Content -Path $pth.FullName -Value $content -Encoding ASCII
+
+    # 4. 引导 pip（embeddable 无 ensurepip，用 get-pip.py；npmmirror 回退官方）
+    Write-Step "引导 pip…"
+    $getpip = Join-Path $env:TEMP "get-pip.py"
+    $getpipUrls = @(
+        "https://registry.npmmirror.com/-/binary/get-pip/get-pip.py",
+        "https://bootstrap.pypa.io/get-pip.py"
+    )
+    $ok = $false
+    foreach ($u in $getpipUrls) {
+        try {
+            Invoke-WebRequest -Uri $u -OutFile $getpip -UseBasicParsing -TimeoutSec 120
+            $ok = $true; break
+        } catch { Write-Host "  get-pip 镜像失败，切换…"}
+    }
+    if (-not $ok) { throw "get-pip.py 下载失败。" }
+    & (Join-Path $rt "python.exe") $getpip --no-warn-script-location
+    if ($LASTEXITCODE -ne 0) { throw "pip 引导失败。" }
+
+    # 5. 安装核心运行依赖 + doc2mind 本体（清华镜像优先）
+    Write-Step "安装核心依赖（CPU 基线，与 requirements-core/server 一致）…"
+    & (Join-Path $rt "python.exe") -m pip install `
+        -r (Join-Path $PSScriptRoot "..\requirements-core.txt") `
+        -r (Join-Path $PSScriptRoot "..\requirements-server.txt") `
+        -i https://pypi.tuna.tsinghua.edu.cn/simple --no-warn-script-location
+    if ($LASTEXITCODE -ne 0) { throw "核心依赖安装失败。" }
+    # 注意：必须普通安装（复制进 site-packages），绝不能用 -e——
+    # editable 会在 site-packages 写指向构建机源码目录的绝对路径钩子，
+    # 拷贝到用户机器后 import 又会断（与 pyvenv.cfg 同类错误）。
+    & (Join-Path $rt "python.exe") -m pip install (Join-Path $PSScriptRoot "..") --no-deps `
+        -i https://pypi.tuna.tsinghua.edu.cn/simple --no-warn-script-location
+    if ($LASTEXITCODE -ne 0) { throw "doc2mind 本体安装失败。" }
+
+    # 6. 清理体积（只删下载缓存；pip 必须保留——后续插件安装 install_cli 依赖它）
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+
+    Write-Host ""
+    Write-Host "[✓] 便携运行时构建完成：$rt"
+    Write-Host "    下一步：docmind-setup.iss 把该目录打包为 {app}\python 即可"
+    Write-Host "    （把 .iss 里 VenvDir 定义切换为 ..\python-runtime，DestDir 改 {app}\python）。"
+    Write-Host "    验证：python-runtime\python.exe -m doc2mind serve --port 8801"
+    exit 0
+}

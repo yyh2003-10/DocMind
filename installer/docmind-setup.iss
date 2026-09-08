@@ -4,7 +4,7 @@
 ; 使用方法：
 ;   1. 先用 dotnet publish 发布 Release 版本：
 ;      dotnet publish DocMind/DocMind.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true
-;   2. 确保 .venv 目录已就绪（通过 setup.ps1 创建）
+;   2. 先跑 python-runtime 构建 setup.ps1 -BuildPortableRuntime（详见文件内说明）
 ;   3. 用 Inno Setup Compiler 打开本文件，点击编译即可生成安装包
 ;
 ; 输出：installer/Output/DocMind-Setup-{version}.exe
@@ -21,7 +21,11 @@
 
 ; 源文件路径（相对于本 .iss 文件所在目录）
 #define WpfPublishDir "..\DocMind\bin\Release\net8.0-windows\win-x64\publish"
-#define VenvDir "..\.venv-slim-new"
+; 便携 Python 运行时（setup.ps1 -BuildPortableRuntime 构建；embeddable 发行版，
+; 无绝对路径绑定，普通用户机器开箱即用）。CI 可 /DRuntimeDir=... 覆盖。
+#ifndef RuntimeDir
+  #define RuntimeDir "..\python-runtime"
+#endif
 #define ScriptsDir "..\scripts"
 #define AssetsDir "..\DocMind\Assets"
 
@@ -76,11 +80,15 @@ Source: "..\DocMind\appsettings.json"; DestDir: "{app}"; Flags: ignoreversion on
 ; ===== 资源文件 =====
 Source: "{#AssetsDir}\*"; DestDir: "{app}\Assets"; Flags: ignoreversion recursesubdirs
 
-; ===== Python 虚拟环境（CPU 核心，已排除 GPU/OCR 大型包） =====
-Source: "{#VenvDir}\*"; DestDir: "{app}\.venv"; Flags: ignoreversion recursesubdirs
+; ===== 便携 Python 运行时（普通用户开箱即用，无 pyvenv.cfg 绝对路径绑定） =====
+; 注意：不要再打包 .venv——venv 的 python.exe 是引导器，pyvenv.cfg 的 home
+; 指向打包机 base Python 绝对路径，拷贝到用户机器必然启动失败。
+Source: "{#RuntimeDir}\*"; DestDir: "{app}\python"; Flags: ignoreversion recursesubdirs
 
-; ===== 部署脚本（开发者用；WPF 运行时使用打包自带的 .venv，不依赖此脚本） =====
+; ===== 部署脚本（开发者用；运行时使用打包自带的便携 Python，不依赖此脚本） =====
 Source: "{#ScriptsDir}\setup.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+; 启动器（后端失败弹窗的排查建议引用了此文件，必须随包分发）
+Source: "..\start.bat"; DestDir: "{app}"; Flags: ignoreversion
 
 ; ===== 可选扩展安装助手（GPU/OCR，多镜像回退 + 实时进度） =====
 Source: "{#ScriptsDir}\install_optional.py"; DestDir: "{app}\scripts"; Flags: ignoreversion
@@ -102,10 +110,10 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 ; GPU 安装（当用户勾选时执行）：走 install_optional.py，多镜像自动回退 + 实时进度
-Filename: "{app}\.venv\Scripts\python.exe"; Parameters: """{app}\scripts\install_optional.py"" gpu"; StatusMsg: "正在安装 GPU 加速包（约 2GB，需联网等待）…"; Flags: skipifdoesntexist; Tasks: install_gpu
+Filename: "{app}\python\python.exe"; Parameters: """{app}\scripts\install_optional.py"" gpu"; StatusMsg: "正在安装 GPU 加速包（约 2GB，需联网等待）…"; Flags: skipifdoesntexist; Tasks: install_gpu
 
 ; OCR 安装（当用户勾选时执行）
-Filename: "{app}\.venv\Scripts\python.exe"; Parameters: """{app}\scripts\install_optional.py"" ocr"; StatusMsg: "正在安装 OCR 识别包（约 1.5GB，需联网等待）…"; Flags: skipifdoesntexist; Tasks: install_ocr
+Filename: "{app}\python\python.exe"; Parameters: """{app}\scripts\install_optional.py"" ocr"; StatusMsg: "正在安装 OCR 识别包（约 1.5GB，需联网等待）…"; Flags: skipifdoesntexist; Tasks: install_ocr
 
 ; 用户数据（知识库/聊天记录/设置/日志）默认保留在 %LOCALAPPDATA% 与 %APPDATA% 下，
 ; 卸载时由下方 [Code] 弹窗询问是否清理，绝不静默删除。

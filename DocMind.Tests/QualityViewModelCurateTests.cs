@@ -58,8 +58,8 @@ public class QualityViewModelCurateTests
 
         Assert.NotNull(captured[0]);
         Assert.True(captured[0]!.DryRun);
-        Assert.Contains("enrich", captured[0]!.Actions);
-        Assert.DoesNotContain("extract", captured[0]!.Actions, StringComparer.Ordinal);
+        Assert.Contains("enrich", captured[0]!.Actions!);
+        Assert.DoesNotContain("extract", captured[0]!.Actions!, StringComparer.Ordinal);
         // 预览完成后解锁「执行」按钮
         Assert.True(vm.ExecuteCurateCommand.CanExecute(null));
         Assert.Contains("打标签/摘要 2 篇", vm.CurateSummary);

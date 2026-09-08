@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocMind 原著查证器</title>
+  <link rel="stylesheet" href="pdf_viewer.min.css">
+  <style>
+    :root {
+      --bg-color: #f4f5f7;
+      --toolbar-bg: #ffffff;
+      --toolbar-border: #e2e8f0;
+      --text-color: #1e293b;
+      --text-muted: #64748b;
+      --primary-color: #2563eb;
+      --primary-hover: #1d4ed8;
+      --badge-bg: #eff6ff;
+      --badge-border: #bfdbfe;
+    }
+
+    body.dark {
+      --bg-color: #0f172a;
+      --toolbar-bg: #1e293b;
+      --toolbar-border: #334155;
+      --text-color: #f8fafc;
+      --text-muted: #94a3b8;
+      --primary-color: #3b82f6;
+      --primary-hover: #60a5fa;
+      --badge-bg: #1e3a8a;
+      --badge-border: #1d4ed8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: text;
+    }
+
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* 顶部迷你控制栏 */
+    #toolbar {
+      height: 38px;
+      background: var(--toolbar-bg);
+      border-bottom: 1px solid var(--toolbar-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 10px;
+      flex-shrink: 0;
+      font-size: 12px;
+      z-index: 100;
+    }
+
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn {
+      background: transparent;
+      border: 1px solid var(--toolbar-border);
+      color: var(--text-color);
+      padding: 3px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      line-height: 1.2;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+    }
+
+    .btn:hover {
+      background: var(--toolbar-border);
+    }
+
+    .page-indicator {
+      color: var(--text-muted);
+      font-weight: 500;
+      min-width: 65px;
+      text-align: center;
+    }
+
+    .citation-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: #fef3c7;
+      color: #92400e;
+      border: 1px solid #fde68a;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 600;
+      opacity: 0;
+      transform: translateY(-2px);
+      transition: all 0.3s ease;
+    }
+
+    .citation-badge.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* PDF 视口容器 */
+    #viewerContainer {
+      flex: 1;
+      overflow: auto;
+      position: absolute;
+      top: 38px;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background-color: var(--bg-color);
+    }
+
+    .pdfViewer .page {
+      margin: 12px auto !important;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+      border: none !important;
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* 高亮核心样式与呼吸动效 */
+    .docmind-citation-highlight {
+      background-color: rgba(254, 240, 138, 0.65) !important; /* 柔和荧光黄 */
+      outline: 1.5px solid #eab308;
+      border-radius: 2px;
+      color: inherit !important;
+      box-shadow: 0 0 10px rgba(234, 179, 8, 0.45);
+      position: relative;
+    }
+
+    .docmind-citation-pulse {
+      animation: docmindHighlightPulse 1.6s ease-in-out 2;
+    }
+
+    @keyframes docmindHighlightPulse {
+      0% {
+        background-color: rgba(254, 240, 138, 0.3);
+        outline-color: rgba(234, 179, 8, 0.4);
+      }
+      50% {
+        background-color: rgba(250, 204, 21, 0.85);
+        outline-color: #ca8a04;
+        box-shadow: 0 0 16px rgba(202, 138, 4, 0.7);
+      }
+      100% {
+        background-color: rgba(254, 240, 138, 0.65);
+        outline-color: #eab308;
+      }
+    }
+
+    /* 空状态/加载提示 */
+    #loadingOverlay {
+      position: absolute;
+      inset: 38px 0 0 0;
+      background: var(--bg-color);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: var(--text-muted);
+      font-size: 13px;
+      z-index: 50;
+      transition: opacity 0.2s ease;
+    }
+
+    #loadingOverlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 3px solid var(--toolbar-border);
+      border-top-color: var(--primary-color);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <!-- 顶部控制条 -->
+  <div id="toolbar">
+    <div class="toolbar-group">
+      <button id="prevBtn" class="btn" title="上一页">◀</button>
+      <span id="pageIndicator" class="page-indicator">- / -</span>
+      <button id="nextBtn" class="btn" title="下一页">▶</button>
+    </div>
+
+    <div class="toolbar-group">
+      <div id="citationBadge" class="citation-badge">
+        <span>📍</span>
+        <span id="badgeText">已定位引用原著</span>
+      </div>
+    </div>
+
+    <div class="toolbar-group">
+      <button id="zoomOutBtn" class="btn" title="缩小">-</button>
+      <button id="zoomFitBtn" class="btn" title="适合宽度">自适应</button>
+      <button id="zoomInBtn" class="btn" title="放大">+</button>
+    </div>
+  </div>
+
+  <!-- PDF 滚动容器 -->
+  <div id="viewerContainer">
+    <div id="viewer" class="pdfViewer"></div>
+  </div>
+
+  <!-- 加载提示 -->
+  <div id="loadingOverlay">
+    <div class="spinner"></div>
+    <div id="loadingText">正在载入文档...</div>
+  </div>
+
+  <!-- 引入 PDF.js 核心库 -->
+  <script src="pdf.min.js"></script>
+  <script src="pdf_viewer.min.js"></script>
+  <script src="citation-highlighter.js"></script>
+</body>
+</html>

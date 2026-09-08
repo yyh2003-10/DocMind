@@ -54,6 +54,79 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def _record_curate_run_safe(
+    store: VectorStore,
+    started_at: str,
+    dry_run: bool,
+    collection: str | None,
+    actions: list[str],
+    report: "CurateReport",
+    note: str | None,
+) -> None:
+    """curate() 收尾时调 record_curate_run 写一行留痕，失败仅记录 warning 不抛错。
+
+    抽取 changed_doc_ids：合并 enriched/categorized/duplicates/consolidated/extracted
+    五种结果里的 doc id，去重后入表。L2 自动化「可观测」的关键 ——
+    让质量看板能显示「过去 7 天跑过几次整理、动了哪些文档」。
+
+    注意：报告项里文档 id 的字段名是 `doc_id`（见 _doc_brief），
+    与 HTTP API 的 `document_id` 是不同来源。dedup 项的 `keep`/`remove` 是
+    嵌套 dict（也带 doc_id），consolidate 项的 `member_ids` 是 list[str]——这
+    两类要递归提取，**不能**只取顶层 doc_id（顶层键是 cluster_size/title/preview）。
+    """
+    try:
+        ids: set[str] = set()
+        for item in report.enriched:
+            if isinstance(item, dict) and item.get("doc_id"):
+                ids.add(str(item["doc_id"]))
+        for item in report.categorized:
+            if isinstance(item, dict) and item.get("doc_id"):
+                ids.add(str(item["doc_id"]))
+        # dedup：嵌套结构 {score, keep:{doc_id,...}, remove:{doc_id,...}, status}
+        # —— 删的是 remove，保留 keep，**两者都算 changed**（dedup 改变了归属）
+        for item in report.duplicates:
+            if not isinstance(item, dict):
+                continue
+            for key in ("keep", "remove"):
+                sub = item.get(key)
+                if isinstance(sub, dict) and sub.get("doc_id"):
+                    ids.add(str(sub["doc_id"]))
+            # 兜底：万一哪天改回顶层 doc_id
+            if item.get("doc_id"):
+                ids.add(str(item["doc_id"]))
+        # consolidate：{cluster_size, members:[source...], member_ids:[id...], title, ...}
+        # —— 被合并的成员文档全部 changed
+        for item in report.consolidated:
+            if not isinstance(item, dict):
+                continue
+            mid = item.get("member_ids")
+            if isinstance(mid, list):
+                for x in mid:
+                    if isinstance(x, str) and x:
+                        ids.add(x)
+            # 兜底：顶层 doc_id（保留兼容）
+            if item.get("doc_id"):
+                ids.add(str(item["doc_id"]))
+        for item in report.extracted:
+            if isinstance(item, dict) and item.get("doc_id"):
+                ids.add(str(item["doc_id"]))
+        store.record_curate_run(
+            started_at=started_at,
+            finished_at=_now_iso(),
+            dry_run=dry_run,
+            collection=collection,
+            actions=actions,
+            changed_doc_ids=sorted(ids),
+            skipped_count=len(report.skipped),
+            error_count=len(report.errors),
+            elapsed_ms=report.elapsed_ms,
+            note=note,
+        )
+    except Exception as e:  # noqa: BLE001
+        # 留痕失败不影响主流程：curate 已完成、报告已生成
+        logger.warning("记录 curate 运行留痕失败: %s", e)
+
+
 # --- 报告 ---
 @dataclass
 class CurateReport:
@@ -433,6 +506,11 @@ def _judge_duplicate(
         deleted = store.delete_document(doc_b.id)
     except StoreError as e:
         return {**item, "status": "error", "reason": str(e)}
+    if deleted == -2:
+        # 冗余文档此前已被软删（如用户手动删过）——本轮并未真正删除，
+        # 不报 merged 避免误导：去重结论成立但无新动作
+        return {**item, "status": "already_deleted",
+                "reason": "冗余文档已处于软删除状态（本轮无新删除动作）"}
     logger.info(
         "dedup 删除冗余文档: %s（保留 %s，相似分 %.3f，删除 %d 个分块）",
         doc_b.source, doc_a.source, score, max(deleted, 0),
@@ -585,6 +663,7 @@ def consolidate_notes(
                 "status": "skipped",
                 "cluster_size": len(members),
                 "members": [d.source for d in members],
+                "member_ids": [d.id for d in members],
                 "reason": "LLM 输出无法解析",
             })
             continue
@@ -593,7 +672,9 @@ def consolidate_notes(
         content = str(parsed.get("content") or "").strip()
         item: dict[str, Any] = {
             "cluster_size": len(members),
+            # 同时保留 source 名（人读）和 doc_id（机器追溯）—— curate_runs 留痕用 doc_id
             "members": [d.source for d in members],
+            "member_ids": [d.id for d in members],
             "title": title,
             "preview": content[:300],
         }
@@ -658,6 +739,7 @@ def curate(
     top_k: int | None = None,
     progress: Callable[[int, int], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    note: str | None = None,
 ) -> CurateReport:
     """知识库整理汇总入口。
 
@@ -676,6 +758,7 @@ def curate(
     Returns:
         `CurateReport`
     """
+    started_at = _now_iso()
     t0 = time.perf_counter()
     requested = list(actions or list(VALID_ACTIONS))
     invalid = [a for a in requested if a not in VALID_ACTIONS]
@@ -688,6 +771,8 @@ def curate(
         )
     if not report.actions:
         report.elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        _record_curate_run_safe(store, started_at, dry_run, collection,
+                                report.actions, report, note)
         return report
 
     if llm is None:
@@ -696,6 +781,8 @@ def curate(
             "请先在设置页配置或在环境变量设置 DOC2MIND_LLM_PROVIDER"
         )
         report.elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        _record_curate_run_safe(store, started_at, dry_run, collection,
+                                report.actions, report, note)
         return report
 
     collections = (
@@ -817,4 +904,6 @@ def curate(
         len(report.skipped), len(report.errors),
         report.elapsed_ms,
     )
+    _record_curate_run_safe(store, started_at, dry_run, collection,
+                            report.actions, report, note)
     return report

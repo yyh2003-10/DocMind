@@ -20,7 +20,9 @@ public partial class GpuWarningViewModel : ViewModelBase
 {
     private readonly IDoc2kbApiService _apiService;
     private readonly BackendProcessService _backendService;
+    private readonly IPluginInstallService _pluginInstaller;
     private readonly NotificationService _notifications;
+    private CancellationTokenSource? _installCts;
 
     private bool _gpuAvailable;
     private string? _gpuProvider;
@@ -44,10 +46,12 @@ public partial class GpuWarningViewModel : ViewModelBase
     public GpuWarningViewModel(
         IDoc2kbApiService apiService,
         BackendProcessService backendService,
+        IPluginInstallService pluginInstaller,
         NotificationService notifications)
     {
         _apiService = apiService;
         _backendService = backendService;
+        _pluginInstaller = pluginInstaller;
         _notifications = notifications;
         Title = "GPU 加速";
     }
@@ -195,14 +199,15 @@ public partial class GpuWarningViewModel : ViewModelBase
         }
     }
 
+    /// <summary>推荐路径提示。注意：后端 get_gpu_diagnosis 只返回
+    /// coreml/cuda12/cuda13/directml/cpu，OCR 路径由用户在方案下拉框手动选择。</summary>
     public string RecommendedPathHint => Diagnosis?.RecommendedPath switch
     {
         "cuda12" => "CUDA 12（NVIDIA GPU，PyPI 标准 wheel）",
         "cuda13" => "CUDA 13（需 cu13 本地 wheel）",
         "directml" => "DirectML（通用 GPU，AMD / Intel / NVIDIA）",
-        "paddle-ocr-gpu" => "PaddlePaddle OCR GPU 加速",
-        "ocr-cpu" => "OCR 文字识别 CPU 版（所有设备可用）",
-        "cpu" => "当前已是 CPU 模式，无可用 GPU 加速方案",
+        "coreml" => "CoreML（Apple Silicon）",
+        "cpu" => "当前已是 CPU 模式；扫描件/图片识别请手动选择下方「OCR 文字识别」方案安装",
         _ => ""
     };
 
@@ -245,7 +250,10 @@ public partial class GpuWarningViewModel : ViewModelBase
         private set
         {
             if (SetProperty(ref _isInstalling, value))
+            {
                 OnPropertyChanged(nameof(CanInstall));
+                OnPropertyChanged(nameof(CanCancelInstall));
+            }
         }
     }
 
@@ -293,11 +301,25 @@ public partial class GpuWarningViewModel : ViewModelBase
         set
         {
             if (SetProperty(ref _selectedPath, value))
+            {
                 OnPropertyChanged(nameof(CanInstall));
+                OnPropertyChanged(nameof(InstallButtonText));
+            }
         }
     }
 
+    /// <summary>安装按钮文案：按所选方案区分，避免装 OCR 时显示「安装 GPU 加速」误导。</summary>
+    public string InstallButtonText => SelectedPath switch
+    {
+        "ocr-cpu" or "paddle-ocr-gpu" => "⬇ 安装 OCR 组件",
+        null => "🚀 一键安装",
+        _ => "🚀 一键安装 GPU 加速",
+    };
+
     public bool CanInstall => !IsInstalling && !IsDiagnosing && SelectedPath is { Length: > 0 };
+
+    /// <summary>安装中允许取消（终止独立安装进程并自动恢复后端）。</summary>
+    public bool CanCancelInstall => IsInstalling;
 
     public bool CanRestart => _installSucceeded && !IsInstalling;
 
@@ -354,25 +376,62 @@ public partial class GpuWarningViewModel : ViewModelBase
     {
         if (IsInstalling || SelectedPath is not { Length: > 0 } path) return;
         if (path == "cpu") return;
+        _installCts = new CancellationTokenSource();
+        var ct = _installCts.Token;
         IsInstalling = true;
         _installSucceeded = false;
         OnPropertyChanged(nameof(CanRestart));
         _logBuffer.Clear();
         InstallLog = "";
-        StatusMessage = "正在安装...";
 
+        // 独立进程安装需要先停止后端：后端进程自身加载的 numpy/paddle/onnxruntime
+        // 运行库 DLL 会让 pip 的文件替换必然失败（WinError 5「拒绝访问」）。
+        // 维护模式：阻止 App 自动启动/其他路径在安装窗口内并发拉起后端，
+        // 并让 App 级「启动失败」弹窗对这次主动停止保持静默。
+        var stoppedBackend = false;
+        var cancelled = false;
+        _backendService.BeginMaintenance();
         try
         {
-            // OCR 扩展路径走专用安装端点（安装内容相同，但语义与日志归类正确）
-            var isOcrPath = path is "ocr-cpu" or "paddle-ocr-gpu";
-            var installTask = isOcrPath
-                ? _apiService.InstallOcrAsync(path, onLog: OnInstallLog, onDone: OnInstallDone, ct: default)
-                : _apiService.InstallGpuAsync(path, onLog: OnInstallLog, onDone: OnInstallDone, ct: default);
-            await installTask;
+            if (_pluginInstaller.CanInstallOutOfProcess)
+            {
+                StatusMessage = "正在停止后端服务（安装需独占 Python 环境，避免文件占用）...";
+                try
+                {
+                    await _backendService.StopAsync(ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    cancelled = true;
+                    throw;
+                }
+                catch (Exception stopEx)
+                {
+                    DebugLog.Warn($"停止后端失败（继续尝试安装）: {stopEx.Message}", "Install");
+                }
+                stoppedBackend = true;
+                StatusMessage = "正在安装（独立进程，后端已暂停，完成后自动重启）...";
+                var ok = await _pluginInstaller.InstallAsync(path, OnInstallLog, ct);
+                _installSucceeded = ok;
+                StatusMessage = ok ? "安装完成，正在重启后端..." : "安装失败，请查看上方日志排查";
+            }
+            else
+            {
+                // 回退：无法解析独立 python 时走后端 SSE
+                // （后端已内置运行库占用预检，会直接拒绝并提示）
+                StatusMessage = "正在安装...";
+                var isOcrPath = path is "ocr-cpu" or "paddle-ocr-gpu";
+                var installTask = isOcrPath
+                    ? _apiService.InstallOcrAsync(path, onLog: OnInstallLog, onDone: OnInstallDone, ct)
+                    : _apiService.InstallGpuAsync(path, onLog: OnInstallLog, onDone: OnInstallDone, ct);
+                await installTask;
+            }
         }
         catch (OperationCanceledException)
         {
-            StatusMessage = "安装已取消";
+            cancelled = true;
+            _logBuffer.AppendLine("[提示] 安装已取消。环境可能处于半安装状态，重新执行一次安装即可覆盖修复。");
+            InstallLog = _logBuffer.ToString();
         }
         catch (Exception ex)
         {
@@ -384,7 +443,48 @@ public partial class GpuWarningViewModel : ViewModelBase
         finally
         {
             IsInstalling = false;
+            if (stoppedBackend)
+            {
+                // 先退出维护模式再重启：排队的 App 自动启动会被下面的 StartAsync 抢先满足；
+                // 恢复后把安装终态写回（重启/诊断动作会覆盖 StatusMessage，终态不能丢）
+                var finalMessage = cancelled
+                    ? "安装已取消（后端已恢复）"
+                    : _installSucceeded
+                        ? "安装完成，后端已重启并刷新诊断"
+                        : "安装失败，请查看上方日志排查（后端已恢复）";
+                StatusMessage = "正在恢复后端服务...";
+                _backendService.EndMaintenance();
+                try
+                {
+                    await _backendService.StartAsync(ct: CancellationToken.None);
+                }
+                catch (Exception restartEx)
+                {
+                    StatusMessage = $"后端恢复失败: {restartEx.Message}（可点击顶栏「启动服务」手动恢复）";
+                    _notifications.Error($"后端恢复失败：{restartEx.Message}", "环境自检");
+                }
+                StatusMessage = finalMessage;
+            }
+            else
+            {
+                // 未走到停后端分支（如校验拦截），也要释放维护标志
+                _backendService.EndMaintenance();
+            }
+            OnPropertyChanged(nameof(CanRestart));
+            // 重新诊断刷新包状态（仅安装成功后端在线时才有意义）
+            if (_installSucceeded && !cancelled)
+            {
+                await DiagnoseAsync();
+            }
         }
+    }
+
+    [RelayCommand]
+    private void CancelInstall()
+    {
+        if (!IsInstalling) return;
+        StatusMessage = "正在取消安装...";
+        _installCts?.Cancel();
     }
 
     /// <summary>SSE 安装日志回调（后台线程 → Dispatcher 回 UI 线程）。</summary>

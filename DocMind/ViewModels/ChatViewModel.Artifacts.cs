@@ -1,0 +1,714 @@
+using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Documents;
+using System.Windows.Input;
+using System.Windows.Media;
+using CommunityToolkit.Mvvm.Input;
+using DocMind.Models;
+using DocMind.Services;
+using Markdig;
+using Markdig.Wpf;
+
+namespace DocMind.ViewModels;
+
+public partial class ChatViewModel : ViewModelBase
+{
+    private SourceRef? _selectedSource;
+    private bool _isSourceDrawerOpen;
+    private double _sourceDrawerWidth;
+    private ArtifactItem? _selectedArtifact;
+    private int _currentSlideIndex;
+    private bool _isArtifactMode;
+
+    /// <summary>当前选中的创作物交付物（供右侧创作画布展示）。</summary>
+    public ArtifactItem? SelectedArtifact
+    {
+        get => _selectedArtifact;
+        set
+        {
+            if (SetProperty(ref _selectedArtifact, value))
+            {
+                OnPropertyChanged(nameof(HasSelectedArtifact));
+                OnPropertyChanged(nameof(SelectedArtifactTitle));
+                OnPropertyChanged(nameof(SelectedSlide));
+                OnPropertyChanged(nameof(HasSelectedSlide));
+                OnPropertyChanged(nameof(SlideCountText));
+                OnPropertyChanged(nameof(CanPrevSlide));
+                OnPropertyChanged(nameof(CanNextSlide));
+                OnPropertyChanged(nameof(IsPptArtifact));
+                OnPropertyChanged(nameof(IsDocArtifact));
+                OnPropertyChanged(nameof(IsExcelArtifact));
+                OnPropertyChanged(nameof(IsHtmlArtifact));
+
+                // 统一同步入口：无论从消息卡片还是横排清单切换创作物，
+                // 都保证页码归位、配色主题与该 artifact 自带的 theme 对齐。
+                CurrentSlideIndex = 0;
+                if (value != null && !string.IsNullOrWhiteSpace(value.Theme))
+                {
+                    var matchedTheme = AvailableThemes.FirstOrDefault(t => string.Equals(t.Id, value.Theme, StringComparison.OrdinalIgnoreCase));
+                    if (matchedTheme != null) SelectedTheme = matchedTheme;
+                }
+            }
+        }
+    }
+
+    public bool HasSelectedArtifact => SelectedArtifact != null;
+
+    // ==================== 本会话创作物清单（工作台横排管理台） ====================
+    // 一次会话常产出多个交付物（PPT + 研报 + 看板），只预览单个 artifact 会让用户在
+    // 消息流里来回翻找。这里把本会话全部 artifact 聚合成清单，支持在工作台内直接切换。
+    /// <summary>本会话已产出的全部创作物。</summary>
+    public ObservableCollection<ArtifactItem> SessionArtifacts { get; } = new();
+
+    /// <summary>本会话是否存在多个创作物（决定横排清单是否显示）。</summary>
+    public bool HasMultipleArtifacts => SessionArtifacts.Count > 1;
+
+    /// <summary>扫描全部消息，重建本会话创作物清单。</summary>
+    private void RefreshSessionArtifacts()
+    {
+        SessionArtifacts.Clear();
+        foreach (var m in Messages)
+        {
+            if (m.Artifact != null && !SessionArtifacts.Contains(m.Artifact))
+            {
+                SessionArtifacts.Add(m.Artifact);
+            }
+        }
+        OnPropertyChanged(nameof(HasMultipleArtifacts));
+    }
+    public string SelectedArtifactTitle => SelectedArtifact?.Title ?? "创作交付物";
+    public bool IsPptArtifact => SelectedArtifact?.IsPpt == true;
+    public bool IsDocArtifact => SelectedArtifact?.IsDoc == true;
+    public bool IsExcelArtifact => SelectedArtifact?.IsExcel == true;
+    public bool IsHtmlArtifact => SelectedArtifact?.IsHtml == true;
+
+    /// <summary>当前正在预览的幻灯片页索引（从 0 开始）。</summary>
+    public int CurrentSlideIndex
+    {
+        get => _currentSlideIndex;
+        set
+        {
+            if (SetProperty(ref _currentSlideIndex, value))
+            {
+                OnPropertyChanged(nameof(SelectedSlide));
+                OnPropertyChanged(nameof(HasSelectedSlide));
+                OnPropertyChanged(nameof(SlideCountText));
+                OnPropertyChanged(nameof(CanPrevSlide));
+                OnPropertyChanged(nameof(CanNextSlide));
+            }
+        }
+    }
+
+    /// <summary>当前选中的幻灯片页。</summary>
+    public SlideItem? SelectedSlide =>
+        SelectedArtifact?.Slides is { Count: > 0 } slides && CurrentSlideIndex >= 0 && CurrentSlideIndex < slides.Count
+            ? slides[CurrentSlideIndex]
+            : null;
+
+    /// <summary>是否存在可预览的当前幻灯片页（无则预览卡显示空状态提示）。</summary>
+    public bool HasSelectedSlide => SelectedSlide != null;
+
+            /// <summary>幻灯片页码文案（如 "1 / 8"）。</summary>
+    public string SlideCountText => SelectedArtifact?.Slides is { Count: > 0 } slides
+        ? $"{CurrentSlideIndex + 1} / {slides.Count}"
+        : "0 / 0";
+
+    public bool CanPrevSlide => CurrentSlideIndex > 0;
+    public bool CanNextSlide => SelectedArtifact?.Slides is { Count: > 0 } slides && CurrentSlideIndex < slides.Count - 1;
+
+    /// <summary>抽屉是否处于创作物工作台模式（false 为原著切片模式）。</summary>
+    public bool IsArtifactMode
+    {
+        get => _isArtifactMode;
+        set => SetProperty(ref _isArtifactMode, value);
+    }
+
+    /// <summary>当前选中的引用来源（供右侧协同抽屉预览）。</summary>
+    public SourceRef? SelectedSource
+    {
+        get => _selectedSource;
+        set
+        {
+            if (SetProperty(ref _selectedSource, value))
+            {
+                OnPropertyChanged(nameof(HasSelectedSource));
+                OnPropertyChanged(nameof(SelectedSourceTitle));
+                OnPropertyChanged(nameof(SelectedSourceSnippet));
+            }
+        }
+    }
+
+    public bool HasSelectedSource => SelectedSource != null;
+    public string SelectedSourceTitle => SelectedSource?.DisplayTitle ?? "(未命名来源)";
+    public string SelectedSourceSnippet
+    {
+        get
+        {
+            var src = SelectedSource;
+            if (src is null)
+            {
+                return "";
+            }
+            // 网页来源：正文没抓到且搜索摘要为空（占位/纯链接摘要已在后端过滤）时，
+            // 给出诚实提示并引导打开原文，而不是展示一段像链接一样的垃圾文本。
+            if (src.IsWebSource && !src.ContentFetched && string.IsNullOrWhiteSpace(src.Snippet))
+            {
+                return "⚠️ 未抓到该网页正文（页面可能需要 JS 渲染、需登录或禁止爬取）。搜索摘要不可用，请点击「🌐 在浏览器中打开」查看原文。";
+            }
+            return !string.IsNullOrWhiteSpace(src.Snippet)
+                ? src.Snippet
+                : "（该切片暂无全文预览或来自早期版本会话，可通过下方动作查看原文）";
+        }
+    }
+
+    /// <summary>协同来源预览抽屉是否展开。</summary>
+    public bool IsSourceDrawerOpen
+    {
+        get => _isSourceDrawerOpen;
+        set => SetProperty(ref _isSourceDrawerOpen, value);
+    }
+
+    /// <summary>右侧协同抽屉允许的最小/最大宽度（像素），与 ChatView 抽屉 Border 的
+    /// MinWidth/MaxWidth 约束保持一致（双重保险，避免两处区间漂移）。</summary>
+    public const double MinSourceDrawerWidth = 240;
+    public const double MaxSourceDrawerWidth = 1100;
+    public const double DefaultSourceDrawerWidth = 380;
+
+    /// <summary>右侧协同抽屉的宽度（像素）。用户拖动左边缘把手后由 ChatView 回写此处，
+    /// 立即钳制到 240~720 并落盘到 AppSettings.ChatDrawerWidth，下次启动自动还原。</summary>
+    public double SourceDrawerWidth
+    {
+        get => _sourceDrawerWidth;
+        set
+        {
+            var clamped = System.Math.Clamp(value, MinSourceDrawerWidth, MaxSourceDrawerWidth);
+            if (SetProperty(ref _sourceDrawerWidth, clamped))
+            {
+                // 仅更新内存快照：拖动过程中每帧都会走到这里，而 Save() 内含
+                // DPAPI 加密（SecretProtector.Protect），逐帧调用会造成明显卡顿，
+                // 故落盘交由 PersistSourceDrawerWidth 在拖动结束时执行一次。
+                _appSettings.ChatDrawerWidth = clamped;
+            }
+        }
+    }
+
+    /// <summary>把当前抽屉宽度落盘到 appsettings.json。
+    /// 由 ChatView 在拖动结束（Thumb.DragCompleted）时调用一次，避免拖动过程逐帧写盘。</summary>
+    public void PersistSourceDrawerWidth()
+    {
+        _appSettings.ChatDrawerWidth = _sourceDrawerWidth;
+        try
+        {
+            _appSettings.Save();
+        }
+        catch
+        {
+            // 落盘失败不阻断对话（与联网搜索开关一致：UI 状态优先）
+        }
+    }
+
+    /// <summary>18 套企业级演示文稿主题配色，覆盖主流与细分场景。</summary>
+    public IReadOnlyList<PptThemeOption> AvailableThemes { get; } = new List<PptThemeOption>
+    {
+        // ── 通用商务 ──
+        new("tech_blue", "🔷 科技商务蓝", "🔷", "深邃稳健，架构汇报首选", "#0F4C81", "#F6F8FC"),
+        new("emerald_green", "🌿 清新自然绿", "🌿", "战略规划、ESG 与教育", "#1B4D3E", "#F4F7F5"),
+        new("modern_purple", "🟣 AI 智能紫", "🟣", "前沿创新、未来科技", "#4A148C", "#F7F5FD"),
+        new("warm_orange", "🔶 活力暖橙红", "🔶", "商业营销与成果战报", "#B73225", "#FEF8F6"),
+        new("dark_elegant", "⬛ 极简暗黑风", "⬛", "沉浸发布会、极客科技", "#60A5FA", "#181A20"),
+        // ── 时尚 / 创意 ──
+        new("rose_pink", "🩷 浪漫玫瑰粉", "🩷", "时尚品牌、产品发布与活动策划", "#BE185D", "#FDF2F8"),
+        new("candy_bright", "🍬 糖果明快", "🍬", "活泼创意、团队协作与内部培训", "#C026D3", "#FDF4FF"),
+        // ── 自然 / 环保 ──
+        new("ocean_turquoise", "🐬 海洋碧蓝", "🐬", "清新通透、科技产品与海洋生态", "#0E7490", "#F0FDFA"),
+        new("forest_deep", "🌲 深林墨绿", "🌲", "自然环保、农业与可持续发展", "#065F46", "#ECFDF5"),
+        new("earth_warm", "🪨 大地暖岩", "🪨", "建筑材料、地质勘探与户外运动", "#78350F", "#FFFBEB"),
+        // ── 金融 / 奢华 ──
+        new("golden_luxury", "✨ 奢华金棕", "✨", "高端金融、奢侈品与年度盛典", "#92400E", "#FFFBEB"),
+        new("deep_wine", "🍷 醇酿酒红", "🍷", "高端商务晚宴、品牌联名与尊享活动", "#7F1D1D", "#FEF2F2"),
+        // ── 医疗 / 学术 ──
+        new("medical_calm", "🏥 医疗清蓝", "🏥", "医疗健康、临床研究与生命科学", "#1E40AF", "#EFF6FF"),
+        new("scholar_cream", "📚 学术象牙", "📚", "论文答辩、学术会议与期刊发表", "#78350F", "#FFFBEB"),
+        // ── 政府 / 公共 ──
+        new("gov_red", "🏛️ 庄重中国红", "🏛️", "政府公文、党建汇报与公共服务", "#991B1B", "#FEF2F2"),
+        // ── 科技 / 前沿 ──
+        new("cyber_neon", "🤖 赛博霓虹", "🤖", "游戏电竞、元宇宙与前沿科技发布会", "#06B6D4", "#0F172A"),
+        new("sunset_gradient", "🌅 日落渐变", "🌅", "温暖叙事、品牌故事与年终总结", "#DC2626", "#FFF7ED"),
+        new("nordic_ice", "🧊 北欧冰川", "🧊", "极简冷淡风、学术会议与研究报告", "#334155", "#F8FAFC"),
+    };
+
+    private PptThemeOption? _selectedTheme;
+
+    /// <summary>当前选中的 PPT 主题配色。</summary>
+    public PptThemeOption SelectedTheme
+    {
+        get => _selectedTheme ?? AvailableThemes[0];
+        set
+        {
+            if (SetProperty(ref _selectedTheme, value ?? AvailableThemes[0]))
+            {
+                RefreshSlideThemeBrushes();
+            }
+        }
+    }
+
+    // ---- 前端预览 / 放映专用主题画笔 ----
+    // 导出与网页放映由后端按主题 id 渲染配色，而前端此前一直用应用全局主色，
+    // 导致切换「配色主题」下拉时预览纹丝不动、只有导出的文件变色（三个出口不同步）。
+    private Brush? _slideAccentBrush;
+    private Brush? _slideAccentSoftBrush;
+
+    /// <summary>当前 PPT 主题主色画笔（标题、装饰条、卡片边框）。</summary>
+    public Brush SlideAccentBrush => _slideAccentBrush ??= ParseThemeBrush(SelectedTheme.PrimaryHex, "#2563EB");
+
+    /// <summary>当前 PPT 主题浅色底画笔（板式徽章等强调块背景）。</summary>
+    public Brush SlideAccentSoftBrush => _slideAccentSoftBrush ??= ParseThemeBrush(SelectedTheme.BgHex, "#EFF6FF");
+
+    private static Brush ParseThemeBrush(string? hex, string fallbackHex)
+    {
+        if (!string.IsNullOrWhiteSpace(hex))
+        {
+            try
+            {
+                var c = (Color)ColorConverter.ConvertFromString(hex!);
+                return new SolidColorBrush(c);
+            }
+            catch
+            {
+                // 主题色非法时落回默认，不让整个预览崩掉
+            }
+        }
+        return new SolidColorBrush((Color)ColorConverter.ConvertFromString(fallbackHex));
+    }
+
+    /// <summary>主题变更后重建画笔并广播，令预览 / 放映 / 导出三处配色保持一致。</summary>
+    private void RefreshSlideThemeBrushes()
+    {
+        _slideAccentBrush = ParseThemeBrush(SelectedTheme.PrimaryHex, "#2563EB");
+        _slideAccentSoftBrush = ParseThemeBrush(SelectedTheme.BgHex, "#EFF6FF");
+        OnPropertyChanged(nameof(SlideAccentBrush));
+        OnPropertyChanged(nameof(SlideAccentSoftBrush));
+    }
+
+    /// <summary>打开创作物画布抽屉。</summary>
+    [RelayCommand]
+    public void OpenArtifact(object? param)
+    {
+        ArtifactItem? item = null;
+        if (param is ArtifactItem ai) item = ai;
+        else if (param is ChatMessage msg && msg.Artifact != null) item = msg.Artifact;
+
+        if (item != null)
+        {
+            // 打开工作台前先重建清单，确保本会话此前产出的其它交付物也能一并切换
+            RefreshSessionArtifacts();
+
+            SelectedArtifact = item;
+            CurrentSlideIndex = 0;
+            IsArtifactMode = true;
+            IsSourceDrawerOpen = true;
+
+            // 匹配并同步主题
+            if (!string.IsNullOrWhiteSpace(item.Theme))
+            {
+                var matchedTheme = AvailableThemes.FirstOrDefault(t => string.Equals(t.Id, item.Theme, StringComparison.OrdinalIgnoreCase));
+                if (matchedTheme != null) SelectedTheme = matchedTheme;
+            }
+
+            StatusMessage = $"展开创作物画布：{item.Title} ({item.Type.ToUpperInvariant()})";
+            DebugLog.Info($"展开创作物画布: title={item.Title} type={item.Type} slides={item.SlideCount}", "Chat");
+        }
+    }
+
+    /// <summary>幻灯片上一页。</summary>
+    [RelayCommand]
+    private void PrevSlide()
+    {
+        if (CanPrevSlide)
+        {
+            CurrentSlideIndex--;
+        }
+    }
+
+    /// <summary>幻灯片下一页。</summary>
+    [RelayCommand]
+    private void NextSlide()
+    {
+        if (CanNextSlide)
+        {
+            CurrentSlideIndex++;
+        }
+    }
+
+    /// <summary>一键将创作物导出为本地物理文件（PPTX/DOCX/XLSX/HTML）。</summary>
+    [RelayCommand]
+    public async Task ExportArtifactFileAsync(string? targetFormat = null)
+    {
+        var artifact = SelectedArtifact;
+        if (artifact == null || string.IsNullOrWhiteSpace(artifact.RawContent))
+        {
+            _notifications?.Warning("当前没有可导出的创作物内容");
+            return;
+        }
+
+        var fmt = targetFormat ?? artifact.Type;
+        StatusMessage = $"正在编译导出 {fmt.ToUpperInvariant()} 物理文件（主题: {SelectedTheme.DisplayName}）…";
+
+        try
+        {
+            var req = new CreativeExportRequest
+            {
+                Content = artifact.RawContent,
+                Format = fmt,
+                Title = artifact.Title,
+                Theme = SelectedTheme.Id,
+            };
+
+            var res = await _apiService.ExportCreativeArtifactAsync(req);
+            if (res.Ok && !string.IsNullOrWhiteSpace(res.FilePath))
+            {
+                StatusMessage = $"已导出文件：{res.FileName}";
+                _notifications?.Success($"已成功导出至：{res.FileName}\n路径：{res.FilePath}", "创作导出成功");
+                DebugLog.Info($"导出创作物物理文件成功: path={res.FilePath} size={res.FileSizeBytes}", "Chat");
+
+                // 尝试在 Windows 资源管理器中高亮选中生成的文件
+                try
+                {
+                    if (System.IO.File.Exists(res.FilePath))
+                    {
+                        Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{res.FilePath}\"") { UseShellExecute = true });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Warn($"在资源管理器中定位导出文件异常: {ex.Message}", "Chat");
+                }
+            }
+            else
+            {
+                StatusMessage = $"导出失败：{res.Error ?? "未知错误"}";
+                _notifications?.Error($"导出失败: {res.Error}");
+                DebugLog.Error($"导出交付物失败: {res.Error}", "Chat");
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"导出异常：{ex.Message}";
+            DebugLog.Error($"导出交付物异常: {ex.Message}", "Chat", ex);
+            _notifications?.Error($"导出异常: {ex.Message}");
+        }
+    }
+
+    /// <summary>自动导出创作物为物理文件（后台静默执行，不阻塞 UI）。</summary>
+    private async Task AutoExportArtifactAsync(ArtifactItem artifact)
+    {
+        try
+        {
+            // 延迟 500ms 等待流式完成渲染
+            await Task.Delay(500);
+
+            var fmt = artifact.Type;
+            var req = new CreativeExportRequest
+            {
+                Content = artifact.RawContent,
+                Format = fmt,
+                Title = artifact.Title,
+                // 若该创作物正在工作台中预览，则跟随用户当前选定的主题，
+                // 否则自动导出会停留在 artifact 自带的原始 theme，与随后手动导出/网页放映的配色对不上。
+                Theme = ReferenceEquals(artifact, SelectedArtifact)
+                    ? SelectedTheme.Id
+                    : (artifact.Theme ?? "tech_blue"),
+            };
+
+            var res = await _apiService.ExportCreativeArtifactAsync(req);
+            if (res.Ok && !string.IsNullOrWhiteSpace(res.FilePath))
+            {
+                StatusMessage = $"✅ 已自动导出 {fmt.ToUpperInvariant()}：{res.FileName}";
+                DebugLog.Info($"自动导出创作物成功: path={res.FilePath} size={res.FileSizeBytes}", "Chat");
+
+                // 尝试在 Windows 资源管理器中高亮选中生成的文件
+                try
+                {
+                    if (System.IO.File.Exists(res.FilePath))
+                    {
+                        Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{res.FilePath}\"") { UseShellExecute = true });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Warn($"在资源管理器中定位自动导出文件异常: {ex.Message}", "Chat");
+                }
+            }
+            else
+            {
+                DebugLog.Warn($"自动导出创作物失败: {res.Error}", "Chat");
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"自动导出创作物异常（不影响对话）: {ex.Message}", "Chat");
+        }
+    }
+
+    private PptInspectionReportDto? _inspectionReport;
+    private bool _isInspectionReportOpen;
+
+    /// <summary>当前 PPT 效果自检与质量诊断报告。</summary>
+    public PptInspectionReportDto? InspectionReport
+    {
+        get => _inspectionReport;
+        set
+        {
+            if (SetProperty(ref _inspectionReport, value))
+            {
+                OnPropertyChanged(nameof(HasInspectionReport));
+            }
+        }
+    }
+
+    public bool HasInspectionReport => InspectionReport != null;
+
+    /// <summary>自检报告抽屉是否展开。</summary>
+    public bool IsInspectionReportOpen
+    {
+        get => _isInspectionReportOpen;
+        set => SetProperty(ref _isInspectionReportOpen, value);
+    }
+
+    /// <summary>对当前创作物进行效果自检体检诊断。</summary>
+    [RelayCommand]
+    public async Task InspectPptAsync()
+    {
+        var artifact = SelectedArtifact;
+        if (artifact == null || string.IsNullOrWhiteSpace(artifact.RawContent))
+        {
+            _notifications?.Warning("当前没有可自检的 PPT 内容");
+            return;
+        }
+
+        StatusMessage = "正在对演示文稿进行全方位效果自检与体检评分…";
+
+        try
+        {
+            var report = await _apiService.InspectCreativeArtifactAsync(artifact.RawContent);
+            InspectionReport = report;
+            IsInspectionReportOpen = true;
+            StatusMessage = $"PPT 自检完成：健康度得分 {report.Score} 分 ({report.Grade})";
+            _notifications?.Info($"PPT 效果自检完成：健康得分 {report.Score} 分 ({report.Grade})\n{report.Summary}", "效果自检报告");
+            DebugLog.Info($"PPT 效果自检完成: score={report.Score} grade={report.Grade} issues={report.Issues.Count}", "Chat");
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"自检异常：{ex.Message}";
+            _notifications?.Error($"效果自检失败: {ex.Message}");
+            DebugLog.Error($"PPT 效果自检异常: {ex.Message}", "Chat", ex);
+        }
+    }
+
+    /// <summary>关闭自检报告抽屉。</summary>
+    [RelayCommand]
+    public void CloseInspectionReport()
+    {
+        IsInspectionReportOpen = false;
+    }
+
+    private bool _isSlideShowOpen;
+    private bool _isSpeakerNotesVisibleInSlideShow = true;
+
+    /// <summary>是否开启客户端全屏沉浸放映预览。</summary>
+    public bool IsSlideShowOpen
+    {
+        get => _isSlideShowOpen;
+        set => SetProperty(ref _isSlideShowOpen, value);
+    }
+
+    /// <summary>全屏放映时是否显示演讲提词器抽屉。</summary>
+    public bool IsSpeakerNotesVisibleInSlideShow
+    {
+        get => _isSpeakerNotesVisibleInSlideShow;
+        set => SetProperty(ref _isSpeakerNotesVisibleInSlideShow, value);
+    }
+
+    /// <summary>开启客户端大屏沉浸放映预览。</summary>
+    [RelayCommand]
+    public void OpenSlideShow()
+    {
+        if (SelectedArtifact == null || !IsPptArtifact)
+        {
+            _notifications?.Warning("当前没有可放映的演示文稿");
+            return;
+        }
+        IsSlideShowOpen = true;
+        StatusMessage = "进入 PPT 大屏沉浸放映预览模式（按 Esc 退出，键盘左右键翻页）";
+    }
+
+    /// <summary>退出客户端全屏沉浸放映预览。</summary>
+    [RelayCommand]
+    public void CloseSlideShow()
+    {
+        IsSlideShowOpen = false;
+        StatusMessage = "已退出大屏放映模式";
+    }
+
+    /// <summary>切换全屏放映时的提词小抄显示状态。</summary>
+    [RelayCommand]
+    public void ToggleSlideShowNotes()
+    {
+        IsSpeakerNotesVisibleInSlideShow = !IsSpeakerNotesVisibleInSlideShow;
+    }
+
+    /// <summary>在浏览器中一键秒开 16:9 交互式 SlideShow 网页放映预览。</summary>
+    [RelayCommand]
+    public async Task OpenWebPreviewAsync()
+    {
+        var artifact = SelectedArtifact;
+        if (artifact == null || string.IsNullOrWhiteSpace(artifact.RawContent))
+        {
+            _notifications?.Warning("当前没有可预览的创作物内容");
+            return;
+        }
+
+        StatusMessage = "正在编译 16:9 交互式 HTML5 幻灯片放映页面…";
+
+        try
+        {
+            var req = new CreativeExportRequest
+            {
+                Content = artifact.RawContent,
+                Format = "html",
+                Title = artifact.Title,
+                Theme = SelectedTheme.Id,
+            };
+
+            var res = await _apiService.ExportCreativeArtifactAsync(req);
+            if (res.Ok && !string.IsNullOrWhiteSpace(res.FilePath) && System.IO.File.Exists(res.FilePath))
+            {
+                StatusMessage = "已在浏览器中启动 16:9 交互式放映预览";
+                _notifications?.Success("已在浏览器中打开全屏交互式放映页面（支持键盘 ← → 翻页与 F 键全屏）", "网页放映启动");
+                Process.Start(new ProcessStartInfo(res.FilePath) { UseShellExecute = true });
+            }
+            else
+            {
+                StatusMessage = $"网页预览生成失败: {res.Error ?? "未知错误"}";
+                _notifications?.Error($"网页放映失败: {res.Error}");
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"网页放映启动异常: {ex.Message}";
+            _notifications?.Error($"启动异常: {ex.Message}");
+            DebugLog.Error($"启动网页预览异常: {ex.Message}", "Chat", ex);
+        }
+    }
+
+    /// <summary>点击引用来源：在右侧协同抽屉就地展开原著切片与元数据，不离开对话主界面。</summary>
+    [RelayCommand]
+    private void OpenSource(SourceRef? src)
+    {
+        if (src is null)
+        {
+            return;
+        }
+        IsArtifactMode = false;
+        SelectedSource = src;
+        IsSourceDrawerOpen = true;
+
+        // 若来源是 PDF 且当前抽屉过窄，自适应调整至舒适阅读宽度（560px）
+        if ((string.Equals(src.Format, "pdf", StringComparison.OrdinalIgnoreCase)
+             || src.Source.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+            && SourceDrawerWidth < 540)
+        {
+            SourceDrawerWidth = 560;
+        }
+
+        StatusMessage = $"查看切片出处：{src.DisplayTitle} ({src.ScoreBadgeText})";
+        DebugLog.Info($"展开引用来源抽屉: index={src.Index} source={src.Source} page={src.Page}", "Chat");
+    }
+
+    /// <summary>在浏览器中打开当前选中的网页来源 URL（仅 http/https，防危险协议）。</summary>
+    [RelayCommand]
+    private void OpenWebSource()
+    {
+        if (SelectedSource?.Url is not { Length: > 0 } url)
+        {
+            return;
+        }
+        if (!TryOpenHttpUrl(url))
+        {
+            _notifications?.Warning("该来源不是有效的网页地址（仅支持 http/https）", "无法打开");
+        }
+    }
+
+    /// <summary>一键直达外部网页来源（在默认浏览器中打开）。</summary>
+    [RelayCommand]
+    private void OpenDirectWeb(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        if (!TryOpenHttpUrl(url))
+        {
+            _notifications?.Warning("该来源不是有效的网页地址（仅支持 http/https）", "无法打开");
+        }
+    }
+
+    /// <summary>在默认浏览器中打开 http/https 链接；其他协议一律拒绝，返回 false。</summary>
+    public static bool TryOpenHttpUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return false;
+        }
+        try
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri)
+                {
+                    UseShellExecute = true,
+                });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"打开网页失败: {ex.Message}", "Chat");
+            return false;
+        }
+    }
+
+    /// <summary>关闭协同来源抽屉。</summary>
+    [RelayCommand]
+    private void CloseSourceDrawer()
+    {
+        IsSourceDrawerOpen = false;
+    }
+
+    /// <summary>复制当前抽屉中切片正文到剪贴板。</summary>
+    [RelayCommand]
+    private void CopySourceSnippet()
+    {
+        if (!string.IsNullOrWhiteSpace(SelectedSource?.Snippet))
+        {
+            try
+            {
+                Clipboard.SetText(SelectedSource.Snippet);
+                _notifications?.Success("已复制切片原文到剪贴板");
+                StatusMessage = "已复制切片原文到剪贴板";
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"复制到剪贴板失败: {ex.Message}", "Chat");
+            }
+        }
+    }
+
+    /// <summary>用户主动选择：在知识搜索页全文检索该文档（深钻次级动作）。</summary>
+    [RelayCommand]
+    private void SearchSourceInSearchPage()
+    {
+        if (SelectedSource is not null)
+        {
+            SourceSearchRequested?.Invoke(SelectedSource);
+        }
+    }
+}

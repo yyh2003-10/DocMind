@@ -68,7 +68,15 @@ from doc2mind.core.llm import (
 from doc2mind.core.loader.detect import get_loader, is_supported
 from doc2mind.core.logging_setup import setup_logging
 from doc2mind.core.models import LoadedDocument
-from doc2mind.core.pipeline import ingest_path, ingest_text
+from doc2mind.core.pipeline import (
+    IngestCancelled as _JobCancelledError,
+)
+from doc2mind.core.pipeline import (
+    ingest_path,
+    ingest_text,
+    run_background_curate,
+    stage_fraction,
+)
 from doc2mind.core.rag import RagError, clear_session, rag_answer, rag_answer_stream
 from doc2mind.core.reranker import get_reranker
 from doc2mind.core.retriever.search import Retriever
@@ -230,6 +238,8 @@ class CurateRequest(BaseModel):
     dry_run: bool = True
     # enrich/categorize 处理的文档上限（LLM 调用成本护栏）
     top_k: int | None = Field(None, ge=1, le=200)
+    # 触发来源（如 "agent_settle" / "user_manual" / "ingest_auto"），写入 curate_runs.note 便于追溯
+    note: str | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -542,6 +552,12 @@ class ConfigUpdate(BaseModel):
     # --- 文件系统监控 ---
     watch_paths: list[str] | None = None
     watch_debounce_seconds: float | None = None
+    # 入库时是否自动跑 AI 整理（enrich + 可选 categorize + extract）；
+    # dedup / consolidate 永不自动跑，必须 dry_run=true 预览 + 用户确认
+    auto_curate_on_ingest: bool | None = None
+    # 持久化开关：True（默认）= 运行时生效 + 写 config.toml；
+    # False = 只更新运行时 settings，不落盘（前端「输入即生效」的即时推送用，保存才持久化）
+    persist: bool = True
 
     model_config = {"populate_by_name": True}
 
@@ -601,17 +617,74 @@ class GpuDiagnosisResponse(BaseModel):
 
 
 class InstallGpuRequest(BaseModel):
-    path: str  # cuda12|cuda13|directml|paddle-ocr-gpu|ocr-cpu（命令构造层统一处理）
+    path: str  # cuda12|cuda13|directml|paddle-ocr-gpu（OCR 路径请用 /v1/system/install-ocr）
 
     model_config = {"populate_by_name": True}
 
 
 class InstallOcrRequest(BaseModel):
-    """OCR 依赖一键安装请求（与 InstallGpuRequest 同构）。"""
+    """OCR 依赖一键安装请求（与 InstallGpuRequest 同构）。
 
-    path: str = "cpu"  # cpu | ocr-cpu | paddle-ocr-gpu
+    注意：本端点在**运行中的后端进程**内执行 pip。后端已加载 numpy /
+    onnxruntime 等运行库时（常态），pip 替换这些包会因 Windows 文件锁
+    失败（WinError 5），因此端点内置占用预检直接拒绝并给出指引；
+    正式安装路径是客户端「停后端 → python -m doc2mind.install_cli → 重启」。
+    """
+
+    path: str = "cpu"  # paddle-ocr-cpu | ocr-cpu | ocr | cpu
+    force: bool = False  # True 时跳过已安装检查强制重装
 
     model_config = {"populate_by_name": True}
+
+
+# 安装路径归属校验（防止 install-gpu 传 "cpu" 静默装上 Paddle 的语义串味）
+_GPU_INSTALL_PATHS = {"cuda12", "cu12", "cuda13", "cu13", "directml", "paddle-ocr-gpu"}
+_OCR_INSTALL_PATHS = {"paddle-ocr-cpu", "ocr-cpu", "ocr", "cpu"}
+
+# 同一时间只允许一个安装任务（两条端点共用一把锁，pip 并发跑会互相破坏环境）
+_install_lock = asyncio.Lock()
+
+
+def _backend_locks_heavy_runtime() -> bool:
+    """后端进程是否已加载会被安装动作替换的重运行库（numpy/paddle/onnxruntime）。
+
+    命中时进程内安装 pip 必然在 Windows 上因 DLL 文件锁失败（WinError 5），
+    必须拒绝并指引走独立安装进程。
+    """
+    import sys as _sys
+
+    return any(m in _sys.modules for m in ("numpy", "paddle", "onnxruntime"))
+
+
+def _install_busy_error(label: str) -> dict[str, str]:
+    return {
+        "type": "error",
+        "message": f"已有安装任务正在进行中，请等待其完成后再发起{label}安装。",
+    }
+
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
+_HEAVY_RUNTIME_LOCKED_MESSAGE = (
+    "当前后端进程已加载 numpy / paddle / onnxruntime 运行库，"
+    "在运行中的后端内执行 pip 安装会因 Windows 文件锁失败（WinError 5）。"
+    "请通过客户端设置页安装（客户端会先停止后端、以独立进程安装、再自动重启），"
+    "或手动停止后端后运行：python -m doc2mind.install_cli <方案路径>"
+)
+
+
+async def _install_error_stream(message: str) -> Any:
+    """单错误帧 + [DONE] 的 SSE 流（路径校验/预检拒绝时直接返回）。"""
+    yield (
+        "data: "
+        + json.dumps({"type": "error", "message": message}, ensure_ascii=False)
+        + "\n\n"
+    )
+    yield "data: [DONE]\n\n"
 
 
 class LocalAiEnvironmentResponse(BaseModel):
@@ -824,6 +897,54 @@ class DeleteResponse(BaseModel):
     status: str = "deleted"
 
 
+class RestoreResponse(BaseModel):
+    """恢复软删除文档的返回。"""
+
+    id: str
+    status: str = "restored"  # restored | not_found
+    note: str  # 给前端的提示（恢复后 chunks/向量已被物理删，需要重新索引）
+
+
+class TrashItem(BaseModel):
+    document_id: str
+    source: str
+    collection: str
+    deleted_at: str
+    purged_at: str | None = None
+
+
+class TrashListResponse(BaseModel):
+    items: list[TrashItem]
+    total: int
+
+
+class PurgeTrashRequest(BaseModel):
+    older_than_days: int = Field(30, ge=1, le=365)
+
+
+class PurgeTrashResponse(BaseModel):
+    purged: int
+
+
+class CurateRunItem(BaseModel):
+    id: int
+    started_at: str
+    finished_at: str
+    dry_run: bool
+    collection: str | None = None
+    actions: list[str] = []
+    changed_doc_ids: list[str] = []
+    skipped_count: int = 0
+    error_count: int = 0
+    elapsed_ms: int = 0
+    note: str | None = None
+
+
+class CurateRunsResponse(BaseModel):
+    items: list[CurateRunItem]
+    total: int
+
+
 class JobStatus(BaseModel):
     job_id: str
     type: str
@@ -834,6 +955,11 @@ class JobStatus(BaseModel):
     started_at: str
     finished_at: str | None = None
     error: str | None = None
+    # 文件内阶段（可选）：parsing/chunking/embedding/writing/curating。
+    # 单大文件导入时 processed/total 长时间不动，前端靠 stage 展示当前阶段。
+    stage: str | None = None
+    # 阶段内进度 0.0~1.0（embedding 按批次有真实值，其余阶段为 None）。
+    stage_progress: float | None = None
     # 异步 job 完成后的详细结果列表（可选，向前兼容），由 job 线程在完成时填充。
     results: list[IngestResultDTO] = []
     # curate 类任务的完整整理报告（dry_run 预览 / 执行结果），由 job 线程填充。
@@ -898,6 +1024,11 @@ def _broadcast_event(payload: dict[str, Any]) -> None:
 _JOB_QUEUES: dict[str, list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]]] = {}
 _job_queues_lock = threading.Lock()
 
+# job 缓存上限与 TTL：完成的 job（含 results/curation）会被及时淘汰，
+# 防止反复导入后端进程内存单调增长。
+_JOB_MAX_KEEP = int(os.getenv("DOC2MIND_JOB_MAX_KEEP", "50"))
+_JOB_TTL_SECONDS = int(os.getenv("DOC2MIND_JOB_TTL_SECONDS", str(30 * 60)))
+
 
 def _broadcast_job_event(job_id: str, payload: dict[str, Any]) -> None:
     """向指定 job 的 SSE 订阅者广播进度事件（跨线程安全）。"""
@@ -926,8 +1057,8 @@ def _unsubscribe_job(job_id: str, loop: asyncio.AbstractEventLoop, q: asyncio.Qu
                 _JOB_QUEUES.pop(job_id, None)
 
 
-class _JobCancelledError(Exception):
-    """后台任务收到取消请求后用于中止工作线程的内部异常。"""
+# 取消信号 = pipeline.IngestCancelled（导入/重索引/整理共用一个类型；
+# pipeline 内部抛出的取消也由 except _JobCancelledError 统一捕获）
 
 
 class _AppState:
@@ -964,6 +1095,48 @@ class _AppState:
                 )
                 self.store.open()
             return self.store
+
+    # --- job 缓存淘汰（调用方需持有 _jobs_lock） ---
+    def _prune_jobs_locked(self) -> None:
+        """按 TTL+上限淘汰已完成的 job。
+
+        - 仅淘汰终态（completed / failed / cancelled / done / succeeded）job；
+          运行中的 job 永远不被动清理；
+        - finished_at 超过 TTL，或终态总数超过上限时，按完成时间由旧到新移除，
+          同时清理其 cancel_event，连带释放挂载的 results/curation dict。
+        """
+        terminal = ("completed", "failed", "cancelled", "done", "succeeded")
+
+        def _ts(job: JobStatus) -> float:
+            ts = job.finished_at or job.started_at
+            try:
+                dt = datetime.fromisoformat(ts)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.timestamp()
+            except Exception:  # noqa: BLE001 — finished_at 形态变化时保守跳过
+                return time.time()
+
+        now = time.time()
+        to_remove: list[str] = []
+        for jid, job in self.jobs.items():
+            if job.status not in terminal:
+                continue
+            if (now - _ts(job)) > _JOB_TTL_SECONDS:
+                to_remove.append(jid)
+        # 数量上限：淘汰最旧的终态 job
+        if len(self.jobs) - len(to_remove) > _JOB_MAX_KEEP:
+            finished = sorted(
+                (jid for jid, j in self.jobs.items() if j.status in terminal),
+                key=lambda j: _ts(self.jobs[j]),
+            )
+            excess = len(self.jobs) - len(to_remove) - _JOB_MAX_KEEP
+            if excess > 0:
+                to_remove.extend(finished[:excess])
+        if to_remove:
+            for jid in to_remove:
+                self.jobs.pop(jid, None)
+                self.job_cancel_events.pop(jid, None)
 
 
 # ============================================================
@@ -1159,33 +1332,43 @@ def create_app(settings: Settings | None = None) -> Any:
     async def install_gpu(req: InstallGpuRequest) -> Any:
         from doc2mind.core.system_env import install_gpu_packages
 
+        if req.path in _OCR_INSTALL_PATHS:
+            # 语义串味防护：GPU 端点不接受 CPU/OCR 路径（旧实现会把
+            # path="cpu" 静默装成 Paddle OCR）
+            return StreamingResponse(
+                _install_error_stream(
+                    f"install-gpu 不接受路径 '{req.path}'（CPU/OCR 安装请使用 POST /v1/system/install-ocr）"
+                ),
+                media_type="text/event-stream",
+                headers=_SSE_HEADERS,
+            )
+        if _backend_locks_heavy_runtime():
+            return StreamingResponse(
+                _install_error_stream(_HEAVY_RUNTIME_LOCKED_MESSAGE),
+                media_type="text/event-stream",
+                headers=_SSE_HEADERS,
+            )
+
         async def event_generator() -> Any:
-            try:
-                async for event in install_gpu_packages(req.path):
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            except Exception as e:  # noqa: BLE001 — 异常以 SSE 错误帧结束
-                logger.error("GPU 安装失败：%s", e)
-                yield (
-                    "data: "
-                    + json.dumps(
-                        {"type": "error", "message": f"安装异常：{e}"},
-                        ensure_ascii=False,
+            async with _install_lock:
+                try:
+                    async for event in install_gpu_packages(req.path):
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except Exception as e:  # noqa: BLE001 — 异常以 SSE 错误帧结束
+                    logger.error("GPU 安装失败：%s", e)
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {"type": "error", "message": f"安装异常：{e}"},
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
                     )
-                    + "\n\n"
-                )
-            yield "data: [DONE]\n\n"
+                yield "data: [DONE]\n\n"
 
         # no-cache / X-Accel-Buffering：防止中间代理缓冲 SSE 分块（流式变"伪流式"）；
         # 空闲超时由各端点的心跳帧兜底，此处再从响应头层面声明不缓存
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            },
-        )
+        return StreamingResponse(event_generator(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
     # --- GET /v1/system/dependencies（设置页「环境自检」面板）---
     @app.get("/v1/system/dependencies")
@@ -1207,33 +1390,41 @@ def create_app(settings: Settings | None = None) -> Any:
     async def install_ocr(req: InstallOcrRequest) -> Any:
         from doc2mind.core.system_env import install_ocr_packages
 
+        if req.path in _GPU_INSTALL_PATHS and req.path != "paddle-ocr-gpu":
+            return StreamingResponse(
+                _install_error_stream(
+                    f"install-ocr 不接受路径 '{req.path}'（GPU 嵌入加速请使用 POST /v1/system/install-gpu）"
+                ),
+                media_type="text/event-stream",
+                headers=_SSE_HEADERS,
+            )
+        if _backend_locks_heavy_runtime():
+            return StreamingResponse(
+                _install_error_stream(_HEAVY_RUNTIME_LOCKED_MESSAGE),
+                media_type="text/event-stream",
+                headers=_SSE_HEADERS,
+            )
+
         async def event_generator() -> Any:
-            try:
-                async for event in install_ocr_packages(req.path):
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            except Exception as e:  # noqa: BLE001
-                logger.error("OCR 安装失败：%s", e)
-                yield (
-                    "data: "
-                    + json.dumps(
-                        {"type": "error", "message": f"OCR 安装异常：{e}"},
-                        ensure_ascii=False,
+            async with _install_lock:
+                try:
+                    async for event in install_ocr_packages(req.path, force=req.force):
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except Exception as e:  # noqa: BLE001
+                    logger.error("OCR 安装失败：%s", e)
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {"type": "error", "message": f"OCR 安装异常：{e}"},
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
                     )
-                    + "\n\n"
-                )
-            yield "data: [DONE]\n\n"
+                yield "data: [DONE]\n\n"
 
         # no-cache / X-Accel-Buffering：防止中间代理缓冲 SSE 分块（流式变"伪流式"）；
         # 空闲超时由各端点的心跳帧兜底，此处再从响应头层面声明不缓存
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            },
-        )
+        return StreamingResponse(event_generator(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
     # --- POST /v1/system/download-model（嵌入模型下载，SSE 流式进度）---
     @app.post("/v1/system/download-model")
@@ -1317,6 +1508,8 @@ def create_app(settings: Settings | None = None) -> Any:
     @app.get("/v1/jobs/{job_id}/events")
     async def job_events(job_id: str) -> Any:
         """SSE 流式推送指定 job 的进度事件，替代前端轮询。"""
+        # 故意不在请求路径触发 _prune_jobs_locked()：单个 job 的 SSE 订阅
+        # 不应因淘汰其它过期 job 而返回 404；测试也直接注入固定 job_id 后订阅。
         with state._jobs_lock:
             job = state.jobs.get(job_id)
         if job is None:
@@ -1337,6 +1530,8 @@ def create_app(settings: Settings | None = None) -> Any:
                         "processed": job.processed,
                         "total": job.total,
                         "current_file": job.current_file,
+                        "stage": job.stage,
+                        "stage_progress": job.stage_progress,
                         "status": job.status,
                     }
                 yield f"data: {json.dumps(snap, ensure_ascii=False)}\n\n"
@@ -1415,7 +1610,7 @@ def create_app(settings: Settings | None = None) -> Any:
                 )
 
         # 允许修改的字段 → 更新运行时 settings（后续导入/检索生效）
-        updates = req.model_dump(exclude_none=True)
+        updates = req.model_dump(exclude_none=True, exclude={"persist"})
         # 空字符串 = 显式清除 llm_api_key / llm_base_url / llm_model / rag_system_prompt
         # （exclude_none 会忽略 null，前端清空输入框时传 ""）
         for k in ("llm_api_key", "llm_base_url", "llm_model", "rag_system_prompt"):
@@ -1445,17 +1640,19 @@ def create_app(settings: Settings | None = None) -> Any:
                     "因维度不匹配而失败，搜索会降级为纯 BM25。"
                 )
 
-        # 持久化到 config.toml（下次启动自动生效）；失败不静默——写入
-        # notice 提示用户本次已生效但重启后可能回退
-        try:
-            from doc2mind.core.config import save_settings
+        # 持久化到 config.toml（下次启动自动生效）；persist=False 时只改运行时
+        # （前端「输入即生效」推送），不落盘——显式保存才持久化。
+        # 失败不静默——写入 notice 提示用户本次已生效但重启后可能回退
+        if req.persist:
+            try:
+                from doc2mind.core.config import save_settings
 
-            if not save_settings(s):
-                msg = "配置已生效，但写入 config.toml 失败（磁盘满/权限不足），重启后可能回退"
+                if not save_settings(s):
+                    msg = "配置已生效，但写入 config.toml 失败（磁盘满/权限不足），重启后可能回退"
+                    notice = f"{notice}；{msg}" if notice else msg
+            except Exception as e:  # noqa: BLE001 — 持久化失败不影响本次运行时更新
+                msg = f"配置已生效，但写入 config.toml 失败（重启后可能回退）：{e}"
                 notice = f"{notice}；{msg}" if notice else msg
-        except Exception as e:  # noqa: BLE001 — 持久化失败不影响本次运行时更新
-            msg = f"配置已生效，但写入 config.toml 失败（重启后可能回退）：{e}"
-            notice = f"{notice}；{msg}" if notice else msg
 
         return ConfigResponse(
             embed_model=s.embed_model,
@@ -1659,6 +1856,8 @@ def create_app(settings: Settings | None = None) -> Any:
                 )
 
         summary = await asyncio.to_thread(_do_ingest)
+        # 后台 AI 整理：写锁已释放，整理剥离到独立 job，导入响应不再等 LLM
+        _spawn_background_curate(state, summary.curatable_document_ids, collection)
         return IngestResponse(
             ingested=[
                 IngestResultDTO(**r.__dict__) for r in summary.results
@@ -1753,13 +1952,21 @@ def create_app(settings: Settings | None = None) -> Any:
 
         cancel_event = state.job_cancel_events[job_id]
 
-        def _check_and_update_progress(done: int, total: int) -> None:
+        def _check_and_update_progress(
+            done: int,
+            total: int,
+            current_file: str | None = None,
+            stage: str | None = None,
+            stage_progress: float | None = None,
+        ) -> None:
             if cancel_event.is_set():
                 raise _JobCancelledError("任务已被取消")
             with state._jobs_lock:
                 if job.status == "cancelled":
                     raise _JobCancelledError("任务已被取消")
-            _update_ingest_job(state, job, done, total)
+            _update_ingest_job(state, job, done, total,
+                               current_file=current_file, stage=stage,
+                               stage_progress=stage_progress)
 
         def _run_ingest_job() -> None:
             try:
@@ -1786,7 +1993,18 @@ def create_app(settings: Settings | None = None) -> Any:
                     job.results = [
                         IngestResultDTO(**r.__dict__) for r in summary.results
                     ]
-                _broadcast_job_event(job_id, {"type": "done", "ts": _now_iso(), "status": "completed", "processed": job.processed})
+                # 后台 AI 整理：导入已完成，整理剥离到独立 job（enrich + 图谱
+                # 抽取），done 事件带上 curate_job_id 供前端展示"后台整理中"。
+                curate_job_id = _spawn_background_curate(
+                    state, summary.curatable_document_ids, collection
+                )
+                _broadcast_job_event(
+                    job_id,
+                    {"type": "done", "ts": _now_iso(), "status": "completed",
+                     "processed": job.processed,
+                     "curate_job_id": curate_job_id,
+                     "curate_total": len(summary.curatable_document_ids)},
+                )
             except Exception as e:  # noqa: BLE001
                 with state._jobs_lock:
                     if job.status == "cancelled":
@@ -2170,7 +2388,7 @@ def create_app(settings: Settings | None = None) -> Any:
             deleted = await asyncio.to_thread(
                 clear_session, chat_id, state.settings.db_path
             )
-        except Exception as e:  # noqa: BLE001 — clear_session 内部已分类，这里兜底
+        except Exception as e:  # noqa: BLE001 — clear_session 不吞 DB 异常，这里兜底返 500
             raise _api_error("INTERNAL", f"删除会话失败: {e}", 500) from e
         if not deleted:
             raise _api_error("NOT_FOUND", f"会话不存在: {chat_id}", 404)
@@ -2262,9 +2480,84 @@ def create_app(settings: Settings | None = None) -> Any:
                 return int(store.delete_document(doc_id))
 
         n = await asyncio.to_thread(_do_delete)
-        if n < 0:
+        if n == -1:
             raise _api_error("NOT_FOUND", f"文档不存在: {doc_id}", 404)
+        if n == -2:
+            # 已处于软删除状态——幂等成功：用户视角该文档已删除，
+            # 且 30 天内可通过 /v1/trash/{id}/restore 恢复
+            return DeleteResponse(id=doc_id, deleted_chunks=0, status="already_deleted")
         return DeleteResponse(id=doc_id, deleted_chunks=n)
+
+    # --- POST /v1/trash/{doc_id}/restore（恢复软删除文档，仅元数据） ---
+    @app.post("/v1/trash/{doc_id}/restore", response_model=RestoreResponse)
+    async def restore_document(doc_id: str) -> RestoreResponse:
+        """把软删除文档的 deleted_at 置 NULL。
+
+        **不重建** chunks_meta / vec_chunks / bm25_index / sparse_terms。
+        恢复后文档出现在 list_documents / get_stats，但**不会被检索命中**，
+        直到用户重新摄入（ingest 同源文件；file_hash 命中可能跳过 → 见
+        find_document_id_by_hash 已过滤 deleted_at）后调用 reindex 重建。
+        """
+        store = await asyncio.to_thread(state.ensure_open)
+
+        def _do_restore() -> bool:
+            with state._write_lock:
+                return bool(store.restore_document(doc_id))
+
+        ok = await asyncio.to_thread(_do_restore)
+        return RestoreResponse(
+            id=doc_id,
+            status="restored" if ok else "not_found",
+            note=(
+                "恢复成功；chunks/向量已物理删，需要重新摄入或重跑 reindex 才能被检索命中"
+                if ok
+                else "文档不存在或未处于软删除状态"
+            ),
+        )
+
+    # --- GET /v1/trash（列出回收站中的软删除文档） ---
+    @app.get("/v1/trash", response_model=TrashListResponse)
+    async def list_trash(limit: int = Query(100, ge=1, le=500)) -> TrashListResponse:
+        store = await asyncio.to_thread(state.ensure_open)
+        try:
+            items = await asyncio.to_thread(store.list_trash, limit)
+        except StoreError as e:
+            raise _api_error("INTERNAL", f"列出回收站失败: {e}", 500) from e
+        return TrashListResponse(items=[TrashItem(**it) for it in items], total=len(items))
+
+    # --- POST /v1/trash/purge（物理清空 N 天前的回收站） ---
+    @app.post("/v1/trash/purge", response_model=PurgeTrashResponse)
+    async def purge_trash(body: PurgeTrashRequest) -> PurgeTrashResponse:
+        """物理删除超过 N 天的 trash 行 + 联动 documents 行 + 联动空集合清理。
+
+        默认 N=30；这是 L2 自动化「dedup/consolidate 静默跑」的安全网前提——
+        软删除 30 天后自动 GC，期间用户可调用 restore_document 撤销。
+        """
+        store = await asyncio.to_thread(state.ensure_open)
+
+        def _do_purge() -> int:
+            with state._write_lock:
+                return int(store.purge_trash(body.older_than_days))
+
+        purged = await asyncio.to_thread(_do_purge)
+        return PurgeTrashResponse(purged=purged)
+
+    # --- GET /v1/curate-runs（列出近 N 天的 curate 运行记录） ---
+    @app.get("/v1/curate-runs", response_model=CurateRunsResponse)
+    async def list_curate_runs(
+        days: int = Query(7, ge=1, le=90),
+        limit: int = Query(50, ge=1, le=500),
+    ) -> CurateRunsResponse:
+        """质量看板用：显示「过去 N 天跑过几次整理、动了哪些文档」。"""
+        store = await asyncio.to_thread(state.ensure_open)
+        try:
+            items = await asyncio.to_thread(store.list_curate_runs, days, limit)
+        except StoreError as e:
+            raise _api_error("INTERNAL", f"列出 curate 运行记录失败: {e}", 500) from e
+        return CurateRunsResponse(
+            items=[CurateRunItem(**it) for it in items],
+            total=len(items),
+        )
 
     # --- PUT /v1/chunks/{chunk_id}/annotation（笔记批注） ---
     @app.put("/v1/chunks/{chunk_id}/annotation")
@@ -2754,7 +3047,14 @@ def create_app(settings: Settings | None = None) -> Any:
                         processed += len(batch)
                         with state._jobs_lock:
                             job.processed = processed
-                            job.progress = round(processed / total, 4)
+                            job.progress = round(processed / total, 4) if total > 0 else 0.0
+                            snapshot = {
+                                "progress": job.progress,
+                                "processed": job.processed,
+                                "total": job.total,
+                                "status": job.status,
+                            }
+                        _broadcast_job_event(job_id, {"type": "progress", "ts": _now_iso(), **snapshot})
 
                     if cancel_event.is_set():
                         raise _JobCancelledError("任务已被取消")
@@ -2770,6 +3070,7 @@ def create_app(settings: Settings | None = None) -> Any:
                         job.status = "completed"
                         job.progress = 1.0
                         job.finished_at = _now_iso()
+                    _broadcast_job_event(job_id, {"type": "done", "ts": _now_iso(), "status": "completed", "processed": job.processed})
 
                     # 换模型重建成功后，把全局 embedder 切换为目标模型，
                     # 使后续搜索 / 导入也使用新模型。
@@ -2851,6 +3152,13 @@ def create_app(settings: Settings | None = None) -> Any:
                 job.processed = done
                 job.total = total
                 job.progress = round(done / total, 4) if total > 0 else 0.0
+                snapshot = {
+                    "progress": job.progress,
+                    "processed": job.processed,
+                    "total": job.total,
+                    "status": job.status,
+                }
+            _broadcast_job_event(job_id, {"type": "progress", "ts": _now_iso(), **snapshot})
 
         def _run_curate() -> None:
             from doc2mind.core.curator import CurateCancelledError
@@ -2871,6 +3179,7 @@ def create_app(settings: Settings | None = None) -> Any:
                         top_k=req.top_k,
                         progress=_update_curate_job,
                         cancel_check=cancel_event.is_set,
+                        note=req.note,
                     )
                 if cancel_event.is_set():
                     raise _JobCancelledError("任务已被取消")
@@ -2881,6 +3190,7 @@ def create_app(settings: Settings | None = None) -> Any:
                     job.progress = 1.0
                     job.finished_at = _now_iso()
                     job.report = report.to_dict()
+                _broadcast_job_event(job_id, {"type": "done", "ts": _now_iso(), "status": "completed", "processed": job.processed})
             except (_JobCancelledError, CurateCancelledError):
                 with state._jobs_lock:
                     job.status = "cancelled"
@@ -2900,6 +3210,7 @@ def create_app(settings: Settings | None = None) -> Any:
     @app.get("/v1/jobs/{job_id}", response_model=JobStatus)
     async def get_job(job_id: str) -> JobStatus:
         with state._jobs_lock:
+            state._prune_jobs_locked()
             job = state.jobs.get(job_id)
         if job is None:
             raise _api_error("NOT_FOUND", f"任务不存在: {job_id}", 404)
@@ -2950,6 +3261,21 @@ def create_app(settings: Settings | None = None) -> Any:
     # --- 启动/关闭钩子 ---
     @app.on_event("startup")
     async def _startup() -> None:
+        # 嵌入模型后台预热：让首次导入/检索不再内联支付 ONNX 会话加载
+        # （约 1-3 秒，与 factory 缓存共享同一实例）。模型未下载或加载
+        # 失败都不阻塞启动，静默降级为首次调用时再加载。
+        def _preheat() -> None:
+            try:
+                state.ensure_open()
+                embedder = state.embedder
+                if embedder is not None:
+                    _ = list(embedder.embed_texts(["warmup"]))
+                    logger.info("嵌入模型预热完成: %s", getattr(embedder, "model_name", "?"))
+            except Exception as e:  # noqa: BLE001 — 预热失败不影响服务
+                logger.warning("嵌入模型后台预热失败（首次使用时再加载）: %s", e)
+
+        threading.Thread(target=_preheat, daemon=True, name="embedder-preheat").start()
+
         if state.settings.watch_paths:
             try:
                 from doc2mind.core.file_watcher import FileWatcher
@@ -2958,6 +3284,10 @@ def create_app(settings: Settings | None = None) -> Any:
                     paths=state.settings.watch_paths,
                     settings=state.settings,
                     debounce_seconds=state.settings.watch_debounce_seconds,
+                    # 共享单例 store 与全局写锁：修复 watcher 旁路写锁、
+                    # 每文件重建 store/embedder 的历史问题
+                    store_provider=lambda: state.store,
+                    write_lock=state._write_lock,
                     on_ingested=lambda payload: _broadcast_event({"type": "file_ingested", "ts": _now_iso(), **payload}),
                 )
                 state.file_watcher.start()
@@ -2994,12 +3324,25 @@ def _update_ingest_job(
     done: int,
     total: int,
     current_file: str | None = None,
+    stage: str | None = None,
+    stage_progress: float | None = None,
 ) -> None:
-    """异步 ingest 的进度回调：更新 job.processed / progress 并广播 SSE 事件（线程安全）。"""
+    """异步 ingest 的进度回调：更新 job.processed / progress 并广播 SSE 事件（线程安全）。
+
+    整体进度 = (已完成文件数 + 当前文件内阶段折算) / 总文件数；
+    阶段折算用 pipeline.stage_fraction 的固定跨度（感知美化，让单大文件
+    导入时进度条也能动起来）。
+    """
+    frac = stage_fraction(stage, stage_progress)
     with state._jobs_lock:
         job.processed = done
         job.total = total
-        job.progress = round(done / total, 4) if total > 0 else 0.0
+        job.stage = stage
+        job.stage_progress = stage_progress
+        new_progress = round((done + frac) / total, 4) if total > 0 else 0.0
+        # 并行摄入（ingest_workers>1）时多个文件的阶段上报会交错到达，
+        # 折算进度可能瞬时回退；钳制单调递增，避免进度条来回跳。
+        job.progress = max(job.progress, new_progress)
         if current_file is not None:
             job.current_file = current_file
         snapshot = {
@@ -3007,6 +3350,104 @@ def _update_ingest_job(
             "processed": job.processed,
             "total": job.total,
             "current_file": job.current_file,
+            "stage": job.stage,
+            "stage_progress": job.stage_progress,
             "status": job.status,
         }
     _broadcast_job_event(job.job_id, {"type": "progress", "ts": _now_iso(), **snapshot})
+
+
+def _update_curate_job(
+    state: _AppState,
+    job: JobStatus,
+    done: int,
+    total: int,
+) -> None:
+    """后台整理 job 的进度回调：更新 processed/progress 并广播 SSE 事件。
+
+    不在这里抛取消 —— 取消由 run_background_curate 的 cancel_event 在
+    文档间检查；progress 回调抛异常会被当成单文档整理失败计数。
+    """
+    with state._jobs_lock:
+        job.processed = done
+        job.total = total
+        job.progress = round(done / total, 4) if total > 0 else 0.0
+        snapshot = {
+            "progress": job.progress,
+            "processed": job.processed,
+            "total": job.total,
+            "status": job.status,
+        }
+    _broadcast_job_event(job.job_id, {"type": "progress", "ts": _now_iso(), **snapshot})
+
+
+def _spawn_background_curate(
+    state: _AppState,
+    document_ids: list[str],
+    collection: str,
+) -> str | None:
+    """导入完成后启动后台 AI 整理 job（enrich + 图谱抽取，不自动归类）。
+
+    导入热路径剥离 auto-curate 的 HTTP 侧执行端：独立线程 + 独立
+    type="curate" 的 JobStatus，进度经 SSE 广播；复用全局 _write_lock
+    保证整理写库与 delete/reindex 互斥。无待整理文档时返回 None。
+
+    Returns:
+        curate job_id（供导入 done 事件透传给前端）
+    """
+    if not document_ids:
+        return None
+    job_id = _new_id()
+    job = JobStatus(
+        job_id=job_id,
+        type="curate",
+        status="running",
+        progress=0.0,
+        processed=0,
+        total=len(document_ids),
+        started_at=_now_iso(),
+    )
+    with state._jobs_lock:
+        state.jobs[job_id] = job
+        state.job_cancel_events[job_id] = threading.Event()
+    cancel_event = state.job_cancel_events[job_id]
+
+    def _run() -> None:
+        try:
+            store = state.ensure_open()
+            result = run_background_curate(
+                state.settings,
+                document_ids,
+                collection,
+                store=store,
+                write_lock=state._write_lock,
+                cancel_event=cancel_event,
+                progress=lambda done, total: _update_curate_job(state, job, done, total),
+            )
+            with state._jobs_lock:
+                if result.get("cancelled"):
+                    job.status = "cancelled"
+                else:
+                    job.status = "completed"
+                    job.progress = 1.0
+                job.processed = result["processed"] + result["failed"]
+                job.finished_at = _now_iso()
+            if job.status == "cancelled":
+                _broadcast_job_event(job_id, {"type": "cancelled", "ts": _now_iso()})
+            else:
+                _broadcast_job_event(
+                    job_id,
+                    {"type": "done", "ts": _now_iso(), "status": "completed",
+                     "processed": job.processed},
+                )
+        except Exception as e:  # noqa: BLE001
+            with state._jobs_lock:
+                if job.status == "cancelled":
+                    return
+                job.status = "failed"
+                job.error = str(e)
+                job.finished_at = _now_iso()
+            _broadcast_job_event(job_id, {"type": "failed", "ts": _now_iso(), "error": str(e)})
+
+    threading.Thread(target=_run, daemon=True, name=f"curate-{job_id[:8]}").start()
+    return job_id

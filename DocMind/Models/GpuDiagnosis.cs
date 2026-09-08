@@ -40,7 +40,9 @@ namespace DocMind.Models
         /// <summary>本地扫描发现的离线 Wheel 包列表。</summary>
         public List<LocalWheelInfo>? LocalWheelsFound { get; init; }
 
-        /// <summary>推荐安装路径：cuda12|cuda13|directml|paddle-ocr-gpu|cpu。</summary>
+        /// <summary>推荐安装路径：coreml|cuda12|cuda13|directml|cpu。
+        /// 注意：后端 get_gpu_diagnosis 从不推荐 OCR 路径；OCR 方案由用户在
+        /// 设置页方案下拉框手动选择（AvailablePaths 提供）。</summary>
         public string RecommendedPath { get; init; } = "cpu";
 
         /// <summary>环境问题清单（如 CPU 版 onnxruntime 覆盖 GPU 模块）。</summary>

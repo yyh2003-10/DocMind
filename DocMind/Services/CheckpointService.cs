@@ -45,70 +45,80 @@ public sealed class CheckpointService
     };
 
     /// <summary>保存检查点。</summary>
-    public Task SaveCheckpointAsync(CheckpointState state)
+    public async Task SaveCheckpointAsync(CheckpointState state)
     {
         var path = GetCheckpointPath(state.OperationId);
         var tmpPath = path + ".tmp";
         var json = JsonSerializer.Serialize(state, JsonOpts);
-        File.WriteAllText(tmpPath, json);
-        // 原子替换：写临时文件后 rename，避免写入中途崩溃导致 JSON 损坏
-        File.Move(tmpPath, path, overwrite: true);
+        await Task.Run(() =>
+        {
+            File.WriteAllText(tmpPath, json);
+            // 原子替换：写临时文件后 rename，避免写入中途崩溃导致 JSON 损坏
+            File.Move(tmpPath, path, overwrite: true);
+        }).ConfigureAwait(false);
         DebugLog.Info($"检查点已保存: {state.OperationId} ({state.OperationType}, {state.CompletedItems}/{state.TotalItems})", "Checkpoint");
-        return Task.CompletedTask;
     }
 
     /// <summary>恢复检查点。返回 null 表示无检查点。</summary>
-    public Task<CheckpointState?> RestoreCheckpointAsync(string operationId)
+    public async Task<CheckpointState?> RestoreCheckpointAsync(string operationId)
     {
         var path = GetCheckpointPath(operationId);
-        if (!File.Exists(path))
-            return Task.FromResult<CheckpointState?>(null);
+        return await Task.Run(() =>
+        {
+            if (!File.Exists(path))
+                return null;
 
-        try
-        {
-            var json = File.ReadAllText(path);
-            var state = JsonSerializer.Deserialize<CheckpointState>(json, JsonOpts);
-            DebugLog.Info($"检查点已恢复: {operationId} ({state?.OperationType}, {state?.CompletedItems}/{state?.TotalItems})", "Checkpoint");
-            return Task.FromResult(state);
-        }
-        catch (Exception ex)
-        {
-            DebugLog.Warn($"检查点恢复失败: {operationId} — {ex.Message}", "Checkpoint");
-            return Task.FromResult<CheckpointState?>(null);
-        }
+            try
+            {
+                var json = File.ReadAllText(path);
+                var state = JsonSerializer.Deserialize<CheckpointState>(json, JsonOpts);
+                DebugLog.Info($"检查点已恢复: {operationId} ({state?.OperationType}, {state?.CompletedItems}/{state?.TotalItems})", "Checkpoint");
+                return state;
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"检查点恢复失败: {operationId} — {ex.Message}", "Checkpoint");
+                return null;
+            }
+        }).ConfigureAwait(false);
     }
 
     /// <summary>清除检查点（操作完成后调用）。</summary>
-    public Task ClearCheckpointAsync(string operationId)
+    public async Task ClearCheckpointAsync(string operationId)
     {
         var path = GetCheckpointPath(operationId);
-        if (File.Exists(path))
+        await Task.Run(() =>
         {
-            File.Delete(path);
-            DebugLog.Info($"检查点已清除: {operationId}", "Checkpoint");
-        }
-        return Task.CompletedTask;
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+                DebugLog.Info($"检查点已清除: {operationId}", "Checkpoint");
+            }
+        }).ConfigureAwait(false);
     }
 
     /// <summary>列出所有未完成的检查点。</summary>
-    public Task<IReadOnlyList<CheckpointState>> ListPendingCheckpointsAsync()
+    public async Task<IReadOnlyList<CheckpointState>> ListPendingCheckpointsAsync()
     {
-        var results = new List<CheckpointState>();
-        if (!Directory.Exists(_checkpointDir))
-            return Task.FromResult<IReadOnlyList<CheckpointState>>(results);
-
-        foreach (var file in Directory.GetFiles(_checkpointDir, "*.json"))
+        return await Task.Run<IReadOnlyList<CheckpointState>>(() =>
         {
-            try
+            var results = new List<CheckpointState>();
+            if (!Directory.Exists(_checkpointDir))
+                return results;
+
+            foreach (var file in Directory.GetFiles(_checkpointDir, "*.json"))
             {
-                var json = File.ReadAllText(file);
-                var state = JsonSerializer.Deserialize<CheckpointState>(json, JsonOpts);
-                if (state is not null)
-                    results.Add(state);
+                try
+                {
+                    var json = File.ReadAllText(file);
+                    var state = JsonSerializer.Deserialize<CheckpointState>(json, JsonOpts);
+                    if (state is not null)
+                        results.Add(state);
+                }
+                catch { /* 跳过损坏的检查点文件 */ }
             }
-            catch { /* 跳过损坏的检查点文件 */ }
-        }
-        return Task.FromResult<IReadOnlyList<CheckpointState>>(results);
+            return results;
+        }).ConfigureAwait(false);
     }
 
     private string GetCheckpointPath(string operationId)

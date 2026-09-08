@@ -13,1500 +13,6 @@ using Markdig.Wpf;
 
 namespace DocMind.ViewModels;
 
-/// <summary>单条对话消息（用户或助手）。可变 class 以支持流式增量追加 token。</summary>
-public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyChanged
-{
-    private string _role = string.Empty;
-    private bool _isIngested;
-    private bool _isIngesting;
-
-    /// <summary>是否已沉淀入知识库。</summary>
-    public bool IsIngested
-    {
-        get => _isIngested;
-        set => SetField(ref _isIngested, value);
-    }
-
-    /// <summary>是否正在沉淀入库中。</summary>
-    public bool IsIngesting
-    {
-        get => _isIngesting;
-        set => SetField(ref _isIngesting, value);
-    }
-    private string _content = string.Empty;
-    private FlowDocument? _renderedDocument;
-    private long _lastRenderTicks;
-    /// <summary>reparse 节流间隔(ms):流式期间避免每个 token 都重新解析 Markdown。</summary>
-    private const long RenderThrottleMs = 50;
-    private IReadOnlyList<SourceRef>? _sources;
-    private string? _model;
-    private string? _provider;
-    private int? _elapsedMs;
-    private bool _isLoading;
-    private bool _isWaitingForFirstToken;
-    private bool _showRegenerate;
-    private bool _showWithdraw;
-    private string _waitingHint = "🧠 正在检索知识库并思考回答...";
-    private string _statusText = string.Empty;
-    private bool _showStatus;
-
-    /// <summary>角色：user / assistant / system。</summary>
-    public string Role
-    {
-        get => _role;
-        set
-        {
-            if (SetField(ref _role, value))
-            {
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsUser)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsAssistant)));
-            }
-        }
-    }
-
-    /// <summary>消息内容。</summary>
-    public string Content
-    {
-        get => _content;
-        set
-        {
-            if (SetField(ref _content, value))
-            {
-                UpdateRenderedDocument();
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CanCopy)));
-            }
-        }
-    }
-
-    /// <summary>助手回答经 Markdig 解析后的 FlowDocument;用户消息或解析失败时为 null。</summary>
-    /// <remarks>UI 层据此渲染 Markdown(代码块/列表/表格/可点击链接);用户消息仍走纯 TextBlock。</remarks>
-    public FlowDocument? RenderedDocument
-    {
-        get => _renderedDocument;
-        private set => SetField(ref _renderedDocument, value);
-    }
-
-    /// <summary>强制重新解析 Markdown(终帧 onDone 后调用,确保最终渲染完整,不受节流影响)。</summary>
-    public void ForceRefreshRender() => UpdateRenderedDocument(force: true);
-
-    /// <summary>流式增量追加 token。</summary>
-    public void AppendToken(string token)
-    {
-        Content += token;
-        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CanCopy)));
-    }
-
-    private static readonly System.Text.RegularExpressions.Regex ActionRegex =
-        new(@"\[ACTIONS:\s*(\[.*?\])\s*\]", System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.Compiled);
-
-    private static readonly System.Text.RegularExpressions.Regex ArtifactRegex =
-        new(@":::\s*artifact(?:\s+type=[""']?([a-zA-Z0-9_-]+)[""']?)?(?:\s+title=[""']?([^""'\n\r]+)[""']?)?(?:\s+theme=[""']?([a-zA-Z0-9_-]+)[""']?)?\s*\n([\s\S]*?)(?::::|\Z)", System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.Compiled);
-
-    /// <summary>从纯 Markdown 内容特征推断交付物类型（模型未输出 :::artifact 包裹时的自愈推断，
-    /// 对齐后端 parser.extract_artifact 的容错能力）。
-    /// 只推断特征足够明确的 PPT / HTML，不推断普通文档，避免日常对话被误判成创作物。</summary>
-    private static string? InferArtifactType(string content)
-    {
-        if (string.IsNullOrWhiteSpace(content) || content.Length < 200) return null;
-
-        var lower = content.ToLowerInvariant();
-
-        // 1) HTML：出现完整 HTML 文档标记
-        if (lower.Contains("<!doctype html") || lower.Contains("<html")) return "html";
-
-        // 2) PPT：多个 `---` 分页 + 幻灯片特征（板式标记或幻灯片关键词）
-        var dashPages = System.Text.RegularExpressions.Regex.Split(content, @"(?m)^---\s*$");
-        var hasSlideMarker = lower.Contains("<!-- layout:") || lower.Contains("<!-- note:");
-        var hasSlideKeyword = lower.Contains("slide")
-                              || lower.Contains("幻灯片")
-                              || lower.Contains("ppt")
-                              || lower.Contains("演示文稿")
-                              || lower.Contains("演讲");
-        if (dashPages.Length >= 3 && (hasSlideMarker || hasSlideKeyword)) return "pptx";
-
-        return null;
-    }
-
-    /// <summary>从内容首个标题行推断交付物标题（自愈推断场景使用）。</summary>
-    private static string InferArtifactTitle(string content)
-    {
-        foreach (var line in content.Split('\n'))
-        {
-            var ls = line.Trim();
-            if (ls.StartsWith('#'))
-            {
-                return ls.TrimStart('#').Trim();
-            }
-        }
-        return "知识创作交付物";
-    }
-
-    /// <summary>正文引用角标匹配：[1] / [1,2] / [1、2]。
-    /// 边界仅用 ASCII 字符类（.NET 的 \w 会把中文算作单词字符，导致“见[1]”不匹配）；
-    /// 前后粘着英文/数字/方括号时不转换，避免误伤代码里的下标如 arr[1]。</summary>
-    private static readonly System.Text.RegularExpressions.Regex SourceMarkerRegex =
-        new(@"(?<![A-Za-z0-9_\]])\[(\d{1,3}(?:[,\s、，]\d{1,3})*)\](?![A-Za-z0-9_\[])",
-            System.Text.RegularExpressions.RegexOptions.Compiled);
-
-    /// <summary>AI 根据上下文预测的下一步行动建议列表。</summary>
-    public ObservableCollection<string> FollowUpActions { get; } = new();
-
-    /// <summary>是否有下一步行动建议。</summary>
-    public bool HasFollowUpActions => FollowUpActions.Count > 0;
-
-    private ArtifactItem? _artifact;
-
-    /// <summary>消息内包含的结构化创作交付物（PPTX/DOCX/XLSX/HTML）。</summary>
-    public ArtifactItem? Artifact
-    {
-        get => _artifact;
-        set
-        {
-            if (SetField(ref _artifact, value))
-            {
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasArtifact)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ArtifactTitle)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ArtifactBadgeText)));
-            }
-        }
-    }
-
-    /// <summary>是否有创作交付物。</summary>
-    public bool HasArtifact => Artifact != null;
-
-    /// <summary>创作交付物标题。</summary>
-    public string ArtifactTitle => Artifact?.Title ?? "创作物";
-
-    /// <summary>创作交付物徽章文案。</summary>
-    public string ArtifactBadgeText => Artifact switch
-    {
-        { IsPpt: true } => $"📊 PPT 演示文稿（{Artifact.SlideCount} 页）",
-        { IsDoc: true } => "📄 深度研报 / 公文方案",
-        { IsExcel: true } => "📑 结构化数据对比表",
-        { IsHtml: true } => "🌐 交互式知识看板",
-        _ => "📦 创作交付物",
-    };
-
-    /// <summary>把 Content 用 Markdig 解析为 FlowDocument。流式期间节流,终帧后强制刷新。</summary>
-    private void UpdateRenderedDocument(bool force = false)
-    {
-        // 确保必须在 UI 线程创建与修改 FlowDocument 和 FollowUpActions，防止多线程跨线程访问崩溃
-        if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
-        {
-            dispatcher.InvokeAsync(() => UpdateRenderedDocument(force));
-            return;
-        }
-
-        // 用户消息不渲染 Markdown(纯文本即可,避免 Markdown 语法误解析)
-        if (IsUser || string.IsNullOrEmpty(Content))
-        {
-            if (_renderedDocument is not null)
-            {
-                RenderedDocument = null;
-            }
-            return;
-        }
-        // 节流:流式期间频繁 reparse 浪费 CPU,50ms 一次足够流畅
-        var now = Environment.TickCount64;
-        if (!force && (now - _lastRenderTicks) < RenderThrottleMs)
-        {
-            return;
-        }
-        _lastRenderTicks = now;
-        try
-        {
-            var rawContent = Content;
-            var cleanContent = rawContent;
-
-            // 1. 嗅探提取 Artifact 交付物
-            // 自愈容错：模型有时不写 :::artifact 包裹，只输出一份纯 Markdown 方案。
-            // 此时先按内容特征推断类型并合成一个等价的 artifact 块，让后续统一走同一套解析逻辑，
-            // 否则这类内容在气泡下完全没有「创作物工作台」预览入口。
-            if (!ArtifactRegex.IsMatch(rawContent))
-            {
-                var inferredType = InferArtifactType(rawContent);
-                if (inferredType != null)
-                {
-                    rawContent = $":::artifact type=\"{inferredType}\" title=\"{InferArtifactTitle(rawContent)}\" theme=\"tech_blue\"\n{rawContent}\n:::";
-                }
-            }
-            var artMatch = ArtifactRegex.Match(rawContent);
-            if (artMatch.Success)
-            {
-                var aType = artMatch.Groups[1].Value;
-                var aTitle = artMatch.Groups[2].Value;
-                var aTheme = artMatch.Groups[3].Value;
-                var aBody = artMatch.Groups[4].Value;
-
-                if (string.IsNullOrWhiteSpace(aType)) aType = "docx";
-                if (string.IsNullOrWhiteSpace(aTitle)) aTitle = "知识创作交付物";
-                if (string.IsNullOrWhiteSpace(aTheme)) aTheme = "tech_blue";
-
-                var item = new ArtifactItem
-                {
-                    Type = aType.ToLowerInvariant().Trim(),
-                    Title = aTitle.Trim(),
-                    Theme = aTheme.ToLowerInvariant().Trim(),
-                    RawContent = aBody.Trim(),
-                };
-
-                // PPT 幻灯片切片解析
-                if (item.IsPpt)
-                {
-                    var pages = System.Text.RegularExpressions.Regex.Split(item.RawContent, @"(?m)^---\s*$");
-                    if (pages.Length <= 1)
-                    {
-                        var splitByH1 = System.Text.RegularExpressions.Regex.Split(item.RawContent, @"(?m)^(?=#\s+)");
-                        var candidates = splitByH1.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
-                        if (candidates.Length >= 2) pages = candidates;
-                    }
-                    var sIndex = 1;
-                    foreach (var page in pages)
-                    {
-                        var pClean = page.Trim();
-                        if (string.IsNullOrWhiteSpace(pClean)) continue;
-
-                        var sTitle = $"第 {sIndex} 页";
-                        var sSub = "";
-                        var sLayout = "general";
-                        var sBullets = new List<string>();
-                        var sNotes = "";
-                        var sCards = new List<SlideCardItem>();
-                        var sMetrics = new List<MetricItem>();
-                        var sTimeline = new List<TimelineNodeItem>();
-                        var sQuote = "";
-                        var sTable = new List<List<string>>();
-
-                        // 提取备注
-                        var noteMatch = System.Text.RegularExpressions.Regex.Match(pClean, @"<!--\s*note:\s*([\s\S]*?)-->", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                        if (noteMatch.Success)
-                        {
-                            sNotes = noteMatch.Groups[1].Value.Trim();
-                            pClean = pClean.Remove(noteMatch.Index, noteMatch.Length).Trim();
-                        }
-
-                        // 提取显式板式
-                        var layoutMatch = System.Text.RegularExpressions.Regex.Match(pClean, @"<!--\s*layout:\s*([a-zA-Z0-9_-]+)\s*-->", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                        if (layoutMatch.Success)
-                        {
-                            sLayout = layoutMatch.Groups[1].Value.ToLowerInvariant().Trim();
-                            pClean = pClean.Remove(layoutMatch.Index, layoutMatch.Length).Trim();
-                        }
-
-                        SlideCardItem? curCard = null;
-                        foreach (var l in pClean.Split('\n'))
-                        {
-                            var ls = l.Trim();
-                            if (string.IsNullOrWhiteSpace(ls)) continue;
-
-                            if (ls.StartsWith("# ") && sTitle == $"第 {sIndex} 页")
-                            {
-                                sTitle = ls[2..].Trim();
-                            }
-                            else if (ls.StartsWith("## ") && sIndex == 1 && string.IsNullOrEmpty(sSub))
-                            {
-                                sSub = ls[3..].Trim();
-                            }
-                            else if (ls.StartsWith("### "))
-                            {
-                                if (curCard != null) sCards.Add(curCard);
-                                curCard = new SlideCardItem { Title = ls[4..].Trim() };
-                            }
-                            else if (ls.StartsWith(">"))
-                            {
-                                var q = ls.TrimStart('>', ' ').Trim();
-                                sQuote = string.IsNullOrEmpty(sQuote) ? q : sQuote + "\n" + q;
-                            }
-                            else if (ls.StartsWith("|") && ls.EndsWith("|"))
-                            {
-                                if (!System.Text.RegularExpressions.Regex.IsMatch(ls, @"^\|[\s\-:|]+\|$"))
-                                {
-                                    var cols = ls.Trim('|').Split('|').Select(c => c.Trim()).ToList();
-                                    sTable.Add(cols);
-                                }
-                            }
-                            else if (ls.StartsWith("- ") || ls.StartsWith("* ") || ls.StartsWith("+ ") || ls.StartsWith("• "))
-                            {
-                                var b = ls[2..].Trim();
-                                if (curCard != null) curCard.Bullets.Add(b);
-                                else sBullets.Add(b);
-                            }
-                            else if (System.Text.RegularExpressions.Regex.IsMatch(ls, @"^\d+\.\s+"))
-                            {
-                                var b = System.Text.RegularExpressions.Regex.Replace(ls, @"^\d+\.\s+", "").Trim();
-                                if (curCard != null) curCard.Bullets.Add(b);
-                                else sBullets.Add(b);
-                            }
-                            else if (!ls.StartsWith("#") && !ls.StartsWith("<!--"))
-                            {
-                                if (curCard != null)
-                                {
-                                    if (string.IsNullOrEmpty(curCard.Content)) curCard.Content = ls;
-                                    else curCard.Bullets.Add(ls);
-                                }
-                                else if (ls.Length < 120)
-                                {
-                                    sBullets.Add(ls);
-                                }
-                            }
-                        }
-
-                        if (curCard != null) sCards.Add(curCard);
-
-                        // 启发式指标抽取（命中的条目从要点中剔除，避免与 KPI 卡片重复渲染）
-                        var metricRx = new System.Text.RegularExpressions.Regex(@"^([0-9]+(?:\.[0-9]+)?(?:%|x|X|ms|s|MB|GB|KB|倍|万|亿)?)\s*[:：\-—]\s*(.*)$");
-                        var absorbed = new List<int>();
-                        for (var bi = 0; bi < sBullets.Count; bi++)
-                        {
-                            var mm = metricRx.Match(sBullets[bi]);
-                            if (mm.Success)
-                            {
-                                sMetrics.Add(new MetricItem { Value = mm.Groups[1].Value.Trim(), Label = mm.Groups[2].Value.Trim() });
-                                absorbed.Add(bi);
-                            }
-                        }
-
-                        // 启发式时间线抽取（同上，命中的条目剔除）
-                        var timeRx = new System.Text.RegularExpressions.Regex(@"^(阶段[一二三四五六七八九十1-9]|Step\s*\d+|Q[1-4]|步骤[1-9])\s*[:：\-—]\s*(.*)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                        for (var bi = 0; bi < sBullets.Count; bi++)
-                        {
-                            var tm = timeRx.Match(sBullets[bi]);
-                            if (tm.Success)
-                            {
-                                sTimeline.Add(new TimelineNodeItem { Stage = tm.Groups[1].Value.Trim(), Title = tm.Groups[2].Value.Trim() });
-                                if (!absorbed.Contains(bi)) absorbed.Add(bi);
-                            }
-                        }
-
-                        // 已被指标 / 时间线卡片吸收的要点不再重复展示
-                        foreach (var bi in absorbed.OrderByDescending(i => i))
-                        {
-                            if (bi < sBullets.Count) sBullets.RemoveAt(bi);
-                        }
-
-                        // 板式智能裁决（预览卡片中各板式区域叠加展示，此处仅用于识别主视觉形态）
-                        if (sLayout == "general")
-                        {
-                            // 仅当首页确实带副标题时才认定为封面，避免首页正文被封面框架吞掉
-                            if (sIndex == 1 && !string.IsNullOrEmpty(sSub)) sLayout = "cover";
-                            else if (sCards.Count >= 2 && sCards.Count <= 4) sLayout = "cards";
-                            else if (sBullets.Count == 0 && sMetrics.Count >= 2) sLayout = "metrics";
-                            else if (sBullets.Count == 0 && sTimeline.Count >= 2) sLayout = "timeline";
-                            else if (sTable.Count >= 2) sLayout = "table";
-                            else if (!string.IsNullOrEmpty(sQuote)) sLayout = "quote";
-                            }
-
-                            // 主视觉唯一化：被更特殊主视觉覆盖的块级数据降级为补充要点，避免多块大视觉堆叠导致预览“混乱”，同时不丢失内容。
-                            // 注：general/agenda/cover 页的卡片仍由卡片区渲染，不在此降级（否则会与卡片区重复）。
-                            if (sLayout != "cards" && sLayout != "general" && sLayout != "agenda" && sLayout != "cover")
-                            {
-                                foreach (var c in sCards)
-                                {
-                                    var ct = string.IsNullOrEmpty(c.Content) ? c.Title : $"{c.Title}：{c.Content}";
-                                    if (c.Bullets.Count > 0) ct += "（" + string.Join("；", c.Bullets) + "）";
-                                    sBullets.Add(ct);
-                                }
-                            }
-                            if (sLayout != "metrics")
-                                foreach (var m in sMetrics) sBullets.Add($"{m.Value} {m.Label}".Trim());
-                            if (sLayout != "timeline")
-                                foreach (var t in sTimeline) sBullets.Add($"{t.Stage}：{t.Title}");
-                            if (sLayout != "quote" && !string.IsNullOrWhiteSpace(sQuote))
-                                sBullets.Add(sQuote);
-
-                            item.Slides.Add(new SlideItem
-                        {
-                            Index = sIndex,
-                            Title = sTitle,
-                            Subtitle = sSub,
-                            Layout = sLayout,
-                            BulletPoints = sBullets,
-                            SpeakerNotes = sNotes,
-                            Cards = sCards,
-                            Metrics = sMetrics,
-                            TimelineNodes = sTimeline,
-                            QuoteText = sQuote,
-                            TableData = sTable.Count > 0 ? sTable : null,
-                        });
-                        sIndex++;
-                    }
-                }
-
-                Artifact = item;
-                // 通知 ViewModel 触发自动导出（仅在流式完成时）
-                ArtifactParsed?.Invoke(this, item);
-            }
-
-            var match = ActionRegex.Match(cleanContent);
-            if (match.Success)
-            {
-                cleanContent = cleanContent.Remove(match.Index, match.Length).TrimEnd();
-                try
-                {
-                    var json = match.Groups[1].Value;
-                    var list = System.Text.Json.JsonSerializer.Deserialize<List<string>>(json);
-                    if (list != null && list.Count > 0)
-                    {
-                        if (FollowUpActions.Count != list.Count || !FollowUpActions.SequenceEqual(list))
-                        {
-                            FollowUpActions.Clear();
-                            foreach (var item in list)
-                            {
-                                if (!string.IsNullOrWhiteSpace(item))
-                                {
-                                    FollowUpActions.Add(item.Trim());
-                                }
-                            }
-                            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasFollowUpActions)));
-                        }
-                    }
-                }
-                catch
-                {
-                    var items = System.Text.RegularExpressions.Regex.Matches(match.Groups[1].Value, "\"([^\"]+)\"");
-                    if (items.Count > 0)
-                    {
-                        FollowUpActions.Clear();
-                        foreach (System.Text.RegularExpressions.Match item in items)
-                        {
-                            FollowUpActions.Add(item.Groups[1].Value.Trim());
-                        }
-                        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasFollowUpActions)));
-                    }
-                }
-            }
-            else
-            {
-                var partialIdx = cleanContent.LastIndexOf("[ACTIONS:", StringComparison.OrdinalIgnoreCase);
-                if (partialIdx >= 0 && partialIdx > cleanContent.Length - 120)
-                {
-                    cleanContent = cleanContent[..partialIdx].TrimEnd();
-                }
-            }
-
-            var pipeline = new MarkdownPipelineBuilder().UseSupportedExtensions().Build();
-            var doc = Markdig.Wpf.Markdown.ToFlowDocument(cleanContent, pipeline);
-            // 对齐 ChatView 气泡样式:清除 FlowDocument 默认页边距,继承 BodyText 样式(FontSize=15, Medium, TextPrimary)
-            doc.PagePadding = new Thickness(0);
-            doc.FontFamily = SystemFonts.MessageFontFamily;
-            doc.FontSize = 15;
-            doc.FontWeight = FontWeights.Medium;
-            doc.Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextPrimaryBrush")
-                                     ?? Brushes.Black);
-            // 降级标题层级：Markdig 把 ###/#### 渲染成 18px+ 大标题，气泡读起来像文档报告；
-            // 统一压回正文大小（保留加粗层级），让回答更接近自然聊天的语气。
-            DownscaleHeadings(doc);
-            // 让回答正文里的 Markdown 链接可直接点击（仅 http/https，其余不可点击防风险）
-            AttachLinkNavigation(doc);
-            // 把 [n] 引用标记转换为可点击角标（点击打开对应来源抽屉）
-            WireSourceMarkers(doc);
-            RenderedDocument = doc;
-        }
-        catch (Exception ex)
-        {
-            // 解析失败:清空 RenderedDocument,UI 会 fallback 到纯文本兜底 TextBox(由 Visibility 控制)。
-            // 记录原文长度与片段：排查"回答只剩标题/代码块消失"时，
-            // 需要能区分是原文本身不完整，还是渲染层把内容丢了。
-            var preview = Content.Length > 200 ? Content[..200] + "…" : Content;
-            DebugLog.Warn(
-                $"Markdown 解析失败,降级纯文本: 原文 {Content.Length} 字, {ex.GetType().Name}: {ex.Message}\n" +
-                $"  原文片段: {preview}", "Chat");
-            if (_renderedDocument is not null)
-            {
-                RenderedDocument = null;
-            }
-        }
-    }
-
-    /// <summary>把 Markdig 渲染的大标题（### 18px Bold 等）降级为正文大小加粗，
-    /// 消除气泡的"文档报告感"，让 AI 回答更像聊天。</summary>
-    private static void DownscaleHeadings(FlowDocument doc)
-    {
-        foreach (var block in doc.Blocks)
-        {
-            DownscaleHeadings(block);
-        }
-    }
-
-    private static void DownscaleHeadings(Block block)
-    {
-        switch (block)
-        {
-            case Paragraph p:
-                // 只有标题会被 Markdig 显式放大到 18px+；正文/代码块继承 15px 不受影响
-                if (p.FontSize > 15)
-                {
-                    p.FontSize = 15;
-                    p.FontWeight = FontWeights.SemiBold;
-                }
-                break;
-            case List list:
-                foreach (var item in list.ListItems)
-                {
-                    foreach (var itemBlock in item.Blocks)
-                    {
-                        DownscaleHeadings(itemBlock);
-                    }
-                }
-                break;
-            case Table table:
-                foreach (var group in table.RowGroups)
-                {
-                    foreach (var row in group.Rows)
-                    {
-                        foreach (var cell in row.Cells)
-                        {
-                            foreach (var cellBlock in cell.Blocks)
-                            {
-                                DownscaleHeadings(cellBlock);
-                            }
-                        }
-                    }
-                }
-                break;
-            case Section section:
-                foreach (var child in section.Blocks)
-                {
-                    DownscaleHeadings(child);
-                }
-                break;
-        }
-    }
-
-    /// <summary>让回答正文中的 Markdown 链接可直接点击并在默认浏览器打开。
-    /// Markdig.Wpf 会把 <c>[text](url)</c> 渲染成带 NavigateUri 的 Hyperlink，但默认
-    /// 没有任何导航处理器，点击无反应。这里只对 http/https 绝对链接挂
-    /// RequestNavigate 处理器；javascript:/file:/相对路径等一律移除导航（不可点击），
-    /// 防止 AI 输出或文档中的危险协议被直接打开。</summary>
-    private static void AttachLinkNavigation(FlowDocument doc)
-    {
-        foreach (var block in doc.Blocks)
-        {
-            AttachLinkNavigation(block);
-        }
-    }
-
-    private static void AttachLinkNavigation(Block block)
-    {
-        switch (block)
-        {
-            case Paragraph paragraph:
-                foreach (var inline in paragraph.Inlines)
-                {
-                    AttachLinkNavigation(inline);
-                }
-                break;
-            case List list:
-                foreach (var item in list.ListItems)
-                {
-                    foreach (var itemBlock in item.Blocks)
-                    {
-                        AttachLinkNavigation(itemBlock);
-                    }
-                }
-                break;
-            case Table table:
-                foreach (var group in table.RowGroups)
-                {
-                    foreach (var row in group.Rows)
-                    {
-                        foreach (var cell in row.Cells)
-                        {
-                            foreach (var cellBlock in cell.Blocks)
-                            {
-                                AttachLinkNavigation(cellBlock);
-                            }
-                        }
-                    }
-                }
-                break;
-            case Section section:
-                foreach (var child in section.Blocks)
-                {
-                    AttachLinkNavigation(child);
-                }
-                break;
-        }
-    }
-
-    private static void AttachLinkNavigation(Inline inline)
-    {
-        switch (inline)
-        {
-            case Hyperlink link:
-                WireHyperlink(link);
-                // 链接文本内可能再嵌套行内元素（如代码 span）
-                foreach (var child in link.Inlines)
-                {
-                    AttachLinkNavigation(child);
-                }
-                break;
-            case Span span:
-                foreach (var child in span.Inlines)
-                {
-                    AttachLinkNavigation(child);
-                }
-                break;
-        }
-    }
-
-    private static void WireHyperlink(Hyperlink link)
-    {
-        var raw = link.NavigateUri?.ToString() ?? "";
-        if (Uri.TryCreate(raw, UriKind.Absolute, out var uri)
-            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
-        {
-            link.NavigateUri = uri;
-            // 主题色高亮 + 下划线：FlowDocument 设置了 TextPrimary 前景，
-            // 默认会让链接继承成正文颜色而看不出可点击，这里显式恢复链接样式
-            link.Foreground = (Brush)(System.Windows.Application.Current?.FindResource("PrimaryBrush")
-                                      ?? Brushes.DodgerBlue);
-            link.TextDecorations = TextDecorations.Underline;
-            link.RequestNavigate += (_, e) =>
-            {
-                e.Handled = true;
-                try
-                {
-                    System.Diagnostics.Process.Start(
-                        new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri)
-                        {
-                            UseShellExecute = true,
-                        });
-                }
-                catch (Exception ex)
-                {
-                    DebugLog.Warn($"打开链接失败: {ex.Message}", "Chat");
-                }
-            };
-        }
-        else
-        {
-            // 非 http(s) 链接：移除导航，点击无反应（防止 javascript:/file: 等风险）
-            link.NavigateUri = null;
-        }
-    }
-
-    /// <summary>把正文中的 [n] 引用标记转换为可点击角标（DeepSeek 风格），
-    /// 点击打开对应来源抽屉。仅在消息带来源时生效；代码块段落（带样式）跳过，
-    /// 避免把代码里的下标当作引用。</summary>
-    private void WireSourceMarkers(FlowDocument doc)
-    {
-        if (Sources is not { Count: > 0 })
-        {
-            return;
-        }
-        // 注意：遍历必须用快照——对 Paragraph.Inlines 的 Clear/Add 会递增整个
-        // TextContainer 的版本号，使正在进行的 doc.Blocks 枚举器直接失效（WPF 经典坑）。
-        foreach (var block in doc.Blocks.ToList())
-        {
-            WireSourceMarkers(block);
-        }
-    }
-
-    private void WireSourceMarkers(Block block)
-    {
-        switch (block)
-        {
-            case Paragraph paragraph:
-                WireSourceMarkers(paragraph);
-                break;
-            case List list:
-                foreach (var item in list.ListItems.ToList())
-                {
-                    foreach (var itemBlock in item.Blocks.ToList())
-                    {
-                        WireSourceMarkers(itemBlock);
-                    }
-                }
-                break;
-            case Table table:
-                foreach (var group in table.RowGroups.ToList())
-                {
-                    foreach (var row in group.Rows.ToList())
-                    {
-                        foreach (var cell in row.Cells.ToList())
-                        {
-                            foreach (var cellBlock in cell.Blocks.ToList())
-                            {
-                                WireSourceMarkers(cellBlock);
-                            }
-                        }
-                    }
-                }
-                break;
-            case Section section:
-                foreach (var child in section.Blocks.ToList())
-                {
-                    WireSourceMarkers(child);
-                }
-                break;
-        }
-    }
-
-    private void WireSourceMarkers(Paragraph paragraph)
-    {
-        // Markdig.Wpf 渲染代码块时会给段落套样式；带样式的段落跳过，避免误转换
-        if (paragraph.Style is not null)
-        {
-            return;
-        }
-        var inlines = paragraph.Inlines.ToList();
-        // Markdig 会把 [ 拆成独立 Run（如 Run[官方资料见] Run[[] Run[1]…]），
-        // 引用标记跨多个 Run 导致单 Run 匹配不到。先把格式相同的相邻 Run 合并成一段。
-        var merged = new List<Inline>();
-        foreach (var inline in inlines)
-        {
-            if (inline is Run run && merged.LastOrDefault() is Run last && SameFormat(last, run))
-            {
-                last.Text += run.Text;
-            }
-            else
-            {
-                merged.Add(inline);
-            }
-        }
-        paragraph.Inlines.Clear();
-        foreach (var inline in merged)
-        {
-            if (inline is Run run)
-            {
-                AppendRunWithMarkers(paragraph, run);
-            }
-            else
-            {
-                paragraph.Inlines.Add(inline);
-            }
-        }
-    }
-
-    private void AppendRunWithMarkers(Paragraph paragraph, Run run)
-    {
-        var text = run.Text ?? "";
-        var matches = SourceMarkerRegex.Matches(text);
-        if (matches.Count == 0)
-        {
-            paragraph.Inlines.Add(run);
-            return;
-        }
-
-        var validIndexes = new HashSet<int>();
-        if (Sources is not null)
-        {
-            foreach (var src in Sources)
-            {
-                validIndexes.Add(src.Index);
-            }
-        }
-
-        int pos = 0;
-        foreach (System.Text.RegularExpressions.Match match in matches)
-        {
-            if (match.Index > pos)
-            {
-                paragraph.Inlines.Add(CloneRun(run, text[pos..match.Index]));
-            }
-            var firstIndex = int.Parse(match.Groups[1].Value.Split(',', '，', '、', ' ')[0]);
-            if (validIndexes.Contains(firstIndex))
-            {
-                paragraph.Inlines.Add(CreateSourceMarker(run, match.Groups[1].Value.Trim(), firstIndex));
-            }
-            else
-            {
-                // 索引不在来源范围内：原样保留文本，避免误转换
-                paragraph.Inlines.Add(CloneRun(run, match.Value));
-            }
-            pos = match.Index + match.Length;
-        }
-        if (pos < text.Length)
-        {
-            paragraph.Inlines.Add(CloneRun(run, text[pos..]));
-        }
-    }
-
-    /// <summary>两个 Run 的格式是否一致（可安全合并文本）。</summary>
-    private static bool SameFormat(Run a, Run b)
-        => Equals(a.FontFamily, b.FontFamily)
-           && Equals(a.FontSize, b.FontSize)
-           && Equals(a.FontWeight, b.FontWeight)
-           && Equals(a.FontStyle, b.FontStyle)
-           && Equals(a.Foreground, b.Foreground)
-           && Equals(a.Background, b.Background)
-           && (a.TextDecorations?.Count ?? 0) == (b.TextDecorations?.Count ?? 0);
-
-    /// <summary>复制 Run 的格式（加粗/斜体/前景/字号等）以保留分段后的视觉效果。</summary>
-    private static Run CloneRun(Run template, string text)
-    {
-        var run = new Run(text)
-        {
-            FontFamily = template.FontFamily,
-            FontSize = template.FontSize,
-            FontWeight = template.FontWeight,
-            FontStyle = template.FontStyle,
-            Foreground = template.Foreground,
-            Background = template.Background,
-            TextDecorations = template.TextDecorations,
-        };
-        return run;
-    }
-
-    /// <summary>创建引用角标（高质感交互徽章，带悬浮详细来源卡片与直达小图标，点击打开来源或网页）。</summary>
-    private Hyperlink CreateSourceMarker(Run template, string indexText, int index)
-    {
-        var targetSource = Sources?.FirstOrDefault(s => s.Index == index);
-        var isWeb = targetSource?.IsWebSource == true && !string.IsNullOrWhiteSpace(targetSource.Url);
-        var iconSymbol = isWeb ? "🌐↗" : "📄";
-
-        var link = new Hyperlink
-        {
-            Foreground = (Brush)(System.Windows.Application.Current?.FindResource("PrimaryBrush")
-                                 ?? Brushes.DodgerBlue),
-            FontSize = Math.Max(10, (template.FontSize > 0 ? template.FontSize : 15) - 3),
-            FontWeight = FontWeights.Bold,
-            BaselineAlignment = BaselineAlignment.Superscript,
-            TextDecorations = null,
-            Cursor = Cursors.Hand,
-        };
-
-        if (targetSource != null)
-        {
-            var tip = new ToolTip
-            {
-                Background = (Brush)(System.Windows.Application.Current?.FindResource("CardBrush") ?? Brushes.White),
-                BorderBrush = (Brush)(System.Windows.Application.Current?.FindResource("BorderBrush") ?? Brushes.LightGray),
-                BorderThickness = new Thickness(1),
-                Padding = new Thickness(8, 6, 8, 6),
-            };
-            var tipPanel = new StackPanel { MaxWidth = 340 };
-            var tipHeader = new TextBlock
-            {
-                Text = targetSource.IsWebSource ? $"🌐 [{index}] {targetSource.DisplayTitle}" : $"📄 [{index}] {targetSource.DisplayTitle}",
-                FontWeight = FontWeights.SemiBold,
-                FontSize = 12,
-                TextWrapping = TextWrapping.Wrap,
-                Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextPrimaryBrush") ?? Brushes.Black),
-            };
-            tipPanel.Children.Add(tipHeader);
-
-            if (targetSource.IsWebSource && !string.IsNullOrWhiteSpace(targetSource.Url))
-            {
-                var tipUrl = new TextBlock
-                {
-                    Text = targetSource.Url,
-                    FontSize = 10,
-                    Foreground = (Brush)(System.Windows.Application.Current?.FindResource("PrimaryBrush") ?? Brushes.DodgerBlue),
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                    Margin = new Thickness(0, 2, 0, 0),
-                };
-                tipPanel.Children.Add(tipUrl);
-            }
-            else if (!targetSource.IsWebSource)
-            {
-                var tipMeta = new TextBlock
-                {
-                    Text = targetSource.Page.HasValue ? $"页码: P{targetSource.Page.Value} · 章节: {targetSource.Heading ?? "正文"}" : $"章节: {targetSource.Heading ?? "正文"}",
-                    FontSize = 10,
-                    Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextSecondaryBrush") ?? Brushes.Gray),
-                    Margin = new Thickness(0, 2, 0, 0),
-                };
-                tipPanel.Children.Add(tipMeta);
-            }
-
-            if (!string.IsNullOrWhiteSpace(targetSource.Snippet))
-            {
-                var tipSnippet = new TextBlock
-                {
-                    Text = targetSource.Snippet.Trim(),
-                    FontSize = 11,
-                    Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextSecondaryBrush") ?? Brushes.DarkGray),
-                    TextWrapping = TextWrapping.Wrap,
-                    MaxHeight = 80,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                    Margin = new Thickness(0, 4, 0, 0),
-                };
-                tipPanel.Children.Add(tipSnippet);
-            }
-
-            var tipHint = new TextBlock
-            {
-                Text = isWeb ? "💡 点击直接在默认浏览器中打开该网页（同时展示来源抽屉）" : "💡 点击直接打开对应来源详情与切片原文",
-                FontSize = 10,
-                Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextTertiaryBrush") ?? Brushes.Gray),
-                Margin = new Thickness(0, 6, 0, 0),
-            };
-            tipPanel.Children.Add(tipHint);
-            tip.Content = tipPanel;
-            link.ToolTip = tip;
-
-            // 点击角标：如果为网页且带有合法 URL，直接在默认浏览器中打开；并通知展开抽屉
-            link.Click += (_, _) =>
-            {
-                if (isWeb && ChatViewModel.TryOpenHttpUrl(targetSource.Url!))
-                {
-                    // 默认浏览器已触发
-                }
-                NotifySourceMarker(index);
-            };
-        }
-        else
-        {
-            link.ToolTip = $"查看来源 [{indexText}]";
-            link.Click += (_, _) => NotifySourceMarker(index);
-        }
-
-        link.Inlines.Add(new Run($"[{indexText} {iconSymbol}]"));
-        return link;
-    }
-
-    /// <summary>引用来源（仅 assistant 有）。设置后刷新搜索摘要/状态统计等计算属性。</summary>
-    public IReadOnlyList<SourceRef>? Sources
-    {
-        get => _sources;
-        set
-        {
-            if (SetField(ref _sources, value))
-            {
-                foreach (var name in new[]
-                {
-                    nameof(HasSources), nameof(WebSourceCount), nameof(WebFetchedCount),
-                    nameof(HasWebSources), nameof(SearchSummaryText),
-                    nameof(WebSources), nameof(LocalSources),
-                    nameof(TokenStatText), nameof(HasTokenStat),
-                })
-                {
-                    PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
-                }
-                // 当 Sources 到达后，重新解析正文以挂载来源引用角标与悬浮卡片
-                if (!string.IsNullOrEmpty(Content))
-                {
-                    UpdateRenderedDocument(force: true);
-                }
-            }
-        }
-    }
-
-    /// <summary>模型名（仅 assistant 有）。</summary>
-    public string? Model
-    {
-        get => _model;
-        set => SetField(ref _model, value);
-    }
-
-    /// <summary>提供商标识（仅 assistant 有）。</summary>
-    public string? Provider
-    {
-        get => _provider;
-        set => SetField(ref _provider, value);
-    }
-
-    /// <summary>耗时 ms（仅 assistant 有）。设置后刷新底部状态统计。</summary>
-    public int? ElapsedMs
-    {
-        get => _elapsedMs;
-        set
-        {
-            if (SetField(ref _elapsedMs, value))
-            {
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(TokenStatText)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasTokenStat)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
-            }
-        }
-    }
-
-    /// <summary>是否正在加载。整体生成期间为 true。</summary>
-    public bool IsLoading
-    {
-        get => _isLoading;
-        set
-        {
-            if (SetField(ref _isLoading, value))
-            {
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CanCopy)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
-            }
-        }
-    }
-
-    /// <summary>是否正在等待首个 token返回（控制骨架屏可见性）。</summary>
-    public bool IsWaitingForFirstToken
-    {
-        get => _isWaitingForFirstToken;
-        set
-        {
-            if (SetField(ref _isWaitingForFirstToken, value))
-            {
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
-            }
-        }
-    }
-
-    /// <summary>是否显示「重新生成」（仅最后一条 assistant 消息、非生成中；由 VM 维护）。</summary>
-    public bool ShowRegenerate
-    {
-        get => _showRegenerate;
-        set => SetField(ref _showRegenerate, value);
-    }
-
-    /// <summary>是否显示「撤回」按钮（仅最后一条用户消息在非生成中显示）。</summary>
-    public bool ShowWithdraw
-    {
-        get => _showWithdraw;
-        set => SetField(ref _showWithdraw, value);
-    }
-
-    /// <summary>等待首字或非流式大包期间的动态状态提示文案。</summary>
-    public string WaitingHint
-    {
-        get => _waitingHint;
-        set => SetField(ref _waitingHint, value);
-    }
-
-    /// <summary>流式阶段状态文案（正在检索/正在联网搜索...）。</summary>
-    public string StatusText
-    {
-        get => _statusText;
-        set => SetField(ref _statusText, value);
-    }
-
-    /// <summary>是否显示阶段状态指示器。</summary>
-    public bool ShowStatus
-    {
-        get => _showStatus;
-        set => SetField(ref _showStatus, value);
-    }
-
-    // ===== DeepSeek 风格信息卡片：思考过程 / 搜索摘要 / 状态统计 =====
-
-    /// <summary>流式阶段收集的思考/搜索过程步骤（解析附件、检索知识库、联网搜索、生成…）。</summary>
-    public ObservableCollection<string> ThinkingSteps { get; } = new();
-
-    /// <summary>是否有思考过程可展示（控制折叠区可见性）。</summary>
-    public bool HasThinkingSteps => ThinkingSteps.Count > 0;
-
-    /// <summary>是否有任何真实思考内容（链路步骤 或 模型推理链 reasoning_content）。</summary>
-    public bool HasThinking => HasThinkingSteps || HasThinkingText;
-
-    private bool _isThinkingExpanded = true;
-
-    /// <summary>思考过程区是否展开（点击标题切换）。</summary>
-    public bool IsThinkingExpanded
-    {
-        get => _isThinkingExpanded;
-        set => SetField(ref _isThinkingExpanded, value);
-    }
-
-    private bool _isThinkingInProgress;
-
-    /// <summary>是否处于思考进行中阶段（生成中且尚未输出正文）。</summary>
-    public bool IsThinkingInProgress
-    {
-        get => _isThinkingInProgress;
-        set
-        {
-            if (SetField(ref _isThinkingInProgress, value))
-            {
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
-            }
-        }
-    }
-
-    private string _thinkingDurationText = "";
-
-    /// <summary>思考耗时文案（如「用时 5.2 秒」）。</summary>
-    public string ThinkingDurationText
-    {
-        get => _thinkingDurationText;
-        set
-        {
-            if (SetField(ref _thinkingDurationText, value))
-            {
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
-            }
-        }
-    }
-
-    /// <summary>思考过程标题：生成中显示「思考中...」，完成后显示「已思考（用时 X 秒）」。</summary>
-    public string ThinkingHeaderText
-    {
-        get
-        {
-            if (IsLoading && (IsThinkingInProgress || IsWaitingForFirstToken))
-            {
-                return !string.IsNullOrEmpty(ThinkingDurationText)
-                    ? $"思考中 ({ThinkingDurationText})"
-                    : "思考中...";
-            }
-            return !string.IsNullOrEmpty(ThinkingDurationText)
-                ? $"已思考（{ThinkingDurationText}）"
-                : "已思考";
-        }
-    }
-
-    /// <summary>思考状态图标文字（🧠 思考中 / 💭 已完成 / 空 无思考）。</summary>
-    public string ThinkingIconText
-    {
-        get
-        {
-            if (IsLoading && (IsThinkingInProgress || IsWaitingForFirstToken))
-                return "🧠";
-            return HasThinking ? "💭" : "";
-        }
-    }
-
-    private FlowDocument? _renderedThinkingDocument;
-    private long _lastThinkingRenderTicks;
-
-    /// <summary>模型推理链 Markdown 解析后的 FlowDocument。</summary>
-    public FlowDocument? RenderedThinkingDocument
-    {
-        get => _renderedThinkingDocument;
-        private set => SetField(ref _renderedThinkingDocument, value);
-    }
-
-    private void UpdateRenderedThinkingDocument(bool force = false)
-    {
-        if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
-        {
-            dispatcher.InvokeAsync(() => UpdateRenderedThinkingDocument(force));
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(ThinkingText))
-        {
-            if (_renderedThinkingDocument is not null)
-            {
-                RenderedThinkingDocument = null;
-            }
-            return;
-        }
-
-        var now = Environment.TickCount64;
-        if (!force && (now - _lastThinkingRenderTicks) < RenderThrottleMs)
-        {
-            return;
-        }
-        _lastThinkingRenderTicks = now;
-
-        try
-        {
-            var pipeline = new MarkdownPipelineBuilder().UseSupportedExtensions().Build();
-            var doc = Markdig.Wpf.Markdown.ToFlowDocument(ThinkingText, pipeline);
-            doc.PagePadding = new Thickness(0);
-            doc.FontFamily = SystemFonts.MessageFontFamily;
-            doc.FontSize = 12.5;
-            doc.FontWeight = FontWeights.Normal;
-            doc.Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextSecondaryBrush")
-                                     ?? Brushes.Gray);
-            DownscaleHeadings(doc);
-            AttachLinkNavigation(doc);
-            RenderedThinkingDocument = doc;
-        }
-        catch
-        {
-            RenderedThinkingDocument = null;
-        }
-    }
-
-    private string _thinkingText = "";
-
-    /// <summary>模型真实推理链文本（DeepSeek-R1/Qwen3 的 reasoning_content 增量累积）。</summary>
-    public string ThinkingText
-    {
-        get => _thinkingText;
-        private set
-        {
-            if (SetField(ref _thinkingText, value))
-            {
-                UpdateRenderedThinkingDocument();
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinkingText)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
-            }
-        }
-    }
-
-    /// <summary>是否有模型推理链可展示。</summary>
-    public bool HasThinkingText => !string.IsNullOrWhiteSpace(ThinkingText);
-
-    /// <summary>追加一段推理链文本（流式增量）。</summary>
-    public void AppendThinking(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return;
-        }
-        ThinkingText += text;
-    }
-
-    /// <summary>更新流式进行中的实时思考秒数（由 ViewModel 定时器驱动）。</summary>
-    public void UpdateLiveThinkingDuration(long elapsedMs)
-    {
-        if (IsThinkingInProgress || IsWaitingForFirstToken)
-        {
-            _thinkingDurationText = $"{Math.Max(0.1, elapsedMs / 1000.0):F1} 秒";
-            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingDurationText)));
-            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
-            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
-        }
-    }
-
-    /// <summary>结束思考阶段，锁定最终耗时并切换为「已思考」。</summary>
-    public void CompleteThinking(long elapsedMs)
-    {
-        IsThinkingInProgress = false;
-        IsWaitingForFirstToken = false;
-        ShowStatus = false;
-        _thinkingDurationText = $"{Math.Max(0.1, elapsedMs / 1000.0):F1} 秒";
-        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsThinkingInProgress)));
-        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingDurationText)));
-        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
-        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
-        UpdateRenderedThinkingDocument(force: true);
-    }
-
-    /// <summary>联网来源数（搜索到的网页数）。</summary>
-    public int WebSourceCount => Sources?.Count(s => s.IsWebSource) ?? 0;
-
-    /// <summary>实际抓到正文的网页数（浏览过的页面）。</summary>
-    public int WebFetchedCount => Sources?.Count(s => s.IsWebSource && s.ContentFetched) ?? 0;
-
-    /// <summary>真实互联网检索网页卡片列表。</summary>
-    public IEnumerable<SourceRef> WebSources => Sources?.Where(s => s.IsWebSource) ?? Enumerable.Empty<SourceRef>();
-
-    /// <summary>真实本地知识库原著切片卡片列表。</summary>
-    public IEnumerable<SourceRef> LocalSources => Sources?.Where(s => !s.IsWebSource) ?? Enumerable.Empty<SourceRef>();
-
-    /// <summary>是否有联网来源（控制搜索摘要行可见性）。</summary>
-    public bool HasWebSources => WebSourceCount > 0;
-
-    /// <summary>搜索摘要文案（如「搜索到 19 个网页 · 浏览 4 个页面」）。</summary>
-    public string SearchSummaryText => HasWebSources
-        ? $"搜索到 {WebSourceCount} 个网页 · 浏览 {WebFetchedCount} 个页面"
-        : "";
-
-    private int _tokenCount;
-
-    /// <summary>本次回答的 token 数（客户端流式帧计数）。</summary>
-    public int TokenCount
-    {
-        get => _tokenCount;
-        set
-        {
-            if (SetField(ref _tokenCount, value))
-            {
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(TokenStatText)));
-                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasTokenStat)));
-            }
-        }
-    }
-
-    /// <summary>底部状态统计文案（token · 速度 · 来源数 · 耗时）。</summary>
-    public string TokenStatText
-    {
-        get
-        {
-            var parts = new List<string>();
-            if (TokenCount > 0)
-            {
-                parts.Add($"{TokenCount} 帧");
-                if (ElapsedMs is > 0)
-                {
-                    var secs = ElapsedMs.Value / 1000.0;
-                    if (secs > 0)
-                    {
-                        parts.Add($"{TokenCount / secs:F1} 帧/s");
-                    }
-                }
-            }
-            if (Sources is { Count: > 0 })
-            {
-                parts.Add($"{Sources.Count} 个来源");
-            }
-            if (ElapsedMs is > 0)
-            {
-                parts.Add($"{ElapsedMs.Value}ms");
-            }
-            return string.Join(" · ", parts);
-        }
-    }
-
-    /// <summary>是否有状态统计可展示（控制底部状态栏可见性）。</summary>
-    public bool HasTokenStat => TokenCount > 0 || Sources is { Count: > 0 } || ElapsedMs is > 0;
-
-    /// <summary>用户点击正文引用角标 [n] 时触发（n 为来源索引）。</summary>
-    public event Action<int>? SourceMarkerRequested;
-
-    /// <summary>创作物解析完成时触发（供 ViewModel 订阅以自动导出）。</summary>
-    public event Action<object, ArtifactItem>? ArtifactParsed;
-
-    /// <summary>
-    /// 追加一条思考/搜索步骤（去重连续重复）。
-    /// 后端会先发「正在…」进行中状态，完成后发「✔ 详情」状态；
-    /// 收到「✔」时替换上一条「正在…」步骤，保持每一步紧凑且带详细内容。
-    /// </summary>
-    public void AddThinkingStep(string step)
-    {
-        var text = step?.Trim() ?? "";
-        if (text.Length == 0)
-        {
-            return;
-        }
-        if (ThinkingSteps.Count > 0 && ThinkingSteps[^1] == text)
-        {
-            return;
-        }
-        // 「✔ 详情」替换上一条「正在…」进行中步骤
-        if (text.StartsWith("✔") && ThinkingSteps.Count > 0 && ThinkingSteps[^1].StartsWith("正在"))
-        {
-            ThinkingSteps[^1] = text;
-            return;
-        }
-        ThinkingSteps.Add(text);
-        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinkingSteps)));
-        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
-        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
-    }
-
-    /// <summary>生成失败/中断时收尾思考步骤：把末尾「正在…」替换为「✖」标记，
-    /// 避免错误提示旁仍挂着进行中状态（调用方需配合 CompleteThinking 关闭阶段胶囊）。</summary>
-    public void FailThinkingStep(string? reason, string label = "回答生成失败")
-    {
-        var detail = (reason ?? "").Trim();
-        var nl = detail.IndexOfAny(['\n', '\r']);
-        if (nl >= 0)
-        {
-            detail = detail[..nl].Trim();
-        }
-        if (detail.Length > 80)
-        {
-            detail = detail[..80] + "…";
-        }
-        var step = string.IsNullOrEmpty(detail) ? $"✖ {label}" : $"✖ {label}：{detail}";
-        if (ThinkingSteps.Count > 0 && ThinkingSteps[^1].StartsWith("正在", StringComparison.Ordinal))
-        {
-            ThinkingSteps[^1] = step;
-        }
-        else if (ThinkingSteps.Count == 0 || ThinkingSteps[^1] != step)
-        {
-            ThinkingSteps.Add(step);
-        }
-        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinkingSteps)));
-        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
-        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
-    }
-
-    /// <summary>触发引用角标点击（由正文中的角标 Hyperlink 调用）。</summary>
-    public void NotifySourceMarker(int index) => SourceMarkerRequested?.Invoke(index);
-
-    /// <summary>是否有可复制内容（控制「复制」按钮可见性）。</summary>
-    public bool CanCopy => !IsLoading && !string.IsNullOrEmpty(Content);
-
-    private bool _isCopied;
-
-    /// <summary>是否已复制（用于呈现「已复制 ✓」对勾微动效）。</summary>
-    public bool IsCopied
-    {
-        get => _isCopied;
-        set => SetField(ref _isCopied, value);
-    }
-
-    private bool _isLiked;
-
-    /// <summary>点赞状态。</summary>
-    public bool IsLiked
-    {
-        get => _isLiked;
-        set
-        {
-            if (SetField(ref _isLiked, value))
-            {
-                if (value && _isDisliked) IsDisliked = false;
-            }
-        }
-    }
-
-    private bool _isDisliked;
-
-    /// <summary>点踩状态。</summary>
-    public bool IsDisliked
-    {
-        get => _isDisliked;
-        set
-        {
-            if (SetField(ref _isDisliked, value))
-            {
-                if (value && _isLiked) IsLiked = false;
-            }
-        }
-    }
-
-    /// <summary>切换点赞。</summary>
-    [RelayCommand]
-    private void ToggleLike()
-    {
-        IsLiked = !IsLiked;
-    }
-
-    /// <summary>切换点踩。</summary>
-    [RelayCommand]
-    private void ToggleDislike()
-    {
-        IsDisliked = !IsDisliked;
-    }
-
-    /// <summary>复制消息内容到剪贴板，并触发「已复制 ✓」反馈。</summary>
-    [RelayCommand]
-    private async Task CopyAsync()
-    {
-        if (string.IsNullOrEmpty(Content))
-        {
-            return;
-        }
-        try
-        {
-            Clipboard.SetText(Content);
-            IsCopied = true;
-            await Task.Delay(1500);
-            IsCopied = false;
-        }
-        catch (Exception ex)
-        {
-            DebugLog.Warn($"复制到剪贴板失败: {ex.Message}", "Chat");
-            try { Clipboard.SetText(Content); } catch { /* 放弃，不打断 UI */ }
-        }
-    }
-
-    /// <summary>是否有引用来源（控制来源列表可见性）。</summary>
-    public bool HasSources => Sources is { Count: > 0 };
-
-    /// <summary>是否有模型信息（仅在 assistant 回答中显示）。</summary>
-    public bool HasModel => Model is not null;
-
-    /// <summary>是否来自用户（UI 分左右用）。</summary>
-    public bool IsUser => Role == "user";
-
-    /// <summary>是否来自助手（UI 渲染助手 Markdown 消息卡片用）。</summary>
-    public bool IsAssistant => Role == "assistant";
-
-    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
-
-    private bool SetField<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? propertyName = null)
-    {
-        if (!System.Collections.Generic.EqualityComparer<T>.Default.Equals(field, value))
-        {
-            field = value;
-            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
-            return true;
-        }
-        return false;
-    }
-}
-
 /// <summary>可勾选的知识库集合项（复选框用）。</summary>
 public sealed class CollectionItem : System.ComponentModel.INotifyPropertyChanged
 {
@@ -1545,19 +51,7 @@ public sealed class CollectionItem : System.ComponentModel.INotifyPropertyChange
         => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
 }
 
-/// <summary>办公角色人设选项。</summary>
-public sealed record PersonaOption(string Id, string DisplayName, string Icon, string Description, IReadOnlyList<string>? QuickQuestions = null)
-{
-    public override string ToString() => DisplayName;
-
-    /// <summary>是否为用户自定义角色（ID 以 custom_ 开头）。</summary>
-    public bool IsCustom => Id.StartsWith("custom_", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>是否有专属快捷问题。</summary>
-    public bool HasQuickQuestions => QuickQuestions is { Count: > 0 };
-}
-
-/// <summary>历史会话列表项（ComboBox 显示用）。</summary>
+/// <summary>历史会话列表项（侧边栏与历史列表显示用）。</summary>
 public sealed class ChatSessionItem
 {
     public string ChatId { get; init; } = string.Empty;
@@ -1569,6 +63,12 @@ public sealed class ChatSessionItem
 
     /// <summary>最后更新时间（ISO，来自后端）。</summary>
     public string UpdatedAt { get; init; } = string.Empty;
+
+    /// <summary>简短知识库前缀标签（类似参考设计的 @知识库 标识）。</summary>
+    public string Tag => "@默认知识库";
+
+    /// <summary>会话主标题显示文本。</summary>
+    public string DisplayTitle => string.IsNullOrWhiteSpace(Title) ? "新对话" : Title;
 
     /// <summary>下拉显示文本。</summary>
     public string Display
@@ -1612,849 +112,13 @@ public partial class ChatViewModel : ViewModelBase
     /// 点选该组模型只随请求带 model 参数覆盖，不携带 ProviderConfig、不改全局配置。</summary>
     private readonly List<string> _defaultProviderModels = new();
 
-    /// <summary>可选的办公与创作角色人设列表。</summary>
-    public IReadOnlyList<PersonaOption> AvailablePersonas { get; } = new List<PersonaOption>
-    {
-        // ── 通用办公 ──
-        new("office", "💼 知识办公助手", "💼",
-            "提炼核心结论、梳理 Action Items 待办清单与标准公文润色",
-            new[] {
-                "请将上述内容提炼为核心结论与 Action Items 待办清单",
-                "请帮我把这份草稿按企业公文规范进行润色重构",
-                "请用 3-5 句话概括上述文档的核心要点",
-            }),
-        new("simplify", "🪶 极简表达翻译官", "🪶",
-            "把复杂专业内容转化为通俗易懂、老少皆宜的极简表达与可视化摘要",
-            new[] {
-                "请用小学生都能听懂的语言解释上述技术概念",
-                "请用一张类比图把复杂流程可视化为生活场景",
-                "请用 100 字以内精炼概括上述内容",
-            }),
-        new("brainstorm", "💡 创新方案顾问", "💡",
-            "头脑风暴、SWOT 矩阵分析、多方案多维度对比表格与排期落地规划",
-            new[] {
-                "请对上述主题进行头脑风暴，列出至少 10 个创新方案",
-                "请做一份 SWOT 分析并给出战略建议",
-                "请对比至少 3 种方案的优缺点并给出推荐",
-            }),
-        // ── 创作输出 ──
-        new("ppt", "📊 PPT 演示架构师", "📊",
-            "依托知识库生成 Marp 语法幻灯片、提炼分页要点与演讲备注",
-            new[] {
-                "请制作一份 10 页的专业汇报 PPT（含封面、目录、核心论点、演讲备注）",
-                "请为上述内容设计一份演示大纲，标注每页的视觉风格建议",
-                "请把上述方案转化为一份 8 页的客户提案 PPT",
-            }),
-        new("doc", "📄 资深研报公文专家", "📄",
-            "深度技术方案论证、公文撰写、行业研报与规范排版",
-            new[] {
-                "请撰写一份结构严谨的技术方案论证报告",
-                "请按照行业研报规范撰写一份深度分析报告",
-                "请帮我润色这份公文，确保格式与用语符合行政规范",
-            }),
-        new("lesson", "🎓 课程教案设计师", "🎓",
-            "教学大纲设计、课时环节编排、重难点剖析与随堂测验",
-            new[] {
-                "请设计一份 2 课时的教学大纲（含教学目标、重难点、教学过程）",
-                "请为上述知识点设计 5 道随堂测验题",
-                "请把上述内容拆解为 4 个教学环节并标注时间分配",
-            }),
-        new("web", "🌐 交互看板工程师", "🌐",
-            "生成自包含 HTML5 响应式知识总结看板与卡片",
-            new[] {
-                "请生成一个自包含的 HTML5 交互式知识总结看板",
-                "请用卡片式布局设计一个数据可视化看板",
-                "请生成一个带动态图表的项目进度看板页面",
-            }),
-        new("writer", "✍️ 创意文案大师", "✍️",
-            "品牌故事撰写、营销文案创作、社媒内容策划与多平台适配",
-            new[] {
-                "请为上述产品撰写 3 版不同风格的营销文案",
-                "请撰写一个品牌故事脚本（300 字以内）",
-                "请为上述内容设计 5 个吸睛标题",
-            }),
-        new("content", "📱 社媒运营策划师", "📱",
-            "小红书/抖音/微信公众号内容策划、爆款标题设计与多平台分发策略",
-            new[] {
-                "请为上述主题策划 5 条小红书笔记（含标题、正文、标签）",
-                "请设计一个抖音短视频脚本（15-60 秒）",
-                "请制定一份多平台内容分发策略表",
-            }),
-        // ── 数据与分析 ──
-        new("table", "📑 商业数据分析师", "📑",
-            "多维对比矩阵抽取、指标打分表与甘特排期规划",
-            new[] {
-                "请提取上述方案的关键指标并输出对比矩阵表格",
-                "请设计一份多维度评分表并对各方案打分",
-                "请用甘特图格式规划项目排期",
-            }),
-        new("analyst", "📈 数据洞察专家", "📈",
-            "数据趋势解读、可视化图表建议、KPI 分析框架与业务洞察提炼",
-            new[] {
-                "请对上述数据进行趋势分析并给出可视化图表建议",
-                "请设计一套 KPI 分析框架并标注关键指标",
-                "请从数据中提炼 5 条可执行的业务洞察",
-            }),
-        new("finance", "💰 财务分析师", "💰",
-            "财务报表解读、预算编制建议、投资回报分析与现金流预测",
-            new[] {
-                "请解读上述财务数据并给出投资建议",
-                "请编制一份年度预算建议方案",
-                "请做一份投资回报率(ROI)分析",
-            }),
-        // ── 技术与工程 ──
-        new("architect", "🧠 资深系统架构师", "🧠",
-            "系统设计模式选型、底层运行机制剖析、性能瓶颈评估与架构演进设计",
-            new[] {
-                "请对上述系统进行架构评审并给出优化建议",
-                "请设计一套微服务架构方案并说明选型理由",
-                "请评估上述架构的性能瓶颈并给出改进路线图",
-            }),
-        new("engineer", "🛠️ 资深研发工匠", "🛠️",
-            "工业级代码实现、重构优化、异常边界防御与单元测试建议",
-            new[] {
-                "请帮我重构这段代码并附上重构理由",
-                "请为上述函数编写单元测试用例",
-                "请分析这段代码的边界异常并补充防御性代码",
-            }),
-        new("devops", "🔧 DevOps 运维专家", "🔧",
-            "CI/CD 流水线设计、容器化部署方案、监控告警体系与故障应急响应",
-            new[] {
-                "请设计一套 CI/CD 流水线方案",
-                "请制定容器化部署方案（Docker + K8s）",
-                "请设计一套监控告警体系并定义告警阈值",
-            }),
-        new("security", "🔐 网络安全顾问", "🔐",
-            "渗透测试报告、安全架构评审、漏洞分析与等保合规方案",
-            new[] {
-                "请对上述系统进行安全架构评审",
-                "请生成一份渗透测试报告模板",
-                "请分析潜在安全漏洞并给出修复建议",
-            }),
-        // ── 行业专家 ──
-        new("medical", "🩺 医疗健康顾问", "🩺",
-            "临床研究解读、药品/器械合规审查、医学文献综述与健康管理方案",
-            new[] {
-                "请解读上述临床研究数据并给出医学建议",
-                "请撰写一份药品/器械合规审查报告",
-                "请综述上述医学文献的核心发现",
-            }),
-        new("legal", "⚖️ 法务合规顾问", "⚖️",
-            "合同条款审阅、合规风险排查、知识产权保护与法律条文解读",
-            new[] {
-                "请审阅上述合同条款并标注风险点",
-                "请对上述业务进行合规风险排查",
-                "请解读相关法律条文并给出合规建议",
-            }),
-        new("hr", "👥 人力资源专家", "👥",
-            "招聘 JD 撰写、绩效考核方案设计、员工培训体系规划与劳动法合规",
-            new[] {
-                "请为上述岗位撰写一份招聘 JD",
-                "请设计一套绩效考核方案（KPI + OKR）",
-                "请规划一份员工培训体系",
-            }),
-        // ── 项目与管理 ──
-        new("scrum", "🏃 敏捷项目教练", "🏃",
-            "Sprint 规划、用户故事拆解、站会纪要生成与迭代复盘报告",
-            new[] {
-                "请为下一个 Sprint 制定规划并拆解用户故事",
-                "请生成一份站会纪要模板",
-                "请对本次迭代进行复盘并列出改进项",
-            }),
-        new("product", "🎯 产品经理", "🎯",
-            "需求文档撰写、用户故事拆解、竞品分析报告与产品路线图规划",
-            new[] {
-                "请撰写一份 PRD 需求文档",
-                "请对上述功能进行竞品分析",
-                "请制定一份季度产品路线图",
-            }),
-        new("cs", "🤝 客户成功经理", "🤝",
-            "客户健康度评估、续约方案设计、客户案例包装与满意度分析",
-            new[] {
-                "请评估客户健康度并给出挽留方案",
-                "请包装一个客户成功案例",
-                "请设计一份客户满意度调研问卷",
-            }),
-        // ── 研究与访谈 ──
-        new("interviewer", "🎙️ 深度访谈策划师", "🎙️",
-            "访谈提纲设计、追问链路规划、访谈稿整理与核心观点提炼",
-            new[] {
-                "请设计一份 30 分钟的深度访谈提纲",
-                "请根据上述回答设计追问链路",
-                "请从访谈稿中提炼核心观点与洞察",
-            }),
-        new("researcher", "🔬 学术研究员", "🔬",
-            "文献综述撰写、研究方法论设计、实验数据分析与论文结构优化",
-            new[] {
-                "请撰写一份文献综述",
-                "请设计一套研究方法论并论证可行性",
-                "请优化论文的结构并给出修改建议",
-            }),
-        new("ux", "🎨 UX 设计师", "🎨",
-            "用户调研报告、交互原型评审、可用性测试分析与设计系统规范",
-            new[] {
-                "请撰写一份用户调研分析报告",
-                "请评审上述交互原型并给出改进建议",
-                "请设计一份设计系统规范（色彩、字体、间距）",
-            }),
-    };
-
-    private PersonaOption _selectedPersona;
-
-    /// <summary>创作类人设集合（后端自动路由创作意图时使用）。
-    /// 仅当后端回传的实际生效人设属于此集合时，才静默同步前端人设下拉框，
-    /// 避免把用户手动选择的 architect/brainstorm/office 覆写为回传值。</summary>
-    private static readonly HashSet<string> CreativePersonaIds = new() { "ppt", "doc", "lesson", "table", "web" };
-
-    /// <summary>当前选中的办公角色人设。</summary>
-    public PersonaOption SelectedPersona
-    {
-        get => _selectedPersona;
-        set
-        {
-            if (SetProperty(ref _selectedPersona, value ?? AllPersonas.FirstOrDefault() ?? AvailablePersonas[0]))
-            {
-                StatusMessage = $"角色: {_selectedPersona.DisplayName}";
-                OnPropertyChanged(nameof(PersonaQuickQuestions));
-                OnPropertyChanged(nameof(HasPersonaQuickQuestions));
-            }
-        }
-    }
-
-    /// <summary>当前选中角色的专属快捷问题列表。</summary>
-    public IReadOnlyList<string> PersonaQuickQuestions =>
-        SelectedPersona?.QuickQuestions ?? Array.Empty<string>();
-
-    /// <summary>当前角色是否有专属快捷问题。</summary>
-    public bool HasPersonaQuickQuestions =>
-        SelectedPersona?.HasQuickQuestions == true && !ShowEmptyGuide;
-
-    // ==================== 自定义角色与主题管理 ====================
-
-    private bool _isCustomManagerOpen;
-
-    /// <summary>自定义角色/主题管理面板是否展开。</summary>
-    public bool IsCustomManagerOpen
-    {
-        get => _isCustomManagerOpen;
-        set => SetProperty(ref _isCustomManagerOpen, value);
-    }
-
-    private string _newPersonaName = string.Empty;
-    public string NewPersonaName { get => _newPersonaName; set => SetProperty(ref _newPersonaName, value); }
-
-    private string _newPersonaIcon = "🤖";
-    public string NewPersonaIcon { get => _newPersonaIcon; set => SetProperty(ref _newPersonaIcon, value); }
-
-    private string _newPersonaDescription = string.Empty;
-    public string NewPersonaDescription { get => _newPersonaDescription; set => SetProperty(ref _newPersonaDescription, value); }
-
-    private string _newThemeDisplayName = string.Empty;
-    public string NewThemeDisplayName { get => _newThemeDisplayName; set => SetProperty(ref _newThemeDisplayName, value); }
-
-    private string _newThemeIcon = "🎨";
-    public string NewThemeIcon { get => _newThemeIcon; set => SetProperty(ref _newThemeIcon, value); }
-
-    private string _newThemeDescription = string.Empty;
-    public string NewThemeDescription { get => _newThemeDescription; set => SetProperty(ref _newThemeDescription, value); }
-
-    private string _newThemePrimaryHex = "#3B82F6";
-    public string NewThemePrimaryHex { get => _newThemePrimaryHex; set => SetProperty(ref _newThemePrimaryHex, value); }
-
-    private string _newThemeBgHex = "#F8FAFC";
-    public string NewThemeBgHex { get => _newThemeBgHex; set => SetProperty(ref _newThemeBgHex, value); }
-
-    /// <summary>当前展示的角色列表（内置 + 自定义）。</summary>
-    public ObservableCollection<PersonaOption> AllPersonas { get; } = new();
-
-    /// <summary>当前展示的主题列表（内置 + 自定义）。</summary>
-    public ObservableCollection<PptThemeOption> AllThemes { get; } = new();
-
-    [RelayCommand]
-    private void OpenCustomManager() => IsCustomManagerOpen = true;
-
-    [RelayCommand]
-    private void CloseCustomManager() => IsCustomManagerOpen = false;
-
-    /// <summary>添加自定义角色。</summary>
-    [RelayCommand]
-    private void AddCustomPersona()
-    {
-        if (string.IsNullOrWhiteSpace(NewPersonaName)) return;
-        var entry = new CustomPersonaEntry
-        {
-            Name = NewPersonaName.Trim(),
-            Icon = string.IsNullOrWhiteSpace(NewPersonaIcon) ? "🤖" : NewPersonaIcon.Trim(),
-            Description = NewPersonaDescription.Trim(),
-        };
-        _appSettings.CustomPersonas.Add(entry);
-        try { _appSettings.Save(); } catch { }
-        AllPersonas.Add(new PersonaOption($"custom_{entry.Id}", $"{entry.Icon} {entry.Name}", entry.Icon, entry.Description));
-        NewPersonaName = string.Empty;
-        NewPersonaIcon = "🤖";
-        NewPersonaDescription = string.Empty;
-        StatusMessage = $"已添加自定义角色: {entry.Name}";
-    }
-
-    /// <summary>删除自定义角色。</summary>
-    [RelayCommand]
-    private void RemoveCustomPersona(string? id)
-    {
-        if (string.IsNullOrWhiteSpace(id)) return;
-        var entry = _appSettings.CustomPersonas.FirstOrDefault(p => $"custom_{p.Id}" == id);
-        if (entry == null) return;
-        _appSettings.CustomPersonas.Remove(entry);
-        try { _appSettings.Save(); } catch { }
-        var item = AllPersonas.FirstOrDefault(p => p.Id == id);
-        if (item != null) AllPersonas.Remove(item);
-        StatusMessage = $"已删除自定义角色: {entry.Name}";
-    }
-
-    /// <summary>添加自定义主题。</summary>
-    [RelayCommand]
-    private void AddCustomTheme()
-    {
-        if (string.IsNullOrWhiteSpace(NewThemeDisplayName)) return;
-        var entry = new CustomThemeEntry
-        {
-            DisplayName = NewThemeDisplayName.Trim(),
-            Icon = string.IsNullOrWhiteSpace(NewThemeIcon) ? "🎨" : NewThemeIcon.Trim(),
-            Description = NewThemeDescription.Trim(),
-            PrimaryHex = string.IsNullOrWhiteSpace(NewThemePrimaryHex) ? "#3B82F6" : NewThemePrimaryHex.Trim(),
-            BgHex = string.IsNullOrWhiteSpace(NewThemeBgHex) ? "#F8FAFC" : NewThemeBgHex.Trim(),
-        };
-        _appSettings.CustomThemes.Add(entry);
-        try { _appSettings.Save(); } catch { }
-        AllThemes.Add(new PptThemeOption($"custom_{entry.Id}", $"{entry.Icon} {entry.DisplayName}", entry.Icon, entry.Description, entry.PrimaryHex, entry.BgHex));
-        NewThemeDisplayName = string.Empty;
-        NewThemeIcon = "🎨";
-        NewThemeDescription = string.Empty;
-        NewThemePrimaryHex = "#3B82F6";
-        NewThemeBgHex = "#F8FAFC";
-        StatusMessage = $"已添加自定义主题: {entry.DisplayName}";
-    }
-
-    /// <summary>删除自定义主题。</summary>
-    [RelayCommand]
-    private void RemoveCustomTheme(string? id)
-    {
-        if (string.IsNullOrWhiteSpace(id)) return;
-        var entry = _appSettings.CustomThemes.FirstOrDefault(t => $"custom_{t.Id}" == id);
-        if (entry == null) return;
-        _appSettings.CustomThemes.Remove(entry);
-        try { _appSettings.Save(); } catch { }
-        var item = AllThemes.FirstOrDefault(t => t.Id == id);
-        if (item != null) AllThemes.Remove(item);
-        StatusMessage = $"已删除自定义主题: {entry.DisplayName}";
-    }
-
-    /// <summary>合并内置 + 自定义角色/主题到展示列表，并确保下拉框数据同步。</summary>
-    private void MergeCustomItems()
-    {
-        AllPersonas.Clear();
-        foreach (var p in AvailablePersonas) AllPersonas.Add(p);
-        foreach (var c in _appSettings.CustomPersonas)
-            AllPersonas.Add(new PersonaOption($"custom_{c.Id}", $"{c.Icon} {c.Name}", c.Icon, c.Description));
-
-        AllThemes.Clear();
-        foreach (var t in AvailableThemes) AllThemes.Add(t);
-        foreach (var c in _appSettings.CustomThemes)
-            AllThemes.Add(new PptThemeOption($"custom_{c.Id}", $"{c.Icon} {c.DisplayName}", c.Icon, c.Description, c.PrimaryHex, c.BgHex));
-    }
-
-    // ==================== 智能推荐：根据对话内容匹配最佳角色与主题 ====================
-
-    private PersonaOption? _recommendedPersona;
-    private PptThemeOption? _recommendedTheme;
-    private string _recommendationReason = string.Empty;
-    private bool _showRecommendation;
-    private bool _isAnalyzingRecommendation;
-
-    /// <summary>推荐的最佳角色。</summary>
-    public PersonaOption? RecommendedPersona
-    {
-        get => _recommendedPersona;
-        set => SetProperty(ref _recommendedPersona, value);
-    }
-
-    /// <summary>推荐的最佳主题。</summary>
-    public PptThemeOption? RecommendedTheme
-    {
-        get => _recommendedTheme;
-        set => SetProperty(ref _recommendedTheme, value);
-    }
-
-    /// <summary>推荐理由（用于提示文案）。</summary>
-    public string RecommendationReason
-    {
-        get => _recommendationReason;
-        set => SetProperty(ref _recommendationReason, value);
-    }
-
-    /// <summary>是否显示推荐提示条。</summary>
-    public bool ShowRecommendation
-    {
-        get => _showRecommendation;
-        set => SetProperty(ref _showRecommendation, value);
-    }
-
-    /// <summary>是否正在分析推荐中。</summary>
-    public bool IsAnalyzingRecommendation
-    {
-        get => _isAnalyzingRecommendation;
-        set => SetProperty(ref _isAnalyzingRecommendation, value);
-    }
-
-    /// <summary>应用推荐的角色。</summary>
-    [RelayCommand]
-    private void ApplyRecommendedPersona()
-    {
-        if (RecommendedPersona != null)
-        {
-            SelectedPersona = RecommendedPersona;
-            StatusMessage = $"✅ 已切换到推荐角色: {RecommendedPersona.DisplayName}";
-        }
-    }
-
-    /// <summary>应用推荐的主题。</summary>
-    [RelayCommand]
-    private void ApplyRecommendedTheme()
-    {
-        if (RecommendedTheme != null)
-        {
-            SelectedTheme = RecommendedTheme;
-            StatusMessage = $"✅ 已切换到推荐主题: {RecommendedTheme.DisplayName}";
-        }
-    }
-
-    /// <summary>一键应用全部推荐（角色 + 主题）。</summary>
-    [RelayCommand]
-    private void ApplyAllRecommendations()
-    {
-        ApplyRecommendedPersona();
-        ApplyRecommendedTheme();
-        ShowRecommendation = false;
-    }
-
-    /// <summary>忽略推荐。</summary>
-    [RelayCommand]
-    private void DismissRecommendation() => ShowRecommendation = false;
-
-    /// <summary>根据最近的用户消息内容，智能匹配最佳 Persona 和主题。</summary>
-    private void AnalyzeAndRecommend()
-    {
-        // 只在有消息且不在忙碌时分析
-        if (IsBusy || Messages.Count == 0) return;
-
-        // 收集最近 3 条用户消息的文本
-        var recentUserText = string.Join(" ", Messages
-            .Where(m => m.Role == "user")
-            .TakeLast(3)
-            .Select(m => m.Content));
-
-        if (string.IsNullOrWhiteSpace(recentUserText)) return;
-
-        IsAnalyzingRecommendation = true;
-
-        try
-        {
-            var lowerText = recentUserText.ToLowerInvariant();
-
-            // ── Persona 关键词匹配 ──
-            var personaMatches = new List<(PersonaOption persona, int score, string reason)>();
-
-            foreach (var p in AllPersonas)
-            {
-                var score = 0;
-                var reason = "";
-                var desc = (p.Description ?? "").ToLowerInvariant();
-                var name = (p.DisplayName ?? "").ToLowerInvariant();
-
-                // PPT / 演示文稿
-                if (MatchesAny(lowerText, "ppt", "演示文稿", "幻灯片", "slide", "放映", "演示", "演讲"))
-                {
-                    if (p.Id == "ppt") { score += 10; reason = "检测到 PPT 演示文稿需求"; }
-                }
-                // 研报 / 公文
-                else if (MatchesAny(lowerText, "研报", "报告", "公文", "方案", "论文", "论证", "分析报告", "调研报告"))
-                {
-                    if (p.Id == "doc") { score += 10; reason = "检测到研报/公文撰写需求"; }
-                }
-                // 教案 / 教学
-                else if (MatchesAny(lowerText, "教案", "教学", "课程", "课时", "教育", "培训课", "备课", "教学大纲"))
-                {
-                    if (p.Id == "lesson") { score += 10; reason = "检测到教学/教案设计需求"; }
-                }
-                // 数据 / 表格
-                else if (MatchesAny(lowerText, "表格", "数据", "对比", "指标", "矩阵", "排序", "对比表", "评分"))
-                {
-                    if (p.Id == "table") { score += 10; reason = "检测到数据对比分析需求"; }
-                }
-                // 看板 / HTML
-                else if (MatchesAny(lowerText, "看板", "html", "网页", "交互", "dashboard", "可视化看板"))
-                {
-                    if (p.Id == "web") { score += 10; reason = "检测到交互式看板生成需求"; }
-                }
-                // 架构 / 系统设计
-                else if (MatchesAny(lowerText, "架构", "系统设计", "设计模式", "微服务", "分布式", "性能优化", "高并发"))
-                {
-                    if (p.Id == "architect") { score += 10; reason = "检测到系统架构设计需求"; }
-                }
-                // 代码 / 编程
-                else if (MatchesAny(lowerText, "代码", "编程", "bug", "重构", "单元测试", "调试", "实现", "函数", "api"))
-                {
-                    if (p.Id == "engineer") { score += 10; reason = "检测到代码开发/调试需求"; }
-                }
-                // 头脑风暴
-                else if (MatchesAny(lowerText, "头脑风暴", "创意", "swot", "方案对比", "brainstorm"))
-                {
-                    if (p.Id == "brainstorm") { score += 10; reason = "检测到头脑风暴/方案对比需求"; }
-                }
-                // 文案 / 营销
-                else if (MatchesAny(lowerText, "文案", "营销", "推广", "广告", "品牌", "社交媒体", "公众号"))
-                {
-                    if (p.Id == "writer" || p.Id == "content") { score += 10; reason = "检测到营销文案/内容创作需求"; }
-                }
-                // 数据分析
-                else if (MatchesAny(lowerText, "数据分析", "趋势", "kpi", "图表", "可视化", "统计"))
-                {
-                    if (p.Id == "analyst") { score += 10; reason = "检测到数据分析/洞察需求"; }
-                }
-                // 财务
-                else if (MatchesAny(lowerText, "财务", "预算", "投资", "回报率", "现金流", "报表分析"))
-                {
-                    if (p.Id == "finance") { score += 10; reason = "检测到财务分析需求"; }
-                }
-                // DevOps / 运维
-                else if (MatchesAny(lowerText, "运维", "部署", "ci/cd", "docker", "kubernetes", "监控", "告警", "devops"))
-                {
-                    if (p.Id == "devops") { score += 10; reason = "检测到 DevOps/运维需求"; }
-                }
-                // 安全
-                else if (MatchesAny(lowerText, "安全", "渗透", "漏洞", "等保", "合规审查", "网络安全"))
-                {
-                    if (p.Id == "security") { score += 10; reason = "检测到网络安全需求"; }
-                }
-                // 医疗
-                else if (MatchesAny(lowerText, "医疗", "临床", "药品", "医学", "患者", "诊断", "治疗方案"))
-                {
-                    if (p.Id == "medical") { score += 10; reason = "检测到医疗健康需求"; }
-                }
-                // 法务
-                else if (MatchesAny(lowerText, "合同", "法律", "法务", "知识产权", "专利", "侵权", "合规"))
-                {
-                    if (p.Id == "legal") { score += 10; reason = "检测到法务合规需求"; }
-                }
-                // HR
-                else if (MatchesAny(lowerText, "招聘", "绩效", "培训体系", "人力资源", "员工", "岗位"))
-                {
-                    if (p.Id == "hr") { score += 10; reason = "检测到人力资源需求"; }
-                }
-                // 产品经理
-                else if (MatchesAny(lowerText, "需求文档", "用户故事", "竞品", "产品路线", "prd", "产品设计"))
-                {
-                    if (p.Id == "product") { score += 10; reason = "检测到产品管理需求"; }
-                }
-                // 客户成功
-                else if (MatchesAny(lowerText, "客户", "续约", "满意度", "nps", "客户成功"))
-                {
-                    if (p.Id == "cs") { score += 10; reason = "检测到客户成功管理需求"; }
-                }
-                // 访谈
-                else if (MatchesAny(lowerText, "访谈", "调研", "采访", "问答", "访谈提纲"))
-                {
-                    if (p.Id == "interviewer") { score += 10; reason = "检测到访谈策划需求"; }
-                }
-                // 学术
-                else if (MatchesAny(lowerText, "文献综述", "研究方法", "实验", "论文", "学术", "期刊"))
-                {
-                    if (p.Id == "researcher") { score += 10; reason = "检测到学术研究需求"; }
-                }
-                // UX
-                else if (MatchesAny(lowerText, "ux", "ui", "交互设计", "可用性", "用户体验", "原型", "设计系统"))
-                {
-                    if (p.Id == "ux") { score += 10; reason = "检测到 UX 设计需求"; }
-                }
-                // 极简
-                else if (MatchesAny(lowerText, "简单", "通俗", "简洁", "简述", "概括", "精简", "通俗易懂"))
-                {
-                    if (p.Id == "simplify") { score += 10; reason = "检测到简洁表达需求"; }
-                }
-                // 敏捷
-                else if (MatchesAny(lowerText, "sprint", "站会", "迭代", "敏捷", "用户故事", "回顾"))
-                {
-                    if (p.Id == "scrum") { score += 10; reason = "检测到敏捷项目管理需求"; }
-                }
-
-                if (score > 0)
-                    personaMatches.Add((p, score, reason));
-            }
-
-            var bestPersona = personaMatches.OrderByDescending(x => x.score).FirstOrDefault();
-            RecommendedPersona = bestPersona.score > 0 ? bestPersona.persona : null;
-
-            // ── 主题关键词匹配 ──
-            var themeMatches = new List<(PptThemeOption theme, int score, string reason)>();
-
-            foreach (var t in AllThemes)
-            {
-                var score = 0;
-                var reason = "";
-                var desc = (t.Description ?? "").ToLowerInvariant();
-                var name = (t.DisplayName ?? "").ToLowerInvariant();
-
-                if (MatchesAny(lowerText, "科技", "技术", "架构", "系统", "ai", "人工智能", "数字化"))
-                {
-                    if (t.Id == "tech_blue" || t.Id == "modern_purple" || t.Id == "cyber_neon")
-                    { score += 8; reason = "科技/技术主题匹配"; }
-                }
-                else if (MatchesAny(lowerText, "教育", "课程", "教学", "培训", "学习"))
-                {
-                    if (t.Id == "emerald_green" || t.Id == "scholar_cream")
-                    { score += 8; reason = "教育/学术主题匹配"; }
-                }
-                else if (MatchesAny(lowerText, "金融", "投资", "财务", "银行", "证券"))
-                {
-                    if (t.Id == "golden_luxury" || t.Id == "deep_wine")
-                    { score += 8; reason = "金融/高端主题匹配"; }
-                }
-                else if (MatchesAny(lowerText, "医疗", "健康", "临床", "医学", "生命科学"))
-                {
-                    if (t.Id == "medical_calm")
-                    { score += 8; reason = "医疗健康主题匹配"; }
-                }
-                else if (MatchesAny(lowerText, "政府", "党建", "公文", "公共服务", "政策"))
-                {
-                    if (t.Id == "gov_red")
-                    { score += 8; reason = "政府/公共主题匹配"; }
-                }
-                else if (MatchesAny(lowerText, "营销", "品牌", "推广", "活动", "产品发布"))
-                {
-                    if (t.Id == "warm_orange" || t.Id == "rose_pink")
-                    { score += 8; reason = "营销/品牌主题匹配"; }
-                }
-                else if (MatchesAny(lowerText, "环保", "自然", "可持续", "农业", "生态"))
-                {
-                    if (t.Id == "forest_deep" || t.Id == "ocean_turquoise")
-                    { score += 8; reason = "自然/环保主题匹配"; }
-                }
-                else if (MatchesAny(lowerText, "极简", "简洁", "简约", "冷淡风", "学术"))
-                {
-                    if (t.Id == "nordic_ice" || t.Id == "dark_elegant")
-                    { score += 8; reason = "极简/冷淡主题匹配"; }
-                }
-                else if (MatchesAny(lowerText, "游戏", "电竞", "元宇宙", "赛博", "科幻"))
-                {
-                    if (t.Id == "cyber_neon")
-                    { score += 8; reason = "科技前沿主题匹配"; }
-                }
-                else if (MatchesAny(lowerText, "汇报", "总结", "年终", "述职", "评审"))
-                {
-                    if (t.Id == "tech_blue" || t.Id == "sunset_gradient")
-                    { score += 8; reason = "商务汇报主题匹配"; }
-                }
-
-                if (score > 0)
-                    themeMatches.Add((t, score, reason));
-            }
-
-            var bestTheme = themeMatches.OrderByDescending(x => x.score).FirstOrDefault();
-            RecommendedTheme = bestTheme.score > 0 ? bestTheme.theme : null;
-
-            // ── 生成推荐理由 ──
-            if (RecommendedPersona != null || RecommendedTheme != null)
-            {
-                var reasons = new List<string>();
-                if (bestPersona.score > 0) reasons.Add(bestPersona.reason);
-                if (bestTheme.score > 0) reasons.Add(bestTheme.reason);
-                RecommendationReason = string.Join("，", reasons);
-                ShowRecommendation = true;
-            }
-            else
-            {
-                ShowRecommendation = false;
-            }
-        }
-        finally
-        {
-            IsAnalyzingRecommendation = false;
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════
-    //  Phase 1: 跨会话记忆 — 自动提取
-    // ═══════════════════════════════════════════════════════
-
-    /// <summary>
-    /// 对话结束后异步提取关键事实存入用户记忆。
-    /// 灵感：Hermes Agent 的后台自我审查循环 + Mem0 的事实提取管线。
-    /// 采用纯规则提取（零 LLM 成本），覆盖最常见的记忆场景。
-    /// </summary>
-    private async Task ExtractAndStoreMemoryAsync(string userMessage, string assistantResponse)
-    {
-        if (_userMemory is null || !_appSettings.MemoryEnabled || !_appSettings.MemoryAutoExtract)
-            return;
-
-        try
-        {
-            var entries = new List<(string content, string category, string source)>();
-            var userLower = userMessage.ToLowerInvariant();
-
-            // ── 规则 1: 用户纠正（"不要"、"别用"、"以后用"、"改为"） ──
-            if (MatchesAny(userLower, "不要", "别用", "别再", "以后用", "改为", "换成", "请用", "记住"))
-            {
-                // 提取纠正内容：取用户消息的前 200 字符作为记忆
-                var memContent = userMessage.Length > 200 ? userMessage[..200] + "…" : userMessage;
-                entries.Add((memContent, "memory", "manual"));
-            }
-
-            // ── 规则 2: 用户偏好表达（"我更喜欢"、"我希望"、"请总是"） ──
-            if (MatchesAny(userLower, "我更喜欢", "我喜欢", "我希望", "请总是", "每次都", "默认用"))
-            {
-                var memContent = userMessage.Length > 200 ? userMessage[..200] + "…" : userMessage;
-                entries.Add((memContent, "user", "manual"));
-            }
-
-            // ── 规则 3: 环境/项目信息（"我的项目在"、"这台机器"、"使用的是"） ──
-            if (MatchesAny(userLower, "我的项目", "这台机器", "使用的是", "操作系统", "电脑是"))
-            {
-                var memContent = userMessage.Length > 200 ? userMessage[..200] + "…" : userMessage;
-                entries.Add((memContent, "memory", "auto"));
-            }
-
-            // ── 规则 4: 人名/组织信息（"我是"、"我在"、"我们公司"） ──
-            if (MatchesAny(userLower, "我是", "我在", "我们公司", "我们团队", "我叫"))
-            {
-                var memContent = userMessage.Length > 150 ? userMessage[..150] + "…" : userMessage;
-                entries.Add((memContent, "user", "auto"));
-            }
-
-            // ── 规则 5: 助手回答中的关键结论（以"总结"、"结论"、"建议"开头的段落） ──
-            if (!string.IsNullOrWhiteSpace(assistantResponse))
-            {
-                var lines = assistantResponse.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                foreach (var line in lines)
-                {
-                    var trimmed = line.TrimStart('#', ' ', '-', '*');
-                    if (trimmed.Length > 20 && trimmed.Length < 200 &&
-                        MatchesAny(trimmed.ToLowerInvariant(), "总结", "结论", "建议", "关键", "核心"))
-                    {
-                        entries.Add((trimmed, "memory", "auto"));
-                    }
-                }
-            }
-
-            // 去重并存储（每轮最多存 3 条，避免记忆膨胀）
-            int stored = 0;
-            foreach (var (content, category, source) in entries.DistinctBy(e => e.content))
-            {
-                if (stored >= 3) break;
-                if (await _userMemory.AddAsync(content, category, source))
-                {
-                    stored++;
-                }
-            }
-
-            if (stored > 0)
-            {
-                DebugLog.Info($"记忆自动提取: 新增 {stored} 条（来源: {string.Join(",", entries.Take(stored).Select(e => e.source))}）", "Memory");
-            }
-        }
-        catch (Exception ex)
-        {
-            // 记忆提取失败不阻断对话
-            DebugLog.Warn($"记忆提取异常（不阻断对话）: {ex.Message}", "Memory");
-        }
-    }
-
-    /// <summary>手动将一条消息保存为记忆（供 UI "记住这个" 菜单调用）。</summary>
-    public async Task RememberMessageAsync(ChatMessage message)
-    {
-        if (_userMemory is null || message.Content.Length < 5) return;
-        var content = message.Content.Length > 300 ? message.Content[..300] + "…" : message.Content;
-        var category = message.IsUser ? "user" : "memory";
-        if (await _userMemory.AddAsync(content, category, "manual"))
-        {
-            _notifications?.Success("已记住这条内容", "记忆");
-            StatusMessage = "已保存到用户记忆";
-        }
-        else
-        {
-            _notifications?.Info("该内容已在记忆中或容量已满", "记忆");
-        }
-    }
-
-    /// <summary>获取记忆统计信息（供 UI 展示）。</summary>
-    public async Task<Models.MemoryStats?> GetMemoryStatsAsync()
-    {
-        if (_userMemory is null) return null;
-        try { return await _userMemory.GetStatsAsync(); }
-        catch { return null; }
-    }
-
-    // ── 反馈循环（Phase 4） ──
-
-    /// <summary>用户对助手回答点赞。</summary>
-    public async Task ThumbsUpAsync(ChatMessage message)
-    {
-        if (_feedback is null || message.Role != "assistant") return;
-        var msgId = GetStableMessageId(message);
-        var query = Messages.LastOrDefault(m => m.Role == "user")?.Content;
-        await _feedback.SubmitFeedbackAsync(msgId, "up",
-            chatId: _chatId, querySnapshot: query, responseSnapshot: message.Content);
-        _notifications?.Success("感谢您的反馈！", "反馈");
-        StatusMessage = "已记录好评 👍";
-    }
-
-    /// <summary>用户对助手回答点踩，并可附带纠正文本。</summary>
-    public async Task ThumbsDownAsync(ChatMessage message, string? correction = null)
-    {
-        if (_feedback is null || message.Role != "assistant") return;
-        var msgId = GetStableMessageId(message);
-        var query = Messages.LastOrDefault(m => m.Role == "user")?.Content;
-        await _feedback.SubmitFeedbackAsync(msgId, "down",
-            correction: correction, chatId: _chatId,
-            querySnapshot: query, responseSnapshot: message.Content);
-        _notifications?.Info("已记录反馈，我们会持续改进", "反馈");
-        StatusMessage = "已记录差评 👎";
-        // 达到阈值时触发自动分析，提取经验教训存入记忆
-        try
-        {
-            if (_userMemory is not null && await _feedback.ShouldAnalyzeAsync())
-            {
-                var added = await _feedback.AnalyzeAndStoreInsightsAsync(_userMemory);
-                if (added > 0)
-                {
-                    DebugLog.Info($"反馈自动分析：新增 {added} 条经验到记忆", "Feedback");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            DebugLog.Warn($"反馈分析异常（不阻断对话）: {ex.Message}", "Feedback");
-        }
-    }
-
-    /// <summary>获取反馈统计（供 UI 展示）。</summary>
-    public async Task<FeedbackStats?> GetFeedbackStatsAsync()
-    {
-        if (_feedback is null) return null;
-        try { return await _feedback.GetStatsAsync(); }
-        catch { return null; }
-    }
-
-    /// <summary>生成消息的稳定 ID（用于反馈关联）。</summary>
-    private static string GetStableMessageId(ChatMessage msg)
-    {
-        // 用内容哈希 + 时间戳作为稳定 ID
-        var contentHash = msg.Content.GetHashCode().ToString("X8");
-        return $"msg_{contentHash}_{msg.Content.Length}";
-    }
-
-    private static bool MatchesAny(string text, params string[] keywords)
-    {
-        return keywords.Any(k => text.Contains(k, StringComparison.OrdinalIgnoreCase));
-    }
+    /// <summary>默认提供商（设置页全局配置）是否已配置可用 Key（后端 llm_api_key_configured 或本地 LlmApiKey 非空）。
+    /// 未配置 Key 时不显示默认项与默认分组——只显示已配置好的供应商。</summary>
+    private bool _defaultKeyConfigured;
+
+    /// <summary>各启用服务商档案（有 Key）实时拉取的模型列表缓存（按 Profile Id）。
+    /// 仅本会话显示用，不落盘；RebuildModelChoices 时并入对应档案的 p.Models 一起列出。</summary>
+    private readonly Dictionary<string, List<string>> _profileLiveModels = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>是否开启实时联网搜索（持久化：勾选状态重启后保持）。</summary>
     public bool IsWebSearchEnabled
@@ -2574,17 +238,21 @@ public partial class ChatViewModel : ViewModelBase
                 }
             }
             OnPropertyChanged(nameof(HasSelectedCollection));
+            OnPropertyChanged(nameof(KnowledgeAnchorText));
             SendCommand.NotifyCanExecuteChanged();
         };
         LoadCollectionsCommand = new AsyncRelayCommand(LoadCollectionsAsync);
         AddCollectionCommand = new AsyncRelayCommand<string?>(AddCollectionAsync);
 
         Sessions = new ObservableCollection<ChatSessionItem>();
+        Sessions.CollectionChanged += (_, _) => OnPropertyChanged(nameof(FilteredSessions));
 
         // 默认提供商（设置页全局配置）候选模型：先用本地 AppSettings 同步种子，后端拉回后再补充。
         // provider 无条件同步（IsLlmConfigured/EffectiveProvider 的判断依据）；
         // 模型名为空时仅跳过默认分组种子（无法预设具体模型）。
         _configuredProvider = string.IsNullOrWhiteSpace(_appSettings.LlmProvider) ? "none" : _appSettings.LlmProvider;
+        // 默认提供商是否"已配置好"：本地 LlmApiKey 非空视为已配置；后端拉回后用 llm_api_key_configured 覆盖
+        _defaultKeyConfigured = !string.IsNullOrWhiteSpace(_appSettings.LlmApiKey);
         if (!string.IsNullOrWhiteSpace(_appSettings.LlmModel))
         {
             _configuredModel = _appSettings.LlmModel;
@@ -2648,45 +316,67 @@ public partial class ChatViewModel : ViewModelBase
     /// <summary>设置页服务商配置变更回调（由 MainViewModel 订阅静态事件转调）：同步默认提供商配置后重建对话页模型候选（首项默认模型名 + 各启用服务商模型）。</summary>
     public void ApplyProviderConfigChanged()
     {
-        // 设置页保存后同步默认提供商（provider/model，含清空），让首项「默认 · xx」显示最新默认模型
-        _configuredProvider = string.IsNullOrWhiteSpace(_appSettings.LlmProvider) ? "none" : _appSettings.LlmProvider;
-        _configuredModel = _appSettings.LlmModel ?? "";
+        // 设置页保存后同步默认提供商（provider/model，含清空），让首项「默认 · xx」显示最新默认模型。
+        // 默认 provider/model 变更时回落到首项「默认」并清除「记住的上次选择」——
+        // 否则设置页改了默认模型并保存后，对话页仍恢复旧模型，表现为「默认模型改不了/不生效」。
+        var newProvider = string.IsNullOrWhiteSpace(_appSettings.LlmProvider) ? "none" : _appSettings.LlmProvider;
+        var newModel = _appSettings.LlmModel ?? "";
+        var defaultChanged = !string.Equals(_configuredProvider, newProvider, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(_configuredModel, newModel, StringComparison.OrdinalIgnoreCase);
+        _configuredProvider = newProvider;
+        _configuredModel = newModel;
+        _defaultKeyConfigured = !string.IsNullOrWhiteSpace(_appSettings.LlmApiKey);
         OnPropertyChanged(nameof(IsLlmConfigured));
         OnPropertyChanged(nameof(EmptyGuideText));
         RebuildModelChoices();
+        if (defaultChanged)
+        {
+            SelectedModelChoice = ModelChoices.FirstOrDefault(c => c.IsDefault) ?? ModelChoices.FirstOrDefault();
+        }
     }
 
-    /// <summary>重建模型选择器候选：首项「默认 · 默认模型名」伪值（无默认模型时显示「默认（设置页配置）」）
-    /// + 默认提供商分组（按请求覆盖 model，不带 ProviderConfig；与默认端点相同的启用档案已列出的模型不再重复出现）
-    /// + 各启用服务商的全部模型（「模型名（服务商名）」，携带该服务商配置按请求生效）。
-    /// 设置页变更服务商/模型后调用（任务 #6 事件驱动），保证对话页立即看到最新模型。</summary>
+    /// <summary>重建模型选择器候选：只显示「已配置好」的供应商——
+    /// 默认提供商（设置页全局）仅在已配 Key 时显示首项「默认 · xx」+ 默认分组；
+    /// 各启用且有 Key 的服务商档案列出其模型（保存的 Models + 本会话实时拉取的 _profileLiveModels）。
+    /// 未配置任何 Key 时不显示任何项（空态引导由 EmptyGuideText 接管）。</summary>
     public void RebuildModelChoices()
     {
         var currentId = SelectedModelChoice?.Provider?.Id;
         var currentModel = SelectedModelChoice?.Model;
         ModelChoices.Clear();
-        // 首项：真实默认模型名（设置页 LlmModel / 后端配置），无配置时回退到通用标签
-        var defaultModelName = string.IsNullOrWhiteSpace(_configuredModel) ? null : _configuredModel.Trim();
-        ModelChoices.Add(new ModelChoice(
-            defaultModelName is null ? DefaultProfileLabel : $"默认 · {defaultModelName}",
-            null,
-            null));
-        // 默认提供商分组：显示裸模型名，发送时只带 model 参数覆盖（用设置页的 provider/key/地址）；
-        // 与默认端点相同的启用档案在下方已带「（服务商名）」列出同名模型，这里跳过，避免同一端点同模型出现两条
-        var twinModels = CollectSameEndpointProfileModels();
-        foreach (var m in _defaultProviderModels
-            .Where(m => !string.IsNullOrWhiteSpace(m))
-            .Select(m => m.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Where(m => !twinModels.Contains(m)))
+        // 默认提供商分组：仅在已配 Key 时显示（点选它发送时用后端全局 provider/key/地址）
+        if (_defaultKeyConfigured)
         {
-            ModelChoices.Add(new ModelChoice(m, null, m));
+            // 首项：真实默认模型名（设置页 LlmModel / 后端配置），无配置时回退到通用标签
+            var defaultModelName = string.IsNullOrWhiteSpace(_configuredModel) ? null : _configuredModel.Trim();
+            ModelChoices.Add(new ModelChoice(
+                defaultModelName is null ? DefaultProfileLabel : $"默认 · {defaultModelName}",
+                null,
+                null));
+            // 默认提供商分组：显示裸模型名，发送时只带 model 参数覆盖（用设置页的 provider/key/地址）；
+            // 与默认端点相同的启用档案在下方已带「（服务商名）」列出同名模型，这里跳过，避免同一端点同模型出现两条
+            var twinModels = CollectSameEndpointProfileModels();
+            foreach (var m in _defaultProviderModels
+                .Where(m => !string.IsNullOrWhiteSpace(m))
+                .Select(m => m.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(m => !twinModels.Contains(m)))
+            {
+                ModelChoices.Add(new ModelChoice(m, null, m));
+            }
         }
         if (_appSettings.LlmProfiles is { Count: > 0 })
         {
-            foreach (var p in _appSettings.LlmProfiles.Where(p => p is not null && p.IsEnabled))
+            // 只显示启用且已配 Key 的服务商档案（"已配置好"才算可选）
+            foreach (var p in _appSettings.LlmProfiles.Where(p => p is not null && p.IsEnabled && !string.IsNullOrWhiteSpace(p.ApiKey)))
             {
-                var models = (p.Models ?? new List<string>())
+                // 保存的 Models + 本会话实时拉取的 _profileLiveModels（去重）
+                var models = (p.Models ?? new List<string>()).ToList();
+                if (_profileLiveModels.TryGetValue(p.Id, out var live) && live is not null)
+                {
+                    models.AddRange(live);
+                }
+                models = models
                     .Where(m => !string.IsNullOrWhiteSpace(m))
                     .Select(m => m.Trim())
                     .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -2703,7 +393,12 @@ public partial class ChatViewModel : ViewModelBase
                 }
             }
         }
-        // 恢复选中：优先同服务商同模型，其次默认组同模型（被去重时落到同端点档案的孪生条目），否则默认项
+        // 恢复选中：优先同服务商同模型，其次默认组同模型（被去重时落到同端点档案的孪生条目），否则首项
+        if (ModelChoices.Count == 0)
+        {
+            SelectedModelChoice = null;
+            return;
+        }
         if (currentId is not null)
         {
             SelectedModelChoice = ModelChoices.FirstOrDefault(c =>
@@ -2766,8 +461,66 @@ public partial class ChatViewModel : ViewModelBase
     /// <summary>可勾选的知识库集合列表（复选框）。</summary>
     public ObservableCollection<CollectionItem> Collections { get; }
 
+    /// <summary>当前选中的知识库锚定文案（如 @DocMind 或 @技术文档）。</summary>
+    public string KnowledgeAnchorText
+    {
+        get
+        {
+            var selected = SelectedCollections;
+            if (selected.Count == 0) return "@全部知识库";
+            if (selected.Count == 1) return $"@{selected[0]}";
+            return $"@{selected[0]} +{selected.Count - 1}";
+        }
+    }
+
     /// <summary>历史会话列表（持久化在后端 SQLite，重启可恢复）。</summary>
     public ObservableCollection<ChatSessionItem> Sessions { get; }
+
+    private string _sessionSearchFilter = string.Empty;
+
+    /// <summary>会话列表搜索关键字（侧边栏即时过滤）。</summary>
+    public string SessionSearchFilter
+    {
+        get => _sessionSearchFilter;
+        set
+        {
+            if (SetProperty(ref _sessionSearchFilter, value))
+            {
+                OnPropertyChanged(nameof(FilteredSessions));
+            }
+        }
+    }
+
+    /// <summary>过滤后的历史会话列表。</summary>
+    public IEnumerable<ChatSessionItem> FilteredSessions
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_sessionSearchFilter))
+                return Sessions;
+
+            return Sessions.Where(s =>
+                (s.Title != null && s.Title.Contains(_sessionSearchFilter, StringComparison.OrdinalIgnoreCase)) ||
+                (s.ChatId != null && s.ChatId.Contains(_sessionSearchFilter, StringComparison.OrdinalIgnoreCase)));
+        }
+    }
+
+    /// <summary>当前是否处于纯本地轻量计算引擎模式。</summary>
+    public bool IsLocalComputeEngine =>
+        EffectiveProvider.Contains("none", StringComparison.OrdinalIgnoreCase) ||
+        EffectiveProvider.Contains("未配置", StringComparison.OrdinalIgnoreCase) ||
+        EffectiveProvider.Contains("ollama", StringComparison.OrdinalIgnoreCase) ||
+        EffectiveProvider.Contains("local", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>算力引擎徽章显示文案。</summary>
+    public string ComputeEngineBadgeText =>
+        IsLocalComputeEngine ? "🛡️ 本地私密引擎" : "⚡ 端云增强推理";
+
+    /// <summary>算力引擎徽章提示。</summary>
+    public string ComputeEngineBadgeTip =>
+        IsLocalComputeEngine
+            ? "当前计算完全在本地完成（ONNX 嵌入模型 + 本地向量库），零数据出机，完全私密安全。"
+            : $"已连接云端大模型 ({EffectiveModel})，具备深度推理与复杂格式生成能力。";
 
     /// <summary>当前选中模型的显示名；由 SelectedModelChoice 单一事实源派生，避免双轨状态不同步。
     /// DefaultModelLabel = 用设置页配置（请求不带 model）。</summary>
@@ -2977,6 +730,7 @@ public partial class ChatViewModel : ViewModelBase
         if (e.PropertyName == nameof(CollectionItem.IsSelected))
         {
             OnPropertyChanged(nameof(HasSelectedCollection));
+            OnPropertyChanged(nameof(KnowledgeAnchorText));
             SendCommand.NotifyCanExecuteChanged();
             // 勾选/取消即落盘，重启后恢复（与联网搜索开关同机制）
             PersistCollectionSelection();
@@ -3156,7 +910,7 @@ public partial class ChatViewModel : ViewModelBase
     /// 空态引导与发送前事前拦截共用此判断。</summary>
     public bool IsLlmConfigured =>
         SelectedModelChoice?.Provider is not null
-        || (!string.IsNullOrWhiteSpace(_configuredProvider) && _configuredProvider != "none");
+        || (_defaultKeyConfigured && !string.IsNullOrWhiteSpace(_configuredProvider) && _configuredProvider != "none");
 
     /// <summary>空态引导文案：LLM 未配置时优先引导配置（事前引导），已配置时引导导入与提问。</summary>
     public string EmptyGuideText =>
@@ -3778,7 +1532,7 @@ public partial class ChatViewModel : ViewModelBase
                         assistantMsg.UpdateLiveThinkingDuration(sw.ElapsedMilliseconds);
                         assistantMsg.AddThinkingStep(status ?? "");
                         assistantMsg.ShowStatus = true;
-                        assistantMsg.StatusText = status;
+                        assistantMsg.StatusText = status ?? "";
                     }
 
                     if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
@@ -4272,695 +2026,7 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
-    private SourceRef? _selectedSource;
-    private bool _isSourceDrawerOpen;
-    private double _sourceDrawerWidth;
-    private ArtifactItem? _selectedArtifact;
-    private int _currentSlideIndex;
-    private bool _isArtifactMode;
-
-    /// <summary>当前选中的创作物交付物（供右侧创作画布展示）。</summary>
-    public ArtifactItem? SelectedArtifact
-    {
-        get => _selectedArtifact;
-        set
-        {
-            if (SetProperty(ref _selectedArtifact, value))
-            {
-                OnPropertyChanged(nameof(HasSelectedArtifact));
-                OnPropertyChanged(nameof(SelectedArtifactTitle));
-                OnPropertyChanged(nameof(SelectedSlide));
-                OnPropertyChanged(nameof(HasSelectedSlide));
-                OnPropertyChanged(nameof(SlideCountText));
-                OnPropertyChanged(nameof(CanPrevSlide));
-                OnPropertyChanged(nameof(CanNextSlide));
-                OnPropertyChanged(nameof(IsPptArtifact));
-                OnPropertyChanged(nameof(IsDocArtifact));
-                OnPropertyChanged(nameof(IsExcelArtifact));
-                OnPropertyChanged(nameof(IsHtmlArtifact));
-
-                // 统一同步入口：无论从消息卡片还是横排清单切换创作物，
-                // 都保证页码归位、配色主题与该 artifact 自带的 theme 对齐。
-                CurrentSlideIndex = 0;
-                if (value != null && !string.IsNullOrWhiteSpace(value.Theme))
-                {
-                    var matchedTheme = AvailableThemes.FirstOrDefault(t => string.Equals(t.Id, value.Theme, StringComparison.OrdinalIgnoreCase));
-                    if (matchedTheme != null) SelectedTheme = matchedTheme;
-                }
-            }
-        }
-    }
-
-    public bool HasSelectedArtifact => SelectedArtifact != null;
-
-    // ==================== 本会话创作物清单（工作台横排管理台） ====================
-    // 一次会话常产出多个交付物（PPT + 研报 + 看板），只预览单个 artifact 会让用户在
-    // 消息流里来回翻找。这里把本会话全部 artifact 聚合成清单，支持在工作台内直接切换。
-    /// <summary>本会话已产出的全部创作物。</summary>
-    public ObservableCollection<ArtifactItem> SessionArtifacts { get; } = new();
-
-    /// <summary>本会话是否存在多个创作物（决定横排清单是否显示）。</summary>
-    public bool HasMultipleArtifacts => SessionArtifacts.Count > 1;
-
-    /// <summary>扫描全部消息，重建本会话创作物清单。</summary>
-    private void RefreshSessionArtifacts()
-    {
-        SessionArtifacts.Clear();
-        foreach (var m in Messages)
-        {
-            if (m.Artifact != null && !SessionArtifacts.Contains(m.Artifact))
-            {
-                SessionArtifacts.Add(m.Artifact);
-            }
-        }
-        OnPropertyChanged(nameof(HasMultipleArtifacts));
-    }
-    public string SelectedArtifactTitle => SelectedArtifact?.Title ?? "创作交付物";
-    public bool IsPptArtifact => SelectedArtifact?.IsPpt == true;
-    public bool IsDocArtifact => SelectedArtifact?.IsDoc == true;
-    public bool IsExcelArtifact => SelectedArtifact?.IsExcel == true;
-    public bool IsHtmlArtifact => SelectedArtifact?.IsHtml == true;
-
-    /// <summary>当前正在预览的幻灯片页索引（从 0 开始）。</summary>
-    public int CurrentSlideIndex
-    {
-        get => _currentSlideIndex;
-        set
-        {
-            if (SetProperty(ref _currentSlideIndex, value))
-            {
-                OnPropertyChanged(nameof(SelectedSlide));
-                OnPropertyChanged(nameof(HasSelectedSlide));
-                OnPropertyChanged(nameof(SlideCountText));
-                OnPropertyChanged(nameof(CanPrevSlide));
-                OnPropertyChanged(nameof(CanNextSlide));
-            }
-        }
-    }
-
-    /// <summary>当前选中的幻灯片页。</summary>
-    public SlideItem? SelectedSlide =>
-        SelectedArtifact?.Slides is { Count: > 0 } slides && CurrentSlideIndex >= 0 && CurrentSlideIndex < slides.Count
-            ? slides[CurrentSlideIndex]
-            : null;
-
-    /// <summary>是否存在可预览的当前幻灯片页（无则预览卡显示空状态提示）。</summary>
-    public bool HasSelectedSlide => SelectedSlide != null;
-
-            /// <summary>幻灯片页码文案（如 "1 / 8"）。</summary>
-    public string SlideCountText => SelectedArtifact?.Slides is { Count: > 0 } slides
-        ? $"{CurrentSlideIndex + 1} / {slides.Count}"
-        : "0 / 0";
-
-    public bool CanPrevSlide => CurrentSlideIndex > 0;
-    public bool CanNextSlide => SelectedArtifact?.Slides is { Count: > 0 } slides && CurrentSlideIndex < slides.Count - 1;
-
-    /// <summary>抽屉是否处于创作物工作台模式（false 为原著切片模式）。</summary>
-    public bool IsArtifactMode
-    {
-        get => _isArtifactMode;
-        set => SetProperty(ref _isArtifactMode, value);
-    }
-
-    /// <summary>当前选中的引用来源（供右侧协同抽屉预览）。</summary>
-    public SourceRef? SelectedSource
-    {
-        get => _selectedSource;
-        set
-        {
-            if (SetProperty(ref _selectedSource, value))
-            {
-                OnPropertyChanged(nameof(HasSelectedSource));
-                OnPropertyChanged(nameof(SelectedSourceTitle));
-                OnPropertyChanged(nameof(SelectedSourceSnippet));
-            }
-        }
-    }
-
-    public bool HasSelectedSource => SelectedSource != null;
-    public string SelectedSourceTitle => SelectedSource?.DisplayTitle ?? "(未命名来源)";
-    public string SelectedSourceSnippet
-    {
-        get
-        {
-            var src = SelectedSource;
-            if (src is null)
-            {
-                return "";
-            }
-            // 网页来源：正文没抓到且搜索摘要为空（占位/纯链接摘要已在后端过滤）时，
-            // 给出诚实提示并引导打开原文，而不是展示一段像链接一样的垃圾文本。
-            if (src.IsWebSource && !src.ContentFetched && string.IsNullOrWhiteSpace(src.Snippet))
-            {
-                return "⚠️ 未抓到该网页正文（页面可能需要 JS 渲染、需登录或禁止爬取）。搜索摘要不可用，请点击「🌐 在浏览器中打开」查看原文。";
-            }
-            return !string.IsNullOrWhiteSpace(src.Snippet)
-                ? src.Snippet
-                : "（该切片暂无全文预览或来自早期版本会话，可通过下方动作查看原文）";
-        }
-    }
-
-    /// <summary>协同来源预览抽屉是否展开。</summary>
-    public bool IsSourceDrawerOpen
-    {
-        get => _isSourceDrawerOpen;
-        set => SetProperty(ref _isSourceDrawerOpen, value);
-    }
-
-    /// <summary>右侧协同抽屉允许的最小/最大宽度（像素），与 ChatView 抽屉 Border 的
-    /// MinWidth/MaxWidth 约束保持一致（双重保险，避免两处区间漂移）。</summary>
-    public const double MinSourceDrawerWidth = 240;
-    public const double MaxSourceDrawerWidth = 720;
-    public const double DefaultSourceDrawerWidth = 380;
-
-    /// <summary>右侧协同抽屉的宽度（像素）。用户拖动左边缘把手后由 ChatView 回写此处，
-    /// 立即钳制到 240~720 并落盘到 AppSettings.ChatDrawerWidth，下次启动自动还原。</summary>
-    public double SourceDrawerWidth
-    {
-        get => _sourceDrawerWidth;
-        set
-        {
-            var clamped = System.Math.Clamp(value, MinSourceDrawerWidth, MaxSourceDrawerWidth);
-            if (SetProperty(ref _sourceDrawerWidth, clamped))
-            {
-                // 仅更新内存快照：拖动过程中每帧都会走到这里，而 Save() 内含
-                // DPAPI 加密（SecretProtector.Protect），逐帧调用会造成明显卡顿，
-                // 故落盘交由 PersistSourceDrawerWidth 在拖动结束时执行一次。
-                _appSettings.ChatDrawerWidth = clamped;
-            }
-        }
-    }
-
-    /// <summary>把当前抽屉宽度落盘到 appsettings.json。
-    /// 由 ChatView 在拖动结束（Thumb.DragCompleted）时调用一次，避免拖动过程逐帧写盘。</summary>
-    public void PersistSourceDrawerWidth()
-    {
-        _appSettings.ChatDrawerWidth = _sourceDrawerWidth;
-        try
-        {
-            _appSettings.Save();
-        }
-        catch
-        {
-            // 落盘失败不阻断对话（与联网搜索开关一致：UI 状态优先）
-        }
-    }
-
-    /// <summary>18 套企业级演示文稿主题配色，覆盖主流与细分场景。</summary>
-    public IReadOnlyList<PptThemeOption> AvailableThemes { get; } = new List<PptThemeOption>
-    {
-        // ── 通用商务 ──
-        new("tech_blue", "🔷 科技商务蓝", "🔷", "深邃稳健，架构汇报首选", "#0F4C81", "#F6F8FC"),
-        new("emerald_green", "🌿 清新自然绿", "🌿", "战略规划、ESG 与教育", "#1B4D3E", "#F4F7F5"),
-        new("modern_purple", "🟣 AI 智能紫", "🟣", "前沿创新、未来科技", "#4A148C", "#F7F5FD"),
-        new("warm_orange", "🔶 活力暖橙红", "🔶", "商业营销与成果战报", "#B73225", "#FEF8F6"),
-        new("dark_elegant", "⬛ 极简暗黑风", "⬛", "沉浸发布会、极客科技", "#60A5FA", "#181A20"),
-        // ── 时尚 / 创意 ──
-        new("rose_pink", "🩷 浪漫玫瑰粉", "🩷", "时尚品牌、产品发布与活动策划", "#BE185D", "#FDF2F8"),
-        new("candy_bright", "🍬 糖果明快", "🍬", "活泼创意、团队协作与内部培训", "#C026D3", "#FDF4FF"),
-        // ── 自然 / 环保 ──
-        new("ocean_turquoise", "🐬 海洋碧蓝", "🐬", "清新通透、科技产品与海洋生态", "#0E7490", "#F0FDFA"),
-        new("forest_deep", "🌲 深林墨绿", "🌲", "自然环保、农业与可持续发展", "#065F46", "#ECFDF5"),
-        new("earth_warm", "🪨 大地暖岩", "🪨", "建筑材料、地质勘探与户外运动", "#78350F", "#FFFBEB"),
-        // ── 金融 / 奢华 ──
-        new("golden_luxury", "✨ 奢华金棕", "✨", "高端金融、奢侈品与年度盛典", "#92400E", "#FFFBEB"),
-        new("deep_wine", "🍷 醇酿酒红", "🍷", "高端商务晚宴、品牌联名与尊享活动", "#7F1D1D", "#FEF2F2"),
-        // ── 医疗 / 学术 ──
-        new("medical_calm", "🏥 医疗清蓝", "🏥", "医疗健康、临床研究与生命科学", "#1E40AF", "#EFF6FF"),
-        new("scholar_cream", "📚 学术象牙", "📚", "论文答辩、学术会议与期刊发表", "#78350F", "#FFFBEB"),
-        // ── 政府 / 公共 ──
-        new("gov_red", "🏛️ 庄重中国红", "🏛️", "政府公文、党建汇报与公共服务", "#991B1B", "#FEF2F2"),
-        // ── 科技 / 前沿 ──
-        new("cyber_neon", "🤖 赛博霓虹", "🤖", "游戏电竞、元宇宙与前沿科技发布会", "#06B6D4", "#0F172A"),
-        new("sunset_gradient", "🌅 日落渐变", "🌅", "温暖叙事、品牌故事与年终总结", "#DC2626", "#FFF7ED"),
-        new("nordic_ice", "🧊 北欧冰川", "🧊", "极简冷淡风、学术会议与研究报告", "#334155", "#F8FAFC"),
-    };
-
-    private PptThemeOption? _selectedTheme;
-
-    /// <summary>当前选中的 PPT 主题配色。</summary>
-    public PptThemeOption SelectedTheme
-    {
-        get => _selectedTheme ?? AvailableThemes[0];
-        set
-        {
-            if (SetProperty(ref _selectedTheme, value ?? AvailableThemes[0]))
-            {
-                RefreshSlideThemeBrushes();
-            }
-        }
-    }
-
-    // ---- 前端预览 / 放映专用主题画笔 ----
-    // 导出与网页放映由后端按主题 id 渲染配色，而前端此前一直用应用全局主色，
-    // 导致切换「配色主题」下拉时预览纹丝不动、只有导出的文件变色（三个出口不同步）。
-    private Brush? _slideAccentBrush;
-    private Brush? _slideAccentSoftBrush;
-
-    /// <summary>当前 PPT 主题主色画笔（标题、装饰条、卡片边框）。</summary>
-    public Brush SlideAccentBrush => _slideAccentBrush ??= ParseThemeBrush(SelectedTheme.PrimaryHex, "#2563EB");
-
-    /// <summary>当前 PPT 主题浅色底画笔（板式徽章等强调块背景）。</summary>
-    public Brush SlideAccentSoftBrush => _slideAccentSoftBrush ??= ParseThemeBrush(SelectedTheme.BgHex, "#EFF6FF");
-
-    private static Brush ParseThemeBrush(string? hex, string fallbackHex)
-    {
-        if (!string.IsNullOrWhiteSpace(hex))
-        {
-            try
-            {
-                var c = (Color)ColorConverter.ConvertFromString(hex!);
-                return new SolidColorBrush(c);
-            }
-            catch
-            {
-                // 主题色非法时落回默认，不让整个预览崩掉
-            }
-        }
-        return new SolidColorBrush((Color)ColorConverter.ConvertFromString(fallbackHex));
-    }
-
-    /// <summary>主题变更后重建画笔并广播，令预览 / 放映 / 导出三处配色保持一致。</summary>
-    private void RefreshSlideThemeBrushes()
-    {
-        _slideAccentBrush = ParseThemeBrush(SelectedTheme.PrimaryHex, "#2563EB");
-        _slideAccentSoftBrush = ParseThemeBrush(SelectedTheme.BgHex, "#EFF6FF");
-        OnPropertyChanged(nameof(SlideAccentBrush));
-        OnPropertyChanged(nameof(SlideAccentSoftBrush));
-    }
-
-    /// <summary>打开创作物画布抽屉。</summary>
-    [RelayCommand]
-    public void OpenArtifact(object? param)
-    {
-        ArtifactItem? item = null;
-        if (param is ArtifactItem ai) item = ai;
-        else if (param is ChatMessage msg && msg.Artifact != null) item = msg.Artifact;
-
-        if (item != null)
-        {
-            // 打开工作台前先重建清单，确保本会话此前产出的其它交付物也能一并切换
-            RefreshSessionArtifacts();
-
-            SelectedArtifact = item;
-            CurrentSlideIndex = 0;
-            IsArtifactMode = true;
-            IsSourceDrawerOpen = true;
-
-            // 匹配并同步主题
-            if (!string.IsNullOrWhiteSpace(item.Theme))
-            {
-                var matchedTheme = AvailableThemes.FirstOrDefault(t => string.Equals(t.Id, item.Theme, StringComparison.OrdinalIgnoreCase));
-                if (matchedTheme != null) SelectedTheme = matchedTheme;
-            }
-
-            StatusMessage = $"展开创作物画布：{item.Title} ({item.Type.ToUpperInvariant()})";
-            DebugLog.Info($"展开创作物画布: title={item.Title} type={item.Type} slides={item.SlideCount}", "Chat");
-        }
-    }
-
-    /// <summary>幻灯片上一页。</summary>
-    [RelayCommand]
-    private void PrevSlide()
-    {
-        if (CanPrevSlide)
-        {
-            CurrentSlideIndex--;
-        }
-    }
-
-    /// <summary>幻灯片下一页。</summary>
-    [RelayCommand]
-    private void NextSlide()
-    {
-        if (CanNextSlide)
-        {
-            CurrentSlideIndex++;
-        }
-    }
-
-    /// <summary>一键将创作物导出为本地物理文件（PPTX/DOCX/XLSX/HTML）。</summary>
-    [RelayCommand]
-    public async Task ExportArtifactFileAsync(string? targetFormat = null)
-    {
-        var artifact = SelectedArtifact;
-        if (artifact == null || string.IsNullOrWhiteSpace(artifact.RawContent))
-        {
-            _notifications?.Warning("当前没有可导出的创作物内容");
-            return;
-        }
-
-        var fmt = targetFormat ?? artifact.Type;
-        StatusMessage = $"正在编译导出 {fmt.ToUpperInvariant()} 物理文件（主题: {SelectedTheme.DisplayName}）…";
-
-        try
-        {
-            var req = new CreativeExportRequest
-            {
-                Content = artifact.RawContent,
-                Format = fmt,
-                Title = artifact.Title,
-                Theme = SelectedTheme.Id,
-            };
-
-            var res = await _apiService.ExportCreativeArtifactAsync(req);
-            if (res.Ok && !string.IsNullOrWhiteSpace(res.FilePath))
-            {
-                StatusMessage = $"已导出文件：{res.FileName}";
-                _notifications?.Success($"已成功导出至：{res.FileName}\n路径：{res.FilePath}", "创作导出成功");
-                DebugLog.Info($"导出创作物物理文件成功: path={res.FilePath} size={res.FileSizeBytes}", "Chat");
-
-                // 尝试在 Windows 资源管理器中高亮选中生成的文件
-                try
-                {
-                    if (System.IO.File.Exists(res.FilePath))
-                    {
-                        Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{res.FilePath}\"") { UseShellExecute = true });
-                    }
-                }
-                catch (Exception ex)
-                {
-                    DebugLog.Warn($"在资源管理器中定位导出文件异常: {ex.Message}", "Chat");
-                }
-            }
-            else
-            {
-                StatusMessage = $"导出失败：{res.Error ?? "未知错误"}";
-                _notifications?.Error($"导出失败: {res.Error}");
-                DebugLog.Error($"导出交付物失败: {res.Error}", "Chat");
-            }
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"导出异常：{ex.Message}";
-            DebugLog.Error($"导出交付物异常: {ex.Message}", "Chat", ex);
-            _notifications?.Error($"导出异常: {ex.Message}");
-        }
-    }
-
-    /// <summary>自动导出创作物为物理文件（后台静默执行，不阻塞 UI）。</summary>
-    private async Task AutoExportArtifactAsync(ArtifactItem artifact)
-    {
-        try
-        {
-            // 延迟 500ms 等待流式完成渲染
-            await Task.Delay(500);
-
-            var fmt = artifact.Type;
-            var req = new CreativeExportRequest
-            {
-                Content = artifact.RawContent,
-                Format = fmt,
-                Title = artifact.Title,
-                // 若该创作物正在工作台中预览，则跟随用户当前选定的主题，
-                // 否则自动导出会停留在 artifact 自带的原始 theme，与随后手动导出/网页放映的配色对不上。
-                Theme = ReferenceEquals(artifact, SelectedArtifact)
-                    ? SelectedTheme.Id
-                    : (artifact.Theme ?? "tech_blue"),
-            };
-
-            var res = await _apiService.ExportCreativeArtifactAsync(req);
-            if (res.Ok && !string.IsNullOrWhiteSpace(res.FilePath))
-            {
-                StatusMessage = $"✅ 已自动导出 {fmt.ToUpperInvariant()}：{res.FileName}";
-                DebugLog.Info($"自动导出创作物成功: path={res.FilePath} size={res.FileSizeBytes}", "Chat");
-
-                // 尝试在 Windows 资源管理器中高亮选中生成的文件
-                try
-                {
-                    if (System.IO.File.Exists(res.FilePath))
-                    {
-                        Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{res.FilePath}\"") { UseShellExecute = true });
-                    }
-                }
-                catch (Exception ex)
-                {
-                    DebugLog.Warn($"在资源管理器中定位自动导出文件异常: {ex.Message}", "Chat");
-                }
-            }
-            else
-            {
-                DebugLog.Warn($"自动导出创作物失败: {res.Error}", "Chat");
-            }
-        }
-        catch (Exception ex)
-        {
-            DebugLog.Warn($"自动导出创作物异常（不影响对话）: {ex.Message}", "Chat");
-        }
-    }
-
-    private PptInspectionReportDto? _inspectionReport;
-    private bool _isInspectionReportOpen;
-
-    /// <summary>当前 PPT 效果自检与质量诊断报告。</summary>
-    public PptInspectionReportDto? InspectionReport
-    {
-        get => _inspectionReport;
-        set
-        {
-            if (SetProperty(ref _inspectionReport, value))
-            {
-                OnPropertyChanged(nameof(HasInspectionReport));
-            }
-        }
-    }
-
-    public bool HasInspectionReport => InspectionReport != null;
-
-    /// <summary>自检报告抽屉是否展开。</summary>
-    public bool IsInspectionReportOpen
-    {
-        get => _isInspectionReportOpen;
-        set => SetProperty(ref _isInspectionReportOpen, value);
-    }
-
-    /// <summary>对当前创作物进行效果自检体检诊断。</summary>
-    [RelayCommand]
-    public async Task InspectPptAsync()
-    {
-        var artifact = SelectedArtifact;
-        if (artifact == null || string.IsNullOrWhiteSpace(artifact.RawContent))
-        {
-            _notifications?.Warning("当前没有可自检的 PPT 内容");
-            return;
-        }
-
-        StatusMessage = "正在对演示文稿进行全方位效果自检与体检评分…";
-
-        try
-        {
-            var report = await _apiService.InspectCreativeArtifactAsync(artifact.RawContent);
-            InspectionReport = report;
-            IsInspectionReportOpen = true;
-            StatusMessage = $"PPT 自检完成：健康度得分 {report.Score} 分 ({report.Grade})";
-            _notifications?.Info($"PPT 效果自检完成：健康得分 {report.Score} 分 ({report.Grade})\n{report.Summary}", "效果自检报告");
-            DebugLog.Info($"PPT 效果自检完成: score={report.Score} grade={report.Grade} issues={report.Issues.Count}", "Chat");
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"自检异常：{ex.Message}";
-            _notifications?.Error($"效果自检失败: {ex.Message}");
-            DebugLog.Error($"PPT 效果自检异常: {ex.Message}", "Chat", ex);
-        }
-    }
-
-    /// <summary>关闭自检报告抽屉。</summary>
-    [RelayCommand]
-    public void CloseInspectionReport()
-    {
-        IsInspectionReportOpen = false;
-    }
-
-    private bool _isSlideShowOpen;
-    private bool _isSpeakerNotesVisibleInSlideShow = true;
-
-    /// <summary>是否开启客户端全屏沉浸放映预览。</summary>
-    public bool IsSlideShowOpen
-    {
-        get => _isSlideShowOpen;
-        set => SetProperty(ref _isSlideShowOpen, value);
-    }
-
-    /// <summary>全屏放映时是否显示演讲提词器抽屉。</summary>
-    public bool IsSpeakerNotesVisibleInSlideShow
-    {
-        get => _isSpeakerNotesVisibleInSlideShow;
-        set => SetProperty(ref _isSpeakerNotesVisibleInSlideShow, value);
-    }
-
-    /// <summary>开启客户端大屏沉浸放映预览。</summary>
-    [RelayCommand]
-    public void OpenSlideShow()
-    {
-        if (SelectedArtifact == null || !IsPptArtifact)
-        {
-            _notifications?.Warning("当前没有可放映的演示文稿");
-            return;
-        }
-        IsSlideShowOpen = true;
-        StatusMessage = "进入 PPT 大屏沉浸放映预览模式（按 Esc 退出，键盘左右键翻页）";
-    }
-
-    /// <summary>退出客户端全屏沉浸放映预览。</summary>
-    [RelayCommand]
-    public void CloseSlideShow()
-    {
-        IsSlideShowOpen = false;
-        StatusMessage = "已退出大屏放映模式";
-    }
-
-    /// <summary>切换全屏放映时的提词小抄显示状态。</summary>
-    [RelayCommand]
-    public void ToggleSlideShowNotes()
-    {
-        IsSpeakerNotesVisibleInSlideShow = !IsSpeakerNotesVisibleInSlideShow;
-    }
-
-    /// <summary>在浏览器中一键秒开 16:9 交互式 SlideShow 网页放映预览。</summary>
-    [RelayCommand]
-    public async Task OpenWebPreviewAsync()
-    {
-        var artifact = SelectedArtifact;
-        if (artifact == null || string.IsNullOrWhiteSpace(artifact.RawContent))
-        {
-            _notifications?.Warning("当前没有可预览的创作物内容");
-            return;
-        }
-
-        StatusMessage = "正在编译 16:9 交互式 HTML5 幻灯片放映页面…";
-
-        try
-        {
-            var req = new CreativeExportRequest
-            {
-                Content = artifact.RawContent,
-                Format = "html",
-                Title = artifact.Title,
-                Theme = SelectedTheme.Id,
-            };
-
-            var res = await _apiService.ExportCreativeArtifactAsync(req);
-            if (res.Ok && !string.IsNullOrWhiteSpace(res.FilePath) && System.IO.File.Exists(res.FilePath))
-            {
-                StatusMessage = "已在浏览器中启动 16:9 交互式放映预览";
-                _notifications?.Success("已在浏览器中打开全屏交互式放映页面（支持键盘 ← → 翻页与 F 键全屏）", "网页放映启动");
-                Process.Start(new ProcessStartInfo(res.FilePath) { UseShellExecute = true });
-            }
-            else
-            {
-                StatusMessage = $"网页预览生成失败: {res.Error ?? "未知错误"}";
-                _notifications?.Error($"网页放映失败: {res.Error}");
-            }
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"网页放映启动异常: {ex.Message}";
-            _notifications?.Error($"启动异常: {ex.Message}");
-            DebugLog.Error($"启动网页预览异常: {ex.Message}", "Chat", ex);
-        }
-    }
-
-    /// <summary>点击引用来源：在右侧协同抽屉就地展开原著切片与元数据，不离开对话主界面。</summary>
-    [RelayCommand]
-    private void OpenSource(SourceRef? src)
-    {
-        if (src is null)
-        {
-            return;
-        }
-        IsArtifactMode = false;
-        SelectedSource = src;
-        IsSourceDrawerOpen = true;
-        StatusMessage = $"查看切片出处：{src.DisplayTitle} ({src.ScoreBadgeText})";
-        DebugLog.Info($"展开引用来源抽屉: index={src.Index} source={src.Source} page={src.Page}", "Chat");
-    }
-
-    /// <summary>在浏览器中打开当前选中的网页来源 URL（仅 http/https，防危险协议）。</summary>
-    [RelayCommand]
-    private void OpenWebSource()
-    {
-        if (SelectedSource?.Url is not { Length: > 0 } url)
-        {
-            return;
-        }
-        if (!TryOpenHttpUrl(url))
-        {
-            _notifications?.Warning("该来源不是有效的网页地址（仅支持 http/https）", "无法打开");
-        }
-    }
-
-    /// <summary>一键直达外部网页来源（在默认浏览器中打开）。</summary>
-    [RelayCommand]
-    private void OpenDirectWeb(string? url)
-    {
-        if (string.IsNullOrWhiteSpace(url)) return;
-        if (!TryOpenHttpUrl(url))
-        {
-            _notifications?.Warning("该来源不是有效的网页地址（仅支持 http/https）", "无法打开");
-        }
-    }
-
-    /// <summary>在默认浏览器中打开 http/https 链接；其他协议一律拒绝，返回 false。</summary>
-    public static bool TryOpenHttpUrl(string url)
-    {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
-            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-        {
-            return false;
-        }
-        try
-        {
-            System.Diagnostics.Process.Start(
-                new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri)
-                {
-                    UseShellExecute = true,
-                });
-            return true;
-        }
-        catch (Exception ex)
-        {
-            DebugLog.Warn($"打开网页失败: {ex.Message}", "Chat");
-            return false;
-        }
-    }
-
-    /// <summary>关闭协同来源抽屉。</summary>
-    [RelayCommand]
-    private void CloseSourceDrawer()
-    {
-        IsSourceDrawerOpen = false;
-    }
-
-    /// <summary>复制当前抽屉中切片正文到剪贴板。</summary>
-    [RelayCommand]
-    private void CopySourceSnippet()
-    {
-        if (!string.IsNullOrWhiteSpace(SelectedSource?.Snippet))
-        {
-            try
-            {
-                Clipboard.SetText(SelectedSource.Snippet);
-                _notifications?.Success("已复制切片原文到剪贴板");
-                StatusMessage = "已复制切片原文到剪贴板";
-            }
-            catch (Exception ex)
-            {
-                DebugLog.Warn($"复制到剪贴板失败: {ex.Message}", "Chat");
-            }
-        }
-    }
-
-    /// <summary>用户主动选择：在知识搜索页全文检索该文档（深钻次级动作）。</summary>
-    [RelayCommand]
-    private void SearchSourceInSearchPage()
-    {
-        if (SelectedSource is not null)
-        {
-            SourceSearchRequested?.Invoke(SelectedSource);
-        }
-    }
-
-    /// <summary>一键体验官方示例文档库（针对新手/空状态）。</summary>
+/// <summary>一键体验官方示例文档库（针对新手/空状态）。</summary>
     [RelayCommand]
     private async Task IngestSampleKnowledgeAsync()
     {
@@ -5156,50 +2222,116 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
-    /// <summary>对话页拉取模型列表（用后端运行时配置：设置页已保存的 provider/key/地址）。</summary>
+    /// <summary>对话页拉取模型列表：默认提供商（已配 Key 时）+ 各已配置服务商档案实时拉取。
+    /// 仅本会话显示用，不落盘；选中项由 RebuildModelChoices 保留。</summary>
     [RelayCommand]
     private async Task RefreshModelsAsync()
     {
+        var fetchedProfiles = 0;
+        var failedProfiles = 0;
+        string? defaultError = null;
         try
         {
-            var result = await _apiService.LlmModelsAsync(new LlmModelsRequest { Timeout = 10 });
-            if (!result.Ok)
+            // 1) 默认提供商（设置页全局配置）：仅在已配 Key 时拉取，否则跳过（provider=none 必失败）
+            if (_defaultKeyConfigured)
             {
-                StatusMessage = $"❌ 获取模型列表失败: {result.Error ?? "未知错误"}";
-                DebugLog.Warn($"对话页获取模型列表失败: {result.Error}", "Chat");
-                return;
-            }
-
-            // 拉取结果并入「默认提供商」分组（保留种子模型）；选中项由 RebuildModelChoices 保留，不改全局配置
-            _defaultProviderModels.Clear();
-            if (!string.IsNullOrWhiteSpace(_configuredModel))
-            {
-                _defaultProviderModels.Add(_configuredModel);
-            }
-            // 持久化的「默认提供商分组」选择保留在候选池：拉取结果不含它时也不会丢失选择
-            if (string.IsNullOrWhiteSpace(_appSettings.LastChatProfileId)
-                && !string.IsNullOrWhiteSpace(_appSettings.LastChatModel))
-            {
-                _defaultProviderModels.Add(_appSettings.LastChatModel.Trim());
-            }
-            foreach (var m in result.Models)
-            {
-                if (!string.IsNullOrWhiteSpace(m))
+                try
                 {
-                    _defaultProviderModels.Add(m);
+                    var result = await _apiService.LlmModelsAsync(new LlmModelsRequest { Timeout = 10 });
+                    if (result.Ok)
+                    {
+                        _defaultProviderModels.Clear();
+                        if (!string.IsNullOrWhiteSpace(_configuredModel))
+                        {
+                            _defaultProviderModels.Add(_configuredModel);
+                        }
+                        if (string.IsNullOrWhiteSpace(_appSettings.LastChatProfileId)
+                            && !string.IsNullOrWhiteSpace(_appSettings.LastChatModel))
+                        {
+                            _defaultProviderModels.Add(_appSettings.LastChatModel.Trim());
+                        }
+                        foreach (var m in result.Models.Where(m => !string.IsNullOrWhiteSpace(m)))
+                        {
+                            _defaultProviderModels.Add(m);
+                        }
+                        if (!string.IsNullOrWhiteSpace(result.Provider) && result.Provider != _configuredProvider)
+                        {
+                            _configuredProvider = result.Provider;
+                            OnPropertyChanged(nameof(EffectiveProvider));
+                            OnPropertyChanged(nameof(EffectiveModelSummary));
+                            OnPropertyChanged(nameof(IsLlmConfigured));
+                            OnPropertyChanged(nameof(EmptyGuideText));
+                        }
+                        DebugLog.Info($"对话页默认提供商模型列表: provider={result.Provider} count={result.Models.Count}", "Chat");
+                    }
+                    else
+                    {
+                        defaultError = result.Error ?? "未知错误";
+                        DebugLog.Warn($"对话页默认提供商获取模型失败: {defaultError}", "Chat");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    defaultError = ex.Message;
+                    DebugLog.Warn($"对话页默认提供商获取模型异常: {ex.Message}", "Chat");
                 }
             }
-            if (!string.IsNullOrWhiteSpace(result.Provider) && result.Provider != _configuredProvider)
+
+            // 2) 各启用且有 Key 的服务商档案：实时拉取该账号下真实可用模型，缓存到 _profileLiveModels
+            if (_appSettings.LlmProfiles is { Count: > 0 })
             {
-                _configuredProvider = result.Provider;
-                OnPropertyChanged(nameof(EffectiveProvider));
-                OnPropertyChanged(nameof(EffectiveModelSummary));
-                OnPropertyChanged(nameof(IsLlmConfigured));
-                OnPropertyChanged(nameof(EmptyGuideText));
+                foreach (var p in _appSettings.LlmProfiles.Where(p => p is not null && p.IsEnabled && !string.IsNullOrWhiteSpace(p.ApiKey)))
+                {
+                    try
+                    {
+                        var pres = await _apiService.LlmModelsAsync(new LlmModelsRequest
+                        {
+                            Provider = p.Provider,
+                            ApiKey = p.ApiKey,
+                            BaseUrl = p.BaseUrl,
+                            Timeout = 10,
+                        });
+                        if (pres.Ok)
+                        {
+                            _profileLiveModels[p.Id] = pres.Models
+                                .Where(m => !string.IsNullOrWhiteSpace(m))
+                                .Select(m => m.Trim())
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .ToList();
+                            fetchedProfiles++;
+                        }
+                        else
+                        {
+                            failedProfiles++;
+                            DebugLog.Warn($"档案 {p.Name} 拉取模型失败: {pres.Error}", "Chat");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        failedProfiles++;
+                        DebugLog.Warn($"档案 {p.Name} 拉取模型异常: {ex.Message}", "Chat");
+                    }
+                }
             }
+
             RebuildModelChoices();
-            StatusMessage = $"✅ 获取到 {result.Models.Count} 个模型（{result.Provider}）";
-            DebugLog.Info($"对话页模型列表: provider={result.Provider} count={result.Models.Count}", "Chat");
+            if (defaultError is not null)
+            {
+                StatusMessage = $"❌ 获取模型列表失败: {defaultError}"
+                    + (failedProfiles > 0 ? $"（另 {failedProfiles} 个服务商失败）" : "");
+            }
+            else if (fetchedProfiles > 0)
+            {
+                StatusMessage = $"✅ 已刷新 {fetchedProfiles} 个服务商的模型列表" + (failedProfiles > 0 ? $"（{failedProfiles} 个失败）" : "");
+            }
+            else if (failedProfiles > 0)
+            {
+                StatusMessage = $"❌ {failedProfiles} 个服务商拉取模型失败，请检查 Key/网络";
+            }
+            else if (!_defaultKeyConfigured)
+            {
+                StatusMessage = "未配置任何可用的服务商（请到设置页配置 API Key）";
+            }
         }
         catch (Exception ex)
         {
@@ -5218,6 +2350,8 @@ public partial class ChatViewModel : ViewModelBase
             var model = cfg?.LlmModel;
             _configuredProvider = cfg?.LlmProvider ?? "none";
             _configuredModel = model ?? string.Empty;
+            // 后端权威覆盖：后端已落盘的 key 是否就绪（比本地 LlmApiKey 更准：可能被后端配置文件改过）
+            _defaultKeyConfigured = cfg?.LlmApiKeyConfigured ?? _defaultKeyConfigured;
             OnPropertyChanged(nameof(EffectiveProvider));
             OnPropertyChanged(nameof(EffectiveModel));
             OnPropertyChanged(nameof(EffectiveModelSummary));
@@ -5236,6 +2370,11 @@ public partial class ChatViewModel : ViewModelBase
             DebugLog.Debug($"读取后端配置种子模型失败（忽略）: {ex.Message}", "Chat");
         }
     }
+
+    /// <summary>后端恢复在线时由 MainViewModel 调用：补拉 v1/config 种子默认提供商模型，
+    /// 覆盖构造时因令牌竞态 401 失败的初载（SeedModelFromConfigAsync 本身无重试），
+    /// 否则整个会话 _configuredModel 为空，「默认 · xx」退回占位符、默认提供商分组缺模型。</summary>
+    public Task RefreshModelSeedAsync() => SeedModelFromConfigAsync();
 
     /// <summary>测试用：等待会话列表加载（构造时 fire-and-forget 不可 await）。</summary>
     internal Task SessionsLoadedForTestAsync() => LoadSessionsAsync();

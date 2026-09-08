@@ -44,12 +44,16 @@
                          MinHeight="36"/>
 
                 <Button Grid.Column="2"
-                        Content="📁 选择文件…"
                         Command="{Binding PickInputCommand}"
                         Style="{StaticResource PrimaryButtonStyle}"
                         Padding="14,6"
                         MinHeight="36"
-                        Margin="12,0,0,0"/>
+                        Margin="12,0,0,0">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Data="{StaticResource IconUpload}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                        <TextBlock Text="选择文件…"/>
+                    </StackPanel>
+                </Button>
             </Grid>
         </Border>
 
@@ -118,12 +122,16 @@
 
                     <!-- 右侧操作按钮组 -->
                     <StackPanel Grid.Column="3" Orientation="Horizontal">
-                        <Button Content="⚡ 开始转换"
-                                Command="{Binding ConvertCommand}"
+                        <Button Command="{Binding ConvertCommand}"
                                 Style="{StaticResource PrimaryButtonStyle}"
                                 Padding="20,6"
                                 MinHeight="36"
-                                Margin="0,0,8,0"/>
+                                Margin="0,0,8,0">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconBolt}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                <TextBlock Text="开始转换"/>
+                            </StackPanel>
+                        </Button>
                         <Button Content="重置"
                                 Command="{Binding ResetCommand}"
                                 Style="{StaticResource TextButtonStyle}"
@@ -161,7 +169,7 @@
         <Border Grid.Row="3"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="8"
+                CornerRadius="{StaticResource CornerLg}"
                 Padding="12">
             <DockPanel>
                 <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
@@ -169,13 +177,17 @@
                                Style="{StaticResource SubtitleText}"
                                DockPanel.Dock="Left"/>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                        <Button Content="📥 一键导入知识库"
-                                Command="{Binding ImportToKnowledgeBaseCommand}"
+                        <Button Command="{Binding ImportToKnowledgeBaseCommand}"
                                 Style="{StaticResource PrimaryButtonStyle}"
                                 Padding="10,3"
                                 Margin="0,0,8,0"
                                 Visibility="{Binding CanImportToKnowledgeBase, Converter={StaticResource BoolToVis}}"
-                                ToolTip="将转换落盘后的文件直接载入【导入】页面加入知识库"/>
+                                ToolTip="将转换落盘后的文件直接载入【导入】页面加入知识库">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconImport}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                <TextBlock Text="一键导入知识库"/>
+                            </StackPanel>
+                        </Button>
                         <Border Background="{StaticResource SurfaceBrush}"
                                 CornerRadius="4"
                                 Padding="8,2"

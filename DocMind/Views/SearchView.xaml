@@ -133,13 +133,7 @@
         </Grid.RowDefinitions>
 
         <!-- ===== 搜索条 ===== -->
-        <Border Grid.Row="0"
-                Background="{StaticResource CardBrush}"
-                BorderBrush="{StaticResource BorderBrush}"
-                BorderThickness="1"
-                CornerRadius="14"
-                Padding="14,10"
-                Margin="0,0,0,12">
+        <Border Grid.Row="0" Style="{StaticResource ToolbarBorderStyle}">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <!-- 主搜索框 (自适应弹性占满) -->
@@ -261,7 +255,7 @@
             <Border Background="{StaticResource SurfaceBrush}"
                     BorderBrush="{StaticResource BorderBrush}"
                     BorderThickness="1"
-                    CornerRadius="14"
+                    CornerRadius="{StaticResource CornerLg}"
                     Padding="36,48"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
@@ -273,7 +267,7 @@
                             CornerRadius="32"
                             HorizontalAlignment="Center"
                             Margin="0,0,0,16">
-                        <TextBlock Text="🔍" FontSize="30" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <Path Data="{StaticResource IconSearch}" Style="{StaticResource IconSmStyle}" Width="32" Height="32" Stroke="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
                     <TextBlock Text="知识库检索"
                                Style="{StaticResource TitleText}"
@@ -385,17 +379,25 @@
                             <StackPanel Orientation="Horizontal"
                                         HorizontalAlignment="Right"
                                         Visibility="{Binding HasSelectedHit, Converter={StaticResource BoolToVis}}">
-                                <Button Content="📄 查看全文"
-                                        Command="{Binding OpenInDocumentsCommand}"
+                                <Button Command="{Binding OpenInDocumentsCommand}"
                                         Style="{StaticResource SecondaryButtonStyle}"
                                         Padding="8,4"
                                         Margin="0,0,6,0"
-                                        ToolTip="跳转至文档库查看该文件的完整分块"/>
-                                <Button Content="💬 发起对话"
-                                        Command="{Binding AskInChatCommand}"
+                                        ToolTip="跳转至文档库查看该文件的完整分块">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Data="{StaticResource IconDocumentFull}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                        <TextBlock Text="查看全文"/>
+                                    </StackPanel>
+                                </Button>
+                                <Button Command="{Binding AskInChatCommand}"
                                         Style="{StaticResource PrimaryButtonStyle}"
                                         Padding="8,4"
-                                        ToolTip="基于此分块内容在对话页发起提问"/>
+                                        ToolTip="基于此分块内容在对话页发起提问">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Data="{StaticResource IconChat}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                        <TextBlock Text="发起对话"/>
+                                    </StackPanel>
+                                </Button>
                             </StackPanel>
                         </Grid>
 

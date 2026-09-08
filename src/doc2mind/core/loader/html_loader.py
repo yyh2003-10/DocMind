@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
 
 from doc2mind.core.loader.base import Loader, LoaderError, make_source
@@ -42,7 +43,11 @@ class HtmlLoader(Loader):
 
     supported_extensions = ("html", "htm", "xhtml")
 
-    def extract(self, path: Path) -> LoadedDocument:
+    def extract(
+        self,
+        path: Path,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> LoadedDocument:
         try:
             from bs4 import BeautifulSoup
         except ImportError as e:

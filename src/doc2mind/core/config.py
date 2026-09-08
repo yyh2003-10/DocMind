@@ -61,7 +61,17 @@ class Settings:
     # --- 嵌入引擎 ---
     embed_model: str = "BAAI/bge-small-zh-v1.5"
     embed_dim: int = 512  # bge-small-zh-v1.5 输出维度
-    embed_batch_size: int = 32
+    # 嵌入批大小：ONNX 本地嵌入的主要吞吐旋钮（fastembed 官方调优结论：
+    # 更大批次显著摊薄单批开销）。32 → 128 在多核 CPU 上常见 2-4× 提升。
+    embed_batch_size: int = 128
+    # ONNX 推理线程数（intra_op_num_threads）。0 = 交给 onnxruntime 默认；
+    # 与物理核数对齐时吞吐最佳（与 ocr_workers 同时调大时注意互相抢核）。
+    embed_threads: int = 0
+    # 嵌入 token 截断上限。默认 512（bge-small-zh 原生窗口）；切换到长上下文
+    # 模型（如 jina-embeddings-v2-base-zh 的 8192）时建议调到 2048，
+    # 让 chunk_max_tokens=1500 的分块全文入模，不再被截断丢信息。
+    # 改动需重建会话（工厂缓存键包含此字段），调大后嵌入耗时按 token 线性增长。
+    embed_max_length: int = 512
 
     # 本地模型目录（可选）：指向一个含 ONNX 模型文件的目录，优先于 embed_model
     # 使用（fastembed specific_model_path）。留空则用 embed_model 从网络下载。
@@ -197,6 +207,31 @@ class Settings:
     # LLM 调用超时（秒），0 = 使用默认值 120s
     llm_timeout: float = 0.0
 
+    # --- 摄入并发 ---
+    # 文件级并行 worker 数：两段式流水线（多线程并行 解析→分块→嵌入，
+    # 主线程串行写库保住 SQLite 单写者语义）。1 = 串行（默认，与历史行为
+    # 一致）；调大对扫描件（OCR 释放 GIL）/ 大批量导入收益最明显。
+    ingest_workers: int = 1
+
+    # --- 摄入护栏（防病态输入打爆内存）---
+    # 单文件大小上限（MB），超过则在收集阶段整文件跳过并记为 skipped，
+    # 避免几百 MB 的扫描 PDF / 超大 Excel 整读进内存。0 或负数 = 不限制。
+    max_file_size_mb: int = 500
+    # 单次目录导入最大文件数，超过的部分在收集阶段直接丢弃（进度按实际
+    # 处理数上报）。0 或负数 = 不限制。
+    max_files_per_import: int = 5000
+
+    # --- OCR（扫描件）---
+    # 扫描型 PDF 渲染 DPI（越高越准但越慢，200 是精度/速度平衡点）
+    ocr_render_dpi: int = 200
+    # CPU OCR 并行实例数（PaddleOCR 无原生 batch，官方推荐多实例并行；
+    # 每实例独占一份模型内存 ~几百MB。GPU 模式固定串行，此值仅 CPU 生效）
+    ocr_workers: int = 1
+    # CPU OCR 启用 oneDNN 加速。默认关闭：Paddle 3.x PIR 执行器下 oneDNN
+    # 算子会崩溃（见 image_loader._disable_paddle_pir 注释）；开启后运行时
+    # 一旦崩溃会自动回退并永久禁用（_OCR_MKLDNN_BROKEN 锁存）。
+    ocr_enable_mkldnn: bool = False
+
     # --- AI 自动整理（curate）---
     # 入库成功后自动打标签/生成摘要；ingest_text 未指定集合时还会自动归类。
     auto_curate_on_ingest: bool = True
@@ -220,6 +255,11 @@ class Settings:
     embed_cache_dir: Path = field(
         default_factory=lambda: _user_data_dir() / "fastembed_cache"
     )
+
+    # --- poppler 可执行目录（扫描 PDF OCR 渲染依赖）---
+    # 指向包含 pdftoppm(.exe) 的 bin 目录；为空时 pdf_loader 按内置顺序自动探测
+    # （PATH → 项目 tools/poppler → 常见安装目录）。客户端设置页可指定。
+    poppler_path: str = ""
 
     # --- 文件系统监控（文件变更自动摄入）---
     watch_paths: list[str] = field(default_factory=list)
@@ -301,6 +341,14 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "embed_dim",
     "embed_model_path",
     "embed_batch_size",
+    "embed_threads",
+    "embed_max_length",
+    "ingest_workers",
+    "max_file_size_mb",
+    "max_files_per_import",
+    "ocr_render_dpi",
+    "ocr_workers",
+    "ocr_enable_mkldnn",
     "chunk_max_tokens",
     "chunk_min_chars",
     "chunk_overlap_chars",
@@ -356,7 +404,14 @@ _SENSITIVE_FIELDS: frozenset[str] = frozenset()
 
 
 def config_file_path() -> Path:
-    """用户配置文件路径：Windows %APPDATA%\\doc2mind\\config.toml。"""
+    """用户配置文件路径：Windows %APPDATA%\\doc2mind\\config.toml。
+
+    支持 DOC2MIND_CONFIG 环境变量重定向到任意位置（客户端「自动寻找
+    可用配置」找到非默认位置的配置文件时注入），未设置时用默认目录。
+    """
+    override = os.environ.get("DOC2MIND_CONFIG")
+    if override:
+        return Path(override).expanduser()
     return _user_config_dir() / "config.toml"
 
 

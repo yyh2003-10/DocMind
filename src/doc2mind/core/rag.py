@@ -360,16 +360,19 @@ def _append_turn(
         )
 
 def clear_session(chat_id: str, db_path: Path | None = None) -> bool:
-    """清除指定会话历史（同时清内存和 SQLite）。"""
+    """清除指定会话历史（同时清内存和 SQLite）。
+
+    DB 删除失败时抛出 ChatStoreError，由调用方（HTTP 层）转为 500。
+    历史上"内存清但 DB 失败 + 返 200"会导致前端以为成功、重启后会话从 DB 复活。
+    """
     with _HISTORY_LOCK:
         in_mem = _CHAT_SESSIONS.pop(chat_id, None) is not None
     in_db = False
     if db_path is not None:
-        try:
-            store = _get_chat_store(db_path)
-            in_db = store.delete_session(chat_id) if store else False
-        except ChatStoreError as e:
-            logger.warning("删除 SQLite 会话失败（内存已清）: %s", e)
+        store = _get_chat_store(db_path)
+        if store is not None:
+            # 不再吞 ChatStoreError：DB 写失败必须让 HTTP 层感知
+            in_db = store.delete_session(chat_id)
     return in_mem or in_db
 
 

@@ -452,7 +452,7 @@ LLM 连接测试：用传入参数构造**临时**客户端发一条极小消息
 
 ### `DELETE /v1/documents/{id}`
 
-删除单个文档及其所有分块与向量。
+软删除单个文档：chunks/向量/FTS/稀疏索引物理删除，`documents` 行保留 30 天（`deleted_at` 置时间戳），期间可 `POST /v1/trash/{id}/restore` 恢复元数据。
 
 **查询参数：**
 - `collection` (string, 可选) — 校验集合归属，不匹配则 404
@@ -461,8 +461,84 @@ LLM 连接测试：用传入参数构造**临时**客户端发一条极小消息
 ```jsonc
 { "id": "01J9XYZ...", "deleted_chunks": 47, "status": "deleted" }
 ```
+重复删除（已处于软删除态）返回 `status: "already_deleted"`、`deleted_chunks: 0`（幂等成功）。
 
-**响应 404 `NOT_FOUND`：** 文档不存在。
+**响应 404 `NOT_FOUND`：** 文档不存在（从未摄入过）。
+
+---
+
+### `POST /v1/trash/{id}/restore`
+
+恢复软删除的文档（仅元数据：`deleted_at` 置 NULL）。**不重建** chunks/向量——恢复后文档出现在列表/统计，但检索不到，需重新摄入或 `POST /v1/reindex` 才能恢复全文检索。
+
+**路径参数：**
+- `id` (string) — 文档 ID（ULID）
+
+**响应 200：**
+```jsonc
+{
+  "id": "01J9XYZ...",
+  "status": "restored",          // 或 "not_found"
+  "note": "恢复成功；chunks/向量已物理删，需要重新摄入或重跑 reindex 才能被检索命中"
+}
+```
+`status: "not_found"` 表示文档不存在、未处于软删除态、或同 source 已被重新摄入的活跃文档占用（无法恢复）。
+
+---
+
+### `GET /v1/trash`
+
+列出回收站中的软删除文档（按 `deleted_at` 倒序）。供"误删后悔期"查看可恢复项。
+
+**查询参数：**
+- `limit` (int, 可选, 默认 100, 上限 500)
+
+**响应 200：**
+```jsonc
+{
+  "items": [
+    { "document_id": "01J9XYZ...", "source": "E:/notes/a.md",
+      "collection": "default", "deleted_at": "2026-09-01T10:00:00+08:00", "purged_at": null }
+  ],
+  "total": 1
+}
+```
+
+---
+
+### `POST /v1/trash/purge`
+
+物理清空超过 N 天的回收站（**破坏性操作，不可恢复**）。联动删除 `documents` 行 + 清理空集合。
+
+**请求体：**
+```jsonc
+{ "older_than_days": 30 }   // 默认 30，范围 1~365
+```
+
+**响应 200：** `{ "purged": 3 }`（物理清除的 trash 行数）。
+
+---
+
+### `GET /v1/curate-runs`
+
+列出近 N 天的 AI 整理（curate）运行记录，用于质量看板展示「过去 N 天跑过几次整理、动了哪些文档」。
+
+**查询参数：**
+- `days` (int, 可选, 默认 7, 上限 90)
+- `limit` (int, 可选, 默认 50, 上限 500)
+
+**响应 200：**
+```jsonc
+{
+  "items": [
+    { "id": 1, "started_at": "...", "finished_at": "...", "dry_run": true,
+      "collection": "default", "actions": ["enrich", "categorize"],
+      "changed_doc_ids": ["doc1", "doc2"], "skipped_count": 0,
+      "error_count": 0, "elapsed_ms": 5000, "note": "agent_settle" }
+  ],
+  "total": 1
+}
+```
 
 ---
 

@@ -1,3 +1,4 @@
+using System.Windows;
 using System.Windows.Documents;
 using DocMind.Models;
 using DocMind.Services;
@@ -14,8 +15,8 @@ namespace DocMind.Tests;
 public class ChatViewModelTests
 {
     private static ChatViewModel CreateVm(FakeDoc2kbApiService fake)
-        // 默认已配置 LLM（模拟正常可用环境）；「未配置」场景的测试需显式传 new AppSettings()
-        => new(fake, null, new AppSettings { LlmProvider = "openai" });
+        // 默认已配置 LLM（模拟正常可用环境：provider + Key 齐全）；「未配置」场景的测试需显式传 new AppSettings()
+        => new(fake, null, new AppSettings { LlmProvider = "openai", LlmApiKey = "test-key" });
 
     private static FakeDoc2kbApiService CreateFake()
     {
@@ -522,7 +523,7 @@ public class ChatViewModelTests
         {
             LlmProfiles = new List<LlmProfile>
             {
-                new() { Id = "p1", Name = "Ollama 本地", Provider = "ollama", Model = "qwen2.5:7b", Models = new List<string> { "qwen2.5:7b" } },
+                new() { Id = "p1", Name = "Ollama 本地", Provider = "ollama", Model = "qwen2.5:7b", Models = new List<string> { "qwen2.5:7b" }, ApiKey = "k1" },
             },
         };
         var vm = new ChatViewModel(fake, null, settings);
@@ -757,7 +758,7 @@ public class ChatViewModelTests
     public void MarkdownHeading_DownscaledToBodySize_NotReportLike()
     {
         // 气泡里 ###/#### 标题不应渲染成 18px+ 大标题（文档报告感），
-        // 应降级为与正文一致的 15px 加粗，保持聊天语气
+        // 现代简约层级：H1-H3 以小步长降级（上限 17px SemiBold），正文保持 15px
         RunOnSta(() =>
         {
             var msg = new ChatMessage { Role = "assistant" };
@@ -767,7 +768,8 @@ public class ChatViewModelTests
             var paras = FindParagraphs(msg.RenderedDocument!).ToList();
             var heading = paras.FirstOrDefault(p => p.Inlines.OfType<Run>().Any(r => r.Text.Contains("标题")));
             Assert.NotNull(heading);
-            Assert.True(heading!.FontSize <= 15, $"标题字号应为 15 以内，实际 {heading.FontSize}");
+            Assert.True(heading!.FontSize <= 17, $"标题字号应为 17 以内，实际 {heading.FontSize}");
+            Assert.NotEqual(FontWeights.Bold, heading.FontWeight);
         });
     }
 
@@ -1738,13 +1740,15 @@ public class ChatViewModelTests
             Provider = "openai",
             Model = "deepseek-chat",
             Models = new List<string> { "deepseek-chat", "deepseek-reasoner" },
+            ApiKey = "k1",
         };
         var settings = new AppSettings
         {
+            LlmApiKey = "test-key",
             LlmProfiles = new List<LlmProfile>
             {
                 active,
-                new LlmProfile { Id = "p2", Name = "Ollama 本地", Provider = "ollama", Model = "llama3.2", Models = new List<string> { "llama3.2" } },
+                new LlmProfile { Id = "p2", Name = "Ollama 本地", Provider = "ollama", Model = "llama3.2", Models = new List<string> { "llama3.2" }, ApiKey = "k2" },
             },
             ActiveProfileId = "p1",
         };
@@ -1768,15 +1772,15 @@ public class ChatViewModelTests
     public void Constructor_DefaultItem_ShowsRealDefaultModelName()
     {
         var fake = CreateFake();
-        // 设置页配置了默认模型 → 首项显示「默认 · 模型名」
-        var vm = new ChatViewModel(fake, null, new AppSettings { LlmModel = "qwen2.5:7b", LlmProvider = "ollama" });
+        // 设置页配置了默认模型 → 首项显示「默认 · 模型名」（已配 Key 才显示默认项）
+        var vm = new ChatViewModel(fake, null, new AppSettings { LlmModel = "qwen2.5:7b", LlmProvider = "ollama", LlmApiKey = "test-key" });
         Assert.Equal("默认 · qwen2.5:7b", vm.ModelChoices[0].DisplayName);
         Assert.True(vm.ModelChoices[0].IsDefault);
         Assert.Null(vm.ModelChoices[0].Model);
 
-        // 未配置默认模型 → 回退到通用标签
+        // 未配置任何 Key → 不显示默认项（空态引导由 EmptyGuideText 接管）
         var vm2 = new ChatViewModel(fake, null, new AppSettings());
-        Assert.Equal(ChatViewModel.DefaultProfileLabel, vm2.ModelChoices[0].DisplayName);
+        Assert.Empty(vm2.ModelChoices);
     }
 
     [Fact]
@@ -1787,9 +1791,10 @@ public class ChatViewModelTests
         {
             LlmModel = "qwen2.5:7b",
             LlmProvider = "ollama",
+            LlmApiKey = "test-key",
             LlmProfiles = new List<LlmProfile>
             {
-                new() { Id = "p1", Name = "DeepSeek", Provider = "openai", Model = "deepseek-chat", Models = new List<string> { "deepseek-chat" } },
+                new() { Id = "p1", Name = "DeepSeek", Provider = "openai", Model = "deepseek-chat", Models = new List<string> { "deepseek-chat" }, ApiKey = "k1" },
             },
         };
         var vm1 = new ChatViewModel(fake, null, settings);
@@ -1808,7 +1813,7 @@ public class ChatViewModelTests
     public void SelectedModelChoice_DefaultGroupModel_PersistedAndRestored()
     {
         var fake = CreateFake();
-        var settings = new AppSettings { LlmModel = "qwen2.5:7b", LlmProvider = "ollama" };
+        var settings = new AppSettings { LlmModel = "qwen2.5:7b", LlmProvider = "ollama", LlmApiKey = "test-key" };
         var vm1 = new ChatViewModel(fake, null, settings);
         // 点选「默认提供商分组」的模型（Provider 为 null、非默认伪项）
         vm1.SelectedModelChoice = vm1.ModelChoices.First(c => c.Provider is null && !c.IsDefault && c.Model == "qwen2.5:7b");
@@ -1838,6 +1843,7 @@ public class ChatViewModelTests
         {
             LlmModel = "qwen2.5:7b",
             LlmProvider = "ollama",
+            LlmApiKey = "test-key",
             LastChatModel = "deepseek-r1:8b",
         };
         var vm = new ChatViewModel(fake, null, settings);
@@ -1857,6 +1863,7 @@ public class ChatViewModelTests
         {
             LlmModel = "01-ai/yi-large",
             LlmProvider = "openai",
+            LlmApiKey = "test-key",
             LlmBaseUrl = "https://integrate.api.nvidia.com/v1",
             LlmProfiles = new List<LlmProfile>
             {
@@ -1868,6 +1875,7 @@ public class ChatViewModelTests
                     BaseUrl = "https://integrate.api.nvidia.com/v1/",
                     Model = "01-ai/yi-large",
                     Models = new List<string> { "01-ai/yi-large", "adept/fuyu-8b" },
+                    ApiKey = "k1",
                 },
             },
         };
@@ -1889,6 +1897,7 @@ public class ChatViewModelTests
         {
             LlmModel = "gpt-4o",
             LlmProvider = "openai",
+            LlmApiKey = "test-key",
             LlmProfiles = new List<LlmProfile>
             {
                 new()
@@ -1899,6 +1908,7 @@ public class ChatViewModelTests
                     BaseUrl = "https://relay.example.com/v1",
                     Model = "gpt-4o",
                     Models = new List<string> { "gpt-4o" },
+                    ApiKey = "k1",
                 },
             },
         };
@@ -1917,6 +1927,7 @@ public class ChatViewModelTests
         {
             LlmModel = "01-ai/yi-large",
             LlmProvider = "openai",
+            LlmApiKey = "test-key",
             LlmBaseUrl = "https://integrate.api.nvidia.com/v1",
             LlmProfiles = new List<LlmProfile>
             {
@@ -1928,6 +1939,7 @@ public class ChatViewModelTests
                     BaseUrl = "https://integrate.api.nvidia.com/v1",
                     Model = "01-ai/yi-large",
                     Models = new List<string> { "01-ai/yi-large" },
+                    ApiKey = "k1",
                 },
             },
             // 旧版本遗留的持久化：选中默认分组裸项（无档案 Id）
@@ -2002,9 +2014,10 @@ public class ChatViewModelTests
         {
             LlmModel = "qwen2.5:7b",
             LlmProvider = "ollama",
+            LlmApiKey = "test-key",
             LlmProfiles = new List<LlmProfile>
             {
-                new() { Id = "p1", Name = "DeepSeek", Provider = "openai", Model = "deepseek-chat", Models = new List<string> { "deepseek-chat" } },
+                new() { Id = "p1", Name = "DeepSeek", Provider = "openai", Model = "deepseek-chat", Models = new List<string> { "deepseek-chat" }, ApiKey = "k1" },
             },
         };
         var vm1 = new ChatViewModel(fake, null, settings);
@@ -2032,7 +2045,7 @@ public class ChatViewModelTests
             IsEnabled = false,
             Models = new List<string> { "deepseek-chat" },
         };
-        var settings = new AppSettings { LlmProfiles = new List<LlmProfile> { disabled } };
+        var settings = new AppSettings { LlmApiKey = "test-key", LlmProfiles = new List<LlmProfile> { disabled } };
 
         var vm = new ChatViewModel(fake, null, settings);
 
@@ -2045,14 +2058,14 @@ public class ChatViewModelTests
     public void RebuildModelChoices_ReflectsLatestProviders()
     {
         var fake = CreateFake();
-        var settings = new AppSettings();
+        var settings = new AppSettings { LlmApiKey = "test-key" };
         var vm = new ChatViewModel(fake, null, settings);
         Assert.Single(vm.ModelChoices); // 仅默认项
 
         // 模拟设置页新增服务商（事件驱动 RebuildModelChoices）
         settings.LlmProfiles = new List<LlmProfile>
         {
-            new() { Id = "p1", Name = "DeepSeek", Provider = "openai", Model = "deepseek-chat", Models = new List<string> { "deepseek-chat" } },
+            new() { Id = "p1", Name = "DeepSeek", Provider = "openai", Model = "deepseek-chat", Models = new List<string> { "deepseek-chat" }, ApiKey = "k1" },
         };
         vm.RebuildModelChoices();
 
@@ -2121,8 +2134,9 @@ public class ChatViewModelTests
             Name = "DeepSeek",
             Provider = "openai",
             Models = new List<string> { "deepseek-chat" },
+            ApiKey = "k1",
         };
-        var settings = new AppSettings { LlmProvider = "openai", LlmProfiles = new List<LlmProfile> { profile } };
+        var settings = new AppSettings { LlmProvider = "openai", LlmApiKey = "test-key", LlmProfiles = new List<LlmProfile> { profile } };
         var vm = new ChatViewModel(fake, null, settings);
         // 选中「设置页默认」伪项
         vm.SelectedModelChoice = vm.ModelChoices.First(c => c.IsDefault);
@@ -2150,7 +2164,7 @@ public class ChatViewModelTests
 
         // 本机用户自己的 GitHub Token（设置页配置，DPAPI 加密落盘）随请求携带，
         // 后端按请求生效，绝不作为全局配置共享给其他用户
-        var settings = new AppSettings { LlmProvider = "openai", GithubToken = "ghp_自己的令牌" };
+        var settings = new AppSettings { LlmProvider = "openai", LlmApiKey = "test-key", GithubToken = "ghp_自己的令牌" };
         var vm = new ChatViewModel(fake, null, settings);
         vm.InputText = "帮我搜一下 GitHub 上的开源仓库";
         await vm.SendCommand.ExecuteAsync(null);
@@ -2172,7 +2186,7 @@ public class ChatViewModelTests
             return Task.FromResult(res);
         };
 
-        var vm = new ChatViewModel(fake, null, new AppSettings { LlmProvider = "openai" });
+        var vm = new ChatViewModel(fake, null, new AppSettings { LlmProvider = "openai", LlmApiKey = "test-key" });
         vm.InputText = "搜索 GitHub";
         await vm.SendCommand.ExecuteAsync(null);
 
@@ -2186,9 +2200,10 @@ public class ChatViewModelTests
         var fake = CreateFake();
         var settings = new AppSettings
         {
+            LlmApiKey = "test-key",
             LlmProfiles = new List<LlmProfile>
             {
-                new() { Id = "p1", Name = "DeepSeek", Provider = "openai", Model = "deepseek-chat", Models = new List<string> { "deepseek-chat" } },
+                new() { Id = "p1", Name = "DeepSeek", Provider = "openai", Model = "deepseek-chat", Models = new List<string> { "deepseek-chat" }, ApiKey = "k1" },
             },
         };
         var vm = new ChatViewModel(fake, null, settings);

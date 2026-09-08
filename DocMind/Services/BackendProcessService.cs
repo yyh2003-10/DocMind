@@ -22,6 +22,47 @@ public sealed class BackendProcessService : IDisposable
     /// <summary>后端当前状态（离线 / 启动中 / 在线 / 退出中）。</summary>
     public BackendState State { get; private set; } = BackendState.Offline;
 
+    /// <summary>维护模式（插件安装等需要独占 Python 环境的操作期间置位）。
+    /// 期间：StartAsync 排队等待而不是并发拉起子进程（避免后端在安装中途
+    /// 被拉起重新锁住 numpy DLL，导致 pip 再次撞文件锁）；调用方（App 启动
+    /// 弹窗）据此静默「启动失败」误报——安装期间的 Offline 是主动停止。</summary>
+    public bool IsMaintenance { get; private set; }
+
+    private TaskCompletionSource<bool>? _maintenanceTcs;
+
+    /// <summary>进入维护模式（幂等）。安装类操作必须在调用后才能 Stop/安装。</summary>
+    public void BeginMaintenance()
+    {
+        if (IsMaintenance) return;
+        IsMaintenance = true;
+        _maintenanceTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        DebugLog.Info("后端进入维护模式（插件安装）", "Backend");
+    }
+
+    /// <summary>退出维护模式并唤醒排队的启动请求。</summary>
+    public void EndMaintenance()
+    {
+        if (!IsMaintenance) return;
+        IsMaintenance = false;
+        DebugLog.Info("后端退出维护模式", "Backend");
+        _maintenanceTcs?.TrySetResult(true);
+        _maintenanceTcs = null;
+    }
+
+    private async Task WaitMaintenanceEndAsync(CancellationToken ct)
+    {
+        var tcs = _maintenanceTcs;
+        if (tcs is null) return;
+        try
+        {
+            await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // 外层 ct 取消时让出；维护标志保持原状
+        }
+    }
+
     /// <summary>后端最近一次启动或运行失败时的底层错误诊断信息（来自 Python stderr）。</summary>
     public string? LastErrorMessage { get; private set; }
 
@@ -51,6 +92,15 @@ public sealed class BackendProcessService : IDisposable
         IProgress<string>? progress = null,
         CancellationToken ct = default)
     {
+        // 维护模式（插件安装）期间排队等待，等待结束后重新走完整启动流程，
+        // 避免安装中途把后端拉起来重新锁住运行库 DLL
+        if (IsMaintenance)
+        {
+            progress?.Report("插件安装中，后端启动已排队等待…");
+            await WaitMaintenanceEndAsync(ct).ConfigureAwait(false);
+            if (IsMaintenance) return false; // 等待被取消且仍在维护中
+            return await StartAsync(progress, ct).ConfigureAwait(false);
+        }
         if (State == BackendState.Online || _python is { HasExited: false })
         {
             DebugLog.Debug($"StartAsync 跳过：已在目标状态 (State={State})", "Backend");
@@ -84,6 +134,15 @@ public sealed class BackendProcessService : IDisposable
 
         try
         {
+            // 启动子进程前再查一次维护标志：App 的在途 StartAsync 可能在
+            // 维护开始后才走到这一步（先停后端、装完再拉起的时序保证）
+            if (IsMaintenance)
+            {
+                progress?.Report("插件安装中，后端启动已排队等待…");
+                await WaitMaintenanceEndAsync(ct).ConfigureAwait(false);
+                if (IsMaintenance) return false;
+                return await StartAsync(progress, ct).ConfigureAwait(false);
+            }
             _python = StartPythonProcess();
             progress?.Report($"后端子进程已启动 (PID {_python.Id})，等待就绪…");
 
@@ -271,6 +330,32 @@ public sealed class BackendProcessService : IDisposable
         {
             psi.Environment["HF_ENDPOINT"] = "https://hf-mirror.com";
             injectedEnv.Add("HF_ENDPOINT=https://hf-mirror.com");
+        }
+
+        // OCR 识别语言（设置项 → DOC2MIND_OCR_LANG；非默认值时注入）
+        if (!string.IsNullOrWhiteSpace(_settings.OcrLanguage)
+            && !_settings.OcrLanguage.Trim().Equals("ch", StringComparison.OrdinalIgnoreCase))
+        {
+            psi.Environment["DOC2MIND_OCR_LANG"] = _settings.OcrLanguage.Trim();
+            injectedEnv.Add($"DOC2MIND_OCR_LANG={psi.Environment["DOC2MIND_OCR_LANG"]}");
+        }
+
+        // 外部资源路径（用户指定 / 自动寻找写入 → 注入后端环境变量）。
+        // 只在非空时注入，留空让后端用内置自动探测。
+        if (!string.IsNullOrWhiteSpace(_settings.PopplerPath))
+        {
+            psi.Environment["DOC2MIND_POPPLER_PATH"] = _settings.PopplerPath.Trim();
+            injectedEnv.Add($"DOC2MIND_POPPLER_PATH={psi.Environment["DOC2MIND_POPPLER_PATH"]}");
+        }
+        if (!string.IsNullOrWhiteSpace(_settings.WheelsDir))
+        {
+            psi.Environment["DOCMIND_WHEELS_DIR"] = _settings.WheelsDir.Trim();
+            injectedEnv.Add($"DOCMIND_WHEELS_DIR={psi.Environment["DOCMIND_WHEELS_DIR"]}");
+        }
+        if (!string.IsNullOrWhiteSpace(_settings.EmbedCacheDir))
+        {
+            psi.Environment["DOC2MIND_EMBED_CACHE_DIR"] = _settings.EmbedCacheDir.Trim();
+            injectedEnv.Add($"DOC2MIND_EMBED_CACHE_DIR={psi.Environment["DOC2MIND_EMBED_CACHE_DIR"]}");
         }
 
         // 设置页的模型/分块参数 → 后端 DOC2MIND_* 环境变量（重启后端生效）。
@@ -484,8 +569,13 @@ public sealed class BackendProcessService : IDisposable
         return null;
     }
 
-    /// <summary>从应用所在目录逐级向上查找项目自带 .venv（最多 6 层），
-    /// 命中返回 (fileName, argsPrefix)；找不到返回 null。</summary>
+    /// <summary>从应用所在目录逐级向上查找可用的 Python 运行时（最多 6 层），
+    /// 命中返回 (fileName, argsPrefix)；找不到返回 null。
+    /// 查找顺序：① {dir}\python\python.exe（安装包便携运行时，普通用户首选）
+    /// ② {dir}\.venv\Scripts\python.exe（开发/打包 venv）
+    /// ③ {dir}\.venv\Scripts\doc2mind.exe（venv 入口脚本，需同目录有 python.exe）。
+    /// 对 venv 额外做可移植性预检：pyvenv.cfg 的 home 指向的解释器不存在时
+    /// 视为损坏（打包机路径绑定的 venv 在用户机上必然失效），跳过并给出诊断。</summary>
     private static (string fileName, string argsPrefix)? TryResolveProjectVenv()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
@@ -495,11 +585,30 @@ public sealed class BackendProcessService : IDisposable
             {
                 break;
             }
+
+            // ① 便携运行时（setup.ps1 构建，随安装包分发，自带完整解释器）
+            var portable = Path.Combine(dir.FullName, "python", "python.exe");
+            if (File.Exists(portable))
+            {
+                return (portable, "-m doc2mind ");
+            }
+
             var scripts = Path.Combine(dir.FullName, ".venv", "Scripts");
             if (!Directory.Exists(scripts))
             {
                 continue;
             }
+
+            // ② venv 可移植性预检：pyvenv.cfg 的 home 指向的 base 解释器必须存在，
+            //    否则 python.exe（引导器）会启动失败——这是打包 venv 跨机失效的根因
+            var venvHealthError = CheckVenvPortability(dir.FullName);
+            if (venvHealthError is not null)
+            {
+                DebugLog.Warn($"跳过损坏的 venv（{dir.FullName}）: {venvHealthError}", "Backend");
+                s_lastVenvHealthError = venvHealthError;
+                continue;
+            }
+            s_lastVenvHealthError = null;
 
             var pythonExe = Path.Combine(scripts, "python.exe");
             if (File.Exists(pythonExe))
@@ -514,6 +623,104 @@ public sealed class BackendProcessService : IDisposable
             }
         }
         return null;
+    }
+
+    private static string? s_lastVenvHealthError;
+
+    /// <summary>最近一次 venv 可移植性预检失败的原因（供启动失败诊断展示）。</summary>
+    public static string? LastVenvHealthError => s_lastVenvHealthError;
+
+    /// <summary>检查 venv 是否可在当前机器运行：pyvenv.cfg 的 home 指向的
+    /// base 解释器存在才可用。损坏时返回中文诊断，健康返回 null。</summary>
+    internal static string? CheckVenvPortability(string venvRoot)
+    {
+        try
+        {
+            var cfg = Path.Combine(venvRoot, "pyvenv.cfg");
+            if (!File.Exists(cfg))
+            {
+                return null; // 非 venv（如便携 python 目录），不做此检查
+            }
+            foreach (var line in File.ReadAllLines(cfg))
+            {
+                var trimmed = line.Trim();
+                if (!trimmed.StartsWith("home", StringComparison.OrdinalIgnoreCase)
+                    || !trimmed.Contains("="))
+                {
+                    continue;
+                }
+                var home = trimmed[(trimmed.IndexOf('=') + 1)..].Trim().Trim('"');
+                if (string.IsNullOrEmpty(home))
+                {
+                    continue;
+                }
+                // home 指向 base 解释器所在目录；找其中的 python.exe / python3xx.dll
+                var baseExe = Path.Combine(home, "python.exe");
+                if (File.Exists(baseExe))
+                {
+                    return null; // base 解释器在，健康
+                }
+                // 兼容 home 指向解释器文件本身的写法
+                if (File.Exists(home))
+                {
+                    return null;
+                }
+                return $"虚拟环境绑定的基础 Python 不存在：pyvenv.cfg home = {home}。" +
+                       "该环境是在另一台机器上创建的，无法在本机运行。" +
+                       "请使用安装包的「修复」或重新安装（新版安装包自带便携运行时），" +
+                       "或在设置页「后端命令」指向本机可用的 python.exe。";
+            }
+            return null;
+        }
+        catch
+        {
+            return null; // 读取失败不阻断启动，交由后续健康检查兜底
+        }
+    }
+
+    /// <summary>解析可用于独立安装进程的 python 解释器与 PYTHONPATH 源码目录。
+    /// 返回 false 表示无法确定解释器（调用方应回退到后端 SSE 安装路径）。
+    /// 典型来源：BackendCommand 配置的 python、项目 .venv\Scripts\python.exe、
+    /// doc2mind.exe 同目录的 venv python.exe、PATH 上的 python。</summary>
+    public bool TryGetPythonExecutable(out string pythonExe, out string? srcDir)
+    {
+        pythonExe = "";
+        srcDir = null;
+        try
+        {
+            var (fileName, argsPrefix) = ResolveBackendCommand();
+            if (!string.IsNullOrEmpty(argsPrefix))
+            {
+                // `python -m doc2mind` 形式：fileName 本身就是解释器
+                pythonExe = fileName;
+            }
+            else
+            {
+                // doc2mind.exe 入口：其所在目录通常是 venv 的 Scripts，找同目录 python.exe
+                var dir = Path.GetDirectoryName(Path.GetFullPath(fileName));
+                if (dir is null)
+                {
+                    return false;
+                }
+                var candidate = Path.Combine(dir, "python.exe");
+                if (!File.Exists(candidate))
+                {
+                    return false;
+                }
+                pythonExe = candidate;
+            }
+            if (!File.Exists(pythonExe))
+            {
+                return false;
+            }
+            srcDir = TryResolveRepoSrcDir();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"解析独立安装 python 失败: {ex.Message}", "Backend");
+            return false;
+        }
     }
 
     /// <summary>用 where 命令查可执行文件绝对路径；找不到返回 null。</summary>

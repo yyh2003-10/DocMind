@@ -48,9 +48,10 @@ public class SkeletonControl : Control
         DependencyProperty.Register(nameof(HighlightBrush), typeof(Brush),
             typeof(SkeletonControl), new PropertyMetadata(null));
 
-    /// <summary>动画低色（默认浅灰）。</summary>
+    /// <summary>动画低色（默认浅灰；OnApplyTemplate 时若主题提供 SkeletonFromColor 则覆盖，
+    /// 避免暗色主题下骨架屏发亮）。</summary>
     public Color FromColor { get; set; } = Color.FromRgb(226, 232, 240);
-    /// <summary>动画高色（默认更浅）。</summary>
+    /// <summary>动画高色（默认更浅；主题提供 SkeletonToColor 时覆盖）。</summary>
     public Color ToColor { get; set; } = Color.FromRgb(247, 250, 252);
 
     // 内部可动画的 brush（避免使用冻结的共享默认值）
@@ -59,7 +60,20 @@ public class SkeletonControl : Control
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
+        ResolveThemeColors();
         StartPulseAnimation();
+    }
+
+    private void ResolveThemeColors()
+    {
+        if (TryFindResource("SkeletonFromColor") is Color from)
+        {
+            FromColor = from;
+        }
+        if (TryFindResource("SkeletonToColor") is Color to)
+        {
+            ToColor = to;
+        }
     }
 
     private void StartPulseAnimation()

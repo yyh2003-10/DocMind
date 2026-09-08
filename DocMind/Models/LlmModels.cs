@@ -86,13 +86,24 @@ public sealed class LlmModelItem
     }
 
     /// <summary>上下文窗口友好显示（如 "128K"、"1M"、"—"）。</summary>
-    public string ContextWindowDisplay => ContextWindow switch
+    public string ContextWindowDisplay
     {
-        null => "—",
-        >= 1_000_000 => $"{ContextWindow / 1_000_000.0:0.#}M",
-        >= 1000 => $"{ContextWindow / 1000.0:0.#}K",
-        _ => ContextWindow.ToString(),
-    };
+        get
+        {
+            if (ContextWindow is null)
+            {
+                return "—";
+            }
+
+            int window = ContextWindow.Value;
+            return window switch
+            {
+                >= 1_000_000 => $"{window / 1_000_000.0:0.#}M",
+                >= 1000 => $"{window / 1000.0:0.#}K",
+                _ => window.ToString(),
+            };
+        }
+    }
 
     /// <summary>完整规格标签（如 "上下文 128K · 最大输出 8K"）。</summary>
     public string FullSpecDisplay => !string.IsNullOrEmpty(SummaryText)

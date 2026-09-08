@@ -3,18 +3,17 @@
                     xmlns:sys="clr-namespace:System;assembly=mscorlib">
 
     <!-- ===================================================================
-         Apple Design System · Light Theme
-         Anchored on Apple HIG system colors
-         Pure white surfaces · clear gray hierarchy · minimal shadows
+         DocMind Design System · Light Theme
+         Deep Indigo primary · warm neutrals · layered elevation
          =================================================================== -->
 
     <!-- ==================== 1. 语义配色 ==================== -->
-    <!-- Primary — Apple System Blue -->
-    <Color x:Key="PrimaryColor">#007AFF</Color>
-    <Color x:Key="PrimaryLight">#E8F2FF</Color>
-    <Color x:Key="PrimaryHover">#0064D6</Color>
-    <Color x:Key="PrimaryActive">#004FAD</Color>
-    <Color x:Key="PrimarySubtle">#CFE5FF</Color>
+    <!-- Primary — Deep Indigo (关联知识深度与思考) -->
+    <Color x:Key="PrimaryColor">#4F46E5</Color>
+    <Color x:Key="PrimaryLight">#EEF2FF</Color>
+    <Color x:Key="PrimaryHover">#4338CA</Color>
+    <Color x:Key="PrimaryActive">#3730A3</Color>
+    <Color x:Key="PrimarySubtle">#C7D2FE</Color>
 
     <!-- Semantic — Apple system colors -->
     <Color x:Key="SuccessColor">#34C759</Color>
@@ -34,7 +33,7 @@
     <Color x:Key="BorderColor">#E5E5EA</Color>
     <Color x:Key="BorderLightColor">#F2F2F7</Color>
     <Color x:Key="HoverColor">#EBEDF0</Color>
-    <Color x:Key="SelectedColor">#E8F2FF</Color>
+    <Color x:Key="SelectedColor">#EEF2FF</Color>
 
     <!-- Text — Apple label hierarchy -->
     <Color x:Key="TextPrimaryColor">#1D1D1F</Color>
@@ -42,8 +41,8 @@
     <Color x:Key="TextTertiaryColor">#AEAEB2</Color>
     <Color x:Key="TextMutedColor">#C7C7CC</Color>
     <Color x:Key="TextInverseColor">#FFFFFF</Color>
-    <Color x:Key="LinkColor">#007AFF</Color>
-    <Color x:Key="AccentColor">#007AFF</Color>
+    <Color x:Key="LinkColor">#4F46E5</Color>
+    <Color x:Key="AccentColor">#4F46E5</Color>
 
     <!-- ==================== Brushes ==================== -->
     <SolidColorBrush x:Key="PrimaryBrush" Color="{StaticResource PrimaryColor}"/>
@@ -71,6 +70,17 @@
     <SolidColorBrush x:Key="HoverBrush" Color="{StaticResource HoverColor}"/>
     <SolidColorBrush x:Key="SelectedBrush" Color="{StaticResource SelectedColor}"/>
 
+    <!-- DocMind Flow 2.0 双轨与画卷系统 -->
+    <SolidColorBrush x:Key="RailBackgroundBrush" Color="#F8FAFC"/>
+    <SolidColorBrush x:Key="DrawerBackgroundBrush" Color="#F1F5F9"/>
+    <SolidColorBrush x:Key="CanvasBackgroundBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="FloatingCardBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="FloatingCardBorderBrush" Color="#E2E8F0"/>
+    <SolidColorBrush x:Key="DocMindEmeraldBrush" Color="#059669"/>
+    <SolidColorBrush x:Key="DocMindEmeraldLightBrush" Color="#ECFDF5"/>
+    <SolidColorBrush x:Key="DocMindCyanBrush" Color="#0EA5E9"/>
+    <SolidColorBrush x:Key="DocMindCyanLightBrush" Color="#F0F9FF"/>
+
     <SolidColorBrush x:Key="TextPrimaryBrush" Color="{StaticResource TextPrimaryColor}"/>
     <SolidColorBrush x:Key="TextSecondaryBrush" Color="{StaticResource TextSecondaryColor}"/>
     <SolidColorBrush x:Key="TextTertiaryBrush" Color="{StaticResource TextTertiaryColor}"/>
@@ -80,12 +90,19 @@
     <SolidColorBrush x:Key="BodyBrush" Color="{StaticResource TextPrimaryColor}"/>
 
     <!-- ==================== 1.5 对话气泡配色 ==================== -->
-    <!-- 用户消息气泡：自上而下的品牌蓝渐变（顶部略亮，底部品牌色，白字可读） -->
-    <LinearGradientBrush x:Key="UserBubbleBrush" StartPoint="0,0" EndPoint="0,1">
-        <GradientStop Color="#3395FF" Offset="0"/>
-        <GradientStop Color="#007AFF" Offset="1"/>
-    </LinearGradientBrush>
-    <SolidColorBrush x:Key="UserBubbleTextBrush" Color="#FFFFFF"/>
+    <!-- 用户消息气泡：浅灰纯色胶囊（现代简约，深色文字），主题切换时两份字典需同步 -->
+    <SolidColorBrush x:Key="UserBubbleBrush" Color="#E9E9EB"/>
+    <SolidColorBrush x:Key="UserBubbleTextBrush" Color="{StaticResource TextPrimaryColor}"/>
+
+    <!-- 对话内 Markdown 排版配色 -->
+    <SolidColorBrush x:Key="ChatCodeBlockBrush" Color="#F6F6F8"/>
+    <SolidColorBrush x:Key="ChatCodeBlockBorderBrush" Color="#E5E5EA"/>
+    <SolidColorBrush x:Key="ChatCodeInlineBrush" Color="#EFEFF2"/>
+    <SolidColorBrush x:Key="ChatQuoteBrush" Color="{StaticResource TextSecondaryColor}"/>
+
+    <!-- 骨架屏脉冲色（SkeletonControl 动画低/高色） -->
+    <Color x:Key="SkeletonFromColor">#E9E9EB</Color>
+    <Color x:Key="SkeletonToColor">#F7F7F9</Color>
 
     <!-- ==================== 2. 间距体系 ==================== -->
     <sys:Double x:Key="SpaceXs">4</sys:Double>
@@ -97,20 +114,27 @@
     <sys:Double x:Key="SpaceXxxl">32</sys:Double>
 
     <!-- ==================== 3. 圆角体系 ==================== -->
-    <CornerRadius x:Key="CornerSm">6</CornerRadius>
-    <CornerRadius x:Key="CornerMd">10</CornerRadius>
-    <CornerRadius x:Key="CornerLg">14</CornerRadius>
-    <CornerRadius x:Key="CornerXl">20</CornerRadius>
+    <CornerRadius x:Key="CornerSm">4</CornerRadius>
+    <CornerRadius x:Key="CornerMd">8</CornerRadius>
+    <CornerRadius x:Key="CornerLg">12</CornerRadius>
+    <CornerRadius x:Key="CornerXl">16</CornerRadius>
+    <CornerRadius x:Key="CornerCapsule">18</CornerRadius>
+    <CornerRadius x:Key="CornerPill">999</CornerRadius>
 
-    <!-- ==================== 4. 阴影效果 — Apple 极简风格 ==================== -->
-    <DropShadowEffect x:Key="ShadowSm" BlurRadius="2" ShadowDepth="1"
-                      Color="#0A000000" Opacity="0.04" RenderingBias="Performance"/>
-    <DropShadowEffect x:Key="ShadowMd" BlurRadius="8" ShadowDepth="2"
-                      Color="#10000000" Opacity="0.06" RenderingBias="Performance"/>
-    <DropShadowEffect x:Key="ShadowLg" BlurRadius="24" ShadowDepth="8"
-                      Color="#14000000" Opacity="0.08" RenderingBias="Performance"/>
-    <DropShadowEffect x:Key="ShadowCard" BlurRadius="4" ShadowDepth="1"
-                      Color="#0A000000" Opacity="0.04" RenderingBias="Performance"/>
+    <!-- ==================== 4. 阴影效果 — 强化层级 ==================== -->
+    <DropShadowEffect x:Key="ShadowSm" BlurRadius="3" ShadowDepth="1"
+                      Color="#000000" Opacity="0.08" RenderingBias="Performance"/>
+    <DropShadowEffect x:Key="ShadowMd" BlurRadius="12" ShadowDepth="2"
+                      Color="#000000" Opacity="0.12" RenderingBias="Performance"/>
+    <DropShadowEffect x:Key="ShadowLg" BlurRadius="28" ShadowDepth="8"
+                      Color="#000000" Opacity="0.16" RenderingBias="Performance"/>
+    <DropShadowEffect x:Key="ShadowCard" BlurRadius="6" ShadowDepth="1"
+                      Color="#000000" Opacity="0.06" RenderingBias="Performance"/>
+    <DropShadowEffect x:Key="ShadowFloating" BlurRadius="24" ShadowDepth="3"
+                      Color="#1E1B4B" Opacity="0.20" RenderingBias="Performance"/>
+    <!-- 按钮悬停阴影（品牌色染色） -->
+    <DropShadowEffect x:Key="ShadowButtonHover" BlurRadius="12" ShadowDepth="2"
+                      Color="#4F46E5" Opacity="0.20" Direction="270" RenderingBias="Performance"/>
 
     <!-- ==================== 5. 字体体系 ==================== -->
     <Style TargetType="TextElement">
@@ -129,26 +153,26 @@
     </Style>
 
     <Style x:Key="TitleText" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="28"/>
-        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="FontSize" Value="26"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
     </Style>
     <Style x:Key="SubtitleText" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="17"/>
-        <Setter Property="FontWeight" Value="Semibold"/>
+        <Setter Property="FontSize" Value="16"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
     </Style>
     <Style x:Key="BodyText" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="15"/>
-        <Setter Property="FontWeight" Value="Medium"/>
+        <Setter Property="FontSize" Value="14.5"/>
+        <Setter Property="FontWeight" Value="Regular"/>
         <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
     </Style>
     <Style x:Key="CaptionText" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontSize" Value="12.5"/>
         <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
     </Style>
     <Style x:Key="SmallText" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontSize" Value="11.5"/>
         <Setter Property="Foreground" Value="{StaticResource TextTertiaryBrush}"/>
     </Style>
     <Style x:Key="MonoText" TargetType="TextBlock">
@@ -161,8 +185,39 @@
         <Setter Property="Background" Value="{StaticResource CardBrush}"/>
         <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
         <Setter Property="BorderThickness" Value="1"/>
-        <Setter Property="CornerRadius" Value="14"/>
-        <Setter Property="Padding" Value="20"/>
+        <Setter Property="CornerRadius" Value="{StaticResource CornerLg}"/>
+        <Setter Property="Padding" Value="16"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+    </Style>
+
+    <!-- 工具条卡片：顶部操作区统一容器 -->
+    <Style x:Key="ToolbarBorderStyle" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="{StaticResource CornerLg}"/>
+        <Setter Property="Padding" Value="14,10"/>
+        <Setter Property="Margin" Value="0,0,0,12"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+    </Style>
+
+    <!-- 内容区卡片：列表/详情/图表等 -->
+    <Style x:Key="SectionCardStyle" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="{StaticResource CornerLg}"/>
+        <Setter Property="Padding" Value="14"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+    </Style>
+
+    <!-- 统计/指标卡片：概览数字网格 -->
+    <Style x:Key="StatCardStyle" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="{StaticResource CornerLg}"/>
+        <Setter Property="Padding" Value="16,14"/>
         <Setter Property="SnapsToDevicePixels" Value="True"/>
     </Style>
 
@@ -174,15 +229,15 @@
         <Setter Property="Padding" Value="24,10"/>
         <Setter Property="MinHeight" Value="40"/>
         <Setter Property="MinWidth" Value="80"/>
-        <Setter Property="FontWeight" Value="Semibold"/>
-        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="FontSize" Value="14.5"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="UseLayoutRounding" Value="True"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
                     <Border x:Name="Root" Background="{TemplateBinding Background}"
-                            CornerRadius="10" Padding="{TemplateBinding Padding}"
+                            CornerRadius="8" Padding="{TemplateBinding Padding}"
                             SnapsToDevicePixels="True">
                         <ContentPresenter HorizontalAlignment="Center"
                                           VerticalAlignment="Center"
@@ -190,13 +245,16 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Root" Property="Opacity" Value="0.88"/>
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource PrimaryHoverBrush}"/>
+                            <Setter TargetName="Root" Property="Effect" Value="{StaticResource ShadowButtonHover}"/>
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="Root" Property="Opacity" Value="0.76"/>
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource PrimaryActiveBrush}"/>
+                            <Setter TargetName="Root" Property="Effect" Value="{x:Null}"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter TargetName="Root" Property="Opacity" Value="0.42"/>
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource PrimarySubtleBrush}"/>
+                            <Setter TargetName="Root" Property="Opacity" Value="0.5"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -254,15 +312,15 @@
         <Setter Property="Padding" Value="24,10"/>
         <Setter Property="MinHeight" Value="40"/>
         <Setter Property="MinWidth" Value="80"/>
-        <Setter Property="FontWeight" Value="Semibold"/>
-        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="FontSize" Value="14.5"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="UseLayoutRounding" Value="True"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
                     <Border x:Name="Root" Background="{TemplateBinding Background}"
-                            CornerRadius="10" Padding="{TemplateBinding Padding}"
+                            CornerRadius="8" Padding="{TemplateBinding Padding}"
                             SnapsToDevicePixels="True">
                         <ContentPresenter HorizontalAlignment="Center"
                                           VerticalAlignment="Center"
@@ -270,13 +328,15 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Root" Property="Opacity" Value="0.88"/>
+                            <Setter TargetName="Root" Property="Background" Value="#DC2626"/>
+                            <Setter TargetName="Root" Property="Effect" Value="{StaticResource ShadowButtonHover}"/>
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="Root" Property="Opacity" Value="0.76"/>
+                            <Setter TargetName="Root" Property="Background" Value="#B91C1C"/>
+                            <Setter TargetName="Root" Property="Effect" Value="{x:Null}"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter TargetName="Root" Property="Opacity" Value="0.42"/>
+                            <Setter TargetName="Root" Property="Opacity" Value="0.5"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -700,6 +760,82 @@
         </Setter>
     </Style>
 
+    <!-- ==================== 14.1 主导航极窄轨项样式 (DocMind Flow 2.0 Rail) ==================== -->
+    <Style x:Key="RailItemStyle" TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Margin" Value="0,3"/>
+        <Setter Property="Width" Value="40"/>
+        <Setter Property="Height" Value="40"/>
+        <Setter Property="HorizontalAlignment" Value="Center"/>
+        <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Grid>
+                        <!-- 左侧指示条：选中时显示细条，未选中隐藏 -->
+                        <Border x:Name="ActiveIndicator"
+                                Width="3" Height="18"
+                                CornerRadius="1.5"
+                                Background="{DynamicResource PrimaryBrush}"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Center"
+                                Margin="-6,0,0,0"
+                                Visibility="Collapsed"/>
+                        <Border x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="10"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="{DynamicResource PrimaryLightBrush}"/>
+                            <Setter TargetName="ActiveIndicator" Property="Visibility" Value="Visible"/>
+                            <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ==================== 14.2 工作区抽屉会话项样式 (DocMind Flow 2.0 Drawer) ==================== -->
+    <Style x:Key="DrawerSessionItemStyle" TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+        <Setter Property="Padding" Value="10,8"/>
+        <Setter Property="Margin" Value="0,2"/>
+        <Setter Property="MinHeight" Value="40"/>
+        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Border x:Name="Root"
+                            Background="{TemplateBinding Background}"
+                            Padding="{TemplateBinding Padding}"
+                            CornerRadius="8"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="{DynamicResource PrimaryLightBrush}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- ==================== 15. ProgressBar 样式 ==================== -->
     <Style TargetType="ProgressBar">
         <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
@@ -710,7 +846,7 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ProgressBar">
-                    <Grid MinHeight="{TemplateBinding MinHeight}">
+                    <Grid x:Name="TemplateRoot" MinHeight="{TemplateBinding MinHeight}" ClipToBounds="True">
                         <Border x:Name="PART_Track"
                                 Background="{TemplateBinding Background}"
                                 CornerRadius="3"
@@ -720,11 +856,43 @@
                                 CornerRadius="3"
                                 HorizontalAlignment="Left"
                                 SnapsToDevicePixels="True"/>
+                        <!-- 不确定性模式下的自适应全宽流动高光波 -->
+                        <Border x:Name="IndeterminateOverlay"
+                                CornerRadius="3"
+                                SnapsToDevicePixels="True"
+                                Visibility="Collapsed">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,0" MappingMode="RelativeToBoundingBox">
+                                    <LinearGradientBrush.Transform>
+                                        <TranslateTransform x:Name="FlowTransform" X="-1.0"/>
+                                    </LinearGradientBrush.Transform>
+                                    <GradientStop Color="#00000000" Offset="0.0"/>
+                                    <GradientStop Color="{StaticResource PrimaryColor}" Offset="0.25"/>
+                                    <GradientStop Color="#B0FFFFFF" Offset="0.5"/>
+                                    <GradientStop Color="{StaticResource PrimaryColor}" Offset="0.75"/>
+                                    <GradientStop Color="#00000000" Offset="1.0"/>
+                                </LinearGradientBrush>
+                            </Border.Background>
+                        </Border>
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsIndeterminate" Value="True">
-                            <Setter TargetName="PART_Indicator" Property="Width" Value="60"/>
-                            <Setter TargetName="PART_Indicator" Property="HorizontalAlignment" Value="Left"/>
+                            <Setter TargetName="PART_Indicator" Property="Visibility" Value="Collapsed"/>
+                            <Setter TargetName="IndeterminateOverlay" Property="Visibility" Value="Visible"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard Name="FlowAnimation">
+                                    <Storyboard RepeatBehavior="Forever">
+                                        <DoubleAnimation
+                                            Storyboard.TargetName="FlowTransform"
+                                            Storyboard.TargetProperty="X"
+                                            From="-1.0" To="1.0"
+                                            Duration="0:0:1.5"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <StopStoryboard BeginStoryboardName="FlowAnimation"/>
+                            </Trigger.ExitActions>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>

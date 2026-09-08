@@ -37,4 +37,26 @@ public partial class ImportView : UserControl
             : DragDropEffects.None;
         e.Handled = true;
     }
+
+    /// <summary>新建分组名称输入框：回车确认、Esc 取消。</summary>
+    private void NewCollectionName_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (DataContext is not ImportViewModel vm)
+        {
+            return;
+        }
+        if (e.Key == System.Windows.Input.Key.Enter)
+        {
+            if (vm.ConfirmCreateCollectionCommand.CanExecute(null))
+            {
+                vm.ConfirmCreateCollectionCommand.Execute(null);
+            }
+            e.Handled = true;
+        }
+        else if (e.Key == System.Windows.Input.Key.Escape)
+        {
+            vm.CancelCreateCollectionCommand.Execute(null);
+            e.Handled = true;
+        }
+    }
 }

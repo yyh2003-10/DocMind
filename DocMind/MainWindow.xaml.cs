@@ -10,10 +10,10 @@ namespace DocMind
         {
             InitializeComponent();
 
-            // 订阅通知服务 → Toast 层显示
+            // 订阅通知服务 → Toast 层显示（异步投递，避免工作线程被 UI 调度阻塞）
             notificationService.NotificationAdded += notification =>
             {
-                Dispatcher.Invoke(() => ToastLayer.Show(notification));
+                Dispatcher.InvokeAsync(() => ToastLayer.Show(notification));
             };
 
             // 窗口状态变化时自适应圆角与边框，防止最大化时屏幕边缘裁剪
