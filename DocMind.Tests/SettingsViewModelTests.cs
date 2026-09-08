@@ -63,7 +63,9 @@ fake ??= new FakeDoc2kbApiService();
         return Task.CompletedTask;
     };
     var backend = new BackendProcessService(appSettings);
-    var gpuWarning = new GpuWarningViewModel(fake, backend, notifications);
+    var gpuWarning = new GpuWarningViewModel(
+        fake, backend,
+        new FakePluginInstallService(), notifications);
     return new SettingsViewModel(appSettings, notifications, themeService, fake, gpuWarning, backend);
     }
 
@@ -1151,7 +1153,7 @@ fake ??= new FakeDoc2kbApiService();
     }
 
     [Fact]
-    public async Task SaveProfile_ApiKeyPersistsEncrypted_AndReloadsPlaintext()
+    public void SaveProfile_ApiKeyPersistsEncrypted_AndReloadsPlaintext()
     {
         // 落盘隔离到 temp 目录（SettingsFileFixture 已保证）
         var settings = new AppSettings();
@@ -1183,7 +1185,7 @@ fake ??= new FakeDoc2kbApiService();
     }
 
     [Fact]
-    public async Task GithubToken_PersistsEncrypted_AndReloadsPlaintext()
+    public void GithubToken_PersistsEncrypted_AndReloadsPlaintext()
     {
         // 落盘隔离到 temp 目录（SettingsFileFixture 已保证）
         var settings = new AppSettings();
@@ -1212,7 +1214,7 @@ fake ??= new FakeDoc2kbApiService();
     }
 
     [Fact]
-    public async Task GithubToken_BlankSave_KeepsOriginal()
+    public void GithubToken_BlankSave_KeepsOriginal()
     {
         var settings = new AppSettings { GithubToken = "ghp_原值" };
         var vm = CreateVm(settings);
@@ -1225,7 +1227,7 @@ fake ??= new FakeDoc2kbApiService();
     }
 
     [Fact]
-    public async Task ClearGithubToken_RemovesOnSave()
+    public void ClearGithubToken_RemovesOnSave()
     {
         var settings = new AppSettings { GithubToken = "ghp_原值" };
         var vm = CreateVm(settings);

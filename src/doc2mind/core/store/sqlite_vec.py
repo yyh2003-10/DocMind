@@ -239,10 +239,45 @@ CREATE TABLE IF NOT EXISTS documents (
     tags          TEXT,                         -- AI 标签，JSON 数组文本（curate）
     summary       TEXT,                         -- AI 摘要（curate）
     enriched_at   TEXT,                         -- 最近一次 AI 整理时间（curate）
-    UNIQUE (collection, source)
+    deleted_at    TEXT                          -- 软删除标记 NULL=正常；非NULL=软删除时间
+    -- 注意：原 UNIQUE 约束已替换为 _migrate_documents_meta 里的部分索引
+    -- （WHERE deleted_at IS NULL），软删文档需让出 collection+source 给活跃文档
 );
 CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection);
 CREATE INDEX IF NOT EXISTS idx_documents_hash      ON documents(file_hash);
+-- 软删除标记：deleted_at 非 NULL = 已软删除（chunks/向量已物理删，但
+-- documents 行保留以支持恢复与审计）。list/search 路径须过滤 IS NULL。
+-- 列由 _migrate_documents_meta 幂等补齐；旧库缺列自动 ALTER。
+
+-- 软删除审计表（trash）：软删除时写入 document_id + 整行 snapshot。
+-- GC 由 purge_trash(older_than_days) 物理清空 trash 行 + documents 行。
+CREATE TABLE IF NOT EXISTS trash (
+    document_id   TEXT    PRIMARY KEY,            -- 与 documents.id 对齐
+    source        TEXT    NOT NULL,
+    collection    TEXT    NOT NULL,
+    deleted_at    TEXT    NOT NULL,
+    snapshot_json TEXT    NOT NULL,               -- documents 整行 JSON（不含 id 重复）
+    purged_at     TEXT                             -- GC 完成时间；NULL = 仍在 30 天保留期
+);
+CREATE INDEX IF NOT EXISTS idx_trash_deleted_at ON trash(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_trash_purged_at  ON trash(purged_at);
+
+-- AI 知识库自动整理（curate）留痕表：每次 curate() 跑完写一行。
+-- 让质量看板显示「过去 7 天跑过几次整理、动了哪些文档」。
+CREATE TABLE IF NOT EXISTS curate_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at      TEXT    NOT NULL,
+    finished_at     TEXT    NOT NULL,
+    dry_run         INTEGER NOT NULL,              -- 0/1
+    collection      TEXT,                          -- NULL = 跨集合
+    actions_json    TEXT    NOT NULL,              -- JSON 列表
+    changed_doc_ids TEXT    NOT NULL DEFAULT '[]', -- JSON 列表
+    skipped_count   INTEGER NOT NULL DEFAULT 0,
+    error_count     INTEGER NOT NULL DEFAULT 0,
+    elapsed_ms      INTEGER NOT NULL DEFAULT 0,
+    note            TEXT                            -- 触发来源（agent/http/auto_curate 等）
+);
+CREATE INDEX IF NOT EXISTS idx_curate_runs_started ON curate_runs(started_at);
 
 -- 分块元数据（与向量表对齐）
 CREATE TABLE IF NOT EXISTS chunks_meta (
@@ -708,12 +743,16 @@ class VectorStore:
         return self._fts_available
 
     # --- schema 迁移 ---
-    # documents 表 AI 整理元数据列（curate 功能）。旧库缺列时补齐。
+    # documents 表 AI 整理元数据列（curate 功能 + 软删除）。旧库缺列时补齐。
+    # 注意：deleted_at 必须与 curate 元数据列在同一处补齐，否则会因迁移顺序
+    # 不一致导致 list_documents 报「no such column」。
     _DOCUMENTS_META_COLUMNS: tuple[tuple[str, str], ...] = (
         ("title", "TEXT"),
         ("tags", "TEXT"),
         ("summary", "TEXT"),
         ("enriched_at", "TEXT"),
+        # 软删除标记：NULL = 正常；非 NULL = 软删除时间（ISO8601）。
+        ("deleted_at", "TEXT"),
     )
 
     @staticmethod
@@ -722,6 +761,10 @@ class VectorStore:
 
         CREATE TABLE IF NOT EXISTS 对已存在的旧表是 no-op，缺的列需在这里
         显式补上；重复调用安全（已存在的列跳过）。
+
+        顺带把旧库"完整 UNIQUE(collection, source)"索引升级为部分索引
+        "WHERE deleted_at IS NULL"——软删文档需让出 (collection, source) 给
+        重新摄入的新文档，否则会触发 UNIQUE 冲突。
         """
         existing = {
             str(row[1]) for row in conn.execute("PRAGMA table_info(documents)").fetchall()
@@ -729,6 +772,22 @@ class VectorStore:
         for name, decl in VectorStore._DOCUMENTS_META_COLUMNS:
             if name not in existing:
                 conn.execute(f"ALTER TABLE documents ADD COLUMN {name} {decl}")
+
+        # 索引迁移：旧库（CREATE TABLE 内的 UNIQUE(collection, source) 约束）
+        # 无法在线移除（SQLite 不支持 DROP CONSTRAINT，只能重建表），因此
+        # **保留**旧库的完整 UNIQUE 约束——其已知限制是"软删后重新摄入同源
+        # 文件会触发 UNIQUE 冲突"；新库（_SCHEMA_SQL）已改用部分索引
+        # WHERE deleted_at IS NULL，无此限制。为减少旧库用户受此影响的概率，
+        # 这里只确保新库/部分索引存在，不尝试 drop 隐式索引。
+        #
+        # 注意：不要 DROP 任何 sqlite_autoindex_*（PRIMARY KEY 的隐式索引，
+        # 报 "index associated with UNIQUE or PRIMARY KEY constraint cannot be
+        # dropped"）。自命名 UNIQUE 索引（若有）也不主动 drop——重建表才是
+        # 干净方案，但风险高，留待 compile engine（L3）阶段处理。
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_active_source"
+            " ON documents(collection, source) WHERE deleted_at IS NULL"
+        )
 
     # --- 写入 ---
     @_retry_on_locked
@@ -866,10 +925,16 @@ class VectorStore:
             try:
                 conn.execute("BEGIN")
 
-                # 1. 删除同 (collection, source) 的旧文档及分块/向量/FTS
+                # 1. 删除同 (collection, source) 的旧**活跃**文档及分块/向量/FTS。
+                # 软删除文档（deleted_at 非空）不动——保留 trash 审计链，避免
+                # 重新摄入同源文件时静默破坏 30 天后悔期。如果同源文件既被软删
+                # 又被重新摄入，恢复后会出现元数据 vs. 实际 chunks 不一致，用户
+                # 在 restore 提示里需明确看到「需重新摄入完成迁移」。
                 old_ids = [
                     r[0] for r in conn.execute(
-                        "SELECT id FROM documents WHERE source = ? AND collection = ?",
+                        "SELECT id FROM documents"
+                        " WHERE source = ? AND collection = ?"
+                        " AND deleted_at IS NULL",
                         (doc.source, doc.collection),
                     ).fetchall()
                 ]
@@ -929,14 +994,28 @@ class VectorStore:
         chunks: Sequence[Chunk],
         embeddings: Sequence,
     ) -> int:
-        """在已开启的事务内插入分块（调用方负责锁 / BEGIN / COMMIT / ROLLBACK）。"""
+        """在已开启的事务内插入分块（调用方负责锁 / BEGIN / COMMIT / ROLLBACK）。
+
+        两段式批量写：先逐行写 vec_chunks 拿 rowid（vec0 虚拟表的 rowid
+        由 C 层分配，保持与历史一致的分配方式），随后把 chunks_meta /
+        bm25_index / sparse_terms 合并为 executemany 批量写。jieba 分词、
+        sparse 词项、extra JSON 等纯 Python 开销在收集期完成，长文档
+        （数千分块）的 SQL 往返从每 chunk 3-4 次降为 3 次。
+        """
+        excluded_keys = {
+            "type", "page", "sheet", "slide", "heading",
+            "language", "level", "chunk_index",
+        }
+        meta_rows: list[tuple] = []
+        fts_rows: list[tuple] = []
+        sparse_rows: list[tuple] = []
+        vec_ids: list[int] = []
         inserted = 0
+
+        # --- 第一段：向量表逐行插入，收集分配到的 chunk id ---
         for chunk, emb in zip(chunks, embeddings, strict=False):
             # 序列化向量为 bytes（vec0 接受 BLOB）
             emb_bytes = self._to_bytes(emb)
-            meta = chunk.metadata
-
-            # 1. 插入向量，拿 id
             cur = conn.execute(
                 "INSERT INTO vec_chunks(embedding) VALUES (?)",
                 (emb_bytes,),
@@ -944,14 +1023,41 @@ class VectorStore:
             vec_id = cur.lastrowid
             if vec_id is None:
                 raise StoreError("无法获取 vec_chunks.id")
+            vec_ids.append(vec_id)
 
-            # 2. 插入 chunks_meta
-            excluded_keys = {
-                "type", "page", "sheet", "slide", "heading",
-                "language", "level", "chunk_index",
-            }
+            meta = chunk.metadata
             extra = {k: v for k, v in meta.items() if k not in excluded_keys}
-            conn.execute(
+            meta_rows.append((
+                vec_id, document_id, chunk.content, chunk.tokens,
+                int(meta.get("chunk_index", 0)),
+                collection, source, fmt,
+                meta.get("type"),
+                meta.get("page"),
+                meta.get("sheet"),
+                meta.get("slide"),
+                meta.get("heading"),
+                meta.get("language"),
+                json.dumps(extra, ensure_ascii=False),
+            ))
+            if self._fts_available:
+                # jieba 分词在收集期完成，写库走 executemany
+                fts_rows.append((
+                    segment(chunk.content, self.bm25_jieba_enabled),
+                    collection,
+                    vec_id,
+                ))
+            if self.sparse_retrieval_enabled:
+                sparse_rows.extend(
+                    (t, vec_id, w, collection)
+                    for t, w in sparse_token_weights(
+                        chunk.content, self.bm25_jieba_enabled
+                    )
+                )
+            inserted += 1
+
+        # --- 第二段：普通表批量写 ---
+        if meta_rows:
+            conn.executemany(
                 """
                 INSERT INTO chunks_meta
                     (id, document_id, content, tokens, chunk_index,
@@ -959,41 +1065,52 @@ class VectorStore:
                      sheet, slide, heading, language, extra)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    vec_id, document_id, chunk.content, chunk.tokens,
-                    int(meta.get("chunk_index", 0)),
-                    collection, source, fmt,
-                    meta.get("type"),
-                    meta.get("page"),
-                    meta.get("sheet"),
-                    meta.get("slide"),
-                    meta.get("heading"),
-                    meta.get("language"),
-                    json.dumps(extra, ensure_ascii=False),
-                ),
+                meta_rows,
+            )
+        if fts_rows:
+            conn.executemany(
+                "INSERT INTO bm25_index(content, collection, chunk_id) VALUES (?, ?, ?)",
+                fts_rows,
+            )
+        if sparse_rows:
+            # 首删后插保持幂等（批量合并为一次，替代逐 chunk 删除）
+            self._delete_sparse_in_txn(conn, vec_ids)
+            conn.executemany(
+                "INSERT INTO sparse_terms(term, chunk_id, weight, collection)"
+                " VALUES (?, ?, ?, ?)",
+                sparse_rows,
             )
 
-            # 3. 插入 FTS5 索引（jieba 模式下存分词后文本）
-            if self._fts_available:
-                conn.execute(
-                    "INSERT INTO bm25_index(content, collection, chunk_id) VALUES (?, ?, ?)",
-                    (
-                        segment(chunk.content, self.bm25_jieba_enabled),
-                        collection,
-                        vec_id,
-                    ),
-                )
-            # 3.5 稀疏向量倒排索引（D2，开启时）
-            if self.sparse_retrieval_enabled:
-                self._insert_sparse_terms_in_txn(conn, vec_id, chunk.content, collection)
-            inserted += 1
-
-        # 4. 更新文档 chunk_count（绝对值写入，不累加）
+        # 更新文档 chunk_count（绝对值写入，不累加）
         conn.execute(
             "UPDATE documents SET chunk_count = ?, updated_at = ? WHERE id = ?",
             (inserted, _now_iso(), document_id),
         )
         return inserted
+
+    def _delete_graph_chunk_links_in_txn(
+        self, conn: sqlite3.Connection, chunk_ids: Sequence[int]
+    ) -> None:
+        """防御式清理知识图谱的分块关联（chunk_entities）悬空行。
+
+        与 GraphStore 共用同一 DB 文件但 schema 独立，因此先探测表是否存在
+        （从未跑过 extract 的新库没有这些表），存在才删，避免依赖耦合。
+        这同时解决两个问题：
+        - 软删后 chunk_entities 悬空行永不回收（存储缓慢增长）；
+        - 软删 + 恢复后重新 extract 会重复建图（chunk_entities 清了就不重复）。
+        """
+        if not chunk_ids:
+            return
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_entities'"
+        ).fetchone()
+        if row is None:
+            return
+        placeholders = ",".join("?" * len(chunk_ids))
+        conn.execute(
+            f"DELETE FROM chunk_entities WHERE chunk_id IN ({placeholders})",
+            list(chunk_ids),
+        )
 
     def _delete_document_chunks_in_txn(
         self, conn: sqlite3.Connection, document_id: str
@@ -1018,30 +1135,46 @@ class VectorStore:
                     chunk_ids,
                 )
             self._delete_sparse_in_txn(conn, chunk_ids)
+            self._delete_graph_chunk_links_in_txn(conn, chunk_ids)
             conn.execute(
                 f"DELETE FROM chunks_meta WHERE id IN ({placeholders})",
                 chunk_ids,
             )
         return chunk_ids
 
-    # --- 删除 ---
+    # --- 删除（软删除：保留 documents 行 30 天，chunks/向量物理删） ---
     @_retry_on_locked
     def delete_document(self, document_id: str) -> int:
-        """删除文档及其所有分块与向量。
+        """软删除文档：写 trash 表 + documents.deleted_at 标记 + 物理删 chunks/向量。
+
+        与旧版差异：
+        - 不再 DELETE FROM documents（行保留以支持 restore_document 恢复元数据）
+        - chunks_meta / vec_chunks / bm25_index / sparse_terms 仍物理删，检索不可见
+        - 30 天内可调用 restore_document(id) 把 deleted_at 置 NULL 恢复元数据；
+          恢复后需要重新索引才能被检索（向量/FTS 已物理删）
+        - 空集合清理逻辑禁用：软删除时 documents 行仍在，无法用 COUNT=0 判定空集合
 
         Returns:
-            删除的 chunk 数；-1 表示文档不存在（哨兵值，调用方据此返回 404）。
+            删除的 chunk 数；-1 表示文档不存在（哨兵值，调用方据此返回 404）；
+            -2 表示文档已处于软删除状态（idempotent：重复调用不抛错）。
         """
         with self._lock:
             self._require_open()
             conn = self._conn
             try:
                 # 先查文档是否存在（避免误删孤儿 chunk）
-                exists = conn.execute(
-                    "SELECT 1 FROM documents WHERE id = ?", (document_id,)
+                doc_row = conn.execute(
+                    "SELECT * FROM documents WHERE id = ?", (document_id,)
                 ).fetchone()
-                if exists is None:
+                if doc_row is None:
                     return -1
+
+                # 解析行：与 list_documents / upsert_document 的列顺序对齐
+                # (id, source, collection, format, file_hash, size_bytes, page_count,
+                #  chunk_count, created_at, updated_at, title, tags, summary, enriched_at,
+                #  deleted_at)
+                if doc_row[14]:  # deleted_at 非空 = 已软删
+                    return -2
 
                 conn.execute("BEGIN")
                 # 取该文档所有 chunk_id
@@ -1051,47 +1184,57 @@ class VectorStore:
                 ).fetchall()
                 chunk_ids = [r[0] for r in rows]
 
-                # 删向量
+                # 物理删向量 / FTS / 稀疏 / meta（与硬删除同逻辑）
                 if chunk_ids:
                     placeholders = ",".join("?" * len(chunk_ids))
                     conn.execute(
                         f"DELETE FROM vec_chunks WHERE id IN ({placeholders})",
                         chunk_ids,
                     )
-                    # 删 FTS（chunk_id TEXT affinity，需 CAST 才能匹配整型参数）
                     if self._fts_available:
                         conn.execute(
                             f"DELETE FROM bm25_index WHERE CAST(chunk_id AS INTEGER) IN ({placeholders})",
                             chunk_ids,
                         )
-                    # 删稀疏向量倒排项（D2）
                     self._delete_sparse_in_txn(conn, chunk_ids)
-                    # 删 meta
+                    self._delete_graph_chunk_links_in_txn(conn, chunk_ids)
                     conn.execute(
                         f"DELETE FROM chunks_meta WHERE id IN ({placeholders})",
                         chunk_ids,
                     )
-                # 删文档前先记录 collection 名，用于判断是否需要清理空集合
-                doc_col_row = conn.execute(
-                    "SELECT collection FROM documents WHERE id = ?",
-                    (document_id,),
-                ).fetchone()
-                doc_collection = doc_col_row[0] if doc_col_row else None
 
-                # 删文档
-                conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+                # 写 trash 审计行（snapshot_json 存整行便于人工核验/恢复元数据）
+                now = _now_iso()
+                snapshot = {
+                    "id": doc_row[0],
+                    "source": doc_row[1],
+                    "collection": doc_row[2],
+                    "format": doc_row[3],
+                    "file_hash": doc_row[4],
+                    "size_bytes": doc_row[5],
+                    "page_count": doc_row[6],
+                    "chunk_count": doc_row[7],
+                    "created_at": doc_row[8],
+                    "updated_at": doc_row[9],
+                    "title": doc_row[10],
+                    "tags": doc_row[11],
+                    "summary": doc_row[12],
+                    "enriched_at": doc_row[13],
+                }
+                conn.execute(
+                    "INSERT OR REPLACE INTO trash"
+                    "(document_id, source, collection, deleted_at, snapshot_json, purged_at)"
+                    " VALUES (?, ?, ?, ?, ?, NULL)",
+                    (doc_row[0], doc_row[1], doc_row[2], now, json.dumps(snapshot, ensure_ascii=False)),
+                )
 
-                # 若集合内已无文档且集合表有对应记录，自动清理空集合
-                if doc_collection:
-                    remaining = conn.execute(
-                        "SELECT COUNT(*) FROM documents WHERE collection = ?",
-                        (doc_collection,),
-                    ).fetchone()
-                    if remaining and remaining[0] == 0:
-                        conn.execute(
-                            "DELETE FROM collections WHERE name = ?",
-                            (doc_collection,),
-                        )
+                # 软删除 documents 行（保留行 + deleted_at 标记）
+                conn.execute(
+                    "UPDATE documents SET deleted_at = ?, updated_at = ? WHERE id = ?",
+                    (now, now, document_id),
+                )
+                # 不再清空集合：documents 行还在，COUNT(*) > 0 保持原状。
+                # 用户恢复后集合自然在；GC 物理删 trash + documents 时再联动清空集合。
 
                 conn.execute("COMMIT")
                 return len(chunk_ids)
@@ -1100,8 +1243,211 @@ class VectorStore:
                     conn.execute("ROLLBACK")
                 raise StoreError(f"删除文档失败: {e}") from e
 
+    @_retry_on_locked
+    def restore_document(self, document_id: str) -> bool:
+        """恢复软删除的文档（仅元数据层面：deleted_at 置 NULL）。
+
+        注意：chunks_meta / vec_chunks / bm25_index / sparse_terms 在软删除时已
+        物理删除，本接口**不重建**。恢复后文档出现在 list_documents 中，但
+        不会被检索命中，直到用户重新摄入（ingest 同源文件，file_hash 去重会
+        自动跳过）后调用 reindex 才能恢复全文检索。
+
+        **chunk_count 同步清零**——软删前 chunk_count=N 但实际 chunks_meta 为空，
+        保留 N 会让 list_docs 报告"42 分块"而实际 0 命中，元数据与现实不一致
+        会让 quality_check（只看 ==0 告警）漏报。
+
+        Returns:
+            True = 恢复成功；False = 文档不存在、未处于软删除状态、或
+            恢复会与活跃文档冲突（同 source 已被重新摄入的活跃文档占用）。
+        """
+        with self._lock:
+            self._require_open()
+            conn = self._conn
+            try:
+                now = _now_iso()
+                # 仅当 deleted_at 非空时才置 NULL；文档不存在返回 False。
+                # chunk_count 同步置 0 避免元数据错乱。
+                cur = conn.execute(
+                    "UPDATE documents SET deleted_at = NULL, updated_at = ?,"
+                    " chunk_count = 0"
+                    " WHERE id = ? AND deleted_at IS NOT NULL",
+                    (now, document_id),
+                )
+                if cur.rowcount == 0:
+                    return False
+                # trash 行不删：保留作为审计；purge_trash 时再清
+                return True
+            except sqlite3.IntegrityError:
+                # UNIQUE 冲突：软删后同 source 被重新摄入的活跃文档占用了。
+                # 恢复会让两个同 source 文档并存（部分索引 WHERE deleted_at IS NULL
+                # 阻止），语义上返回"无法恢复"而非抛 500。
+                return False
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"恢复文档失败: {e}") from e
+
+    @_retry_on_locked
+    def list_trash(self, limit: int = 100) -> list[dict[str, Any]]:
+        """列出回收站中的软删除文档（按 deleted_at 倒序）。"""
+        with self._lock:
+            self._require_open()
+            try:
+                rows = self._conn.execute(
+                    "SELECT document_id, source, collection, deleted_at, purged_at"
+                    " FROM trash ORDER BY deleted_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                return [
+                    {
+                        "document_id": r[0],
+                        "source": r[1],
+                        "collection": r[2],
+                        "deleted_at": r[3],
+                        "purged_at": r[4],
+                    }
+                    for r in rows
+                ]
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"列出回收站失败: {e}") from e
+
+    @_retry_on_locked
+    def purge_trash(self, older_than_days: int = 30) -> int:
+        """物理清空超过 N 天的 trash 行 + 联动 documents 行 + 联动空集合清理。
+
+        与 list_documents 不同：purge_trash 删的是已软删除的 documents 行
+        （deleted_at 非空），不是活跃文档。
+
+        Returns:
+            物理删除的 trash 行数。
+        """
+        with self._lock:
+            self._require_open()
+            conn = self._conn
+            try:
+                cutoff = _now_iso_offset(days=-older_than_days)
+                # 找出待清的 document_id 与所在集合
+                rows = conn.execute(
+                    "SELECT document_id, collection FROM trash"
+                    " WHERE purged_at IS NULL AND deleted_at < ?",
+                    (cutoff,),
+                ).fetchall()
+                if not rows:
+                    return 0
+                doc_ids = [r[0] for r in rows]
+                affected_collections = {r[1] for r in rows if r[1]}
+
+                conn.execute("BEGIN")
+                now = _now_iso()
+                placeholders = ",".join("?" * len(doc_ids))
+                # 物理删 documents 行（连带 trash 行一并清）
+                conn.execute(
+                    f"DELETE FROM documents WHERE id IN ({placeholders})"
+                    " AND deleted_at IS NOT NULL",
+                    doc_ids,
+                )
+                conn.execute(
+                    f"DELETE FROM trash WHERE document_id IN ({placeholders})",
+                    doc_ids,
+                )
+                # 联动清空无活跃文档的集合（documents.deleted_at IS NULL = 活跃）
+                for col in affected_collections:
+                    remaining = conn.execute(
+                        "SELECT COUNT(*) FROM documents"
+                        " WHERE collection = ? AND deleted_at IS NULL",
+                        (col,),
+                    ).fetchone()
+                    if remaining and remaining[0] == 0:
+                        conn.execute(
+                            "DELETE FROM collections WHERE name = ?",
+                            (col,),
+                        )
+                conn.execute("COMMIT")
+                # 标记成功条数（不记录 purged_at：物理删后行已不存在）
+                _ = now
+                return len(doc_ids)
+            except Exception as e:  # noqa: BLE001
+                with contextlib.suppress(Exception):
+                    conn.execute("ROLLBACK")
+                raise StoreError(f"清空回收站失败: {e}") from e
+
+    @_retry_on_locked
+    def record_curate_run(
+        self,
+        started_at: str,
+        finished_at: str,
+        dry_run: bool,
+        collection: str | None,
+        actions: list[str],
+        changed_doc_ids: list[str],
+        skipped_count: int,
+        error_count: int,
+        elapsed_ms: int,
+        note: str | None = None,
+    ) -> int:
+        """记录一次 curate 运行的留痕（让 L2 自动化「可观测」）。"""
+        with self._lock:
+            self._require_open()
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO curate_runs"
+                    "(started_at, finished_at, dry_run, collection, actions_json,"
+                    " changed_doc_ids, skipped_count, error_count, elapsed_ms, note)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        started_at,
+                        finished_at,
+                        1 if dry_run else 0,
+                        collection,
+                        json.dumps(actions, ensure_ascii=False),
+                        json.dumps(changed_doc_ids, ensure_ascii=False),
+                        skipped_count,
+                        error_count,
+                        elapsed_ms,
+                        note,
+                    ),
+                )
+                return int(cur.lastrowid or 0)
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"记录 curate 运行失败: {e}") from e
+
+    @_retry_on_locked
+    def list_curate_runs(self, days: int = 7, limit: int = 50) -> list[dict[str, Any]]:
+        """列出近 N 天的 curate 运行记录（按 started_at 倒序）。"""
+        with self._lock:
+            self._require_open()
+            try:
+                cutoff = _now_iso_offset(days=-days)
+                rows = self._conn.execute(
+                    "SELECT id, started_at, finished_at, dry_run, collection,"
+                    " actions_json, changed_doc_ids, skipped_count, error_count,"
+                    " elapsed_ms, note FROM curate_runs"
+                    " WHERE started_at >= ? ORDER BY started_at DESC LIMIT ?",
+                    (cutoff, limit),
+                ).fetchall()
+                return [
+                    {
+                        "id": r[0],
+                        "started_at": r[1],
+                        "finished_at": r[2],
+                        "dry_run": bool(r[3]),
+                        "collection": r[4],
+                        "actions": json.loads(r[5]) if r[5] else [],
+                        "changed_doc_ids": json.loads(r[6]) if r[6] else [],
+                        "skipped_count": r[7],
+                        "error_count": r[8],
+                        "elapsed_ms": r[9],
+                        "note": r[10],
+                    }
+                    for r in rows
+                ]
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"列出 curate 运行失败: {e}") from e
+
     def delete_by_source(self, source: str, collection: str = "default") -> int:
-        """按文件名删除（用于 `doc2mind remove <path>`）。
+        """按 source 精确匹配删除（用于 `doc2mind remove <path>` 全路径场景）。
+
+        `documents.source` 存的是 loader 解析后的绝对路径，所以 caller 必须传
+        完整绝对路径而非 basename。**普通用户按文件名删除请用
+        delete_by_source_basename**，否则会找不到记录。
 
         Returns:
             删除的文档数（0 或 1）
@@ -1110,7 +1456,9 @@ class VectorStore:
             self._require_open()
             try:
                 rows = self._conn.execute(
-                    "SELECT id FROM documents WHERE source = ? AND collection = ?",
+                    "SELECT id FROM documents"
+                    " WHERE source = ? AND collection = ?"
+                    " AND deleted_at IS NULL",
                     (source, collection),
                 ).fetchall()
                 if not rows:
@@ -1121,7 +1469,95 @@ class VectorStore:
             except StoreError:
                 raise
             except Exception as e:  # noqa: BLE001
+                raise StoreError(f"按 source 精确删除失败: {e}") from e
+
+    def delete_by_source_basename(self, basename: str, collection: str = "default") -> int:
+        """按文件名（basename）模糊匹配删除（`doc2mind remove a.md` 这类场景）。
+
+        `documents.source` 是绝对路径，所以用 basename 配合 `LIKE '%/<basename>'`
+        后缀匹配（POSIX 与 Windows 都用 `/` 作路径分隔符——`loader.base.make_source`
+        内部统一替换为 `/`）。仅匹配**活跃**文档；软删文档保留 trash 审计。
+
+        Returns:
+            删除的文档数（0、1 或多个同名文件）
+        """
+        with self._lock:
+            self._require_open()
+            try:
+                # 转义 LIKE 通配符（用户输入的 % / _ 不应被当通配符）
+                escaped = basename.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                rows = self._conn.execute(
+                    "SELECT id FROM documents"
+                    " WHERE source LIKE ? ESCAPE '\\'"
+                    " AND collection = ?"
+                    " AND deleted_at IS NULL",
+                    (f"%/{escaped}", collection),
+                ).fetchall()
+                if not rows:
+                    return 0
+                # 多份同名文件全部软删
+                count = 0
+                for (doc_id,) in rows:
+                    if self.delete_document(doc_id) >= 0:
+                        count += 1
+                return count
+            except StoreError:
+                raise
+            except Exception as e:  # noqa: BLE001
                 raise StoreError(f"按文件名删除失败: {e}") from e
+
+    def find_soft_deleted_document_id(
+        self, target: str, collection: str = "default"
+    ) -> str | None:
+        """在软删除文档中定位 document_id（供 restore_doc 按文件名恢复）。
+
+        匹配策略（与 delete_by_source_basename 保持一致）：
+        1. target 是 26 位 ULID → 直接按 id 查（须处于软删除态）；
+        2. target 含路径分隔符 → 先按完整 source 精确匹配；
+        3. 兜底按 basename `LIKE '%/<name>'` 后缀匹配（documents.source 是绝对路径）。
+
+        走 self._lock（RLock），供 MCP 工具调用，避免裸访问 store._conn
+        绕过锁（同进程共库时是并发读写竞态）。
+
+        Returns:
+            软删除文档的 id；未找到返回 None。
+        """
+        with self._lock:
+            self._require_open()
+            try:
+                # 1. ULID 直查
+                if _looks_like_ulid(target):
+                    row = self._conn.execute(
+                        "SELECT id FROM documents"
+                        " WHERE id = ? AND deleted_at IS NOT NULL",
+                        (target,),
+                    ).fetchone()
+                    return row[0] if row else None
+
+                # 2. 完整 source 精确匹配（target 是绝对路径）
+                if "/" in target or "\\" in target:
+                    row = self._conn.execute(
+                        "SELECT id FROM documents"
+                        " WHERE source = ? AND collection = ?"
+                        " AND deleted_at IS NOT NULL LIMIT 1",
+                        (target, collection),
+                    ).fetchone()
+                    if row:
+                        return row[0]
+
+                # 3. basename 后缀匹配
+                basename = target.replace("\\", "/").rsplit("/", 1)[-1]
+                escaped = basename.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                row = self._conn.execute(
+                    "SELECT id FROM documents"
+                    " WHERE source LIKE ? ESCAPE '\\'"
+                    " AND collection = ?"
+                    " AND deleted_at IS NOT NULL LIMIT 1",
+                    (f"%/{escaped}", collection),
+                ).fetchone()
+                return row[0] if row else None
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"定位软删除文档失败: {e}") from e
 
     # --- AI 整理（curate）写入 ---
     @_retry_on_locked
@@ -1761,7 +2197,11 @@ class VectorStore:
                 )
                 params: list[Any] = []
                 # 兼容极旧数据库：即使迁移尚未清理占位行，也不把它暴露为真实文档。
-                conds: list[str] = ["source != '__collection_placeholder__'"]
+                # 同时排除软删除的文档（deleted_at 非空 → 不算活跃文档）。
+                conds: list[str] = [
+                    "source != '__collection_placeholder__'",
+                    "deleted_at IS NULL",
+                ]
                 if collection:
                     conds.append("collection = ?")
                     params.append(collection)
@@ -1792,7 +2232,11 @@ class VectorStore:
             self._require_open()
             try:
                 # 兼容极旧数据库：占位行不计入真实文档总数。
-                conds: list[str] = ["source != '__collection_placeholder__'"]
+                # 软删除文档（deleted_at 非空）也不计入。
+                conds: list[str] = [
+                    "source != '__collection_placeholder__'",
+                    "deleted_at IS NULL",
+                ]
                 params: list[Any] = []
                 if collection:
                     conds.append("collection = ?")
@@ -1823,7 +2267,7 @@ class VectorStore:
                     SELECT id, source, collection, format, file_hash,
                            size_bytes, page_count, chunk_count,
                            created_at, updated_at, title, tags, summary, enriched_at
-                    FROM documents WHERE id = ?
+                    FROM documents WHERE id = ? AND deleted_at IS NULL
                     """,
                     (document_id,),
                 ).fetchone()
@@ -1859,13 +2303,18 @@ class VectorStore:
         必须走 self._lock：store 可能是跨线程共享的单例（HTTP 服务），
         裸访问 _conn 会与其它线程的写操作并发，触发
         `Recursive use of cursors not allowed` / SQLITE_BUSY。
+
+        软删除文档（deleted_at 非空）不算"已存在"——增量摄入需要重新创建
+        文档，让 chunks_meta/vec_chunks 重新被填充。
         """
         with self._lock:
             if self._conn is None:
                 return None
             try:
                 row = self._conn.execute(
-                    "SELECT id FROM documents WHERE file_hash = ? AND collection = ?",
+                    "SELECT id FROM documents"
+                    " WHERE file_hash = ? AND collection = ?"
+                    " AND deleted_at IS NULL",
                     (file_hash, collection),
                 ).fetchone()
                 return row[0] if row else None
@@ -1878,12 +2327,15 @@ class VectorStore:
             self._require_open()
             try:
                 doc_total = self._conn.execute(
-                    "SELECT COUNT(*) FROM documents WHERE source != '__collection_placeholder__'"
+                    "SELECT COUNT(*) FROM documents"
+                    " WHERE source != '__collection_placeholder__'"
+                    " AND deleted_at IS NULL"
                 ).fetchone()[0]
                 chunk_total = self._conn.execute(
                     "SELECT COUNT(*) FROM chunks_meta"
                 ).fetchone()[0]
                 # 各集合 (doc_count, chunk_count, size_bytes)，包含空集合。
+                # 软删除文档（deleted_at 非空）不计入 doc_count。
                 rows = self._conn.execute(
                     """
                     SELECT c.name,
@@ -1893,6 +2345,7 @@ class VectorStore:
                     FROM collections c
                     LEFT JOIN documents d ON d.collection = c.name
                         AND d.source != '__collection_placeholder__'
+                        AND d.deleted_at IS NULL
                     LEFT JOIN chunks_meta ch ON ch.document_id = d.id
                     GROUP BY c.name
                     """
@@ -1972,6 +2425,20 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def _now_iso_offset(*, days: int = 0) -> str:
+    """相对当前时间的 ISO8601（days 负数 = 过去），用于 cutoff 边界计算。"""
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc).astimezone() + timedelta(days=days)).isoformat(
+        timespec="seconds"
+    )
+
+
 def _new_id() -> str:
     """生成文档/占位记录主键（与 HTTP 层一致：uuid4 hex）。"""
     return uuid.uuid4().hex
+
+
+def _looks_like_ulid(s: str) -> bool:
+    """ULID 是 26 字符的 Crockford Base32 字符串。简化判断：长度 26 且仅含字母数字。"""
+    return len(s) == 26 and s.isalnum()

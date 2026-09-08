@@ -10,9 +10,15 @@ namespace DocMind.ViewModels;
 /// 调试日志页：展示 DebugLog 内存缓冲的实时内容，
 /// 提供"清空缓冲"和"用系统默认应用打开日志文件"两个操作。
 /// </summary>
-public partial class DebugLogViewModel : ViewModelBase
-{
-    public ObservableCollection<string> Lines { get; } = new();
+    public partial class DebugLogViewModel : ViewModelBase
+    {
+        /// <summary>日志行集合。超出上限时整体替换新实例（一次 Reset），避免逐条 RemoveAt 的 O(n²)。</summary>
+        public ObservableCollection<string> Lines
+        {
+            get => _lines;
+            private set => SetProperty(ref _lines, value);
+        }
+        private ObservableCollection<string> _lines = new();
 
     private readonly System.Windows.Threading.Dispatcher _dispatcher;
 
@@ -42,10 +48,12 @@ public partial class DebugLogViewModel : ViewModelBase
         _dispatcher.BeginInvoke(() =>
         {
             Lines.Add(line);
-            // 内存上限保护：缓冲只保留最近 2000 行
-            while (Lines.Count > 2000)
+            // 内存上限保护：缓冲只保留最近 2000 行。
+            // 注意：逐条 RemoveAt(0) 是 O(n) 且每次都触发视图更新，日志洪峰时
+            // 会在 UI 线程累积 O(n²) 开销导致窗口卡死；这里用整体替换触发一次 Reset。
+            if (Lines.Count > 2000)
             {
-                Lines.RemoveAt(0);
+                Lines = new ObservableCollection<string>(Lines.Skip(Lines.Count - 2000));
             }
             OnPropertyChanged(nameof(LineCount));
         });

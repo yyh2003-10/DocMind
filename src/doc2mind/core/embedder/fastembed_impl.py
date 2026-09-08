@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -181,12 +182,46 @@ def first_run_hint() -> str:
     )
 
 
+def _build_model_kwargs(settings: Settings, model: str) -> dict[str, object]:
+    """构造 TextEmbedding 构造参数（仅会话创建期生效项；纯函数便于测试）。"""
+    kwargs: dict[str, object] = {
+        "model_name": model,
+        # token 截断上限：默认 512（bge-small-zh 原生窗口）；长上下文模型
+        # 可经 embed_max_length 放开，避免 chunk_max_tokens=1500 的分块被
+        # 静默截断（超出部分完全不参与向量，检索天然召回不到）。
+        # 非法值（0/负数/过小）回落默认，而非钳到下限。
+        "max_length": (
+            raw
+            if (raw := int(getattr(settings, "embed_max_length", 0) or 0)) >= 64
+            else 512
+        ),
+        "cache_dir": str(settings.embed_cache_dir),
+    }
+    # ONNX intra_op 线程数：0 = onnxruntime 默认；显式设置时须在会话
+    # 创建期传入（运行期不可改）。与物理核数对齐时小模型吞吐最佳。
+    embed_threads = int(getattr(settings, "embed_threads", 0) or 0)
+    if embed_threads > 0:
+        kwargs["threads"] = embed_threads
+    # 本地模型目录：fastembed 的 specific_model_path 直接使用该目录的
+    # ONNX + tokenizer 文件，跳过网络下载（model_name 仍须是内置名，
+    # 决定 model_file 文件名与 tokenizer 结构）。目录存在性由调用方校验。
+    if settings.embed_model_path:
+        kwargs["specific_model_path"] = str(settings.embed_model_path)
+    return kwargs
+
+
 class FastEmbedEmbedder(Embedder):
     """fastembed ONNX 嵌入实现。"""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._impl = None  # 惰性初始化
+        # 并发安全：ingest_workers>1 时多个文件线程会共享同一实例（工厂缓存）。
+        # _load_lock 防 _ensure_loaded 双重构造；_embed_lock 让多个线程的批次
+        # 请求在 ORT 会话上串行进、批内并行（ORT 本身多线程，交叉并发无收益
+        # 且 fastembed 未承诺线程安全）。
+        self._load_lock = threading.Lock()
+        self._embed_lock = threading.Lock()
         # B1 预设别名解析：`embed_model` 可用友好别名（如 bge-en-large）或完整名。
         self._model = resolve_embed_model(settings.embed_model)
         # 初始维度：预设已明确时直接用清单维度（即使 embed_dim 尚未持久化），
@@ -200,7 +235,13 @@ class FastEmbedEmbedder(Embedder):
         """首次调用时加载模型（避免导入时下模型）。"""
         if self._impl is not None:
             return
+        with self._load_lock:
+            if self._impl is not None:
+                return
+            self._ensure_loaded_locked()
 
+    def _ensure_loaded_locked(self) -> None:
+        """实际加载逻辑（必须持有 `_load_lock` 调用）。"""
         # 镜像/端点必须在 import fastembed 之前设置：
         # huggingface_hub 在导入时就缓存 HF_ENDPOINT，事后改环境变量不生效。
         # 优先级：系统环境变量 HF_ENDPOINT > 配置 DOC2MIND_HF_ENDPOINT > 默认镜像。
@@ -214,23 +255,16 @@ class FastEmbedEmbedder(Embedder):
                 "fastembed 未安装。请运行：pip install fastembed"
             ) from e
 
-        kwargs: dict[str, object] = {
-            "model_name": self._model,
-            "max_length": 512,
-            "cache_dir": str(self.settings.embed_cache_dir),
-        }
-
-        # 本地模型目录：fastembed 的 specific_model_path 直接使用该目录的
-        # ONNX + tokenizer 文件，跳过网络下载（model_name 仍须是内置名，
-        # 决定 model_file 文件名与 tokenizer 结构）。
+        # 本地模型目录：校验存在性（路径合法性由 _build_model_kwargs 消费）
         if self.settings.embed_model_path:
             local_dir = Path(self.settings.embed_model_path)
             if not local_dir.is_dir():
                 raise EmbedderError(
                     f"本地模型目录不存在: {self.settings.embed_model_path}"
                 )
-            kwargs["specific_model_path"] = str(local_dir)
             logger.info("嵌入使用本地模型目录: %s", local_dir)
+
+        kwargs = _build_model_kwargs(self.settings, self._model)
 
         try:
             self._load_impl(TextEmbedding, kwargs)
@@ -287,12 +321,27 @@ class FastEmbedEmbedder(Embedder):
 
     # --- 嵌入方法 ---
     def embed(self, chunks: Sequence[Chunk]) -> Iterator:
-        """批量嵌入，逐批 yield 向量。"""
+        """批量嵌入，逐批 yield 向量。
+
+        线程安全：多线程（ingest_workers>1）共享同一实例时，批次推理在
+        `_embed_lock` 上串行——单批内部仍由 ORT 多线程并行，跨文件批次
+        交错不产生额外吞吐，但保证不并发进入同一 ONNX 会话。
+        """
         self._ensure_loaded()
         assert self._impl is not None
         texts = [c.content for c in chunks]
+        batch_size = self.settings.embed_batch_size
+        internal = self._impl.embed(texts, batch_size=batch_size)
         try:
-            yield from self._impl.embed(texts, batch_size=self.settings.embed_batch_size)
+            while True:
+                with self._embed_lock:
+                    try:
+                        vec = next(internal)
+                    except StopIteration:
+                        break
+                yield vec
+        except EmbedderError:
+            raise
         except Exception as e:  # noqa: BLE001
             raise EmbedderError(f"嵌入失败: {e}") from e
 
@@ -301,16 +350,24 @@ class FastEmbedEmbedder(Embedder):
         self._ensure_loaded()
         assert self._impl is not None
         try:
-            return next(self._impl.query_embed([text]))
+            with self._embed_lock:
+                return next(self._impl.query_embed([text]))
         except Exception as e:  # noqa: BLE001
             raise EmbedderError(f"查询嵌入失败: {e}") from e
 
     def embed_texts(self, texts: Sequence[str]) -> Iterator:
-        """嵌入纯文本列表（重建索引用）。"""
+        """嵌入纯文本列表（重建索引用）。线程安全约束同 `embed`。"""
         self._ensure_loaded()
         assert self._impl is not None
+        internal = self._impl.embed(list(texts), batch_size=self.settings.embed_batch_size)
         try:
-            yield from self._impl.embed(list(texts), batch_size=self.settings.embed_batch_size)
+            while True:
+                with self._embed_lock:
+                    try:
+                        vec = next(internal)
+                    except StopIteration:
+                        break
+                yield vec
         except Exception as e:  # noqa: BLE001
             raise EmbedderError(f"嵌入失败: {e}") from e
 

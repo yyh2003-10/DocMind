@@ -15,16 +15,20 @@
 | `mcp__doc2mind__ingest_job` | 异步摄入目录，返回 `job_id` 轮询进度（中大型项目用） | 同 `ingest` |
 | `mcp__doc2mind__get_job` | 查询异步任务进度 | `job_id` |
 | `mcp__doc2mind__list_docs` | 列出已摄入文档 | `collection`、`limit` |
-| `mcp__doc2mind__remove_doc` | 删除文档及其分块/向量 | `target`（文档 ID 或路径） |
+| `mcp__doc2mind__remove_doc` | 软删除文档（chunks/向量物理删，documents 行保留 30 天可恢复） | `target`（文档 ID 或路径） |
 | `mcp__doc2mind__quality_check` | 知识库质量报告 | `collection` |
 | `mcp__doc2mind__convert_file` | 文档格式互转 | `input_path`、`output_format` |
 | `mcp__doc2mind__reindex` | 重建向量索引 | `collection`、`model` |
-| `mcp__doc2mind__curate` | AI 整理知识库：打标签/摘要/自动归类/语义去重/归纳合并 | `collection`、`actions`、`dry_run`（默认 true 只读预览）、`top_k` |
+| `mcp__doc2mind__curate` | AI 整理知识库：打标签/摘要/自动归类/语义去重/归纳合并 | `collection`、`actions`、`dry_run`（默认 true 只读预览）、`top_k`、`note`（触发来源） |
 | `mcp__doc2mind__graph_get` | 知识图谱查询：实体与关系（需先经 `extract`/curate 抽取入库） | `collection`、`limit` |
 | `mcp__doc2mind__create_artifact` | 创作导出：大纲/内容编译为 PPTX/DOCX/XLSX/HTML 物理文件 | `content`、`format`、`output_path` |
 | `mcp__doc2mind__inspect_artifact` | PPT 大纲体检：0-100 评分 + 排版/密度/版式多样性诊断 | `content` |
+| `mcp__doc2mind__restore_doc` | 恢复软删除的文档（仅元数据：deleted_at 置 NULL；不重建 chunks/向量，恢复后需重新摄入才能被检索） | `target`（文档 ID 或文件路径）、`collection` |
+| `mcp__doc2mind__list_trash` | 列出回收站中的软删除文档（按 deleted_at 倒序） | `limit` |
+| `mcp__doc2mind__purge_trash` | 物理清空回收站（破坏性，不可恢复；默认清 30 天前的，需用户明确同意） | `older_than_days` |
+| `mcp__doc2mind__list_curate_runs` | 列出近 N 天的 curate 运行记录（让 Agent 看到自己/别人跑了什么整理） | `days`、`limit` |
 
-> 共 **15 个** MCP 工具（与 `docs/mcp.md` 工具清单一致）。
+> 共 **19 个** MCP 工具（与 `docs/mcp.md` 工具清单一致）。
 
 ### 用法约定
 
@@ -48,14 +52,41 @@
 
 等用户确认后再调用 `mcp__doc2mind__ingest_text`（写入前先 `search` 查重，避免重复入库）。如用户多次无需确认可直接入库，可改用直接写入并简短告知。
 
-## AI 自动整理（curate）
+## AI 自动整理（curate）— 必读契约
 
-知识库支持 AI 自主整理，入库时会自动打标签/摘要/归类（`auto_curate_on_ingest` 开启且 LLM 已配置时）。agent 的整理职责：
+知识库的自动整理是软件自身的能力，agent 应在合适时机主动调用，而不是建议用户"自己去点"。
 
-- **入库**：`ingest_text` 不传 `collection`，让 AI 自动归类；返回的 `curation` 字段带有最终集合和生成的标签。
-- **定期整理**：发现知识库杂乱（重复经验多、集合混乱）时，先跑 `curate`（`dry_run=true`，只读预览）出一份整理方案；涉及删除/合并的动作，把预览结论告诉用户、确认后再用 `dry_run=false` 执行。
-- **四个动作**：`enrich`（打标签/摘要）、`categorize`（自动归类/建集合）、`dedup`（语义去重）、`consolidate`（把小而散的经验归纳成蒸馏笔记）。前两个低风险可自动执行，后两个有损失、必须 dry-run 先行。
-- LLM 未配置时一切功能照旧，`curate` 会返回明确的配置提示。
+### 已自动运行的部分（agent 无需动手）
+
+- **入库自动 enrich + 可选 categorize + extract**：每次 `ingest_text` 入库后，`auto_curate_on_ingest` 默认开启时会自动跑这三个动作，agent 看不到也无须干预。
+- **每次 curate() 跑完自动写留痕**：自动在 `curate_runs` 表记一行（started_at / actions / changed_doc_ids / dry_run / note），质量看板能查。`note` 字段建议传入"触发来源"（如 `"agent_settle"`、`"user_manual"`、`"ingest_auto"`），方便回溯。
+
+### Agent 必须主动调用的时机（强制契约）
+
+1. **会话收尾、≥3 次 `ingest_text` 后，或完成一个明确专题时**：必须跑一次 `curate(actions=["enrich","categorize"], dry_run=true)` 预览，把"将要改动的文档数 + 新建集合名"告诉用户；用户确认后再用 `dry_run=false` 落盘。
+2. **检测到集合明显脏乱时**（例如同主题重复 ≥3 份、集合内有大量无 title/summary 的文档）：必须跑 `curate(actions=["dedup","consolidate"], dry_run=true)` 预览。
+3. **协助用户恢复误删文档时**：先用 `list_trash` 查回收站，再用 `restore_doc(target=...)` 恢复元数据（恢复后需重新摄入或重跑 reindex 才能检索命中）。
+4. **回答"刚才做了什么整理"类问题前**：先用 `list_curate_runs(days=7)` 查最近记录，**不靠记忆**。
+
+### 风险分级（不可破坏）
+
+- **可静默自动跑**：`enrich`（幂等，失败仅 skipped）、`categorize`（会建/移集合但能恢复）、`extract`（图谱实体增量追加）。
+- **永不静默跑**：`dedup`（删除文档）、`consolidate`（删除原笔记 + 写蒸馏笔记）。这两类**必须** `dry_run=true` 预览 + 用户在干流对话里明确同意才能落盘。
+- LLM 未配置时一切功能照旧，`curate` 会返回明确的配置提示，`curate_runs` 仍会写一行（status=skipped）。
+
+### 软删除（trash）契约
+
+- `remove_doc` 现在是**软删除**：documents 行保留 `deleted_at`，chunks/向量物理删，30 天内可 `restore_doc` 撤销。30 天后下次 curate 入口会自动 GC（`purge_trash`，保留由系统管理，agent 无须手动调）。
+- agent 删除文档前应**先确认用户意图**，因为撤回要靠用户记得 ID 或文件路径。
+
+### 完整工具清单
+
+| 工具 | 用途 |
+|---|---|
+| `curate` | 整理（enrich/categorize/dedup/consolidate/extract 五选多） |
+| `list_curate_runs` | 查最近 N 天的整理记录 |
+| `list_trash` | 查回收站中的软删除文档 |
+| `restore_doc` | 恢复软删除文档（仅元数据） |
 
 ## Agent skills
 

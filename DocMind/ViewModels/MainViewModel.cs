@@ -72,10 +72,16 @@ public partial class MainViewModel : ViewModelBase
         if (state == BackendState.Online)
         {
             _ = _searchViewModel.LoadCollectionsAsync();
+            // 导入页集合下拉同理：构造时后端未就绪加载失败且无重试，
+            // 恢复在线后必须补拉，否则目标分组一直只剩种子项 default。
+            _ = _importViewModel.LoadCollectionsAsync();
             _ = _chatViewModel.LoadCollectionsCommand.ExecuteAsync(null);
             // 构造时会话列表可能因后端未就绪加载失败（fire-and-forget 无重试），
             // 必须在后端恢复在线后补一次刷新，否则历史会话一直空白。
             _ = _chatViewModel.RefreshSessionsAsync();
+            // 同理补拉模型种子：构造时 v1/config 可能因令牌竞态 401 失败且无重试，
+            // 否则整个会话 _configuredModel 为空，「默认 · xx」退回占位符、默认提供商分组缺模型。
+            _ = _chatViewModel.RefreshModelSeedAsync();
         }
     }
 
@@ -213,19 +219,19 @@ public partial class MainViewModel : ViewModelBase
         Title = "DocMind";
 
         // 分组 1：核心工作台 (日常问答与探索)
-        NavigationItems.Add(new NavigationItem { Title = "对话", Icon = "💬", Category = "工作台", ViewModelType = typeof(ChatViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "搜索", Icon = "🔍", IconPath = "Assets/nav-search.png", Category = "工作台", ViewModelType = typeof(SearchViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "知识图谱", Icon = "🕸️", Category = "工作台", ViewModelType = typeof(GraphViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "对话", IconKey = "IconChat", Category = "工作台", ViewModelType = typeof(ChatViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "搜索", IconKey = "IconSearch", Category = "工作台", ViewModelType = typeof(SearchViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "知识图谱", IconKey = "IconGraph", Category = "工作台", ViewModelType = typeof(GraphViewModel) });
 
         // 分组 2：知识资产 (内容管理与生产线)
-        NavigationItems.Add(new NavigationItem { Title = "文档库", Icon = "🗂️", Category = "知识资产", ViewModelType = typeof(DocumentsViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "导入", Icon = "📥", IconPath = "Assets/nav-import.png", Category = "知识资产", ViewModelType = typeof(ImportViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "转换", Icon = "🔄", IconPath = "Assets/nav-convert.png", Category = "知识资产", ViewModelType = typeof(ConvertViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "质量看板", Icon = "📊", IconPath = "Assets/nav-quality.png", Category = "知识资产", ViewModelType = typeof(QualityViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "文档库", IconKey = "IconFolder", Category = "知识资产", ViewModelType = typeof(DocumentsViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "导入", IconKey = "IconImport", Category = "知识资产", ViewModelType = typeof(ImportViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "转换", IconKey = "IconConvert", Category = "知识资产", ViewModelType = typeof(ConvertViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "质量看板", IconKey = "IconDashboard", Category = "知识资产", ViewModelType = typeof(QualityViewModel) });
 
         // 分组 3：系统与支持
-        NavigationItems.Add(new NavigationItem { Title = "设置", Icon = "⚙️", IconPath = "Assets/nav-settings.png", Category = "系统与支持", ViewModelType = typeof(SettingsViewModel) });
-        NavigationItems.Add(new NavigationItem { Title = "调试日志", Icon = "📋", Category = "系统与支持", ViewModelType = typeof(DebugLogViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "设置", IconKey = "IconSettings", Category = "系统与支持", ViewModelType = typeof(SettingsViewModel) });
+        NavigationItems.Add(new NavigationItem { Title = "调试日志", IconKey = "IconList", Category = "系统与支持", ViewModelType = typeof(DebugLogViewModel) });
 
         var cvs = System.Windows.Data.CollectionViewSource.GetDefaultView(NavigationItems);
         cvs.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription(nameof(NavigationItem.Category)));
@@ -264,9 +270,18 @@ public partial class MainViewModel : ViewModelBase
                 // 订阅新页面
                 if (_currentPage != null)
                     _currentPage.PropertyChanged += OnPagePropertyChanged;
+
+                OnPropertyChanged(nameof(IsChatActive));
+                OnPropertyChanged(nameof(DrawerWidth));
             }
         }
     }
+
+    /// <summary>对话页面 ViewModel（供双轨侧栏抽屉直接绑定历史会话与操作）。</summary>
+    public ChatViewModel ChatViewModel => _chatViewModel;
+
+    /// <summary>当前页面是否为对话页。</summary>
+    public bool IsChatActive => _currentPage is ChatViewModel;
 
     public NavigationItem? SelectedNavigationItem
     {
@@ -294,7 +309,39 @@ public partial class MainViewModel : ViewModelBase
         }
     }
 
-    // ===================== 侧栏折叠 =====================
+    // ===================== 双轨抽屉折叠 (DocMind Flow 2.0) =====================
+
+    private bool _isDrawerOpen = true;
+
+    /// <summary>工作区二级侧栏抽屉是否展开。</summary>
+    public bool IsDrawerOpen
+    {
+        get => _isDrawerOpen;
+        set
+        {
+            if (SetProperty(ref _isDrawerOpen, value))
+            {
+                OnPropertyChanged(nameof(DrawerWidth));
+                OnPropertyChanged(nameof(DrawerToggleIcon));
+                OnPropertyChanged(nameof(DrawerToggleTooltip));
+            }
+        }
+    }
+
+    /// <summary>二级侧栏当前宽度（处于对话页且展开时为 240，否则为 0）。</summary>
+    public System.Windows.GridLength DrawerWidth =>
+        (IsChatActive && IsDrawerOpen) ? new System.Windows.GridLength(240) : new System.Windows.GridLength(0);
+
+    /// <summary>抽屉切换按钮图标。</summary>
+    public string DrawerToggleIcon => IsDrawerOpen ? "◧" : "◨";
+
+    /// <summary>抽屉切换按钮提示。</summary>
+    public string DrawerToggleTooltip => IsDrawerOpen ? "收起会话历史抽屉" : "展开会话历史抽屉";
+
+    [RelayCommand]
+    private void ToggleDrawer() => IsDrawerOpen = !IsDrawerOpen;
+
+    // ===================== 侧栏折叠（兼容旧版） =====================
 
     /// <summary>侧栏是否折叠（仅图标模式）。</summary>
     public bool IsSidebarCollapsed
@@ -423,6 +470,7 @@ public partial class MainViewModel : ViewModelBase
         _ = _chatViewModel.LoadCollectionsCommand.ExecuteAsync(null);
         _ = _searchViewModel.LoadCollectionsAsync();
         _ = _documentsViewModel.LoadCollectionsAsync();
+        _ = _importViewModel.LoadCollectionsAsync();
     }
 
     [RelayCommand]
@@ -521,21 +569,6 @@ public partial class MainViewModel : ViewModelBase
             NavigateToImport();
         }
     }
-
-    // ===================== 详情面板（已移除） =====================
-
-    /// <summary>各子 View（SearchView / DocumentsView）已内嵌详情面板，
-    /// MainWindow 不再提供全局详情面板。保留此属性返回 false 以兼容外部引用。</summary>
-    public bool ShowDetailPanel => false;
-
-    /// <summary>兼容保留：已不再使用。</summary>
-    public bool IsSearchActive => false;
-
-    /// <summary>兼容保留：已不再使用。</summary>
-    public bool IsChatActive => false;
-
-    /// <summary>兼容保留：已不再使用。</summary>
-    public bool IsImportActive => false;
 
     private void OnPagePropertyChanged(object? sender, PropertyChangedEventArgs e)
     {

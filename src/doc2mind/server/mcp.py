@@ -44,7 +44,12 @@ from doc2mind.core.converter import (
 )
 from doc2mind.core.embedder import get_embedder
 from doc2mind.core.loader.detect import get_loader, is_supported
-from doc2mind.core.pipeline import ingest_path, ingest_text
+from doc2mind.core.pipeline import (
+    ingest_path,
+    ingest_text,
+    run_background_curate,
+    stage_fraction,
+)
 from doc2mind.core.rag import RagError, rag_answer
 from doc2mind.core.reranker import get_reranker
 from doc2mind.core.retriever.search import Retriever
@@ -104,6 +109,41 @@ def _open_store() -> tuple[VectorStore, Any]:
     return store, embedder
 
 
+def _spawn_curate_job(
+    settings: Any,
+    document_ids: list[str],
+    collection: str,
+) -> str:
+    """后台 AI 整理任务（enrich + 图谱抽取）：独立线程 + 独立 curate job。
+
+    导入热路径剥离 auto-curate 的 MCP 侧执行端；整理自开自关 store，
+    与摄入任务的 store 生命周期解耦。返回 job_id 供 get_job 轮询。
+    """
+    job_id, _job = _create_job("curate")
+
+    def _progress(done: int, total: int) -> None:
+        _update_job(
+            job_id, processed=done, total=total,
+            progress=round(done / total, 4) if total > 0 else 0.0,
+        )
+
+    def _run() -> None:
+        try:
+            result = run_background_curate(
+                settings, document_ids, collection, progress=_progress
+            )
+            _update_job(
+                job_id, status="completed", progress=1.0,
+                processed=result["processed"] + result["failed"],
+                finished_at=_now_iso(),
+            )
+        except Exception as e:  # noqa: BLE001
+            _update_job(job_id, status="failed", error=str(e), finished_at=_now_iso())
+
+    threading.Thread(target=_run, daemon=True).start()
+    return job_id
+
+
 def _tool_ingest(
     path: str,
     collection: str = "default",
@@ -122,11 +162,18 @@ def _tool_ingest(
         recursive=recursive,
         force=force,
     )
+    # 入库自动整理已剥离出导入路径：后台执行，导入立即返回
+    curate_job_id = (
+        _spawn_curate_job(get_settings(), summary.curatable_document_ids, collection)
+        if summary.curatable_document_ids else None
+    )
     return _ok({
         "ingested": summary.total_documents,
         "skipped": summary.skipped,
         "failed": summary.failed,
         "total_chunks": summary.total_chunks,
+        "curate_job_id": curate_job_id,
+        "curate_pending": len(summary.curatable_document_ids),
         "results": [
             {
                 "source": r.source,
@@ -165,6 +212,23 @@ def _tool_ingest_job(
     )
     store.open()
 
+    def _report_progress(
+        done: int,
+        total: int,
+        current_file: str | None = None,
+        stage: str | None = None,
+        stage_progress: float | None = None,
+    ) -> None:
+        # 与 http.py _update_ingest_job 同一折算：文件内阶段按固定跨度
+        # 计入整体进度，单大文件导入时 get_job 也能看到条动。
+        frac = stage_fraction(stage, stage_progress)
+        _update_job(
+            job_id,
+            processed=done, total=total,
+            progress=round((done + frac) / total, 4) if total > 0 else 0.0,
+            current_file=current_file, stage=stage, stage_progress=stage_progress,
+        )
+
     def _run() -> None:
         try:
             summary = ingest_path(
@@ -173,16 +237,16 @@ def _tool_ingest_job(
                 recursive=recursive,
                 force=force,
                 store=store,
-                progress=lambda done, total: _update_job(
-                    job_id, processed=done, total=total,
-                    progress=round(done / total, 4) if total > 0 else 0.0,
-                ),
+                progress=_report_progress,
             )
             _update_job(
                 job_id, status="completed", progress=1.0,
                 processed=summary.total_documents + summary.skipped + summary.failed,
                 finished_at=_now_iso(),
             )
+            # 入库自动整理：后台任务（自开自关 store，不依赖本任务的 store）
+            if summary.curatable_document_ids:
+                _spawn_curate_job(settings, summary.curatable_document_ids, collection)
         except Exception as e:  # noqa: BLE001
             _update_job(job_id, status="failed", error=str(e), finished_at=_now_iso())
         finally:
@@ -332,17 +396,88 @@ def _tool_remove_doc(
         # 优先按 ID
         if len(target) >= 12 and not Path(target).exists():
             n = store.delete_document(target)
+            if n == -2:
+                return _ok({
+                    "id": target, "deleted_chunks": 0, "status": "already_deleted",
+                    "note": "文档已处于软删除状态；30 天内可用 restore_doc 恢复，或调 purge_trash 立即清除",
+                })
             if n >= 0:
                 return _ok({"id": target, "deleted_chunks": n, "status": "deleted"})
 
-        # 按 source 名删
-        source_name = Path(target).name if Path(target).exists() else target
-        n = store.delete_by_source(source_name, collection)
+        # 按 source 文件名删（basename 模糊匹配；documents.source 是绝对路径）
+        n = store.delete_by_source_basename(Path(target).name, collection)
         if n > 0:
-            return _ok({"source": source_name, "deleted": True})
-        return _error("NOT_FOUND", f"未找到: {source_name}")
+            return _ok({"source": Path(target).name, "deleted": True, "matched": n})
+        return _error("NOT_FOUND", f"未找到: {Path(target).name}（可从 list_trash 查已软删，用 restore_doc 恢复）")
     finally:
         store.close()
+
+
+def _tool_restore_doc(target: str, collection: str = "default") -> str:
+    """恢复软删除的文档（仅元数据：deleted_at 置 NULL）。
+
+    Args:
+        target: 文档 ID（ULID）或文件路径。
+        collection: 集合名（按文件路径恢复时必填）。
+
+    Returns:
+        JSON: {id, status: "restored"|"not_found", note}。
+    """
+    store, _ = _open_store()
+    # 通过 store 方法定位（内部走 RLock，避免裸访问 _conn 的并发竞态）
+    doc_id = store.find_soft_deleted_document_id(target, collection)
+    if doc_id is None:
+        return _error(
+            "NOT_FOUND",
+            f"未找到处于软删除状态的文档: {target}。"
+            f"请先用 list_trash 查看回收站拿准确的 document_id 再重试。",
+        )
+    ok = store.restore_document(doc_id)
+    return _ok(
+        {
+            "id": doc_id,
+            "status": "restored" if ok else "not_found",
+            "note": (
+                "恢复成功；chunks/向量已物理删，需要重新摄入或重跑 reindex 才能被检索命中"
+                if ok
+                else "无法恢复：同 source 已被重新摄入的活跃文档占用（可保留在回收站等 30 天 GC）"
+            ),
+        }
+    )
+
+
+def _tool_list_trash(limit: int = 100) -> str:
+    """列出回收站中的软删除文档（按 deleted_at 倒序）。"""
+    store, _ = _open_store()
+    items = store.list_trash(limit=limit)
+    return _ok({"items": items, "total": len(items)})
+
+
+def _tool_purge_trash(older_than_days: int = 30) -> str:
+    """物理清空超过 N 天的回收站（**破坏性操作，不可恢复**）。
+
+    默认 30 天（与软删除保留期一致）。调用前建议先 list_trash 确认，
+    且仅在用户明确同意后执行——被清除的文档无法再 restore。
+    """
+    store, _ = _open_store()
+    purged = store.purge_trash(older_than_days=older_than_days)
+    return _ok(
+        {
+            "purged": purged,
+            "note": f"已物理清除 {purged} 条超过 {older_than_days} 天的回收站记录，"
+                    "这些文档不可再恢复。",
+        }
+    )
+
+
+def _tool_list_curate_runs(days: int = 7, limit: int = 50) -> str:
+    """列出近 N 天的 curate 运行记录（started_at 倒序）。
+
+    用来了解 Agent 何时跑了哪些整理动作、动了哪些文档。
+    """
+    store, _ = _open_store()
+    items = store.list_curate_runs(days=days, limit=limit)
+    return _ok({"items": items, "total": len(items)})
 
 
 def _tool_quality_check(collection: str = "default") -> str:
@@ -561,6 +696,7 @@ def _tool_curate(
     actions: list[str] | None = None,
     dry_run: bool = True,
     top_k: int = 10,
+    note: str | None = None,
 ) -> str:
     """AI 整理知识库：enrich（打标签/摘要）、categorize（自动归类）、
     dedup（语义去重）、consolidate（归纳合并蒸馏笔记）。
@@ -595,6 +731,7 @@ def _tool_curate(
             actions=actions,
             dry_run=dry_run,
             top_k=top_k,
+            note=note,
         )
     except CuratorError as e:
         return _error("CURATE_ERROR", str(e))
@@ -763,7 +900,8 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
     },
     {
         "name": "remove_doc",
-        "description": "从知识库删除单个文档及其所有分块与向量。target 可以是文档 ID（ULID/UUID）或文件路径。",
+        "description": "软删除单个文档：chunks/向量物理删，documents 行保留 30 天（可 restore_doc 恢复，"
+                       "或用 purge_trash 提前清除）。target 可以是文档 ID（ULID/UUID）或文件路径。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -780,6 +918,52 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "collection": {"type": "string", "default": "default"},
+            },
+        },
+    },
+    {
+        "name": "restore_doc",
+        "description": "恢复软删除的文档（仅元数据：deleted_at 置 NULL，"
+                       "不重建 chunks/向量；恢复后需重新摄入才能被检索）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "文档 ID（ULID）或文件路径。"},
+                "collection": {"type": "string", "default": "default"},
+            },
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "list_trash",
+        "description": "列出回收站中的软删除文档（按 deleted_at 倒序）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 100, "minimum": 1, "maximum": 500},
+            },
+        },
+    },
+    {
+        "name": "purge_trash",
+        "description": "物理清空超过 N 天的回收站（破坏性操作，不可恢复）。"
+                       "默认 30 天与软删除保留期一致；执行前先 list_trash 确认，"
+                       "并仅在用户明确同意后调用。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "older_than_days": {"type": "integer", "default": 30, "minimum": 1, "maximum": 365},
+            },
+        },
+    },
+    {
+        "name": "list_curate_runs",
+        "description": "列出近 N 天的 curate 运行记录（让 Agent 看到自己/别人跑了什么整理）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "default": 7, "minimum": 1, "maximum": 90},
+                "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 500},
             },
         },
     },
@@ -835,6 +1019,7 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
                 },
                 "dry_run": {"type": "boolean", "default": True, "description": "true=只读预览（零写入，推荐先跑）；false=执行（含删除/合并/图谱落库）。"},
                 "top_k": {"type": "integer", "default": 10, "minimum": 1, "maximum": 200, "description": "enrich/categorize/extract 处理的文档数上限（控制 LLM 调用成本）。"},
+                "note": {"type": "string", "description": "触发来源标签（如 'agent_settle' / 'user_manual' / 'ingest_auto'），写入 curate_runs.note 便于回溯。"},
             },
         },
     },
@@ -963,6 +1148,10 @@ def _dispatch_tool(name: str, args: dict[str, Any]) -> str:
         "search": _tool_search,
         "list_docs": _tool_list_docs,
         "remove_doc": _tool_remove_doc,
+        "restore_doc": _tool_restore_doc,
+        "list_trash": _tool_list_trash,
+        "purge_trash": _tool_purge_trash,
+        "list_curate_runs": _tool_list_curate_runs,
         "quality_check": _tool_quality_check,
         "convert_file": _tool_convert_file,
         "reindex": _tool_reindex,

@@ -6,10 +6,15 @@
 
 from __future__ import annotations
 
-import hashlib
+from collections.abc import Callable
 from pathlib import Path
 
-from doc2mind.core.loader.base import Loader, LoaderError, make_source
+from doc2mind.core.loader.base import (
+    Loader,
+    LoaderError,
+    make_source,
+    stream_file_hash,
+)
 from doc2mind.core.models import (
     DocFormat,
     DocumentElement,
@@ -60,7 +65,11 @@ class DocxLoader(Loader):
 
     supported_extensions = ("docx", "doc")
 
-    def extract(self, path: Path) -> LoadedDocument:
+    def extract(
+        self,
+        path: Path,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> LoadedDocument:
         try:
             from docx import Document
             from docx.oxml.ns import qn
@@ -73,8 +82,7 @@ class DocxLoader(Loader):
             raise LoaderError(f"文件不存在: {path}")
 
         try:
-            data = path.read_bytes()
-            file_hash = hashlib.md5(data).hexdigest()
+            file_hash, size_bytes = stream_file_hash(path)
             doc = Document(path)
 
             # 建立 XML 节点 → python-docx 对象的反向索引
@@ -137,7 +145,7 @@ class DocxLoader(Loader):
                 format=DocFormat.DOCX,
                 elements=elements,
                 page_count=None,  # docx 不原生分页
-                size_bytes=len(data),
+                size_bytes=size_bytes,
                 file_hash=file_hash,
             )
         except LoaderError:

@@ -319,13 +319,26 @@ public partial class QualityViewModel : ViewModelBase
             // Progress<T> 的回调是异步投递的，可能在轮询返回之后才执行；
             // 若不设闸，落后的进度回调会把下面的失败/完成终态文案覆盖成中间状态文案。
             var pollingCompleted = false;
-            var progress = new Progress<JobStatus>(j =>
+            void ApplyProgress(JobStatus j)
             {
                 if (pollingCompleted) return;
                 CurateProgressPercent = (int)(j.Progress * 100);
                 CurateStatus = j.Status.Equals("running", StringComparison.OrdinalIgnoreCase)
                     ? $"{mode}中 {CurateProgressPercent}%（{j.Processed}/{j.Total}）…"
                     : $"任务状态: {j.Status}";
+            }
+
+            var progress = new Progress<JobStatus>(j =>
+            {
+                var app = System.Windows.Application.Current;
+                if (app?.Dispatcher != null && !app.Dispatcher.CheckAccess())
+                {
+                    app.Dispatcher.InvokeAsync(() => ApplyProgress(j));
+                }
+                else
+                {
+                    ApplyProgress(j);
+                }
             });
 
             // 优先走 job 进度 SSE 实时流（AUD-017 接通 /v1/jobs/{id}/events）；

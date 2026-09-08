@@ -9,7 +9,7 @@
         xmlns:cc="clr-namespace:DocMind.Controls"
         mc:Ignorable="d"
         Title="{Binding Title}"
-        MinWidth="900" MinHeight="600"
+        MinWidth="960" MinHeight="620"
         Width="1100" Height="720"
         d:DataContext="{d:DesignInstance Type=vm:MainViewModel}"
         Icon="/托盘图标D 单.png"
@@ -155,31 +155,33 @@
 
                     <!-- 右侧: 窗口控制按钮 -->
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Content="⚙"
-                                WindowChrome.IsHitTestVisibleInChrome="True"
+                        <Button WindowChrome.IsHitTestVisibleInChrome="True"
                                 Command="{Binding NavigateToSettingsCommand}"
                                 ToolTip="设置"
                                 Style="{StaticResource IconButtonStyle}"
-                                Width="32" Height="32"/>
+                                Width="32" Height="32">
+                            <Path Data="{StaticResource IconSettings}" Style="{StaticResource IconSmStyle}"/>
+                        </Button>
                         <Button x:Name="MinimizeButton"
                                 WindowChrome.IsHitTestVisibleInChrome="True"
-                                Content="─"
                                 ToolTip="最小化"
                                 Style="{StaticResource IconButtonStyle}"
                                 Width="36" Height="32"
                                 Margin="4,0,0,0"
-                                Click="MinimizeButton_Click"/>
+                                Click="MinimizeButton_Click">
+                            <Path Data="{StaticResource IconMinimize}" Style="{StaticResource IconSmStyle}"/>
+                        </Button>
                         <Button x:Name="MaximizeButton"
                                 WindowChrome.IsHitTestVisibleInChrome="True"
-                                Content="□"
                                 ToolTip="最大化"
                                 Style="{StaticResource IconButtonStyle}"
                                 Width="36" Height="32"
                                 Margin="2,0,0,0"
-                                Click="MaximizeButton_Click"/>
+                                Click="MaximizeButton_Click">
+                            <Path Data="{StaticResource IconMaximize}" Style="{StaticResource IconSmStyle}"/>
+                        </Button>
                         <Button x:Name="CloseButton"
                                 WindowChrome.IsHitTestVisibleInChrome="True"
-                                Content="✕"
                                 ToolTip="关闭"
                                 Width="36" Height="32"
                                 Margin="2,0,-4,0"
@@ -188,6 +190,7 @@
                                 Foreground="{StaticResource TextSecondaryBrush}"
                                 BorderThickness="0"
                                 Click="CloseButton_Click">
+                            <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource TextSecondaryBrush}"/>
                             <Button.Style>
                                 <Style TargetType="Button">
                                     <Setter Property="Template">
@@ -229,160 +232,320 @@
                     Visibility="{Binding ShowOfflineBanner, Converter={StaticResource BoolToVis}}">
                 <DockPanel LastChildFill="True">
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Content="🔄 重新检测"
-                                Command="{Binding RefreshBackendCommand}"
+                        <Button Command="{Binding RefreshBackendCommand}"
                                 Style="{StaticResource SecondaryButtonStyle}"
-                                Padding="10,4" Margin="0,0,8,0"/>
-                        <Button Content="🚀 一键重启后端"
-                                Command="{Binding StartBackendCommand}"
+                                Padding="10,4" Margin="0,0,8,0">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconRefresh}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                <TextBlock Text="重新检测"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Command="{Binding StartBackendCommand}"
                                 Style="{StaticResource PrimaryButtonStyle}"
-                                Padding="10,4" Margin="0,0,8,0"/>
-                        <Button Content="📋 查看日志"
-                                Command="{Binding OpenDebugLogCommand}"
+                                Padding="10,4" Margin="0,0,8,0">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconRocket}" Style="{StaticResource IconSmStyle}" Stroke="White" Margin="0,0,6,0"/>
+                                <TextBlock Text="一键重启后端"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Command="{Binding OpenDebugLogCommand}"
                                 Style="{StaticResource SecondaryButtonStyle}"
-                                Padding="10,4"/>
+                                Padding="10,4">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconList}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                <TextBlock Text="查看日志"/>
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
                     <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="⚠️ 后端服务离线" FontWeight="Bold" FontSize="13" Foreground="{DynamicResource DangerBrush}"/>
+                        <StackPanel Orientation="Horizontal">
+                            <Path Data="{StaticResource IconWarning}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource DangerBrush}" Margin="0,0,6,0"/>
+                            <TextBlock Text="后端服务离线" FontWeight="Bold" FontSize="13" Foreground="{DynamicResource DangerBrush}"/>
+                        </StackPanel>
                         <TextBlock Text="无法连接到后端服务，部分功能暂不可用。请检查后重启。" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,2,0,0"/>
                     </StackPanel>
                 </DockPanel>
             </Border>
 
             <!-- =====================================================================
-                 主体区域 (Row 2) — 侧栏 | 内容 | 详情
+                 主体区域 (Row 2) — 双轨侧栏 (Rail + Drawer) | 内容画卷 (Canvas)
                  ===================================================================== -->
             <Grid Grid.Row="2">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="{Binding SidebarWidth, Mode=OneWay}"/>
-                    <ColumnDefinition Width="Auto"/>
+                    <!-- Col 0: 主导航极窄轨 (54px) -->
+                    <ColumnDefinition Width="54"/>
+                    <!-- Col 1: 工作区二级侧栏抽屉 (Drawer) -->
+                    <ColumnDefinition Width="{Binding DrawerWidth, Mode=OneWay}"/>
+                    <!-- Col 2: 主工作区画卷 (Canvas) -->
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- 侧栏 (Col 0) -->
+                <!-- ═══════════════════════════════════════════════════════════════
+                     Col 0: 主导航极窄轨 (Rail, 54px)
+                     ═══════════════════════════════════════════════════════════════ -->
                 <Border Grid.Column="0"
-                        Background="{StaticResource SidebarBackgroundBrush}"
-                        BorderBrush="{StaticResource BorderBrush}"
+                        Background="{DynamicResource RailBackgroundBrush}"
+                        BorderBrush="{DynamicResource BorderLightBrush}"
                         BorderThickness="0,0,1,0"
                         SnapsToDevicePixels="True">
-                    <Grid Margin="0,6,0,0">
+                    <Grid Margin="0,8,0,12">
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
-                        <!-- 导航项 -->
-                        <ListBox Grid.Row="0"
-                                 ItemsSource="{Binding NavigationItemsView}"
+                        <!-- 顶部灵动品牌图标 -->
+                        <Border Grid.Row="0" Width="36" Height="36" CornerRadius="8"
+                                Background="{DynamicResource PrimaryLightBrush}"
+                                HorizontalAlignment="Center" Margin="0,0,0,12"
+                                ToolTip="DocMind 本地向量知识库">
+                            <Path Data="{StaticResource IconBrain}"
+                                  Width="20" Height="20"
+                                  Stretch="Uniform"
+                                  Stroke="{DynamicResource PrimaryBrush}"
+                                  StrokeThickness="1.5"
+                                  StrokeLineJoin="Round"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  Fill="Transparent"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+
+                        <!-- 主导航图标列表 (纯图标，带 ToolTip) -->
+                        <ListBox Grid.Row="1"
+                                 ItemsSource="{Binding NavigationItems}"
                                  SelectedItem="{Binding SelectedNavigationItem, Mode=TwoWay}"
-                                 Style="{StaticResource NavigationListBoxStyle}"
-                                 ItemContainerStyle="{StaticResource SidebarItemStyle}">
-                            <ListBox.GroupStyle>
-                                <GroupStyle>
-                                    <GroupStyle.HeaderTemplate>
-                                        <DataTemplate>
-                                            <Border Margin="8,10,6,3"
-                                                    Padding="4,0,0,2">
-                                                <Border.Style>
-                                                    <Style TargetType="Border">
-                                                        <Setter Property="Visibility" Value="Visible"/>
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding DataContext.IsSidebarCollapsed, Source={x:Reference WindowRoot}}" Value="True">
-                                                                <Setter Property="Visibility" Value="Collapsed"/>
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </Border.Style>
-                                                <TextBlock Text="{Binding Name}"
-                                                           FontSize="11"
-                                                           FontWeight="SemiBold"
-                                                           Foreground="{StaticResource TextMutedBrush}"/>
-                                            </Border>
-                                        </DataTemplate>
-                                    </GroupStyle.HeaderTemplate>
-                                </GroupStyle>
-                            </ListBox.GroupStyle>
+                                 Style="{DynamicResource NavigationListBoxStyle}"
+                                 ItemContainerStyle="{DynamicResource RailItemStyle}">
                             <ListBox.ItemTemplate>
                                 <DataTemplate DataType="{x:Type vm:NavigationItem}">
-                                    <StackPanel Orientation="Horizontal" Margin="4,0,0,0">
-                                        <!-- emoji 回退图标 -->
-                                        <TextBlock Text="{Binding Icon}"
-                                                   FontSize="16"
-                                                   Width="22" Height="22"
-                                                   VerticalAlignment="Center"
-                                                   TextAlignment="Center">
-                                            <TextBlock.Style>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="Visibility" Value="Collapsed"/>
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding IconSource}" Value="{x:Null}">
-                                                            <Setter Property="Visibility" Value="Visible"/>
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </TextBlock.Style>
-                                        </TextBlock>
-                                        <!-- PNG 图标 -->
-                                        <Image Source="{Binding IconSource}"
-                                               Width="22" Height="22"
-                                               VerticalAlignment="Center">
-                                            <Image.Style>
-                                                <Style TargetType="Image">
-                                                    <Setter Property="Visibility" Value="Visible"/>
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding IconSource}" Value="{x:Null}">
-                                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </Image.Style>
-                                        </Image>
-                                        <!-- 标题 -->
-                                        <TextBlock Text="{Binding Title, Mode=OneWay}"
-                                                   VerticalAlignment="Center"
-                                                   Margin="10,0,0,0"
-                                                   FontSize="14"
-                                                   FontWeight="Medium">
-                                            <TextBlock.Style>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="Visibility" Value="Visible"/>
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding DataContext.IsSidebarCollapsed, Source={x:Reference WindowRoot}}"
-                                                                     Value="True">
-                                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </TextBlock.Style>
-                                        </TextBlock>
-                                    </StackPanel>
+                                    <Grid ToolTip="{Binding Title}" Width="40" Height="40">
+                                        <Path x:Name="NavIcon"
+                                              Data="{StaticResource IconChat}"
+                                              Style="{StaticResource NavIconStyle}"
+                                              Stroke="{DynamicResource TextSecondaryBrush}"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Grid>
+                                    <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding Title}" Value="搜索">
+                                            <Setter TargetName="NavIcon" Property="Data" Value="{StaticResource IconSearch}"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Title}" Value="知识图谱">
+                                            <Setter TargetName="NavIcon" Property="Data" Value="{StaticResource IconGraph}"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Title}" Value="文档库">
+                                            <Setter TargetName="NavIcon" Property="Data" Value="{StaticResource IconFolder}"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Title}" Value="导入">
+                                            <Setter TargetName="NavIcon" Property="Data" Value="{StaticResource IconImport}"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Title}" Value="转换">
+                                            <Setter TargetName="NavIcon" Property="Data" Value="{StaticResource IconConvert}"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Title}" Value="质量看板">
+                                            <Setter TargetName="NavIcon" Property="Data" Value="{StaticResource IconDashboard}"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Title}" Value="设置">
+                                            <Setter TargetName="NavIcon" Property="Data" Value="{StaticResource IconSettings}"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Title}" Value="调试日志">
+                                            <Setter TargetName="NavIcon" Property="Data" Value="{StaticResource IconList}"/>
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
 
-                        <!-- 折叠按钮 -->
-                        <Button Grid.Row="1"
-                                Command="{Binding ToggleSidebarCommand}"
-                                Style="{StaticResource IconButtonStyle}"
-                                Height="32" Margin="0,0,0,6"
-                                HorizontalAlignment="Center"
-                                ToolTip="{Binding SidebarToggleTooltip}">
-                            <TextBlock Text="{Binding SidebarToggleIcon, Mode=OneWay}"
-                                       FontSize="10"/>
-                        </Button>
+                        <!-- 底部控制按钮：抽屉折叠/展开 + 设置 -->
+                        <StackPanel Grid.Row="2" HorizontalAlignment="Center" Margin="0,4,0,0">
+                            <!-- 折叠/展开抽屉 -->
+                            <Button Command="{Binding ToggleDrawerCommand}"
+                                    Style="{DynamicResource IconButtonStyle}"
+                                    Width="36" Height="36"
+                                    Margin="0,2"
+                                    ToolTip="{Binding DrawerToggleTooltip}">
+                                <TextBlock Text="{Binding DrawerToggleIcon}" FontSize="13" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            </Button>
+                        </StackPanel>
                     </Grid>
                 </Border>
 
-                <!-- 侧栏分割线 -->
-                <GridSplitter Grid.Column="1"
-                              Width="1"
-                              Background="{StaticResource BorderBrush}"
-                              IsEnabled="False"/>
+                <!-- ═══════════════════════════════════════════════════════════════
+                     Col 1: 工作区二级侧栏抽屉 (Drawer) — 对话页显示会话历史
+                     ═══════════════════════════════════════════════════════════════ -->
+                <Border Grid.Column="1"
+                        Background="{DynamicResource DrawerBackgroundBrush}"
+                        BorderBrush="{DynamicResource BorderLightBrush}"
+                        BorderThickness="0,0,1,0"
+                        SnapsToDevicePixels="True"
+                        ClipToBounds="True">
+                    <Grid Margin="12,12,12,8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
 
-                <!-- 内容区域 (Col 2) — 带淡入过渡，子 View 自行管理详情面板 -->
+                        <!-- 抽屉头部：新建会话主操作 -->
+                        <Grid Grid.Row="0" Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0"
+                                    Command="{Binding ChatViewModel.NewChatCommand}"
+                                    Style="{DynamicResource PrimaryButtonStyle}"
+                                    Height="34"
+                                    HorizontalContentAlignment="Center"
+                                    ToolTip="开启新会话">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="＋" FontSize="14" FontWeight="Bold" Margin="0,0,6,0"/>
+                                    <TextBlock Text="新建对话" FontSize="13" FontWeight="SemiBold"/>
+                                </StackPanel>
+                            </Button>
+                            <Button Grid.Column="1"
+                                    Command="{Binding ToggleDrawerCommand}"
+                                    Style="{DynamicResource IconButtonStyle}"
+                                    Width="32" Height="34"
+                                    Margin="6,0,0,0"
+                                    ToolTip="收起侧边栏">
+                                <TextBlock Text="◧" FontSize="12" Foreground="{DynamicResource TextTertiaryBrush}"/>
+                            </Button>
+                        </Grid>
+
+                        <!-- 会话历史标题与搜索框 -->
+                        <Grid Grid.Row="1" Margin="0,0,0,10">
+                            <TextBox Text="{Binding ChatViewModel.SessionSearchFilter, UpdateSourceTrigger=PropertyChanged}"
+                                     Padding="26,5,22,5"
+                                     Height="32"
+                                     FontSize="12"
+                                     VerticalContentAlignment="Center"
+                                     Background="{DynamicResource CardBrush}"
+                                     BorderBrush="{DynamicResource BorderLightBrush}"
+                                     BorderThickness="1"/>
+                            <TextBlock Text="🔍" FontSize="11"
+                                       Foreground="{DynamicResource TextMutedBrush}"
+                                       VerticalAlignment="Center"
+                                       HorizontalAlignment="Left"
+                                       Margin="8,0,0,0"
+                                       IsHitTestVisible="False"/>
+                            <TextBlock Text="搜索会话…"
+                                       FontSize="11.5"
+                                       Foreground="{DynamicResource TextMutedBrush}"
+                                       VerticalAlignment="Center"
+                                       HorizontalAlignment="Left"
+                                       Margin="28,0,0,0"
+                                       IsHitTestVisible="False">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding ChatViewModel.SessionSearchFilter}" Value="">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding ChatViewModel.SessionSearchFilter}" Value="{x:Null}">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Grid>
+
+                        <!-- 历史会话列表 -->
+                        <ListBox Grid.Row="2"
+                                 ItemsSource="{Binding ChatViewModel.FilteredSessions}"
+                                 SelectedItem="{Binding ChatViewModel.SelectedSession, Mode=TwoWay}"
+                                 Style="{DynamicResource NavigationListBoxStyle}"
+                                 ItemContainerStyle="{DynamicResource DrawerSessionItemStyle}"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 Margin="0,0,0,8">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:ChatSessionItem}">
+                                    <Grid Background="Transparent">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="2,0,0,0">
+                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                <Ellipse Width="6" Height="6"
+                                                         Fill="{DynamicResource DocMindEmeraldBrush}"
+                                                         VerticalAlignment="Center"
+                                                         Margin="0,0,6,0"/>
+                                                <TextBlock Text="{Binding DisplayTitle}"
+                                                           FontSize="12.5"
+                                                           FontWeight="Medium"
+                                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           MaxWidth="165"
+                                                           ToolTip="{Binding Title}"/>
+                                            </StackPanel>
+                                            <TextBlock Text="{Binding Tag}"
+                                                       FontSize="10"
+                                                       Foreground="{DynamicResource TextTertiaryBrush}"
+                                                       Margin="12,2,0,0"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                        <!-- 仅在悬停/选中时显示的删除按钮 -->
+                                        <Button Grid.Column="1"
+                                                x:Name="DeleteSessionBtn"
+                                                Content="✕"
+                                                Command="{Binding DataContext.ChatViewModel.DeleteSessionCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                CommandParameter="{Binding}"
+                                                Width="22" Height="22"
+                                                FontSize="10"
+                                                VerticalAlignment="Center"
+                                                Margin="2,0,0,0"
+                                                ToolTip="删除此会话">
+                                            <Button.Style>
+                                                <Style TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
+                                                    <Setter Property="Opacity" Value="0"/>
+                                                    <Setter Property="IsHitTestVisible" Value="False"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                                            <Setter Property="Opacity" Value="0.75"/>
+                                                            <Setter Property="IsHitTestVisible" Value="True"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                                            <Setter Property="Opacity" Value="0.75"/>
+                                                            <Setter Property="IsHitTestVisible" Value="True"/>
+                                                        </DataTrigger>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter Property="Opacity" Value="1"/>
+                                                        </Trigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                        </Button>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <!-- 抽屉底部安全与留存提示 -->
+                        <Border Grid.Row="3" Margin="0,4,0,4" Padding="0,4,0,2" Height="28"
+                                BorderBrush="{DynamicResource BorderLightBrush}" BorderThickness="0,1,0,0">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <Path Data="{StaticResource IconLock}" Style="{StaticResource IconSmStyle}" Width="12" Height="12" Margin="0,0,4,0"/>
+                                <TextBlock Text="本地私有存储 · 永久留存"
+                                           FontSize="10.5"
+                                           Foreground="{DynamicResource TextMutedBrush}"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Border>
+
+                <!-- ═══════════════════════════════════════════════════════════════
+                     Col 2: 主工作区画卷 (Content Canvas)
+                     ═══════════════════════════════════════════════════════════════ -->
                 <cc:TransitioningContentControl Grid.Column="2"
                                                 Content="{Binding CurrentPage}"
-                                                Margin="20,16,20,16"
+                                                Margin="0"
                                                 Focusable="False"/>
             </Grid>
 

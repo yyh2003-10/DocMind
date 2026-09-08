@@ -37,13 +37,13 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <!-- 第一行：文件/目录路径选择 + 目标分组名称 -->
+                <!-- 第一行：文件/目录路径选择 + 目标分组下拉选择/新建 -->
                 <Grid Grid.Row="0" Margin="0,0,0,12">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="150"/>
+                        <ColumnDefinition Width="230"/>
                     </Grid.ColumnDefinitions>
 
                     <TextBox Grid.Column="0"
@@ -54,12 +54,16 @@
                              Margin="0,0,8,0"/>
 
                     <Button Grid.Column="1"
-                            Content="📁 选择…"
                             Command="{Binding PickPathCommand}"
                             Style="{StaticResource SecondaryButtonStyle}"
                             Padding="14,6"
                             MinHeight="36"
-                            Margin="0,0,16,0"/>
+                            Margin="0,0,16,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Data="{StaticResource IconUpload}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                            <TextBlock Text="选择…"/>
+                        </StackPanel>
+                    </Button>
 
                     <TextBlock Grid.Column="2"
                                Text="目标分组:"
@@ -67,10 +71,42 @@
                                VerticalAlignment="Center"
                                Margin="0,0,8,0"/>
 
-                    <TextBox Grid.Column="3"
-                             Text="{Binding Collection, UpdateSourceTrigger=PropertyChanged}"
-                             ToolTip="目标分组名称（默认 default）"
-                             VerticalContentAlignment="Center"/>
+                    <Grid Grid.Column="3">
+                        <!-- 下拉选择已有知识库集合（含「＋ 新建分组…」哨兵项） -->
+                        <ComboBox ItemsSource="{Binding AvailableCollections}"
+                                  SelectedItem="{Binding SelectedCollectionItem, UpdateSourceTrigger=PropertyChanged}"
+                                  Visibility="{Binding IsCreatingCollection, Converter={StaticResource InvertBoolVis}}"
+                                  ToolTip="选择导入目标知识库分组，或选「＋ 新建分组…」创建新分组"
+                                  VerticalContentAlignment="Center"/>
+
+                        <!-- 内联新建分组：输入名称 + 确认/取消 -->
+                        <StackPanel Orientation="Horizontal"
+                                    Visibility="{Binding IsCreatingCollection, Converter={StaticResource BoolToVis}}">
+                            <TextBox Text="{Binding NewCollectionName, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="输入新分组名称（导入时后端会自动创建不存在的分组）"
+                                     VerticalContentAlignment="Center"
+                                     Width="140"
+                                     KeyDown="NewCollectionName_KeyDown"/>
+                            <Button Command="{Binding ConfirmCreateCollectionCommand}"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    Padding="8,4"
+                                    MinWidth="32"
+                                    MinHeight="32"
+                                    Margin="4,0,0,0"
+                                    ToolTip="确认新建该分组">
+                                <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource SuccessBrush}"/>
+                            </Button>
+                            <Button Command="{Binding CancelCreateCollectionCommand}"
+                                    Style="{StaticResource TextButtonStyle}"
+                                    Padding="8,4"
+                                    MinWidth="32"
+                                    MinHeight="32"
+                                    Margin="2,0,0,0"
+                                    ToolTip="取消新建">
+                                <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}"/>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
                 </Grid>
 
                 <!-- 第二行：导入选项 + 批量操作按钮组 -->
@@ -168,7 +204,7 @@
             </Grid>
         </Border>
 
-        <!-- 空态拖拽引导（HasResults=false 时显示） -->
+        <!-- 空态拖拽引导（IsBusy=False 且 HasResults=False 时显示） -->
         <Border Grid.Row="3"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="2"
@@ -178,14 +214,18 @@
                 <Style TargetType="Border">
                     <Setter Property="Visibility" Value="Collapsed"/>
                     <Style.Triggers>
-                        <DataTrigger Binding="{Binding HasResults}" Value="False">
+                        <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                                <Condition Binding="{Binding IsBusy}" Value="False"/>
+                                <Condition Binding="{Binding HasResults}" Value="False"/>
+                            </MultiDataTrigger.Conditions>
                             <Setter Property="Visibility" Value="Visible"/>
-                        </DataTrigger>
+                        </MultiDataTrigger>
                     </Style.Triggers>
                 </Style>
             </Border.Style>
             <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                <TextBlock Text="📂" FontSize="48" HorizontalAlignment="Center"/>
+                <Path Data="{StaticResource IconFolder}" Style="{StaticResource IconLgStyle}" Stroke="{StaticResource TextMutedBrush}" HorizontalAlignment="Center"/>
                 <TextBlock Text="拖拽文件或文件夹到此处"
                            Style="{StaticResource SubtitleText}"
                            Foreground="{StaticResource TextMutedBrush}"
@@ -197,15 +237,113 @@
             </StackPanel>
         </Border>
 
-        <!-- 结果三栏（HasResults=true 时显示） -->
+        <!-- ===== 正在导入中动态看板（IsBusy=True 时显示，彻底消除白屏与空态误导） ===== -->
+        <Border Grid.Row="3"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="12"
+                Background="{StaticResource CardBrush}"
+                Padding="32,24">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <Grid VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="520">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- 动态标题与处理步骤 -->
+                <StackPanel Grid.Row="0" HorizontalAlignment="Center" Margin="0,0,0,16">
+                    <TextBlock Text="⚡ 正在执行知识库导入与本地索引…"
+                               FontSize="18" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimaryBrush}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock Text="{Binding CurrentProcessingItem, Mode=OneWay}"
+                               Style="{StaticResource BodyText}"
+                               Foreground="{StaticResource PrimaryBrush}"
+                               HorizontalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               Margin="0,8,0,0"/>
+                </StackPanel>
+
+                <!-- 主进度条与百分比 -->
+                <Grid Grid.Row="1" Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <ProgressBar Grid.Column="0"
+                                 Value="{Binding ProgressPercent, Mode=OneWay}"
+                                 Maximum="100"
+                                 Height="12"
+                                 VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding ProgressPercent, Mode=OneWay, StringFormat={}{0}%}"
+                               Style="{StaticResource SubtitleText}"
+                               FontWeight="Bold"
+                               Foreground="{StaticResource PrimaryBrush}"
+                               Margin="16,0,0,0"
+                               VerticalAlignment="Center"/>
+                </Grid>
+
+                <!-- 耗时统计与后端状态 -->
+                <DockPanel Grid.Row="2" Margin="0,0,0,20">
+                    <TextBlock Text="{Binding ElapsedTimeText, Mode=OneWay}"
+                               Style="{StaticResource CaptionText}"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               DockPanel.Dock="Left"/>
+                    <TextBlock Text="{Binding StatusMessage, Mode=OneWay}"
+                               Style="{StaticResource CaptionText}"
+                               Foreground="{StaticResource TextSecondaryBrush}"
+                               HorizontalAlignment="Right"
+                               DockPanel.Dock="Right"/>
+                </DockPanel>
+
+                <!-- 取消按钮 -->
+                <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,16">
+                    <Button Command="{Binding CancelImportCommand}"
+                            Style="{StaticResource DangerButtonStyle}"
+                            Padding="16,6">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                            <TextBlock Text="取消本次导入"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+
+                <!-- 本地离线说明提示 -->
+                <TextBlock Grid.Row="4"
+                           Text="提示：文档解析、切片与 ONNX 向量嵌入均在本地离线计算，请稍候…"
+                           Style="{StaticResource SmallText}"
+                           Foreground="{StaticResource TextMutedBrush}"
+                           HorizontalAlignment="Center"/>
+            </Grid>
+        </Border>
+
+        <!-- 结果三栏（IsBusy=False 且 HasResults=True 时显示） -->
         <Grid Grid.Row="3">
             <Grid.Style>
                 <Style TargetType="Grid">
                     <Setter Property="Visibility" Value="Collapsed"/>
                     <Style.Triggers>
-                        <DataTrigger Binding="{Binding HasResults}" Value="True">
+                        <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                                <Condition Binding="{Binding IsBusy}" Value="False"/>
+                                <Condition Binding="{Binding HasResults}" Value="True"/>
+                            </MultiDataTrigger.Conditions>
                             <Setter Property="Visibility" Value="Visible"/>
-                        </DataTrigger>
+                        </MultiDataTrigger>
                     </Style.Triggers>
                 </Style>
             </Grid.Style>
@@ -223,8 +361,7 @@
                         Padding="12,8"
                         Margin="0,0,0,8">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="✓" Foreground="{StaticResource SuccessBrush}"
-                                   FontSize="18" FontWeight="Bold" Margin="0,0,8,0"/>
+                        <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource SuccessBrush}" Margin="0,0,8,0"/>
                         <TextBlock Style="{StaticResource SubtitleText}"
                                    Foreground="{StaticResource SuccessBrush}">
                             <Run Text="导入成功 ("/>
@@ -234,7 +371,10 @@
                     </StackPanel>
                 </Border>
 
-                <ListBox ItemsSource="{Binding Results}" BorderThickness="1">
+                <ListBox ItemsSource="{Binding Results}" BorderThickness="1"
+                         VirtualizingPanel.IsVirtualizing="True"
+                         VirtualizingPanel.VirtualizationMode="Recycling"
+                         ScrollViewer.CanContentScroll="True">
                     <ListBox.ItemTemplate>
                         <DataTemplate DataType="{x:Type m:IngestResult}">
                             <StackPanel Margin="4,4">
@@ -258,10 +398,11 @@
                                     <Border Background="{StaticResource PrimaryLightBrush}"
                                             CornerRadius="6" Padding="8,6" Margin="0,0,0,4">
                                         <StackPanel>
-                                            <TextBlock Style="{StaticResource SmallText}" FontWeight="SemiBold"
-                                                       Foreground="{StaticResource PrimaryBrush}" Margin="0,0,0,2">
-                                                <Run Text="🤖 AI 整理"/>
-                                            </TextBlock>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                                                <Path Data="{StaticResource IconAi}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                                <TextBlock Text="AI 整理" Style="{StaticResource SmallText}" FontWeight="SemiBold"
+                                                           Foreground="{StaticResource PrimaryBrush}"/>
+                                            </StackPanel>
                                             <!-- 标签 -->
                                             <ItemsControl ItemsSource="{Binding CurationTags}" Margin="0,0,0,4">
                                                 <ItemsControl.ItemsPanel>
@@ -305,7 +446,7 @@
                         Padding="12,8"
                         Margin="0,0,0,8">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="⏭" FontSize="18" Margin="0,0,8,0"/>
+                        <Path Data="{StaticResource IconSkip}" Style="{StaticResource IconSmStyle}" Margin="0,0,8,0"/>
                         <TextBlock Style="{StaticResource SubtitleText}">
                             <Run Text="跳过 ("/>
                             <Run Text="{Binding Skipped.Count, Mode=OneWay}"/>
@@ -314,7 +455,10 @@
                     </StackPanel>
                 </Border>
 
-                <ListBox ItemsSource="{Binding Skipped}" BorderThickness="1">
+                <ListBox ItemsSource="{Binding Skipped}" BorderThickness="1"
+                         VirtualizingPanel.IsVirtualizing="True"
+                         VirtualizingPanel.VirtualizationMode="Recycling"
+                         ScrollViewer.CanContentScroll="True">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <TextBlock Text="{Binding}"
@@ -334,8 +478,7 @@
                         Padding="12,8"
                         Margin="0,0,0,8">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="✗" Foreground="{StaticResource DangerBrush}"
-                                   FontSize="18" FontWeight="Bold" Margin="0,0,8,0"/>
+                        <Path Data="{StaticResource IconCross}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource DangerBrush}" Margin="0,0,8,0"/>
                         <TextBlock Style="{StaticResource SubtitleText}"
                                    Foreground="{StaticResource DangerBrush}">
                             <Run Text="失败 ("/>
@@ -345,7 +488,10 @@
                     </StackPanel>
                 </Border>
 
-                <ListBox ItemsSource="{Binding Failed}" BorderThickness="1">
+                <ListBox ItemsSource="{Binding Failed}" BorderThickness="1"
+                         VirtualizingPanel.IsVirtualizing="True"
+                         VirtualizingPanel.VirtualizationMode="Recycling"
+                         ScrollViewer.CanContentScroll="True">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <TextBlock Text="{Binding}"

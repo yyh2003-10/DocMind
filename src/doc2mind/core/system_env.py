@@ -26,7 +26,10 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
-from doc2mind.core.embedder.fastembed_impl import get_embed_providers
+# 注意：本模块被 install_cli（独立安装进程）复用，禁止在模块顶层导入
+# fastembed/numpy 等重依赖——安装进程一旦加载 numpy DLL，其子进程 pip
+# 替换 numpy 文件时会再踩一次 WinError 5（文件被占用）。相关导入一律
+# 延迟到 get_gpu_diagnosis() 函数体内。
 from doc2mind.core.nvidia_runtime import cuda_runtime_ready, get_nvidia_driver_info
 
 logger = logging.getLogger("doc2mind.system_env")
@@ -47,18 +50,16 @@ _PACKAGE_KEYS: tuple[str, ...] = (
     "paddlepaddle-gpu",
 )
 
-# 国内网络优先镜像（pip 常规安装）
-_PIP_MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
+# 国内网络优先镜像（pip 常规安装），按顺序回退：清华 → 阿里云 → 官方 PyPI。
+# 用户显式配置了 PIP_INDEX_URL 时不再覆盖（见 _pip_install）。
+_PIP_MIRRORS: tuple[str, ...] = (
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "https://mirrors.aliyun.com/pypi/simple",
+    "https://pypi.org/simple",
+)
+_DEFAULT_MIRROR = _PIP_MIRRORS[0]
 # Paddle 官方 GPU 稳定源（paddlepaddle-gpu cu126 whl 仅此处提供）
 _PADDLE_GPU_INDEX = "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
-
-# Python 版本 → paddle CUDA wheel 的 cp 标签（支持 3.9 ~ 3.12）
-_PY_TAG: dict[tuple[int, int], str] = {
-    (3, 9): "cp39",
-    (3, 10): "cp310",
-    (3, 11): "cp311",
-    (3, 12): "cp312",
-}
 
 _GUI_INSTALLABLE = object()  # 哨兵：区分"该路径可安装"与"未知路径"
 
@@ -74,12 +75,6 @@ def _dist_versions(names: tuple[str, ...]) -> dict[str, str | None]:
         except PackageNotFoundError:
             out[name] = None
     return out
-
-
-def _py_wheel_tag() -> str | None:
-    """当前 Python 对应的 cpXX 标签；不支持版本返回 None。"""
-    ver = (sys.version_info.major, sys.version_info.minor)
-    return _PY_TAG.get(ver)
 
 
 def _is_gpu_provider(provider: str) -> bool:
@@ -114,18 +109,36 @@ def parse_wheel_filename(filename: str) -> dict[str, Any] | None:
     }
 
 
+# sys.platform → 当前平台 wheel 标签的公共前缀（is_wheel_compatible 用）
+_PLATFORM_HINTS: dict[str, str] = {
+    "win32": "win",
+    "darwin": "macosx",
+    "linux": "linux",
+}
+
+
 def is_wheel_compatible(info: dict[str, Any]) -> bool:
-    """检查 wheel 是否与当前平台及 Python 版本兼容。"""
+    """检查 wheel 是否与当前平台及 Python 版本兼容。
+
+    平台判定统一走 _PLATFORM_HINTS 前缀匹配：Windows 上必须含 "win"、
+    macOS 上必须含 "macosx"、Linux 上必须含 "linux"，否则视为不兼容。
+    （旧实现 `sys.platform != "win32"` 的条件让 Windows 恒跳过平台检查，
+    linux/macos wheel 会被误判为兼容，pip 随后报 No matching distribution。）
+    """
     plat = info["platform_tag"].lower()
-    if plat != "any" and plat != "none_any" and "win_amd64" not in plat:
-        if sys.platform != "win32" and plat not in sys.platform:
+    if plat not in ("any", "none_any"):
+        hint = _PLATFORM_HINTS.get(sys.platform)
+        if hint is None or hint not in plat:
             return False
 
     py = info["python_tag"].lower()
     current_major, current_minor = sys.version_info.major, sys.version_info.minor
     current_tag = f"cp{current_major}{current_minor}"
 
-    if "py3" in py or "py2.py3" in py or "none" in py:
+    if "py3" in py or "py2.py3" in py:
+        return True
+    # abi3 / cp3x-abi3 wheel 对同主版本系列通用；none（纯 py）已在上面放行
+    if py == "none" or "abi3" in info["abi_tag"].lower():
         return True
     return current_tag in py
 
@@ -213,6 +226,9 @@ def scan_local_wheels(extra_dirs: list[str | Path] | None = None) -> list[dict[s
 
 def get_gpu_diagnosis() -> dict[str, Any]:
     """综合探测当前 GPU / 硬件加速环境，产出跨平台诊断报告。"""
+    # 延迟导入：fastembed → onnxruntime/numpy，安装 CLI 复用本模块时不可提前加载
+    from doc2mind.core.embedder.fastembed_impl import get_embed_providers
+
     providers = get_embed_providers()
     gpu_providers = [p for p in providers if _is_gpu_provider(p)]
 
@@ -300,20 +316,29 @@ def get_gpu_diagnosis() -> dict[str, Any]:
 _CUDA_RUNTIME_HINTS = (("cudart64_13.dll", "cu13"), ("cudart64_12.dll", "cu12"))
 
 
-def _pip_install(argv: list[str], find_links_dirs: list[str] | None = None) -> list[str]:
-    """构造 pip install 命令（优先使用本地 find-links 目录 + 清华镜像）。"""
+def _pip_install(
+    argv: list[str],
+    find_links_dirs: list[str] | None = None,
+    mirror: str | None = None,
+) -> list[str]:
+    """构造 pip install 命令（优先使用本地 find-links 目录 + 指定镜像）。
+
+    mirror 为 None 时尊重用户显式配置的 PIP_INDEX_URL；都未配置才用默认清华源。
+    """
     cmd = [sys.executable, "-m", "pip", "install", *argv]
     if find_links_dirs:
         for d in find_links_dirs:
             cmd.extend(["--find-links", d])
-    cmd.extend(["-i", _PIP_MIRROR])
+    effective = mirror or os.environ.get("PIP_INDEX_URL") or _DEFAULT_MIRROR
+    cmd.extend(["-i", effective])
     return cmd
 
 
-def _build_install_commands(path: str) -> list[list[str]] | None:
+def _build_install_commands(path: str, mirror: str | None = None) -> list[list[str]] | None:
     """根据路径构造安装命令序列（离线优先 + 网络回退）；未知路径返回 None。
 
     每个元素是一条完整命令（subprocess 直接执行，无需 shell）。
+    mirror 参数供镜像回退重试用（见 _run_install_commands）。
     """
     py = [sys.executable, "-m", "pip"]
     local_wheels = scan_local_wheels()
@@ -336,7 +361,7 @@ def _build_install_commands(path: str) -> list[list[str]] | None:
             ]
         return [
             [*py, "uninstall", "onnxruntime", "-y"],
-            _pip_install(req_pkgs, find_links_dirs=find_dirs),
+            _pip_install(req_pkgs, find_links_dirs=find_dirs, mirror=mirror),
         ]
 
     if path in ("cuda13", "cu13"):
@@ -353,7 +378,7 @@ def _build_install_commands(path: str) -> list[list[str]] | None:
             ]
         return [
             [*py, "uninstall", "onnxruntime", "-y"],
-            _pip_install(req_pkgs, find_links_dirs=find_dirs),
+            _pip_install(req_pkgs, find_links_dirs=find_dirs, mirror=mirror),
         ]
 
     if path == "directml":
@@ -364,14 +389,14 @@ def _build_install_commands(path: str) -> list[list[str]] | None:
             ]
         return [
             [*py, "uninstall", "onnxruntime", "onnxruntime-gpu", "-y"],
-            _pip_install(["onnxruntime-directml"], find_links_dirs=find_dirs),
+            _pip_install(["onnxruntime-directml"], find_links_dirs=find_dirs, mirror=mirror),
         ]
 
-    if path == "paddle-ocr-gpu":
+    if path in ("paddle-ocr-gpu",):
         if "paddlepaddle-gpu" in local_map:
             return [
                 [*py, "install", local_map["paddlepaddle-gpu"]["path"], "--no-index"],
-                _pip_install(["paddleocr==3.7.0", "pillow==12.2.0"], find_links_dirs=find_dirs),
+                _pip_install(["paddleocr==3.7.0", "pillow==12.2.0"], find_links_dirs=find_dirs, mirror=mirror),
             ]
         # paddlepaddle-gpu 只在 Paddle 官方 cu126 索引提供（PyPI/镜像无 GPU whl；
         # 旧阿里云直链已失效，返回 404 HTML 会被 pip 当 wheel 解析失败）。
@@ -385,12 +410,19 @@ def _build_install_commands(path: str) -> list[list[str]] | None:
                     "--extra-index-url", _PADDLE_GPU_INDEX,
                 ],
                 find_links_dirs=find_dirs,
+                mirror=mirror,
             ),
         ]
 
     if path in ("paddle-ocr-cpu", "ocr-cpu", "ocr", "cpu"):
+        # pillow 必须锁版本：与 pyproject[ocr] / requirements-ocr.txt / 安装器
+        # install_optional.py 三处口径一致，避免 GUI 路径自由解析漂移。
         return [
-            _pip_install(["paddlepaddle==3.3.1", "paddleocr==3.7.0", "pillow"], find_links_dirs=find_dirs),
+            _pip_install(
+                ["paddlepaddle==3.3.1", "paddleocr==3.7.0", "pillow==12.2.0"],
+                find_links_dirs=find_dirs,
+                mirror=mirror,
+            ),
         ]
 
     return None
@@ -434,14 +466,82 @@ def _check_disk_space(path: str) -> str | None:
     return None
 
 
-async def _run_install_commands(
-    cmds: list[list[str]] | None, path: str, label: str
-) -> AsyncGenerator[dict[str, Any], None]:
-    """执行安装命令序列并流式产出事件（GPU / OCR 安装共用）。
+# 安装超时：pip 单条命令读输出的空闲上限与总上限（秒）。
+# 没有超时的话 pip 网络挂死会让 SSE 永不终帧，前端永久卡「正在安装」。
+_INSTALL_IDLE_TIMEOUT_SEC = 300.0
+_INSTALL_TOTAL_TIMEOUT_SEC = 3600.0
 
-    具备 Windows 运行态文件锁定容错（卸载被占用时跳过继续）与全流程日志。
+# 失败原因分类关键字（小写匹配；pip 中文本地化输出经 utf-8 replace 解码后
+# 英文关键字仍保留，中文关键字在 GBK 环境可能乱码，仅作补充）
+_DISK_KEYWORDS = ("no space left", "errno 28")
+_FILE_LOCK_KEYWORDS = (
+    "winerror 5",
+    "access is denied",
+    "permissionerror",
+    "cannot access the file",
+    "being used by another process",
+    "拒绝访问",
+)
+_NETWORK_KEYWORDS = (
+    "connectionerror",
+    "readtimeout",
+    "connection timed out",
+    "timed out",
+    "unreachable",
+    "connection reset",
+    "failed to resolve",
+    "ssl",
+    "proxy error",
+)
+
+
+def _classify_install_failure(lines: list[str]) -> str:
+    """按输出尾部归类失败原因：disk / filelock / network / generic。"""
+    blob = "\n".join(lines).lower()
+    if any(k in blob for k in _DISK_KEYWORDS):
+        return "disk"
+    if any(k in blob for k in _FILE_LOCK_KEYWORDS):
+        return "filelock"
+    if any(k in blob for k in _NETWORK_KEYWORDS):
+        return "network"
+    return "generic"
+
+
+_FAILURE_MESSAGES: dict[str, str] = {
+    "filelock": (
+        "安装失败：文件被占用或无写入权限（Windows 错误 WinError 5）。\n"
+        "两种常见原因：\n"
+        "1. 后端服务正在运行，占用了 numpy/paddle 等运行库 —— "
+        "请从客户端设置页重新安装（客户端会先停止后端再独立安装）；\n"
+        "2. DocMind 安装在无写入权限的目录（如 C:\\Program Files）—— "
+        "pip 无法向虚拟环境写文件。请以管理员身份运行客户端，"
+        "或把 DocMind 安装到用户目录（默认 %LOCALAPPDATA%\\Programs，无需管理员）。"
+    ),
+    "generic": "常见原因：网络不可达、包冲突或 wheel 不兼容。"
+    "若日志中有文件占用（WinError 5）字样，请先停止后端服务再重试。",
+}
+
+
+async def _run_install_commands(
+    build_cmds, path: str, label: str, mirrors: list[str] | None = None
+) -> AsyncGenerator[dict[str, Any], None]:
+    """按镜像序列执行安装命令并流式产出事件（GPU / OCR 安装共用）。
+
+    具备：Windows 文件锁专项识别、磁盘不足专项识别、网络类失败自动切换
+    下一镜像整序列重试、空闲/总超时（超时终止子进程）。
+
+    Args:
+        build_cmds: ``mirror -> list[cmd] | None`` 工厂，供镜像回退重建命令序列。
     """
-    if cmds is None:
+    if mirrors is None:
+        configured = os.environ.get("PIP_INDEX_URL")
+        mirror_list = [configured] if configured else list(_PIP_MIRRORS)
+    else:
+        mirror_list = list(mirrors)
+    if not mirror_list:
+        mirror_list = [_DEFAULT_MIRROR]
+
+    if build_cmds(mirror_list[0]) is None:
         yield {"type": "error", "message": f"未知的安装路径: {path}"}
         return
 
@@ -457,61 +557,152 @@ async def _run_install_commands(
         "stderr": asyncio.subprocess.STDOUT,
         "creationflags": (subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
     }
-    for cmd in cmds:
-        cmd_str = " ".join(cmd)
-        is_uninstall = len(cmd) >= 4 and cmd[1:3] == ["-m", "pip"] and cmd[3] == "uninstall"
-        yield {"type": "log", "line": "$ " + cmd_str}
-        logger.info("执行 %s 安装命令: %s", label, cmd_str)
 
-        proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
-        assert proc.stdout is not None
-        recent_lines: list[str] = []
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="replace").rstrip("\r\n")
-            if text:
-                recent_lines.append(text)
-                if len(recent_lines) > 15:
-                    recent_lines.pop(0)
-                yield {"type": "log", "line": text}
+    network_only_failure = False
+    for attempt, mirror in enumerate(mirror_list):
+        cmds = build_cmds(mirror)
+        if not cmds:
+            continue
+        if attempt > 0:
+            yield {
+                "type": "log",
+                "line": f"[提示] 网络异常，切换镜像重试（{attempt + 1}/{len(mirror_list)}）: {mirror}",
+            }
 
-        rc = await proc.wait()
-        if rc != 0:
-            if is_uninstall:
-                warn_msg = "卸载前代组件被系统占用锁定，已跳过卸载并继续尝试覆盖安装..."
-                logger.warning("%s 卸载步骤跳过（退出码 %d）: %s", label, rc, warn_msg)
-                yield {"type": "log", "line": f"[提示] {warn_msg}"}
-                continue
+        sequence_failed = False
+        for cmd in cmds:
+            cmd_str = " ".join(cmd)
+            is_uninstall = len(cmd) >= 4 and cmd[1:3] == ["-m", "pip"] and cmd[3] == "uninstall"
+            yield {"type": "log", "line": "$ " + cmd_str}
+            logger.info("执行 %s 安装命令: %s", label, cmd_str)
 
-            err_details = "\n".join(recent_lines[-5:]) if recent_lines else f"退出码 {rc}"
-            logger.error("%s 安装步骤失败（退出码 %d）: %s\n详细输出:\n%s", label, rc, cmd_str, err_details)
-            if any("no space left" in l.lower() for l in recent_lines):
+            proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+            assert proc.stdout is not None
+            recent_lines: list[str] = []
+            timed_out = False
+            deadline = asyncio.get_event_loop().time() + _INSTALL_TOTAL_TIMEOUT_SEC
+            try:
+                while True:
+                    idle_left = deadline - asyncio.get_event_loop().time()
+                    if idle_left <= 0:
+                        timed_out = True
+                        break
+                    line = await asyncio.wait_for(
+                        proc.stdout.readline(), timeout=min(_INSTALL_IDLE_TIMEOUT_SEC, idle_left)
+                    )
+                    if not line:
+                        break
+                    text = line.decode("utf-8", errors="replace").rstrip("\r\n")
+                    if text:
+                        recent_lines.append(text)
+                        if len(recent_lines) > 15:
+                            recent_lines.pop(0)
+                        yield {"type": "log", "line": text}
+            except asyncio.TimeoutError:
+                timed_out = True
+
+            if timed_out:
+                logger.error("%s 安装超时（%s）: %s", label, "总时长" if recent_lines else "空闲", cmd_str)
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
                 yield {
                     "type": "error",
-                    "message": "磁盘空间不足导致安装失败，请清理磁盘"
-                    "（可运行 pip cache purge 清理 pip 下载缓存）后重试。",
+                    "message": (
+                        f"{label}安装超时已终止（pip 长时间无输出或总时长超上限）。"
+                        "多为网络卡住所致，请检查网络/代理后重试。"
+                    ),
                 }
                 return
-            yield {
-                "type": "error",
-                "message": f"{label}安装失败（退出码 {rc}）：\n{err_details}\n常见原因：网络不可达、包冲突或 wheel 不兼容。",
-            }
-            return
-        logger.info("%s 安装步骤完成: %s", label, " ".join(cmd[:4]))
-    yield {"type": "done", "success": True, "path": path}
+
+            rc = await proc.wait()
+            if rc != 0:
+                if is_uninstall:
+                    warn_msg = "卸载前代组件被系统占用锁定，已跳过卸载并继续尝试覆盖安装..."
+                    logger.warning("%s 卸载步骤跳过（退出码 %d）: %s", label, rc, warn_msg)
+                    yield {"type": "log", "line": f"[提示] {warn_msg}"}
+                    continue
+
+                err_details = "\n".join(recent_lines[-5:]) if recent_lines else f"退出码 {rc}"
+                kind = _classify_install_failure(recent_lines)
+                logger.error("%s 安装步骤失败（退出码 %d，类别 %s）: %s\n详细输出:\n%s",
+                             label, rc, kind, cmd_str, err_details)
+                if kind == "disk":
+                    yield {
+                        "type": "error",
+                        "message": "磁盘空间不足导致安装失败，请清理磁盘"
+                        "（可运行 pip cache purge 清理 pip 下载缓存）后重试。",
+                    }
+                    return
+                if kind == "filelock":
+                    yield {"type": "error", "message": _FAILURE_MESSAGES["filelock"]}
+                    return
+                if kind == "network" and attempt < len(mirror_list) - 1:
+                    sequence_failed = True
+                    network_only_failure = True
+                    break
+                yield {
+                    "type": "error",
+                    "message": f"{label}安装失败（退出码 {rc}）：\n{err_details}\n{_FAILURE_MESSAGES['generic']}",
+                }
+                return
+            logger.info("%s 安装步骤完成: %s", label, " ".join(cmd[:4]))
+
+        if sequence_failed:
+            continue
+        yield {"type": "done", "success": True, "path": path}
+        return
+
+    # 所有镜像均因网络类失败耗尽
+    if network_only_failure:
+        yield {
+            "type": "error",
+            "message": f"{label}安装失败：所有镜像（清华/阿里云/PyPI）均网络失败，"
+            "请检查网络连接或代理设置后重试。",
+        }
+    else:
+        yield {"type": "error", "message": f"{label}安装失败（未知原因），请查看安装日志。"}
 
 
-async def install_gpu_packages(path: str) -> AsyncGenerator[dict[str, Any], None]:
+async def install_gpu_packages(
+    path: str, mirrors: list[str] | None = None
+) -> AsyncGenerator[dict[str, Any], None]:
     """按路径执行 GPU 加速包安装，流式产出事件字典。"""
-    async for event in _run_install_commands(_build_install_commands(path), path, "GPU"):
+    async for event in _run_install_commands(
+        lambda m: _build_install_commands(path, m), path, "GPU", mirrors
+    ):
         yield event
 
 
-async def install_ocr_packages(path: str = "cpu") -> AsyncGenerator[dict[str, Any], None]:
-    """按路径执行 OCR 依赖安装，流式产出事件字典。"""
-    async for event in _run_install_commands(_build_install_commands(path), path, "OCR"):
+async def install_ocr_packages(
+    path: str = "cpu", mirrors: list[str] | None = None, force: bool = False
+) -> AsyncGenerator[dict[str, Any], None]:
+    """按路径执行 OCR 依赖安装，流式产出事件字典。
+
+    幂等保护：检测到 paddle + paddleocr 均已安装时跳过重复安装（重装会
+    再次触发 pip 隐式替换 numpy → Windows 文件占用失败）。force=True
+    （CLI --force 或请求体 force 字段）可强制重装修复。
+    版本检测走 importlib.metadata，不 import paddle（避免在安装进程里
+    提前加载 numpy DLL，否则后续 pip 替换 numpy 又会踩文件锁）。
+    """
+    if not force and path in ("paddle-ocr-cpu", "ocr-cpu", "ocr", "cpu"):
+        installed = _dist_versions(("paddlepaddle", "paddlepaddle-gpu", "paddleocr"))
+        if installed.get("paddleocr") and (installed.get("paddlepaddle") or installed.get("paddlepaddle-gpu")):
+            engine = "paddlepaddle-gpu" if installed.get("paddlepaddle-gpu") else "paddlepaddle"
+            yield {
+                "type": "log",
+                "line": (
+                    f"[提示] OCR 组件已安装（{engine} {installed.get('paddlepaddle') or installed.get('paddlepaddle-gpu')}"
+                    f" / paddleocr {installed['paddleocr']}），跳过重复安装。"
+                    f"如需强制重装修复，请运行：python -m doc2mind.install_cli {path} --force"
+                ),
+            }
+            yield {"type": "done", "success": True, "path": path}
+            return
+    async for event in _run_install_commands(
+        lambda m: _build_install_commands(path, m), path, "OCR", mirrors
+    ):
         yield event
 
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from doc2mind.core.loader.base import Loader, LoaderError, make_source
@@ -299,7 +300,11 @@ class CodeLoader(Loader):
         )
     )
 
-    def extract(self, path: Path) -> LoadedDocument:
+    def extract(
+        self,
+        path: Path,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> LoadedDocument:
         if not path.exists():
             raise LoaderError(f"文件不存在: {path}")
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 
 from doc2mind.core.models import LoadedDocument
@@ -14,6 +16,24 @@ class LoaderError(Exception):
 
 class UnsupportedFormatError(LoaderError):
     """不支持的文件格式。"""
+
+
+def stream_file_hash(path: Path, chunk_size: int = 1 << 20) -> tuple[str, int]:
+    """流式计算文件 MD5 与字节数（1MB 分块读，不把整个文件压进内存）。
+
+    各 loader 历史上用 `read_bytes()` 全量读入再 md5——几百 MB 的 PDF
+    直接翻倍内存占用。与全量 md5 结果逐字节一致，可安全用于去重比对。
+    """
+    h = hashlib.md5()
+    size = 0
+    with open(path, "rb") as f:
+        while True:
+            block = f.read(chunk_size)
+            if not block:
+                break
+            h.update(block)
+            size += len(block)
+    return h.hexdigest(), size
 
 
 def make_source(path: Path) -> str:
@@ -41,11 +61,19 @@ class Loader(ABC):
     supported_extensions: tuple[str, ...] = ()
 
     @abstractmethod
-    def extract(self, path: Path) -> LoadedDocument:
+    def extract(
+        self,
+        path: Path,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> LoadedDocument:
         """解析文档，返回 `LoadedDocument`。
 
         Args:
             path: 文件路径
+            progress: 可选的文件内进度回调 `(done, total)`。多页文档（PDF
+                逐页解析 / 扫描件逐页 OCR）按页上报，供 pipeline 折算成
+                parsing 阶段进度；total 未知（如流式解析到哪算哪）时传 0。
+                慢速 loader 应尽量支持，快速 loader 可忽略。
 
         Returns:
             `LoadedDocument`，其中 `elements` 按文档顺序排列。

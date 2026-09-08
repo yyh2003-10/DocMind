@@ -135,6 +135,15 @@ namespace DocMind
             services.AddSingleton<GpuWarningViewModel>();
 
             services.AddSingleton<BackendProcessService>();
+            // 插件（GPU/OCR）独立进程安装器：先停后端再安装，规避运行中后端
+            // 占用 numpy/paddle DLL 导致的 WinError 5
+            services.AddSingleton<IPluginInstallService, PluginInstallService>();
+            services.AddSingleton<Microsoft.Extensions.Logging.ILogger<PluginInstallService>>(NullLogger<PluginInstallService>.Instance);
+            // 外部资源定位（poppler / 后端 Python / wheels / 模型缓存）：
+            // 手动指定 + 自动寻找可用配置（快扫/全盘深扫含 U 盘）
+            services.AddSingleton<ResourceLocatorService>();
+            services.AddSingleton<Microsoft.Extensions.Logging.ILogger<ResourceLocatorService>>(NullLogger<ResourceLocatorService>.Instance);
+            services.AddSingleton<ResourcePathPanelViewModel>();
 
             services.AddSingleton<Microsoft.Extensions.Logging.ILogger<Doc2kbApiService>>(NullLogger<Doc2kbApiService>.Instance);
             services.AddSingleton<Microsoft.Extensions.Logging.ILogger<BackendProcessService>>(NullLogger<BackendProcessService>.Instance);
@@ -216,6 +225,11 @@ namespace DocMind
             var themeService = _serviceProvider.GetRequiredService<ThemeService>();
             themeService.LoadInitialTheme();
 
+            // 提前加载后端服务令牌：ViewModel 构造即 fire-and-forget 拉 v1/config 等，
+            // 若令牌到 BackendProcessService.StartAsync 才加载，首批请求会 401（SeedModelFromConfigAsync
+            // 失败且无重试 → 整个会话模型种子为空）。此处幂等预读，消除启动期令牌竞态。
+            Doc2kbApiService.LoadAuthToken();
+
             var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
             mainWindow.DataContext = _serviceProvider.GetRequiredService<MainViewModel>();
             mainWindow.Show();
@@ -230,15 +244,17 @@ namespace DocMind
                     _trayService.HideToTray();
                 }
             };
-            // 隐藏到托盘时弹一次 Toast，引导用户从托盘恢复
-            // （Windows 11 默认把托盘图标收到溢出区，用户常找不到窗口去哪了）
-            var trayNotifications = _serviceProvider.GetRequiredService<NotificationService>();
+            // 隐藏到托盘时弹一次系统托盘气泡，引导用户从托盘恢复
+            // （Windows 11 默认把托盘图标收到溢出区，用户常找不到窗口去哪了。
+            // 注意不能用窗口内 Toast——窗口此刻已被 Hide()，永远没人看得见）
             var trayHintShown = false;
             _trayService.HiddenToTray += (_, _) =>
             {
                 if (trayHintShown) return;
                 trayHintShown = true;
-                trayNotifications.Info("已最小化到系统托盘，单击或双击托盘图标可恢复窗口", "最小化到托盘");
+                _trayService.ShowNotification(
+                    "最小化到托盘",
+                    "DocMind 已最小化到系统托盘，单击托盘图标可恢复窗口；右键菜单可显示或退出");
             };
 
             // 启动后端子进程（受 AutoStartBackend 开关控制；fire-and-forget；状态灯由事件回调）
@@ -280,6 +296,8 @@ namespace DocMind
                 backend.StateChanged += (_, state) =>
                 {
                     if (backendFailedShown) return;
+                    // 插件安装等维护操作会主动停后端（Offline 是预期行为），不弹失败框
+                    if (backend.IsMaintenance) return;
                     // Starting → Offline 表示启动失败
                     if (state == BackendState.Offline && backend.State == BackendState.Offline)
                     {
@@ -289,11 +307,14 @@ namespace DocMind
                             var detail = !string.IsNullOrWhiteSpace(backend.LastErrorMessage)
                                 ? $"【底层错误诊断】\n{backend.LastErrorMessage}\n\n"
                                 : "";
+                            var venvDiag = Services.BackendProcessService.LastVenvHealthError is { } v
+                                ? $"【环境诊断】\n{v}\n\n"
+                                : "";
                             MessageBox.Show(
                                 "后端服务启动失败，所有功能将不可用。\n\n" +
-                                detail +
+                                detail + venvDiag +
                                 "排查建议：\n" +
-                                "1. 运行 start.bat 或检查 Python 虚拟环境依赖\n" +
+                                "1. 重新安装 DocMind（新版安装包自带便携 Python 运行时）\n" +
                                 "2. 或在设置页配置「后端命令」指向 Python.exe 路径\n\n" +
                                 "详细日志请查看「调试日志」页面。",
                                 "DocMind — 后端启动失败",

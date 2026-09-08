@@ -10,6 +10,7 @@ public class NavigationItem
     public string Title { get; set; } = string.Empty;
     public string Icon { get; set; } = string.Empty;
     public string? IconPath { get; set; }
+    public string? IconKey { get; set; }
     public string Category { get; set; } = string.Empty;
     public Type ViewModelType { get; set; } = null!;
 

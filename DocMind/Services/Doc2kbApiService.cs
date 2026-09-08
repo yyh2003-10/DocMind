@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
 using DocMind.Models;
 using Microsoft.Extensions.Logging;
@@ -1147,33 +1148,44 @@ public class Doc2kbApiService : IDoc2kbApiService
                 throw ex;
             }
 
-            // 成功路径：读取 raw body 用于日志，再反序列化
-            string rawBody;
-            try
+            // 成功路径：流式反序列化 + 日志只留截断预览，
+            // 避免整包 ReadAsStringAsync（UTF-16 全量副本）+ 再反序列化的 2~3 份大响应体副本。
+            T result;
+            using (var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
             {
-                rawBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            }
-            catch
-            {
-                rawBody = "<unreadable>";
-            }
+                string preview = string.Empty;
+                if (stream.CanSeek)
+                {
+                    preview = await ReadBodyPreviewAsync(stream).ConfigureAwait(false);
+                    stream.Position = 0;
+                }
 
-            DebugLog.Info(
-                $"✓ {method} {uri} -> {status} in {sw.ElapsedMilliseconds}ms"
-                + (string.IsNullOrWhiteSpace(rawBody) ? "" : "\n  resp: " + Truncate(rawBody, 800)),
-                "API");
+                DebugLog.Info(
+                    $"✓ {method} {uri} -> {status} in {sw.ElapsedMilliseconds}ms"
+                    + (string.IsNullOrWhiteSpace(preview) ? "" : "\n  resp: " + Truncate(preview, 800)),
+                    "API");
 
-            try
-            {
-                var result = JsonSerializer.Deserialize<T>(rawBody, JsonOptions);
-                return result ?? throw new ApiException("PARSE_ERROR", "Response body was empty.");
+                try
+                {
+                    result = await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, ct).ConfigureAwait(false)
+                        ?? throw new ApiException("PARSE_ERROR", "Response body was empty.");
+                }
+                catch (JsonException ex)
+                {
+                    DebugLog.Error($"JSON parse failed for {method} {uri}: {ex.Message}\n  raw: {Truncate(preview, 800)}", "API", ex);
+                    throw new ApiException("PARSE_ERROR", "Failed to parse response body.", innerException: ex);
+                }
             }
-            catch (JsonException ex)
-            {
-                DebugLog.Error($"JSON parse failed for {method} {uri}: {ex.Message}\n  raw: {Truncate(rawBody, 800)}", "API", ex);
-                throw new ApiException("PARSE_ERROR", "Failed to parse response body.", innerException: ex);
-            }
+            return result;
         }
+    }
+
+    /// <summary>只读响应体开头 ≤2KB 原始字节用于日志预览，不为打日志整读大响应。</summary>
+    private static async Task<string> ReadBodyPreviewAsync(Stream stream)
+    {
+        var buf = new byte[2048];
+        var n = await stream.ReadAsync(buf.AsMemory(0, buf.Length)).ConfigureAwait(false);
+        return n == 0 ? string.Empty : Encoding.UTF8.GetString(buf, 0, n);
     }
 
     private static string Truncate(string s, int max)

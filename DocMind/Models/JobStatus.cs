@@ -15,6 +15,12 @@ public sealed record JobStatus
     public string? StartedAt { get; init; }
     public string? FinishedAt { get; init; }
     public string? Error { get; init; }
+    /// <summary>当前正在处理的文件路径（可选）。</summary>
+    public string? CurrentFile { get; init; }
+    /// <summary>当前文件内阶段（可选）：parsing/chunking/embedding/writing/curating。旧后端为 null。</summary>
+    public string? Stage { get; init; }
+    /// <summary>阶段内进度 0.0~1.0（可选，embedding 阶段有真实值，其余为 null）。</summary>
+    public double? StageProgress { get; init; }
     /// <summary>异步 job 完成后的详细结果列表（可选，向后兼容），由后端在完成时填充。</summary>
     public IReadOnlyList<IngestResult> Results { get; init; } = [];
     /// <summary>curate 任务完成后的整理报告（其它类型任务为 null）。原始 JSON 保留结构，UI 按需解析。</summary>

@@ -73,6 +73,7 @@ public partial class SettingsViewModel : ViewModelBase
     private string? _backendCommand;
     private bool _autoStartBackend = true;
     private bool _stopBackendOnExit = true;
+    private bool _autoCurateOnIngest = true;
     private string? _autoIngestPath;
     private string _autoIngestCollection = "default";
     private bool _autoIngestRecursive;
@@ -130,6 +131,18 @@ public partial class SettingsViewModel : ViewModelBase
     private string? _savedGithubTokenAtLoad;
     private bool _clearGithubTokenRequested;
 
+    // ── LLM 连接字段「输入即生效」：提供商/Key/地址/模型变化后防抖推送后端运行时 ──
+    // persist=false 不落盘（保存才持久化）；实现输入即可测试、调用，无需先点保存。
+    private System.Windows.Threading.DispatcherTimer? _llmAutoApplyTimer;
+    private bool _isAutoApplyingLlm;
+    // 表单回填中（下拉选服务商/应用档案前回填）：抑制自动推送（应用档案走完整保存流程自带推送）
+    private bool _isBackfillingLlmForm;
+    // 上次已推送后端运行时的 LLM 连接快照（避免重复推送）
+    private string? _appliedLlmProvider;
+    private string? _appliedLlmApiKey;
+    private string? _appliedLlmBaseUrl;
+    private string? _appliedLlmModel;
+
     // --- AI 提供商档案 ---
     private LlmProfile? _selectedProfile;
     private string _profileNameInput = "";
@@ -144,7 +157,8 @@ public partial class SettingsViewModel : ViewModelBase
         ThemeService themeService,
         IDoc2kbApiService apiService,
         GpuWarningViewModel gpuWarning,
-        BackendProcessService? backendProcess = null)
+        BackendProcessService? backendProcess = null,
+        ResourcePathPanelViewModel? resourcePaths = null)
     {
         _appSettings = appSettings;
         _notifications = notifications;
@@ -152,7 +166,14 @@ public partial class SettingsViewModel : ViewModelBase
         _apiService = apiService;
         _gpuWarning = gpuWarning;
         _backendProcess = backendProcess;
+        ResourcePaths = resourcePaths;
         Title = "设置";
+
+        // 异步预检外部组件路径（高概率区快扫，秒级；不阻塞设置页打开）
+        if (resourcePaths is not null)
+        {
+            _ = resourcePaths.RefreshAsync();
+        }
         
         _gpuWarning.PropertyChanged += (s, e) =>
         {
@@ -169,6 +190,7 @@ public partial class SettingsViewModel : ViewModelBase
         _backendCommand = _appSettings.BackendCommand;
         _autoStartBackend = _appSettings.AutoStartBackend;
         _stopBackendOnExit = _appSettings.StopBackendOnExit;
+        _autoCurateOnIngest = _appSettings.AutoCurateOnIngest;
         _autoIngestPath = _appSettings.AutoIngestPath;
         _autoIngestCollection = _appSettings.AutoIngestCollection;
         _autoIngestRecursive = _appSettings.AutoIngestRecursive;
@@ -217,6 +239,8 @@ public partial class SettingsViewModel : ViewModelBase
         _savedBaseUrlAtLoad = _llmBaseUrl;
         _savedModelAtLoad = _llmModel;
         _savedRagSystemPromptAtLoad = _ragSystemPrompt;
+        // 「输入即生效」基准快照：后端运行时当前即这些值，启动后不重复推送
+        SyncLlmAppliedSnapshot();
         // 批次 2：保存重启类字段快照（用于变更检测）
         _savedBackendUrlAtLoad = _backendUrl;
         _savedStartupTimeoutSecAtLoad = _startupTimeoutSec;
@@ -409,6 +433,10 @@ public partial class SettingsViewModel : ViewModelBase
     /// <summary>GPU 加速状态（警告条 + 关于区显示）。</summary>
     public GpuWarningViewModel GpuWarning => _gpuWarning;
 
+    /// <summary>外部组件路径面板（poppler / 后端 Python / wheels / 模型缓存，
+    /// 支持手动指定与「自动寻找可用配置」）。DI 未注册时为 null（向后兼容）。</summary>
+    public ResourcePathPanelViewModel? ResourcePaths { get; }
+
     public ThemeMode SelectedTheme
     {
         get => _themeService.CurrentTheme;
@@ -463,6 +491,14 @@ public partial class SettingsViewModel : ViewModelBase
     {
         get => _stopBackendOnExit;
         set => SetDirty(ref _stopBackendOnExit, value);
+    }
+
+    /// <summary>入库时自动跑 AI 整理（enrich + 可选 categorize + extract）。
+    /// 关闭后只写元数据不调 LLM；dedup/consolidate 永不自动跑。</summary>
+    public bool AutoCurateOnIngest
+    {
+        get => _autoCurateOnIngest;
+        set => SetDirty(ref _autoCurateOnIngest, value);
     }
 
     /// <summary>启动时自动 ingest 的目录路径（空表示不自动导入）。</summary>
@@ -539,7 +575,13 @@ public partial class SettingsViewModel : ViewModelBase
     public string LlmProvider
     {
         get => _llmProvider;
-        set => SetDirty(ref _llmProvider, value);
+        set
+        {
+            if (SetDirty(ref _llmProvider, value))
+            {
+                ScheduleLlmAutoApply();
+            }
+        }
     }
 
     /// <summary>API Key（内存中持明文，落盘时经 DPAPI 加密；留空保存 = 保留原值）。</summary>
@@ -548,10 +590,14 @@ public partial class SettingsViewModel : ViewModelBase
         get => _llmApiKey;
         set
         {
-            if (SetDirty(ref _llmApiKey, value) && !string.IsNullOrWhiteSpace(value))
+            if (SetDirty(ref _llmApiKey, value))
             {
-                // 重新输入即取消「清除」请求
-                _clearApiKeyRequested = false;
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    // 重新输入即取消「清除」请求
+                    _clearApiKeyRequested = false;
+                }
+                ScheduleLlmAutoApply();
             }
         }
     }
@@ -627,14 +673,26 @@ public partial class SettingsViewModel : ViewModelBase
     public string? LlmBaseUrl
     {
         get => _llmBaseUrl;
-        set => SetDirty(ref _llmBaseUrl, value);
+        set
+        {
+            if (SetDirty(ref _llmBaseUrl, value))
+            {
+                ScheduleLlmAutoApply();
+            }
+        }
     }
 
     /// <summary>模型名（如 deepseek-chat、gpt-4o-mini、llama3.2）。</summary>
     public string LlmModel
     {
         get => _llmModel;
-        set => SetDirty(ref _llmModel, value);
+        set
+        {
+            if (SetDirty(ref _llmModel, value))
+            {
+                ScheduleLlmAutoApply();
+            }
+        }
     }
 
     /// <summary>温度参数（0-2，默认 0.7）。</summary>
@@ -1099,7 +1157,7 @@ public partial class SettingsViewModel : ViewModelBase
         OnPropertyChanged(nameof(ModelDownloadProgressText));
         try
         {
-            var progress = new Progress<DownloadProgressFrame>(f =>
+            void ApplyDownloadProgress(DownloadProgressFrame f)
             {
                 // 字节优先，退化到文件进度；避免回跳
                 var p = f.Progress;
@@ -1108,6 +1166,19 @@ public partial class SettingsViewModel : ViewModelBase
                 ModelDownloadStatus = f.TotalBytes > 0
                     ? $"下载中… {FormatBytes(f.DownloadedBytes)} / {FormatBytes(f.TotalBytes)}"
                     : $"下载中… 文件 {f.DownloadedFiles}/{f.TotalFiles}";
+            }
+
+            var progress = new Progress<DownloadProgressFrame>(f =>
+            {
+                var app = System.Windows.Application.Current;
+                if (app?.Dispatcher != null && !app.Dispatcher.CheckAccess())
+                {
+                    app.Dispatcher.InvokeAsync(() => ApplyDownloadProgress(f));
+                }
+                else
+                {
+                    ApplyDownloadProgress(f);
+                }
             });
 
             var snapPath = await _apiService.DownloadModelAsync(
@@ -1182,6 +1253,99 @@ public partial class SettingsViewModel : ViewModelBase
 
     private bool CanSave => IsDirty;
 
+    // ── LLM 连接字段「输入即生效」──────────────────────────────────────────
+    // 提供商/Key/地址/模型变化后防抖 1.2s 推送后端运行时（persist=false，不落盘）：
+    // 输入即可测试、调用（对话/RAG 走后端运行时配置），点「保存」才持久化到本地+config.toml。
+
+    /// <summary>LLM 连接字段变化后重置防抖计时器（表单回填/档案应用期间跳过）。</summary>
+    private void ScheduleLlmAutoApply()
+    {
+        if (_isBackfillingLlmForm || IsApplyingProfile)
+        {
+            return;
+        }
+        _llmAutoApplyTimer ??= CreateLlmAutoApplyTimer();
+        _llmAutoApplyTimer.Stop();
+        _llmAutoApplyTimer.Start();
+    }
+
+    private System.Windows.Threading.DispatcherTimer CreateLlmAutoApplyTimer()
+    {
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
+        timer.Tick += async (_, _) =>
+        {
+            timer.Stop();
+            await AutoApplyLlmConnectionAsync();
+        };
+        return timer;
+    }
+
+    /// <summary>把当前 LLM 连接输入推送到后端运行时（只推非空字段；空 = 不修改，
+    /// 避免输入中途误清后端已有配置——清除 Key/地址仍走显式清除+保存流程）。</summary>
+    private async Task AutoApplyLlmConnectionAsync()
+    {
+        if (_isAutoApplyingLlm || IsApplyingProfile)
+        {
+            return;
+        }
+
+        string? pushProvider = string.IsNullOrWhiteSpace(LlmProvider) ? null : LlmProvider.Trim();
+        string? pushApiKey = string.IsNullOrWhiteSpace(LlmApiKey) ? null : LlmApiKey!.Trim();
+        string? pushBaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl) ? null : LlmBaseUrl.Trim();
+        string? pushModel = string.IsNullOrWhiteSpace(LlmModel) ? null : LlmModel.Trim();
+        if (pushProvider == _appliedLlmProvider && pushApiKey == _appliedLlmApiKey
+            && pushBaseUrl == _appliedLlmBaseUrl && pushModel == _appliedLlmModel)
+        {
+            return; // 与后端当前生效值一致，无需推送
+        }
+
+        _isAutoApplyingLlm = true;
+        try
+        {
+            await _apiService.UpdateConfigAsync(new BackendConfigUpdate
+            {
+                LlmProvider = pushProvider,
+                LlmApiKey = pushApiKey,
+                LlmBaseUrl = pushBaseUrl,
+                LlmModel = pushModel,
+                Persist = false,
+            });
+            _appliedLlmProvider = pushProvider;
+            _appliedLlmApiKey = pushApiKey;
+            _appliedLlmBaseUrl = pushBaseUrl;
+            _appliedLlmModel = pushModel;
+            if (pushApiKey != null)
+            {
+                _backendApiKeyConfigured = true;
+                OnPropertyChanged(nameof(HasSavedApiKey));
+                OnPropertyChanged(nameof(ApiKeyStatusText));
+            }
+            StatusMessage = "LLM 连接配置已即时生效（点「保存」后重启仍保留）";
+            DebugLog.Info(
+                $"LLM 连接已即时生效: provider={pushProvider ?? "-"} model={pushModel ?? "-"} " +
+                $"baseUrl={(string.IsNullOrEmpty(pushBaseUrl) ? "-" : pushBaseUrl)}",
+                "Settings");
+        }
+        catch (Exception ex)
+        {
+            // 即时推送失败不弹窗（后端未就绪时输入会频繁触发）；保存仍会全量推送兜底
+            DebugLog.Warn($"LLM 连接即时生效失败（保存后仍会生效）: {ex.Message}", "Settings");
+        }
+        finally
+        {
+            _isAutoApplyingLlm = false;
+        }
+    }
+
+    /// <summary>把「已推送后端」快照同步为当前输入（构造加载与保存成功后调用，避免防抖重复推送）。</summary>
+    private void SyncLlmAppliedSnapshot()
+    {
+        _appliedLlmProvider = string.IsNullOrWhiteSpace(_llmProvider) ? null : _llmProvider.Trim();
+        _appliedLlmApiKey = string.IsNullOrWhiteSpace(_llmApiKey) ? null : _llmApiKey!.Trim();
+        _appliedLlmBaseUrl = string.IsNullOrWhiteSpace(_llmBaseUrl) ? null : _llmBaseUrl.Trim();
+        _appliedLlmModel = string.IsNullOrWhiteSpace(_llmModel) ? null : _llmModel.Trim();
+    }
+
     /// <summary>保存到 appsettings.json 并刷新 AppSettings 单例。</summary>
     [RelayCommand(CanExecute = nameof(CanSave))]
     private async Task SaveAsync()
@@ -1237,6 +1401,7 @@ public partial class SettingsViewModel : ViewModelBase
             _appSettings.BackendCommand = BackendCommand;
             _appSettings.AutoStartBackend = AutoStartBackend;
             _appSettings.StopBackendOnExit = StopBackendOnExit;
+            _appSettings.AutoCurateOnIngest = AutoCurateOnIngest;
             _appSettings.AutoIngestPath = AutoIngestPath;
             _appSettings.AutoIngestCollection = AutoIngestCollection;
             _appSettings.AutoIngestRecursive = AutoIngestRecursive;
@@ -1336,6 +1501,7 @@ public partial class SettingsViewModel : ViewModelBase
                     RagMaxHistoryTokens = RagMaxHistoryTokens,
                     WatchPaths = WatchPaths.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToList(),
                     WatchDebounceSeconds = WatchDebounceSeconds,
+                    AutoCurateOnIngest = AutoCurateOnIngest,
                 });
                 // 后端提示（如切换模型后维度变化需重建索引）
                 if (!string.IsNullOrWhiteSpace(pushed.Notice))
@@ -1359,6 +1525,8 @@ public partial class SettingsViewModel : ViewModelBase
             IsDirty = false;
             _clearApiKeyRequested = false;
             _clearGithubTokenRequested = false;
+            // 保存已全量推送后端：同步「已生效」快照，避免防抖计时器随后重复推送
+            SyncLlmAppliedSnapshot();
             _savedApiKeyAtLoad = effectiveApiKey;
             _savedGithubTokenAtLoad = effectiveGithubToken;
             _savedBaseUrlAtLoad = LlmBaseUrl;
@@ -1392,6 +1560,9 @@ public partial class SettingsViewModel : ViewModelBase
                 _notifications.Success("设置已保存");
             }
             DebugLog.Info($"设置保存成功: {settingsPath}", "Settings");
+
+            // 通知对话页同步默认提供商/模型（否则改默认模型保存后，对话页仍用旧默认/上次选择）
+            RaiseProviderConfigChanged();
 
             // 批次 2：重启类字段变更后弹出「立即重启 / 稍后」确认对话框
             if (restartRequired)
@@ -1430,6 +1601,7 @@ public partial class SettingsViewModel : ViewModelBase
         BackendCommand = _appSettings.BackendCommand;
         AutoStartBackend = _appSettings.AutoStartBackend;
         StopBackendOnExit = _appSettings.StopBackendOnExit;
+        AutoCurateOnIngest = _appSettings.AutoCurateOnIngest;
         AutoIngestPath = _appSettings.AutoIngestPath;
         AutoIngestCollection = _appSettings.AutoIngestCollection;
         AutoIngestRecursive = _appSettings.AutoIngestRecursive;
@@ -1490,6 +1662,7 @@ public partial class SettingsViewModel : ViewModelBase
         BackendCommand = defaults.BackendCommand;
         AutoStartBackend = defaults.AutoStartBackend;
         StopBackendOnExit = defaults.StopBackendOnExit;
+        AutoCurateOnIngest = defaults.AutoCurateOnIngest;
         AutoIngestPath = defaults.AutoIngestPath;
         AutoIngestCollection = defaults.AutoIngestCollection;
         AutoIngestRecursive = defaults.AutoIngestRecursive;
@@ -1628,47 +1801,55 @@ public partial class SettingsViewModel : ViewModelBase
     }
 
     /// <summary>把服务商配置回填到表单（Provider/地址/模型列表/默认模型/温度/token/Key/名称）。
-    /// 仅回填不推送；「应用该服务商」按钮才执行保存+推送。</summary>
+    /// 仅回填不推送（「输入即生效」在回填期间抑制）；「应用该服务商」按钮才执行保存+推送。</summary>
     private void LoadProfileIntoForm(LlmProfile profile)
     {
-        LlmProvider = profile.Provider;
-        LlmBaseUrl = profile.BaseUrl;
-        // 模型下拉候选 = 该服务商全部模型（含上下文窗口元数据）；默认模型 = profile.Model（若不在候选则追加）
-        LlmModels.Clear();
-        var hasDefault = false;
-        foreach (var m in profile.Models ?? new List<string>())
+        _isBackfillingLlmForm = true;
+        try
         {
-            if (!string.IsNullOrWhiteSpace(m))
+            LlmProvider = profile.Provider;
+            LlmBaseUrl = profile.BaseUrl;
+            // 模型下拉候选 = 该服务商全部模型（含上下文窗口元数据）；默认模型 = profile.Model（若不在候选则追加）
+            LlmModels.Clear();
+            var hasDefault = false;
+            foreach (var m in profile.Models ?? new List<string>())
             {
-                int? ctx = profile.ModelContextWindows?.TryGetValue(m, out var cw) == true ? cw : null;
-                LlmModels.Add(new LlmModelItem(m.Trim(), ctx));
-                if (string.Equals(m.Trim(), profile.Model?.Trim(), StringComparison.OrdinalIgnoreCase))
+                if (!string.IsNullOrWhiteSpace(m))
                 {
-                    hasDefault = true;
+                    int? ctx = profile.ModelContextWindows?.TryGetValue(m, out var cw) == true ? cw : null;
+                    LlmModels.Add(new LlmModelItem(m.Trim(), ctx));
+                    if (string.Equals(m.Trim(), profile.Model?.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasDefault = true;
+                    }
                 }
             }
+            if (!string.IsNullOrWhiteSpace(profile.Model) && !hasDefault)
+            {
+                int? ctx = profile.ModelContextWindows?.TryGetValue(profile.Model, out var cw) == true ? cw : null;
+                LlmModels.Add(new LlmModelItem(profile.Model.Trim(), ctx));
+            }
+            LlmModel = profile.Model ?? "";
+            if (profile.Temperature is not null)
+            {
+                LlmTemperature = profile.Temperature.Value;
+            }
+            if (profile.MaxTokens is not null)
+            {
+                LlmMaxTokens = profile.MaxTokens.Value;
+            }
+            if (!string.IsNullOrWhiteSpace(profile.ApiKey))
+            {
+                // setter 会同步清除 _clearApiKeyRequested
+                LlmApiKey = profile.ApiKey;
+            }
+            // 名称自动默认（用户可改）
+            ProfileNameInput = profile.Name;
         }
-        if (!string.IsNullOrWhiteSpace(profile.Model) && !hasDefault)
+        finally
         {
-            int? ctx = profile.ModelContextWindows?.TryGetValue(profile.Model, out var cw) == true ? cw : null;
-            LlmModels.Add(new LlmModelItem(profile.Model.Trim(), ctx));
+            _isBackfillingLlmForm = false;
         }
-        LlmModel = profile.Model ?? "";
-        if (profile.Temperature is not null)
-        {
-            LlmTemperature = profile.Temperature.Value;
-        }
-        if (profile.MaxTokens is not null)
-        {
-            LlmMaxTokens = profile.MaxTokens.Value;
-        }
-        if (!string.IsNullOrWhiteSpace(profile.ApiKey))
-        {
-            // setter 会同步清除 _clearApiKeyRequested
-            LlmApiKey = profile.ApiKey;
-        }
-        // 名称自动默认（用户可改）
-        ProfileNameInput = profile.Name;
     }
 
     /// <summary>重建服务商下拉选项（内置预设 + 自定义服务商），并尽量保持当前选中项。

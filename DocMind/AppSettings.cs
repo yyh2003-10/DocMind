@@ -30,8 +30,9 @@ public class AppSettings
     public string BackendUrl { get; set; } = "http://127.0.0.1:8765";
     public int PollIntervalMs { get; set; } = 1000;
     public int StartupTimeoutSec { get; set; } = 30;
-    /// <summary>后端请求超时（秒）。大文件 OCR/嵌入可能较慢，建议 60-300 秒。</summary>
-    public int RequestTimeoutSec { get; set; } = 60;
+    /// <summary>后端请求超时（秒）。大文件 OCR/嵌入可能耗时数分钟，默认 1800s
+    /// （与 App.xaml.cs 的 Math.Max(120, RequestTimeoutSec) 下限配合）。</summary>
+    public int RequestTimeoutSec { get; set; } = 1800;
     public string Theme { get; set; } = "Light";
 
     /// <summary>拉起后端用的命令（绝对路径优先；空表示自动探测 doc2mind / python -m doc2mind）。</summary>
@@ -53,6 +54,22 @@ public class AppSettings
 
     /// <summary>HuggingFace 镜像端点（注入 HF_ENDPOINT 环境变量；空 = 用内置默认值 hf-mirror.com）。</summary>
     public string? HfEndpoint { get; set; }
+
+    /// <summary>OCR 识别语言（注入 DOC2MIND_OCR_LANG；ch=中英混合，en=纯英文，japan 等）。</summary>
+    public string OcrLanguage { get; set; } = "ch";
+
+    // ===== 外部资源路径（可由用户指定或「自动寻找可用配置」写入；注入 DOC2MIND_* 环境变量） =====
+
+    /// <summary>poppler bin 目录（含 pdftoppm.exe；扫描 PDF OCR 渲染依赖；
+    /// 注入 DOC2MIND_POPPLER_PATH。空 = 后端按内置顺序自动探测）。</summary>
+    public string? PopplerPath { get; set; }
+
+    /// <summary>离线安装包 wheels 目录（注入 DOCMIND_WHEELS_DIR，插件安装离线优先）。</summary>
+    public string? WheelsDir { get; set; }
+
+    /// <summary>嵌入模型缓存目录（注入 DOC2MIND_EMBED_CACHE_DIR；
+    /// 空 = 默认 %LOCALAPPDATA%\doc2mind\fastembed_cache）。</summary>
+    public string? EmbedCacheDir { get; set; }
 
     // ===== 推送到后端的共享配置 — LLM / RAG 对话（启动时注入 DOC2MIND_* 环境变量） =====
     /// <summary>LLM 提供商标识（none | openai | ollama）。</summary>
@@ -143,6 +160,13 @@ public class AppSettings
     public bool MemoryAutoExtract { get; set; } = true;
     /// <summary>用户记忆容量上限（字符数），与 Hermes Agent 的 MEMORY.md 对齐。</summary>
     public int MemoryMaxChars { get; set; } = 2200;
+
+    // ===== 仅前端配置 — 知识库自动整理（curate） =====
+    /// <summary>是否启用「入库时自动跑 AI 整理」（对应后端 DOC2MIND_AUTO_CURATE_ON_INGEST）。
+    /// 启用时：每次 ingest 后自动跑 enrich + 可选 categorize + extract（图谱实体）；
+    /// 关闭时：入库后只写元数据，不调 LLM（enrich 不跑），用户可在质量看板或 Agent 主动跑 curate。
+    /// 风险：dedup / consolidate 永不自动跑（必须 dry_run=true 预览 + 用户确认）。</summary>
+    public bool AutoCurateOnIngest { get; set; } = true;
 
     // ===== 仅前端配置 — 启动选项 =====
     /// <summary>启动 WPF 时自动拉起后端子进程（false = 仅轮询外部已运行的后端）。</summary>

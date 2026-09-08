@@ -52,6 +52,10 @@ public sealed record BackendConfig
 
     /// <summary>文件监控去抖秒数。</summary>
     public double WatchDebounceSeconds { get; init; } = 5.0;
+
+    /// <summary>入库时是否自动跑 AI 整理（enrich + 可选 categorize + extract）。
+    /// 默认 true；关闭后只写元数据，不调 LLM。dedup / consolidate 永不自动跑。</summary>
+    public bool AutoCurateOnIngest { get; init; } = true;
 }
 
 /// <summary>对应后端 ConfigUpdate：只提交有值的字段（null 表示不修改）。</summary>
@@ -98,4 +102,11 @@ public sealed record BackendConfigUpdate
     // --- 文件监控 ---
     public List<string>? WatchPaths { get; init; }
     public double? WatchDebounceSeconds { get; init; }
+
+    /// <summary>入库时是否自动跑 AI 整理；null = 不修改。</summary>
+    public bool? AutoCurateOnIngest { get; init; }
+
+    /// <summary>持久化开关：true（默认）= 运行时生效 + 后端落盘 config.toml；
+    /// false = 只更新后端运行时配置，不落盘（LLM 连接字段「输入即生效」的即时推送用，保存才持久化）。</summary>
+    public bool? Persist { get; init; }
 }

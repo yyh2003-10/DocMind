@@ -66,7 +66,9 @@ EMBED_MODEL_CATALOG: tuple[EmbedModelInfo, ...] = (
         name="jinaai/jina-embeddings-v2-base-zh",
         dim=768,
         lang="multilingual",
-        desc="中英混合模型，支持超长文本（8192 token），中文长文档效果好",
+        desc="中英混合模型，中文检索质量明显高于 bge-small，原生 8192 token "
+             "长上下文（建议配合 DOC2MIND_EMBED_MAX_LENGTH=2048 放开截断），"
+             "体积约 7 倍、CPU 推理稍慢",
         size_gb=0.64,
     ),
     EmbedModelInfo(

@@ -14,10 +14,15 @@
 
 from __future__ import annotations
 
-import hashlib
+from collections.abc import Callable
 from pathlib import Path
 
-from doc2mind.core.loader.base import Loader, LoaderError, make_source
+from doc2mind.core.loader.base import (
+    Loader,
+    LoaderError,
+    make_source,
+    stream_file_hash,
+)
 from doc2mind.core.models import (
     DocFormat,
     DocumentElement,
@@ -59,7 +64,11 @@ class PptxLoader(Loader):
 
     supported_extensions = ("pptx", "ppt")
 
-    def extract(self, path: Path) -> LoadedDocument:
+    def extract(
+        self,
+        path: Path,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> LoadedDocument:
         try:
             from pptx import Presentation
         except ImportError as e:
@@ -71,8 +80,7 @@ class PptxLoader(Loader):
             raise LoaderError(f"文件不存在: {path}")
 
         try:
-            data = path.read_bytes()
-            file_hash = hashlib.md5(data).hexdigest()
+            file_hash, size_bytes = stream_file_hash(path)
             prs = Presentation(path)
             elements: list[DocumentElement] = []
 
@@ -201,7 +209,7 @@ class PptxLoader(Loader):
                 format=DocFormat.PPTX,
                 elements=elements,
                 page_count=len(prs.slides) if prs.slides else None,
-                size_bytes=len(data),
+                size_bytes=size_bytes,
                 file_hash=file_hash,
             )
         except LoaderError:

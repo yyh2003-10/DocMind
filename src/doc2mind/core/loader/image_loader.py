@@ -20,12 +20,18 @@
 
 from __future__ import annotations
 
-import hashlib
+import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from doc2mind.core.loader.base import Loader, LoaderError, make_source
+from doc2mind.core.loader.base import (
+    Loader,
+    LoaderError,
+    make_source,
+    stream_file_hash,
+)
 from doc2mind.core.models import (
     DocFormat,
     DocumentElement,
@@ -33,12 +39,16 @@ from doc2mind.core.models import (
     LoadedDocument,
 )
 
-# 单例 OCR 实例缓存（key: lang）
-# key: (lang, device) → PaddleOCR 实例；同一语言 GPU/CPU 各缓存一份，
-# 便于 GPU 推理失败时回退 CPU 复用实例
-_OCR_INSTANCES: dict[tuple[str, str], object] = {}
+logger = logging.getLogger("doc2mind.loader.image")
+
+# 单例 OCR 实例缓存（key: (lang, device, slot)）
+# 同一语言 GPU/CPU 各缓存一份，便于 GPU 推理失败时回退 CPU 复用实例；
+# slot 用于 CPU 多实例并行（ocr_workers>1 时每 worker 一个独立 predictor）
+_OCR_INSTANCES: dict[tuple[str, str, int], object] = {}
 # 运行时 GPU 推理失败后置 True：之后一律走 CPU，避免每次重复 GPU 崩溃
 _OCR_GPU_INFERENCE_BROKEN = False
+# oneDNN 运行时崩溃后置 True：之后构造实例一律关闭 mkldnn（即使配置开启）
+_OCR_MKLDNN_BROKEN = False
 
 
 def _disable_paddle_pir() -> None:
@@ -98,15 +108,18 @@ def _detect_ocr_device() -> str:
     return "cpu"
 
 
-def _get_ocr(lang: str = "ch", device: str | None = None) -> object:
-    """惰性加载并缓存 PaddleOCR 实例（按语言 + 设备缓存）。
+def _get_ocr(lang: str = "ch", device: str | None = None, slot: int = 0) -> object:
+    """惰性加载并缓存 PaddleOCR 实例（按语言 + 设备 + 槽位缓存）。
 
     Args:
         lang: OCR 语言代码，'ch' 中英混合 / 'en' 纯英文 / 'japan' 等
         device: 推理设备；None 自动检测（GPU 可用则 gpu:0，否则 cpu）
+        slot: CPU 并行槽位（ocr_workers>1 时每个槽位一个独立 predictor，
+            官方推荐的多实例并行方式；同槽位复用同一实例）
 
     Returns:
-        PaddleOCR 实例
+        PaddleOCR 实例（带 `_docmind_device` / `_docmind_mkldnn` 标注，
+        供运行时崩溃降级判断）
 
     Raises:
         LoaderError: PaddleOCR 未安装或加载失败
@@ -133,7 +146,7 @@ def _get_ocr(lang: str = "ch", device: str | None = None) -> object:
         # GPU 推理已确认崩溃（见 extract 的运行时回退）→ 直接走 CPU
         if _OCR_GPU_INFERENCE_BROKEN and device != "cpu":
             device = "cpu"
-    key = (lang, device)
+    key = (lang, device, slot)
     if key in _OCR_INSTANCES:
         return _OCR_INSTANCES[key]
 
@@ -155,7 +168,14 @@ def _get_ocr(lang: str = "ch", device: str | None = None) -> object:
         # 在 Paddle 3.x PIR 执行器下触发 oneDNN 指令崩溃
         # （ConvertPirAttribute2RuntimeAttribute not support，HTTP 500）。
         # 必须显式关闭 oneDNN —— 环境变量 FLAGS_use_mkldnn=0 无法覆盖 predictor 层设置。
-        init_kwargs["enable_mkldnn"] = False
+        # mkldnn 可经 DOC2MIND_OCR_ENABLE_MKLDNN=1 显式开启（仅 CPU）；一旦运行时
+        # 崩溃，_OCR_MKLDNN_BROKEN 锁存后任何实例都不会再开。
+        enable_mkldnn = (
+            device == "cpu"
+            and not _OCR_MKLDNN_BROKEN
+            and bool(getattr(_mkldnn_setting(), "ocr_enable_mkldnn", False))
+        )
+        init_kwargs["enable_mkldnn"] = enable_mkldnn
 
         init_kwargs["device"] = device
 
@@ -165,9 +185,12 @@ def _get_ocr(lang: str = "ch", device: str | None = None) -> object:
             if device != "cpu":
                 # GPU 初始化失败（驱动/显存/模型不兼容）→ 回退 CPU 重试
                 init_kwargs["device"] = "cpu"
+                init_kwargs["enable_mkldnn"] = False
                 ocr = PaddleOCR(**init_kwargs)
                 # CPU 实例单独缓存，供 extract 运行时回退复用
-                _OCR_INSTANCES[(lang, "cpu")] = ocr
+                _OCR_INSTANCES[(lang, "cpu", slot)] = ocr
+                device = "cpu"
+                enable_mkldnn = False
             else:
                 raise gpu_err
     except Exception as e:  # noqa: BLE001 — PaddleOCR 初始化失败原因多样
@@ -175,8 +198,60 @@ def _get_ocr(lang: str = "ch", device: str | None = None) -> object:
             f"PaddleOCR 初始化失败：{e}。首次运行需下载模型，请检查网络。"
         ) from e
 
+    # 标注实例的运行环境，供推理崩溃时精准降级（GPU→CPU / mkldnn→纯CPU）
+    ocr._docmind_device = device  # type: ignore[attr-defined]
+    ocr._docmind_mkldnn = enable_mkldnn  # type: ignore[attr-defined]
     _OCR_INSTANCES[key] = ocr
     return ocr
+
+
+def _mkldnn_setting() -> object:
+    """读取全局设置（惰性导入避免 loader→config 循环依赖）。"""
+    from doc2mind.core.config import get_settings
+
+    return get_settings()
+
+
+def _ocr_call_kwargs(ocr: object) -> dict[str, Any]:
+    """构造 ocr() 调用参数（新旧版本 cls 参数兼容）。"""
+    import inspect
+
+    ocr_kwargs: dict[str, Any] = {}
+    sig = inspect.signature(ocr.ocr)
+    if "cls" in sig.parameters:
+        ocr_kwargs["cls"] = True  # 旧版兼容
+    return ocr_kwargs
+
+
+def _infer_regions(lang: str, ocr_input: Any, slot: int = 0) -> list[tuple[str, list[list[float]]]]:
+    """跑一次 OCR 推理并提取 (text, bbox) 区域列表。
+
+    ocr_input: 图片文件路径字符串或 HWC ndarray（PaddleOCR 两者都接受）。
+    运行时崩溃自动降级：GPU 实例（CUDNN/显存问题）或 oneDNN 实例
+    （PIR 崩溃）→ 锁存降级标记，换确定性 CPU 实例重试一次。
+    """
+    global _OCR_GPU_INFERENCE_BROKEN, _OCR_MKLDNN_BROKEN
+
+    ocr = _get_ocr(lang, slot=slot)
+    ocr_kwargs = _ocr_call_kwargs(ocr)
+    try:
+        result = ocr.ocr(ocr_input, **ocr_kwargs)
+    except Exception:  # noqa: BLE001
+        if getattr(ocr, "_docmind_mkldnn", False):
+            _OCR_MKLDNN_BROKEN = True
+            logger.warning(
+                "oneDNN OCR 推理崩溃，已永久回退纯 CPU 路径（ocr_enable_mkldnn 失效）"
+            )
+        if getattr(ocr, "_docmind_device", "cpu") != "cpu":
+            _OCR_GPU_INFERENCE_BROKEN = True
+            logger.warning("GPU OCR 推理崩溃，已永久回退 CPU 路径")
+        cpu_ocr = _get_ocr(lang, device="cpu", slot=slot)
+        result = cpu_ocr.ocr(ocr_input, **_ocr_call_kwargs(cpu_ocr))
+
+    # result 形如 [ [line1, line2, ...] ]，取第一层
+    if result and isinstance(result, list) and len(result) > 0:
+        return _extract_region_text(result[0])
+    return []
 
 
 def _extract_region_text(result) -> list[tuple[str, list[list[float]]]]:
@@ -330,44 +405,24 @@ class ImageLoader(Loader):
         "gif",
     )
 
-    def __init__(self, lang: str = "ch") -> None:
-        self.lang = lang
+    def __init__(self, lang: str | None = None) -> None:
+        # 语言可配置：DOC2MIND_OCR_LANG 环境变量（客户端设置 → 后端注入），
+        # 'ch' 中英混合 / 'en' 纯英文 / 'japan' 等
+        self.lang = lang or os.getenv("DOC2MIND_OCR_LANG", "ch")
 
-    def extract(self, path: Path) -> LoadedDocument:
+    def extract(
+        self,
+        path: Path,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> LoadedDocument:
         if not path.exists():
             raise LoaderError(f"文件不存在: {path}")
 
         try:
-            data = path.read_bytes()
-            file_hash = hashlib.md5(data).hexdigest()
-            ocr = _get_ocr(self.lang)
+            file_hash, size_bytes = stream_file_hash(path)
 
-            # PaddleOCR 接收字符串路径
-            str_path = str(path)
             # 注意：绝不调用 ocr.ocr(pdf, type='pdf')，会触发 PyMuPDF AGPL
-            # PaddleOCR 3.7+：ocr() 的 cls 参数已废弃（初始化时用_textline_orientation=True替代）
-            import inspect
-
-            ocr_kwargs: dict[str, Any] = {}
-            sig = inspect.signature(ocr.ocr)
-            if "cls" in sig.parameters:
-                ocr_kwargs["cls"] = True  # 旧版兼容
-            try:
-                result = ocr.ocr(str_path, **ocr_kwargs)
-            except Exception:  # noqa: BLE001
-                # 运行时 GPU 推理崩溃（CUDNN 版本不匹配 / 显存不足，见 _detect_ocr_device
-                # 与 _disable_paddle_pir 注释）→ 回退 CPU 实例重试一次，
-                # 并把 _OCR_GPU_INFERENCE_BROKEN 置位，后续请求直接走 CPU。
-                global _OCR_GPU_INFERENCE_BROKEN
-                _OCR_GPU_INFERENCE_BROKEN = True
-                cpu_ocr = _get_ocr(self.lang, device="cpu")
-                result = cpu_ocr.ocr(str_path, **ocr_kwargs)
-
-            # result 形如 [ [line1, line2, ...] ]，取第一层
-            if result and isinstance(result, list) and len(result) > 0:
-                regions = _extract_region_text(result[0])
-            else:
-                regions = []
+            regions = _infer_regions(self.lang, str(path))
 
             elements: list[DocumentElement] = []
 
@@ -392,7 +447,7 @@ class ImageLoader(Loader):
                     metadata={
                         "type": "image",
                         "filename": path.name,
-                        "size_bytes": len(data),
+                        "size_bytes": size_bytes,
                         "source_format": DocFormat.IMAGE.value,
                     },
                 )
@@ -405,10 +460,27 @@ class ImageLoader(Loader):
                 format=DocFormat.IMAGE,
                 elements=elements,
                 page_count=1,
-                size_bytes=len(data),
+                size_bytes=size_bytes,
                 file_hash=file_hash,
             )
         except LoaderError:
             raise
         except Exception as e:  # noqa: BLE001
             raise LoaderError(f"图片 OCR 失败 ({path.name}): {e}") from e
+
+    def ocr_array(
+        self, arr: Any, slot: int = 0
+    ) -> list[DocumentElement]:
+        """对内存图像（HWC ndarray，RGB/BGR 均可）跑 OCR，返回段落元素。
+
+        供 pdf_loader 扫描件回退直接传渲染帧，省去逐页 PNG 编码 +
+        临时文件落盘 + 二次读取的往返（大 PDF 每页可省数百毫秒）。
+        与 extract 不同：不产生文件名 H1 伪标题与 IMAGE 占位元素，
+        元数据（source_format/page）由调用方（pdf_loader）负责标注。
+
+        Args:
+            arr: 图像 ndarray
+            slot: CPU 并行槽位（多实例并行时区分实例）
+        """
+        regions = _infer_regions(self.lang, arr, slot=slot)
+        return _region_to_paragraph(regions)

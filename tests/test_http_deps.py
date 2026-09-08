@@ -48,13 +48,18 @@ class TestDependenciesEndpoint:
 # --- POST /v1/system/install-ocr (SSE) ---
 class TestInstallOcrEndpoint:
     def test_sse_frame_format(self) -> None:
-        """mock install_ocr_packages 产出固定事件，验证 SSE 帧格式。"""
+        """mock install_ocr_packages 产出固定事件，验证 SSE 帧格式。
 
-        async def _fake_install(path: str):
+        同时 patch 掉「运行中后端占用运行库」预检（测试进程可能已加载 numpy）。
+        """
+
+        async def _fake_install(path: str, force: bool = False):
             yield {"type": "log", "line": "fake log"}
             yield {"type": "done", "success": True, "path": path}
 
-        with patch("doc2mind.core.system_env.install_ocr_packages", _fake_install):
+        with patch("doc2mind.core.system_env.install_ocr_packages", _fake_install), patch(
+            "doc2mind.server.http._backend_locks_heavy_runtime", return_value=False
+        ):
             with _make_client() as client:
                 resp = client.post("/v1/system/install-ocr", json={"path": "cpu"})
         assert resp.status_code == 200
@@ -70,10 +75,37 @@ class TestInstallOcrEndpoint:
         assert first["line"] == "fake log"
 
     def test_unknown_path_yields_error(self) -> None:
-        with _make_client() as client:
-            resp = client.post("/v1/system/install-ocr", json={"path": "bad-path"})
+        with patch("doc2mind.server.http._backend_locks_heavy_runtime", return_value=False):
+            with _make_client() as client:
+                resp = client.post("/v1/system/install-ocr", json={"path": "bad-path"})
         assert resp.status_code == 200  # SSE 总是 200，错误在帧里
         assert "error" in resp.text
+
+    def test_heavy_runtime_loaded_rejects_install(self) -> None:
+        """后端进程已加载 numpy/paddle/onnxruntime 时必须拒绝进程内安装（WinError 5 根因）。"""
+        with patch("doc2mind.server.http._backend_locks_heavy_runtime", return_value=True):
+            with _make_client() as client:
+                resp = client.post("/v1/system/install-ocr", json={"path": "cpu"})
+        body = resp.text
+        assert "error" in body
+        # 引导走独立安装进程 / 客户端设置页
+        assert "install_cli" in body or "设置页" in body
+
+    def test_gpu_endpoint_rejects_cpu_path(self) -> None:
+        """install-gpu 传 cpu/ocr 路径必须被拒绝（旧实现会静默装成 Paddle OCR）。"""
+        with patch("doc2mind.server.http._backend_locks_heavy_runtime", return_value=False):
+            with _make_client() as client:
+                resp = client.post("/v1/system/install-gpu", json={"path": "cpu"})
+        body = resp.text
+        assert "error" in body
+        assert "install-ocr" in body
+
+    def test_ocr_endpoint_rejects_gpu_embed_path(self) -> None:
+        with patch("doc2mind.server.http._backend_locks_heavy_runtime", return_value=False):
+            with _make_client() as client:
+                resp = client.post("/v1/system/install-ocr", json={"path": "cuda12"})
+        assert "error" in resp.text
+        assert "install-gpu" in resp.text
 
 
 # --- GET /v1/jobs/{id}/events ---

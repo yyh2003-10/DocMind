@@ -58,6 +58,29 @@ public partial class ChatView : UserControl
         _vm?.PersistSourceDrawerWidth();
     }
 
+    /// <summary>点击灵感快捷场景按钮，弹出提示词模板菜单。</summary>
+    private void InspirationButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.ContextMenu != null)
+        {
+            btn.ContextMenu.PlacementTarget = btn;
+            btn.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Top;
+            btn.ContextMenu.IsOpen = true;
+        }
+    }
+
+    /// <summary>点击 @知识库 锚定徽章，弹出知识库集合多选面板。</summary>
+    private void KnowledgeBadge_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.ContextMenu != null)
+        {
+            fe.ContextMenu.PlacementTarget = fe;
+            fe.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Top;
+            fe.ContextMenu.IsOpen = true;
+            e.Handled = true;
+        }
+    }
+
     private void Messages_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
         if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add)

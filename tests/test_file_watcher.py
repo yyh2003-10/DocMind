@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -51,8 +52,9 @@ def test_supported_file_filters(tmp_path: Path) -> None:
     watcher._schedule_ingest(str(tmp_path / "~$word.docx"))
     watcher._schedule_ingest(str(tmp_path / "unknown.xyz"))
 
-    # pending_timers 应该为空（未被 schedule）
-    assert len(watcher._pending_timers) == 0
+    # 待处理集合应该为空（未被 schedule）
+    assert len(watcher._pending) == 0
+    watcher.stop()
 
 
 def test_debounce_merges(tmp_path: Path) -> None:
@@ -69,9 +71,9 @@ def test_debounce_merges(tmp_path: Path) -> None:
     )
 
     with patch("doc2mind.core.file_watcher.ingest_path") as mock_ingest:
-        mock_resp = MagicMock()
-        mock_resp.ingested = []
-        mock_resp.failed = 0
+        mock_resp = SimpleNamespace(
+            results=[], failed=0, curatable_document_ids=[]
+        )
         mock_ingest.return_value = mock_resp
 
         # 连续触发 3 次
@@ -81,10 +83,10 @@ def test_debounce_merges(tmp_path: Path) -> None:
         time.sleep(0.05)
         watcher._schedule_ingest(str(target_file))
 
-        # 应该只有一个 pending timer
-        assert len(watcher._pending_timers) == 1
+        # 去抖窗口内：待处理集合只有 1 个条目
+        assert len(watcher._pending) == 1
 
-        # 等待定时器触发
-        time.sleep(0.3)
+        # 等待去抖到期 + worker 消费
+        time.sleep(0.4)
         assert mock_ingest.call_count == 1
         watcher.stop()

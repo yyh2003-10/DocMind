@@ -2,6 +2,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 
 namespace DocMind.Services;
 
@@ -32,6 +33,16 @@ public static class DebugLog
         "DocMind", "logs");
     private static readonly string _logFile = Path.Combine(_logDir, "debug.log");
     private static bool _fileInitFailed;
+
+    /// <summary>单条日志长度上限（字符），超长截断，防止后端 stdout 长行放大内存与 UI 开销。</summary>
+    private const int MaxLineLength = 2048;
+
+    // 磁盘写入经 Channel 交给后台单写者线程批量落盘：调用方（可能是 UI 线程）
+    // 只做 O(1) 入队，同步磁盘 I/O 永不落在 UI 线程。
+    private static readonly Channel<string> _fileChannel =
+        Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
+    private static Task? _fileWriterTask;
+    private static int _fileWriterStarted;
 
     /// <summary>单份日志文件大小上限（超过则轮转）。</summary>
     private static readonly long _maxFileSize = 5L * 1024 * 1024;
@@ -127,6 +138,10 @@ public static class DebugLog
         {
             entry += "\n" + new string(' ', 22) + lines[i];
         }
+        if (entry.Length > MaxLineLength)
+        {
+            entry = entry[..MaxLineLength] + "…(truncated)";
+        }
 
         // 内存环形缓冲
         _buffer.Enqueue(entry);
@@ -135,21 +150,11 @@ public static class DebugLog
             _buffer.TryDequeue(out _);
         }
 
-        // 磁盘文件
+        // 磁盘文件：入队后台单写者，调用线程（可能是 UI 线程）不做磁盘 I/O
         if (!_fileInitFailed)
         {
-            lock (_fileLock)
-            {
-                try
-                {
-                    RotateIfNeeded();
-                    File.AppendAllText(_logFile, entry + Environment.NewLine, Encoding.UTF8);
-                }
-                catch
-                {
-                    _fileInitFailed = true;
-                }
-            }
+            EnsureFileWriterStarted();
+            _fileChannel.Writer.TryWrite(entry);
         }
 
         // 错误计数（供 UI 徽标/统计使用）
@@ -166,6 +171,51 @@ public static class DebugLog
         catch
         {
             // 忽略订阅者异常
+        }
+    }
+
+    /// <summary>启动后台单写者线程（进程内仅启动一次）。</summary>
+    private static void EnsureFileWriterStarted()
+    {
+        if (Interlocked.Exchange(ref _fileWriterStarted, 1) == 0)
+        {
+            _fileWriterTask = Task.Run(FileWriteLoop);
+        }
+    }
+
+    /// <summary>后台写盘循环：批量收集日志行后一次性落盘，降低磁盘 I/O 次数。</summary>
+    private static async Task FileWriteLoop()
+    {
+        var reader = _fileChannel.Reader;
+        var batch = new List<string>(64);
+        while (await reader.WaitToReadAsync().ConfigureAwait(false))
+        {
+            while (reader.TryRead(out var line))
+            {
+                batch.Add(line);
+            }
+            FlushFileBatch(batch);
+            batch.Clear();
+        }
+    }
+
+    private static void FlushFileBatch(List<string> batch)
+    {
+        if (_fileInitFailed || batch.Count == 0)
+        {
+            return;
+        }
+        lock (_fileLock)
+        {
+            try
+            {
+                RotateIfNeeded();
+                File.AppendAllLines(_logFile, batch, Encoding.UTF8);
+            }
+            catch
+            {
+                _fileInitFailed = true;
+            }
         }
     }
 

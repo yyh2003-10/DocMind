@@ -300,14 +300,17 @@ def remove(
             if n >= 0:
                 rprint(f"[green]已删除[/green] {target} ({n} 个分块)")
                 return
+            if n == -2:
+                rprint(f"[yellow]文档已处于软删除状态[/yellow] {target}（30 天内可用 restore 恢复）")
+                return
 
-        # 按 source 文件名删
-        source_name = Path(target).name if Path(target).exists() else target
-        n = store.delete_by_source(source_name, collection)
+        # 按 source 文件名删（basename 模糊匹配；documents.source 是绝对路径）
+        basename = Path(target).name
+        n = store.delete_by_source_basename(basename, collection)
         if n > 0:
-            rprint(f"[green]已删除[/green] {source_name}")
+            rprint(f"[green]已删除[/green] {basename} (matched={n})")
         else:
-            rprint(f"[yellow]未找到[/yellow] {source_name} (collection={collection})")
+            rprint(f"[yellow]未找到[/yellow] {basename} (collection={collection})")
             raise typer.Exit(code=1)
     finally:
         store.close()

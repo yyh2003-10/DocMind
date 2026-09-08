@@ -16,13 +16,7 @@
         </Grid.RowDefinitions>
 
         <!-- ===== 工具条 ===== -->
-        <Border Grid.Row="0"
-                Background="{StaticResource CardBrush}"
-                BorderBrush="{StaticResource BorderBrush}"
-                BorderThickness="1"
-                CornerRadius="14"
-                Padding="14,12"
-                Margin="0,0,0,12">
+        <Border Grid.Row="0" Style="{StaticResource ToolbarBorderStyle}" Padding="14,12">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -82,19 +76,27 @@
 
                     <!-- 左侧：重建索引 + 删除选中 -->
                     <StackPanel Grid.Column="0" Orientation="Horizontal">
-                        <Button Content="⚡ 重建索引"
-                                Command="{Binding ReindexCommand}"
+                        <Button Command="{Binding ReindexCommand}"
                                 Style="{StaticResource SecondaryButtonStyle}"
                                 Padding="12,6"
                                 MinHeight="32"
                                 Margin="0,0,8,0"
-                                ToolTip="使用当前配置的模型全量重新生成向量嵌入"/>
-                        <Button Content="🗑 删除选中"
-                                Command="{Binding DeleteCommand}"
+                                ToolTip="使用当前配置的模型全量重新生成向量嵌入">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconBolt}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                <TextBlock Text="重建索引"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Command="{Binding DeleteCommand}"
                                 Style="{StaticResource DangerButtonStyle}"
                                 Padding="12,6"
                                 MinHeight="32"
-                                ToolTip="从知识库中删除当前选中的文档及其分块数据"/>
+                                ToolTip="从知识库中删除当前选中的文档及其分块数据">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconTrash}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource DangerBrush}" Margin="0,0,6,0"/>
+                                <TextBlock Text="删除选中"/>
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
 
                     <!-- 右侧：翻页控件 -->
@@ -123,7 +125,7 @@
                 Background="{StaticResource SurfaceBrush}"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="8"
+                CornerRadius="{StaticResource CornerMd}"
                 Padding="12,8"
                 Margin="0,0,0,12"
                 Visibility="{Binding IsReindexing, Converter={StaticResource BoolToVis}}">
@@ -162,12 +164,7 @@
             </Grid.ColumnDefinitions>
 
             <!-- 文档列表 -->
-            <Border Grid.Column="0"
-                    Background="{StaticResource CardBrush}"
-                    BorderBrush="{StaticResource BorderBrush}"
-                    BorderThickness="1"
-                    CornerRadius="14"
-                    Padding="14">
+            <Border Grid.Column="0" Style="{StaticResource SectionCardStyle}">
                 <Grid>
                     <TextBlock Text="文档列表"
                                Style="{StaticResource SubtitleText}"
@@ -228,12 +225,25 @@
                     </ListBox>
 
                     <!-- 空态 -->
-                    <Border VerticalAlignment="Center"
-                            HorizontalAlignment="Center"
-                            Visibility="{Binding HasNoDocuments, Converter={StaticResource BoolToVis}}">
-                        <TextBlock Text="暂无文档，请先在「导入」页摄入内容"
-                                   Style="{StaticResource SmallText}"/>
-                    </Border>
+                    <StackPanel VerticalAlignment="Center"
+                                HorizontalAlignment="Center"
+                                Visibility="{Binding HasNoDocuments, Converter={StaticResource BoolToVis}}">
+                        <Border Width="48" Height="48"
+                                Background="{StaticResource PrimaryLightBrush}"
+                                CornerRadius="24"
+                                HorizontalAlignment="Center"
+                                Margin="0,0,0,12">
+                            <Path Data="{StaticResource IconFolder}" Style="{StaticResource IconSmStyle}" Width="22" Height="22" Stroke="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <TextBlock Text="暂无文档"
+                                   Style="{StaticResource BodyText}"
+                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                   HorizontalAlignment="Center"/>
+                        <TextBlock Text="请先在「导入」页摄入内容"
+                                   Style="{StaticResource SmallText}"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
                 </Grid>
             </Border>
 
@@ -268,11 +278,13 @@
                                     Margin="0,0,0,8"
                                     Visibility="{Binding HasDetailError, Converter={StaticResource BoolToVis}}">
                                 <StackPanel>
-                                    <TextBlock Text="⚠ 详情加载失败"
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <Path Data="{StaticResource IconWarning}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource WarningBrush}" Margin="0,0,6,0"/>
+                                    <TextBlock Text="详情加载失败"
                                                Style="{StaticResource CaptionText}"
                                                Foreground="{StaticResource DangerBrush}"
-                                               FontWeight="SemiBold"
-                                               Margin="0,0,0,4"/>
+                                               FontWeight="SemiBold"/>
+                                </StackPanel>
                                     <TextBlock Text="{Binding DetailError, Mode=OneWay}"
                                                Style="{StaticResource SmallText}"
                                                TextWrapping="Wrap"/>
@@ -339,12 +351,16 @@
                                                                        Margin="12,0,0,0"/>
                                                         </StackPanel>
                                                         <Button Grid.Column="1"
-                                                                Content="🔍 定位"
                                                                 Command="{Binding DataContext.SearchChunkCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                                 CommandParameter="{Binding}"
                                                                 Style="{StaticResource TextButtonStyle}"
                                                                 FontSize="11"
-                                                                ToolTip="跳转到搜索页定位该分块原文"/>
+                                                                ToolTip="跳转到搜索页定位该分块原文">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <Path Data="{StaticResource IconSearch}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                                                <TextBlock Text="定位"/>
+                                                            </StackPanel>
+                                                        </Button>
                                                     </Grid>
                                                     <TextBlock Text="{Binding Heading, Mode=OneWay}"
                                                                TextTrimming="CharacterEllipsis">
@@ -407,16 +423,19 @@
                                                                     </TextBox.InputBindings>
                                                                 </TextBox>
                                                                 <Button Grid.Column="1"
-                                                                        Content="💾 保存"
                                                                         Command="{Binding DataContext.SaveAnnotationCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                                         CommandParameter="{Binding}"
                                                                         Style="{StaticResource TextButtonStyle}"
                                                                         FontSize="11"
                                                                         Padding="8,2"
                                                                         Margin="6,0,0,0"
-                                                                        ToolTip="保存批注（留空=清除）"/>
+                                                                        ToolTip="保存批注（留空=清除）">
+                                                                    <StackPanel Orientation="Horizontal">
+                                                                        <Path Data="{StaticResource IconSave}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                                                        <TextBlock Text="保存"/>
+                                                                    </StackPanel>
+                                                                </Button>
                                                                 <Button Grid.Column="2"
-                                                                        Content="🗑 删除"
                                                                         Command="{Binding DataContext.DeleteAnnotationCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                                         CommandParameter="{Binding}"
                                                                         FontSize="11"
@@ -433,6 +452,10 @@
                                                                             </Style.Triggers>
                                                                         </Style>
                                                                     </Button.Style>
+                                                                    <StackPanel Orientation="Horizontal">
+                                                                        <Path Data="{StaticResource IconTrash}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource DangerBrush}" Margin="0,0,6,0"/>
+                                                                        <TextBlock Text="删除"/>
+                                                                    </StackPanel>
                                                                 </Button>
                                                             </Grid>
                                                         </StackPanel>
