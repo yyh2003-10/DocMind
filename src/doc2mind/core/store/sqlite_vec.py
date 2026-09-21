@@ -147,8 +147,11 @@ def _build_fts5_match_unicode(tokens: list[str]) -> str:
 
     unicode61 把连续 CJK 保留为单个 token（含多字词），故对 jieba 已按空格
     切分的中文词/英文词/数字做精确匹配即可；空返回 ""。
+    token 内的双引号按 FTS5 规则转义为两个引号，否则查询含 `"` 时
+    MATCH 表达式引号失配，FTS5 把后续裸词（如 ROW）当列名报
+    "no such column"（真实故障：库内代码片段含 `"ROW"`）。
     """
-    quoted = [f'"{t}"' for t in tokens if t]
+    quoted = [f'"{t.replace(chr(34), chr(34) * 2)}"' for t in tokens if t]
     return " OR ".join(quoted) if quoted else ""
 
 
@@ -2009,6 +2012,53 @@ class VectorStore:
                 ]
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"获取邻块上下文失败: {e}") from e
+
+    def get_heading_siblings(
+        self, chunk_id: int, limit: int = 8
+    ) -> list[StoredChunk]:
+        """按命中 chunk 取同 (source, heading) 的兄弟分块（小到大 / 章节上下文）。
+
+        命中小块时返回同标题下其余块，把「父级章节」文本并入上下文；
+        无 heading 的块回退为空（调用方可再走邻块）。
+        """
+        limit = max(0, int(limit))
+        if limit == 0:
+            return []
+        with self._lock:
+            self._require_open()
+            try:
+                anchor = self._conn.execute(
+                    "SELECT source, heading, chunk_index FROM chunks_meta WHERE id = ?",
+                    (chunk_id,),
+                ).fetchone()
+                if anchor is None or not anchor[1]:
+                    return []
+                source, heading, idx = anchor
+                cur = self._conn.execute(
+                    """
+                    SELECT cm.id, cm.content, cm.source, cm.format, cm.doc_type, cm.page,
+                           cm.heading, d.file_hash, cm.collection, d.created_at,
+                           cm.tokens, cm.chunk_index, cm.extra, cm.sheet, cm.slide, cm.language
+                    FROM chunks_meta cm
+                    LEFT JOIN documents d ON d.id = cm.document_id
+                    WHERE cm.source = ? AND cm.heading = ? AND cm.id != ?
+                    ORDER BY ABS(cm.chunk_index - ?) ASC, cm.chunk_index ASC
+                    LIMIT ?
+                    """,
+                    (source, heading, chunk_id, idx, limit),
+                )
+                return [
+                    StoredChunk(
+                        id=r[0], content=r[1], source=r[2], format=r[3],
+                        doc_type=r[4], page=r[5], heading=r[6],
+                        file_hash=r[7] or "", collection=r[8], created_at=r[9],
+                        tokens=r[10], chunk_index=r[11],
+                        extra_metadata=json.loads(r[12]) if r[12] else {},
+                    )
+                    for r in cur.fetchall()
+                ]
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"获取同标题上下文失败: {e}") from e
 
     def list_chunks_by_document(
         self, document_id: str, limit: int = 100

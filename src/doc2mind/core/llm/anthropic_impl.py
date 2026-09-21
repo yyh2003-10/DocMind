@@ -173,6 +173,13 @@ class AnthropicClient(LLMClient):
             )
             self._raise_for_status(resp)
             data = resp.json()
+            stop_reason = data.get("stop_reason")
+            self._last_truncated = stop_reason == "max_tokens"
+            if self._last_truncated:
+                logger.info(
+                    "输出因达到 token 上限被截断（stop_reason=max_tokens, model=%s）",
+                    self._model,
+                )
             texts = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
             return "".join(texts).strip()
         except LLMError:
@@ -234,6 +241,7 @@ class AnthropicClient(LLMClient):
                     headers=self._headers(),
                 ) as response:
                     self._raise_for_status(response)
+                    last_stop_reason: str | None = None
                     for line in response.iter_lines():
                         if stop_event is not None and stop_event.is_set():
                             return
@@ -261,8 +269,18 @@ class AnthropicClient(LLMClient):
                                     if text:
                                         emitted_parts.append(text)
                                         yield ("content", text)
+                        elif event.get("type") == "message_delta":
+                            sr = event.get("delta", {}).get("stop_reason")
+                            if sr:
+                                last_stop_reason = sr
                         elif event.get("type") == "error":
                             raise LLMError(f"Anthropic 流式返回错误: {event.get('error', {}).get('message', raw)}")
+                self._last_truncated = last_stop_reason == "max_tokens"
+                if self._last_truncated:
+                    logger.info(
+                        "流式输出因达到 token 上限被截断（stop_reason=max_tokens, model=%s）",
+                        self._model,
+                    )
                 return
             except LLMError:
                 raise

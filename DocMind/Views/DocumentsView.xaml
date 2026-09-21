@@ -8,7 +8,7 @@
              mc:Ignorable="d"
              d:DesignHeight="450" d:DesignWidth="800">
 
-    <Grid Margin="0">
+    <Grid Margin="{StaticResource PageContentMargin}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>   <!-- 工具条 (Row 0) -->
             <RowDefinition Height="Auto"/>   <!-- 重建索引进度条 (Row 1) -->
@@ -79,7 +79,7 @@
                         <Button Command="{Binding ReindexCommand}"
                                 Style="{StaticResource SecondaryButtonStyle}"
                                 Padding="12,6"
-                                MinHeight="32"
+                                MinHeight="36"
                                 Margin="0,0,8,0"
                                 ToolTip="使用当前配置的模型全量重新生成向量嵌入">
                             <StackPanel Orientation="Horizontal">
@@ -90,7 +90,7 @@
                         <Button Command="{Binding DeleteCommand}"
                                 Style="{StaticResource DangerButtonStyle}"
                                 Padding="12,6"
-                                MinHeight="32"
+                                MinHeight="36"
                                 ToolTip="从知识库中删除当前选中的文档及其分块数据">
                             <StackPanel Orientation="Horizontal">
                                 <Path Data="{StaticResource IconTrash}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource DangerBrush}" Margin="0,0,6,0"/>
@@ -101,20 +101,24 @@
 
                     <!-- 右侧：翻页控件 -->
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Content="◀"
-                                Command="{Binding PrevPageCommand}"
+                        <Button Command="{Binding PrevPageCommand}"
                                 Style="{StaticResource TextButtonStyle}"
                                 Padding="8,4"
-                                VerticalAlignment="Center"/>
+                                VerticalAlignment="Center"
+                                ToolTip="上一页">
+                            <Path Data="{StaticResource IconChevronLeft}" Style="{StaticResource IconSmStyle}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Button>
                         <TextBlock Text="{Binding PageInfo, Mode=OneWay}"
                                    Style="{StaticResource CaptionText}"
                                    VerticalAlignment="Center"
                                    Margin="8,0"/>
-                        <Button Content="▶"
-                                Command="{Binding NextPageCommand}"
+                        <Button Command="{Binding NextPageCommand}"
                                 Style="{StaticResource TextButtonStyle}"
                                 Padding="8,4"
-                                VerticalAlignment="Center"/>
+                                VerticalAlignment="Center"
+                                ToolTip="下一页">
+                            <Path Data="{StaticResource IconChevronRight}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource TextSecondaryBrush}"/>
+                        </Button>
                     </StackPanel>
                 </Grid>
             </Grid>
@@ -174,52 +178,49 @@
                     <ListBox ItemsSource="{Binding Documents}"
                              SelectedItem="{Binding SelectedDocument}"
                              BorderThickness="0"
+                             Background="Transparent"
                              ScrollViewer.VerticalScrollBarVisibility="Auto"
-                             Margin="0,28,0,0">
+                             Margin="0,28,0,0"
+                             ItemContainerStyle="{StaticResource SelectableCardItemStyle}">
                         <ListBox.ItemTemplate>
                             <DataTemplate DataType="{x:Type m:Document}">
-                                <Border Background="{StaticResource SurfaceBrush}"
-                                        CornerRadius="6"
-                                        Padding="10,8"
-                                        Margin="0,0,0,6">
-                                    <Grid>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto"/>
-                                            <RowDefinition Height="Auto"/>
-                                        </Grid.RowDefinitions>
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
 
-                                        <DockPanel Grid.Row="0">
-                                            <Border DockPanel.Dock="Right"
-                                                    Background="{StaticResource PrimaryLightBrush}"
-                                                    CornerRadius="4"
-                                                    Padding="6,2"
-                                                    Margin="8,0,0,0"
-                                                    VerticalAlignment="Center">
-                                                <TextBlock Text="{Binding Format, Mode=OneWay}"
-                                                           Style="{StaticResource SmallText}"/>
-                                            </Border>
-                                            <TextBlock Text="{Binding Source, Mode=OneWay}"
-                                                       FontWeight="SemiBold"
-                                                       Style="{StaticResource BodyText}"
-                                                       TextTrimming="CharacterEllipsis"/>
-                                        </DockPanel>
+                                    <DockPanel Grid.Row="0">
+                                        <Border DockPanel.Dock="Right"
+                                                Style="{StaticResource BadgePrimaryStyle}"
+                                                Padding="6,2"
+                                                Margin="8,0,0,0"
+                                                VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Format, Mode=OneWay}"
+                                                       Style="{StaticResource SmallText}"
+                                                       Foreground="{StaticResource PrimaryBrush}"/>
+                                        </Border>
+                                        <TextBlock Text="{Binding Source, Mode=OneWay}"
+                                                   FontWeight="SemiBold"
+                                                   FontSize="13"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </DockPanel>
 
-                                        <StackPanel Grid.Row="1" Orientation="Horizontal"
-                                                    Margin="0,4,0,0">
-                                            <TextBlock Style="{StaticResource SmallText}">
-                                                <Run Text="分组 " FontWeight="SemiBold"/>
-                                                <Run Text="{Binding Collection, Mode=OneWay}"/>
-                                            </TextBlock>
-                                            <TextBlock Style="{StaticResource SmallText}" Margin="16,0,0,0">
-                                                <Run Text="Chunks " FontWeight="SemiBold"/>
-                                                <Run Text="{Binding ChunkCount, Mode=OneWay}"/>
-                                            </TextBlock>
-                                            <TextBlock Style="{StaticResource SmallText}" Margin="16,0,0,0">
-                                                <Run Text="{Binding SizeBytes, Mode=OneWay, StringFormat={}{0:N0} B}"/>
-                                            </TextBlock>
-                                        </StackPanel>
-                                    </Grid>
-                                </Border>
+                                    <StackPanel Grid.Row="1" Orientation="Horizontal"
+                                                Margin="0,4,0,0">
+                                        <TextBlock Style="{StaticResource SmallText}">
+                                            <Run Text="分组 " FontWeight="SemiBold"/>
+                                            <Run Text="{Binding Collection, Mode=OneWay}"/>
+                                        </TextBlock>
+                                        <TextBlock Style="{StaticResource SmallText}" Margin="16,0,0,0">
+                                            <Run Text="Chunks " FontWeight="SemiBold"/>
+                                            <Run Text="{Binding ChunkCount, Mode=OneWay}"/>
+                                        </TextBlock>
+                                        <TextBlock Style="{StaticResource SmallText}" Margin="16,0,0,0">
+                                            <Run Text="{Binding SizeBytes, Mode=OneWay, StringFormat={}{0:N0} B}"/>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </Grid>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>
@@ -230,7 +231,7 @@
                                 Visibility="{Binding HasNoDocuments, Converter={StaticResource BoolToVis}}">
                         <Border Width="48" Height="48"
                                 Background="{StaticResource PrimaryLightBrush}"
-                                CornerRadius="24"
+                                CornerRadius="{StaticResource CornerXl}"
                                 HorizontalAlignment="Center"
                                 Margin="0,0,0,12">
                             <Path Data="{StaticResource IconFolder}" Style="{StaticResource IconSmStyle}" Width="22" Height="22" Stroke="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -248,12 +249,7 @@
             </Border>
 
             <!-- 详情面板 -->
-            <Border Grid.Column="2"
-                    Background="{StaticResource CardBrush}"
-                    BorderBrush="{StaticResource BorderBrush}"
-                    BorderThickness="1"
-                    CornerRadius="14"
-                    Padding="14">
+            <Border Grid.Column="2" Style="{StaticResource SectionCardStyle}">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Top"
                                Text="文档详情"
@@ -330,7 +326,7 @@
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate DataType="{x:Type m:Chunk}">
                                             <Border Background="{StaticResource SurfaceBrush}"
-                                                    CornerRadius="6"
+                                                    CornerRadius="{StaticResource CornerSm}"
                                                     Padding="10,8"
                                                     Margin="0,0,0,8">
                                                 <StackPanel>

@@ -267,7 +267,7 @@ RAG 对话问答：从知识库检索相关文档，调用 LLM 生成回答并�
 
 ### `POST /v1/chat/stream`
 
-RAG **流式**对话（SSE）：WPF 对话页实际使用的端点。请求体与 `POST /v1/chat` 完全一致（含 `topK`/`chatId`/`providerConfig`/`enableWebSearch`/`attachments`/`ragMode` 等字段）。响应为 `text/event-stream`，携带 `Cache-Control: no-cache` / `X-Accel-Buffering: no` 头；空闲超 15s 发送心跳注释帧 `: heartbeat` 防代理掐断。
+RAG **流式**对话（SSE）：WPF 对话页实际使用的端点。请求体与 `POST /v1/chat` 完全一致（含 `topK`/`chatId`/`providerConfig`/`enableWebSearch`/`webSearchMode`（`normal`|`deep`，深度扩源）/`attachments`/`ragMode` 等字段）。响应为 `text/event-stream`，携带 `Cache-Control: no-cache` / `X-Accel-Buffering: no` 头；空闲超 15s 发送心跳注释帧 `: heartbeat` 防代理掐断。
 
 **SSE 帧类型（`data: ` 前缀 JSON 行，`data: [DONE]` 结束）：**
 
@@ -576,6 +576,82 @@ LLM 连接测试：用传入参数构造**临时**客户端发一条极小消息
 - `collection` (string, 可选)
 
 **响应 200：** 见上文 `QualityReport` 模型。
+
+---
+
+### `GET /v1/config/retrieval-recommended`
+
+只读预览：当前配置 vs 推荐检索预设（不写回）。
+
+**响应 200：**
+```jsonc
+{
+  "label": "推荐检索配置",
+  "description": "...",
+  "current": { "query_instruction": "", "semantic_floor": 0.0, "...": "..." },
+  "recommended": { "query_instruction": "为这个句子生成表示以用于检索相关文章：", "semantic_floor": 0.15, "...": "..." },
+  "changes": [ { "field": "query_instruction", "from": "", "to": "..." } ],
+  "aligned": false
+}
+```
+
+---
+
+### `POST /v1/config/retrieval-recommended`
+
+应用推荐检索配置并持久化到 `config.toml`。
+
+**请求体（可选）：**
+```jsonc
+{ "fields": ["query_instruction", "semantic_floor"] }  // 缺省 = 全部白名单字段
+```
+
+**响应 200：**
+```jsonc
+{
+  "aligned_before": false,
+  "applied": true,
+  "changes": [ { "field": "...", "from": "...", "to": "..." } ],
+  "description": "...",
+  "current": { "query_instruction": "...", "semantic_floor": 0.15 }
+}
+```
+
+幂等：已对齐时 `applied=false`、`changes=[]`。
+
+---
+
+### `POST /v1/eval/library`
+
+本库检索自评估（抽样分块 → 自检索基线 + 健康快照 + 建议）。
+
+**请求体（均可选）：**
+```jsonc
+{
+  "collection": "papers",
+  "sample": 30,
+  "seed": 42,
+  "top_k": 5,
+  "no_embed": false
+}
+```
+
+**响应 200：**
+```jsonc
+{
+  "engine": "BAAI/bge-small-zh-v1.5",
+  "health": { "total_documents": 12, "total_chunks": 340, "dim_mismatch": false },
+  "metrics": { "SelfRecall@1": 0.72, "SelfRecall@3": 0.91, "MRR": 0.78, "same_doc_hit_rate": 0.95 },
+  "gate": { "min_self_recall@1": 0.5, "min_self_recall@3": 0.75, "min_mrr": 0.55 },
+  "gate_passed": true,
+  "recommendations": ["..."],
+  "per_query": [ { "query": "...", "rank": 1, "source": "..." } ]
+}
+```
+
+CLI 对等命令：`python tools/eval_library.py --sample 30`（退出码 0 通过 / 1 空库 / 2 未过门槛）。
+契约详见 [`docs/testing/feature-eval-contract.md`](testing/feature-eval-contract.md)。
+
 
 ---
 

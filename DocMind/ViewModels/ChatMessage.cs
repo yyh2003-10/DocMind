@@ -141,11 +141,147 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         return "知识创作交付物";
     }
 
-    /// <summary>正文引用角标匹配：[1] / [1,2] / [1、2]。
+    /// <summary>段落进入 bullets 的长度阈值；与 Python PARAGRAPH_MAX_LEN 对齐。</summary>
+    private const int ParagraphMaxLen = 140;
+
+    private static readonly System.Collections.Generic.Dictionary<string, string> LatexCmdMap = new()
+    {
+        ["alpha"] = "α", ["beta"] = "β", ["gamma"] = "γ", ["delta"] = "δ", ["Delta"] = "Δ",
+        ["epsilon"] = "ε", ["theta"] = "θ", ["lambda"] = "λ", ["mu"] = "μ", ["pi"] = "π",
+        ["sigma"] = "σ", ["phi"] = "φ", ["omega"] = "ω",
+        ["le"] = "≤", ["ge"] = "≥", ["neq"] = "≠", ["approx"] = "≈",
+        ["times"] = "×", ["cdot"] = "·", ["pm"] = "±",
+        ["infty"] = "∞", ["sum"] = "∑", ["int"] = "∫", ["sqrt"] = "√",
+        ["leftarrow"] = "←", ["rightarrow"] = "→", ["uparrow"] = "↑", ["downarrow"] = "↓",
+    };
+
+    private static readonly System.Text.RegularExpressions.Regex MathInlineRx =
+        new(@"\$([^$\n]{1,80})\$", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex TableAlignRx =
+        new(@"^\|?[\s\-:|]+\|?$", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex LatexCmdRx =
+        new(@"\\([a-zA-Z]+)", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>清洗单元格/正文中的 Markdown 残留与简易 $公式$（与 Python clean_markdown_inline 对齐）。</summary>
+    internal static string CleanMarkdownInline(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+        var t = MathInlineRx.Replace(text!, m =>
+        {
+            var inner = m.Groups[1].Value.Trim();
+            inner = LatexCmdRx.Replace(inner, cm => LatexCmdMap.TryGetValue(cm.Groups[1].Value, out var u) ? u : cm.Groups[1].Value);
+            inner = System.Text.RegularExpressions.Regex.Replace(inner, @"\^\{([^}]+)\}", cm => ToSuperscript(cm.Groups[1].Value));
+            inner = System.Text.RegularExpressions.Regex.Replace(inner, @"\^(\w+)", cm => ToSuperscript(cm.Groups[1].Value));
+            inner = System.Text.RegularExpressions.Regex.Replace(inner, @"_\{([^}]+)\}", cm => ToSubscript(cm.Groups[1].Value));
+            inner = System.Text.RegularExpressions.Regex.Replace(inner, @"_(\w+)", cm => ToSubscript(cm.Groups[1].Value));
+            inner = inner.Replace("{", "").Replace("}", "").Replace("\\", "");
+            return inner.Trim();
+        });
+        t = System.Text.RegularExpressions.Regex.Replace(t, @"\*\*(.+?)\*\*", "$1");
+        t = System.Text.RegularExpressions.Regex.Replace(t, @"__(.+?)__", "$1");
+        t = System.Text.RegularExpressions.Regex.Replace(t, @"(?<!\*)\*([^*]+)\*(?!\*)", "$1");
+        t = System.Text.RegularExpressions.Regex.Replace(t, @"(?<!_)_([^_]+)_(?!_)", "$1");
+        t = System.Text.RegularExpressions.Regex.Replace(t, @"`([^`]+)`", "$1");
+        return t.Trim();
+    }
+
+    private static string ToSuperscript(string s)
+    {
+        var map = new[] { '⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹' };
+        var chars = s.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (chars[i] is >= '0' and <= '9') chars[i] = map[chars[i] - '0'];
+        }
+        return new string(chars);
+    }
+
+    private static string ToSubscript(string s)
+    {
+        var map = new[] { '₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉' };
+        var chars = s.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (chars[i] is >= '0' and <= '9') chars[i] = map[chars[i] - '0'];
+        }
+        return new string(chars);
+    }
+
+    /// <summary>超长段落按句读拆成多条要点，禁止静默丢弃（与 Python split_long_paragraph 对齐）。</summary>
+    internal static List<string> SplitLongParagraph(string? text, int maxLen = ParagraphMaxLen)
+    {
+        var raw = (text ?? string.Empty).Trim();
+        if (raw.Length == 0) return new List<string>();
+        if (raw.Length <= maxLen) return new List<string> { raw };
+
+        var parts = System.Text.RegularExpressions.Regex.Split(raw, @"(?<=[。；;！!？?])")
+            .Select(p => p.Trim())
+            .Where(p => p.Length > 0)
+            .ToList();
+        if (parts.Count <= 1)
+        {
+            var hard = new List<string>();
+            for (var i = 0; i < raw.Length; i += maxLen)
+            {
+                hard.Add(raw.Substring(i, Math.Min(maxLen, raw.Length - i)));
+            }
+            return hard;
+        }
+
+        var bullets = new List<string>();
+        var buf = new System.Text.StringBuilder();
+        foreach (var p in parts)
+        {
+            if (buf.Length == 0) buf.Append(p);
+            else if (buf.Length + p.Length <= maxLen) buf.Append(p);
+            else
+            {
+                bullets.Add(buf.ToString());
+                buf.Clear();
+                buf.Append(p);
+            }
+        }
+        if (buf.Length > 0) bullets.Add(buf.ToString());
+
+        var result = new List<string>();
+        foreach (var b in bullets)
+        {
+            if (b.Length <= maxLen) result.Add(b);
+            else
+            {
+                for (var i = 0; i < b.Length; i += maxLen)
+                    result.Add(b.Substring(i, Math.Min(maxLen, b.Length - i)));
+            }
+        }
+        return result;
+    }
+
+    private static bool TableBlockIsComplete(List<string> block)
+    {
+        var hasAlign = block.Any(l => TableAlignRx.IsMatch(l));
+        var dataRows = block.Count(l => !TableAlignRx.IsMatch(l));
+        return hasAlign && dataRows >= 1;
+    }
+
+    private static List<List<string>> ParseTableBlock(List<string> block)
+    {
+        var rows = new List<List<string>>();
+        foreach (var tLine in block)
+        {
+            if (TableAlignRx.IsMatch(tLine)) continue;
+            var trimmed = tLine.Trim().Trim('|');
+            var cols = trimmed.Split('|').Select(c => CleanMarkdownInline(c)).ToList();
+            if (cols.Any(c => !string.IsNullOrEmpty(c))) rows.Add(cols);
+        }
+        return rows;
+    }
+
+    /// <summary>正文引用角标匹配：[1] / [1,2] / [1、2] / 【1】。
     /// 边界仅用 ASCII 字符类（.NET 的 \w 会把中文算作单词字符，导致“见[1]”不匹配）；
-    /// 前后粘着英文/数字/方括号时不转换，避免误伤代码里的下标如 arr[1]。</summary>
+    /// 前后粘着英文/数字/方括号时不转换，避免误伤代码里的下标如 arr[1]。
+    /// 同时识别全角【n】——模型常输出全角引用，旧正则漏检会导致角标挂不上。</summary>
     private static readonly System.Text.RegularExpressions.Regex SourceMarkerRegex =
-        new(@"(?<![A-Za-z0-9_\]])\[(\d{1,3}(?:[,\s、，]\d{1,3})*)\](?![A-Za-z0-9_\[])",
+        new(@"(?<![A-Za-z0-9_\]])[\[【](\d{1,3}(?:[,\s、，]\d{1,3})*)[\]】](?![A-Za-z0-9_\[【])",
             System.Text.RegularExpressions.RegexOptions.Compiled);
 
     /// <summary>AI 根据上下文预测的下一步行动建议列表。</summary>
@@ -266,7 +402,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
                         var pClean = page.Trim();
                         if (string.IsNullOrWhiteSpace(pClean)) continue;
 
-                        var sTitle = $"第 {sIndex} 页";
+                        var sTitle = "";  // 空表示尚未识别；禁止再用「第 N 页」当展示标题
                         var sSub = "";
                         var sLayout = "general";
                         var sBullets = new List<string>();
@@ -294,64 +430,145 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
                         }
 
                         SlideCardItem? curCard = null;
-                        foreach (var l in pClean.Split('\n'))
+                        var tableBlocks = new List<List<string>>(); // 多表原始行块
+                        var curTableLines = new List<string>();
+
+                        void FlushTableBlock()
                         {
-                            var ls = l.Trim();
+                            if (curTableLines.Count > 0)
+                            {
+                                tableBlocks.Add(new List<string>(curTableLines));
+                                curTableLines.Clear();
+                            }
+                        }
+
+                        void AddBullet(string itemText)
+                        {
+                            var cleaned = CleanMarkdownInline(itemText);
+                            if (string.IsNullOrEmpty(cleaned)) return;
+                            foreach (var piece in SplitLongParagraph(cleaned))
+                            {
+                                if (curCard != null) curCard.Bullets.Add(piece);
+                                else sBullets.Add(piece);
+                            }
+                        }
+
+                        var lineList = pClean.Split('\n').ToList();
+                        for (var li = 0; li < lineList.Count; li++)
+                        {
+                            var ls = lineList[li].Trim();
                             if (string.IsNullOrWhiteSpace(ls)) continue;
 
-                            if (ls.StartsWith("# ") && sTitle == $"第 {sIndex} 页")
+                            if (ls.StartsWith("# ") && string.IsNullOrEmpty(sTitle))
                             {
-                                sTitle = ls[2..].Trim();
+                                sTitle = CleanMarkdownInline(ls[2..].Trim());
                             }
-                            else if (ls.StartsWith("## ") && sIndex == 1 && string.IsNullOrEmpty(sSub))
+                            else if (System.Text.RegularExpressions.Regex.IsMatch(ls, @"^(?:第[0-9一二三四五六七八九十]+页|Slide\s*\d+)[:：]\s*") && string.IsNullOrEmpty(sTitle))
                             {
-                                sSub = ls[3..].Trim();
+                                sTitle = CleanMarkdownInline(System.Text.RegularExpressions.Regex.Replace(ls, @"^(?:第[0-9一二三四五六七八九十]+页|Slide\s*\d+)[:：]\s*", "").Trim());
+                            }
+                            else if (ls.StartsWith("## "))
+                            {
+                                // 封面副标题；非封面禁止丢弃，降级为弱标题或要点
+                                var h2 = CleanMarkdownInline(ls[3..].Trim());
+                                if (string.IsNullOrEmpty(h2)) continue;
+                                if (sIndex == 1 && string.IsNullOrEmpty(sSub)) sSub = h2;
+                                else if (string.IsNullOrEmpty(sTitle) && h2.Length <= 40) sTitle = h2;
+                                else AddBullet(h2);
                             }
                             else if (ls.StartsWith("### "))
                             {
                                 if (curCard != null) sCards.Add(curCard);
-                                curCard = new SlideCardItem { Title = ls[4..].Trim() };
+                                curCard = new SlideCardItem { Title = CleanMarkdownInline(ls[4..].Trim()) };
                             }
                             else if (ls.StartsWith(">"))
                             {
-                                var q = ls.TrimStart('>', ' ').Trim();
-                                sQuote = string.IsNullOrEmpty(sQuote) ? q : sQuote + "\n" + q;
+                                var q = CleanMarkdownInline(ls.TrimStart('>', ' ').Trim());
+                                if (!string.IsNullOrEmpty(q))
+                                    sQuote = string.IsNullOrEmpty(sQuote) ? q : sQuote + "\n" + q;
                             }
-                            else if (ls.StartsWith("|") && ls.EndsWith("|"))
+                            else if (ls.Contains('|') && ls.Count(c => c == '|') >= 2)
                             {
-                                if (!System.Text.RegularExpressions.Regex.IsMatch(ls, @"^\|[\s\-:|]+\|$"))
+                                var isAlign = System.Text.RegularExpressions.Regex.IsMatch(ls, @"^\|?[\s\-:|]+\|?$");
+                                var nextIsAlign = li + 1 < lineList.Count
+                                    && System.Text.RegularExpressions.Regex.IsMatch(lineList[li + 1].Trim(), @"^\|?[\s\-:|]+\|?$");
+                                if (!isAlign && nextIsAlign && TableBlockIsComplete(curTableLines))
                                 {
-                                    var cols = ls.Trim('|').Split('|').Select(c => c.Trim()).ToList();
-                                    sTable.Add(cols);
+                                    FlushTableBlock();
                                 }
+                                curTableLines.Add(ls);
                             }
                             else if (ls.StartsWith("- ") || ls.StartsWith("* ") || ls.StartsWith("+ ") || ls.StartsWith("• "))
                             {
-                                var b = ls[2..].Trim();
-                                if (curCard != null) curCard.Bullets.Add(b);
-                                else sBullets.Add(b);
+                                AddBullet(ls[2..].Trim());
                             }
-                            else if (System.Text.RegularExpressions.Regex.IsMatch(ls, @"^\d+\.\s+"))
+                            else if (System.Text.RegularExpressions.Regex.IsMatch(ls, @"^\d+[\.、\)]\s*"))
                             {
-                                var b = System.Text.RegularExpressions.Regex.Replace(ls, @"^\d+\.\s+", "").Trim();
-                                if (curCard != null) curCard.Bullets.Add(b);
-                                else sBullets.Add(b);
+                                AddBullet(System.Text.RegularExpressions.Regex.Replace(ls, @"^\d+[\.、\)]\s*", "").Trim());
                             }
                             else if (!ls.StartsWith("#") && !ls.StartsWith("<!--"))
                             {
                                 if (curCard != null)
                                 {
-                                    if (string.IsNullOrEmpty(curCard.Content)) curCard.Content = ls;
-                                    else curCard.Bullets.Add(ls);
+                                    var cleanedPara = CleanMarkdownInline(ls);
+                                    if (string.IsNullOrEmpty(curCard.Content)) curCard.Content = cleanedPara;
+                                    else
+                                    {
+                                        foreach (var piece in SplitLongParagraph(cleanedPara))
+                                            curCard.Bullets.Add(piece);
+                                    }
                                 }
-                                else if (ls.Length < 120)
+                                else
                                 {
-                                    sBullets.Add(ls);
+                                    AddBullet(ls);
                                 }
                             }
                         }
+                        FlushTableBlock();
 
                         if (curCard != null) sCards.Add(curCard);
+
+                        // 表格：多表切分 + 单元格清洗；主表留本页，续表拆独立页
+                        var parsedTables = new List<List<List<string>>>();
+                        foreach (var block in tableBlocks)
+                        {
+                            var rows = ParseTableBlock(block);
+                            if (rows.Count > 0) parsedTables.Add(rows);
+                        }
+                        if (parsedTables.Count > 0)
+                        {
+                            sTable = parsedTables[0];
+                        }
+
+                        // 标题兜底：禁止输出「第 N 页」；封面优先用 artifact 标题
+                        if (string.IsNullOrEmpty(sTitle))
+                        {
+                            if (sIndex == 1 && !string.IsNullOrWhiteSpace(aTitle) && aTitle != "知识创作交付物")
+                            {
+                                sTitle = aTitle.Trim();
+                            }
+                            else
+                            {
+                                var shortBullet = sBullets.FirstOrDefault(b => !string.IsNullOrWhiteSpace(b) && b.Length <= 40);
+                                if (!string.IsNullOrEmpty(shortBullet))
+                                {
+                                    sTitle = shortBullet.Trim();
+                                }
+                                else if (!string.IsNullOrWhiteSpace(sSub) && sSub.Length <= 40)
+                                {
+                                    sTitle = sSub.Trim();
+                                }
+                                else if (!string.IsNullOrWhiteSpace(sQuote))
+                                {
+                                    var firstQuote = sQuote.Split('\n')[0].Trim();
+                                    sTitle = firstQuote.Length <= 40 ? firstQuote : $"内容页 {sIndex}";
+                                }
+                                else
+                                {
+                                    sTitle = $"内容页 {sIndex}";
+                                }
+                            }
+                        }
 
                         // 启发式指标抽取（命中的条目从要点中剔除，避免与 KPI 卡片重复渲染）
                         var metricRx = new System.Text.RegularExpressions.Regex(@"^([0-9]+(?:\.[0-9]+)?(?:%|x|X|ms|s|MB|GB|KB|倍|万|亿)?)\s*[:：\-—]\s*(.*)$");
@@ -429,6 +646,21 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
                             TableData = sTable.Count > 0 ? sTable : null,
                         });
                         sIndex++;
+
+                        // 同页多表：续表拆独立 TABLE 页，禁止列数硬拼
+                        for (var ti = 1; ti < parsedTables.Count; ti++)
+                        {
+                            item.Slides.Add(new SlideItem
+                            {
+                                Index = sIndex,
+                                Title = $"{sTitle}（续表）",
+                                Layout = "table",
+                                BulletPoints = new List<string>(),
+                                SpeakerNotes = string.Empty,
+                                TableData = parsedTables[ti],
+                            });
+                            sIndex++;
+                        }
                     }
                 }
 
@@ -1083,7 +1315,14 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         get => _sources;
         set
         {
-            if (SetField(ref _sources, value))
+            // 防御过滤：未精读网页不得出现在列表（后端已保证；历史脏数据兜底）
+            IReadOnlyList<SourceRef>? cleaned = value;
+            if (value is not null)
+            {
+                var filtered = value.Where(s => !(s.IsWebSource && !s.ContentFetched)).ToList();
+                cleaned = filtered.Count == value.Count ? value : filtered;
+            }
+            if (SetField(ref _sources, cleaned))
             {
                 foreach (var name in new[]
                 {
@@ -1091,6 +1330,9 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
                     nameof(HasWebSources), nameof(SearchSummaryText),
                     nameof(WebSources), nameof(LocalSources),
                     nameof(TokenStatText), nameof(HasTokenStat),
+                    nameof(EvidenceSummaryText), nameof(HasEvidenceWarning),
+                    nameof(HasEvidenceBar), nameof(ShowSourcesList),
+                    nameof(EvidenceExpandHint),
                 })
                 {
                     PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
@@ -1103,6 +1345,150 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             }
         }
     }
+
+    private EvidenceSummary? _evidence;
+
+    /// <summary>后端 done 帧证据摘要；历史会话可为 null，此时从 Sources 兜底推算。</summary>
+    public EvidenceSummary? Evidence
+    {
+        get => _evidence;
+        set
+        {
+            if (SetField(ref _evidence, value))
+            {
+                foreach (var name in new[]
+                {
+                    nameof(EvidenceSummaryText), nameof(HasEvidenceWarning),
+                    nameof(HasEvidenceBar),
+                })
+                {
+                    PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
+                }
+            }
+        }
+    }
+
+    /// <summary>当前生效的证据摘要（后端字段优先，旧数据从 Sources 推算）。</summary>
+    private EvidenceSummary EffectiveEvidence =>
+        Evidence ?? EvidenceSummary.FromSources(Sources);
+
+    /// <summary>检索到了来源但答案零实质引用（citation_audit.evidence_support 为空）。
+    /// 此时不允许证据条暗示「引用了 N 篇」——正文很可能已明说资料与主题无关。</summary>
+    public bool HasSourcesButZeroCited
+    {
+        get
+        {
+            if (EffectiveEvidence.FallbackGeneralKnowledge || !HasSources)
+            {
+                return false;
+            }
+            var audit = EffectiveEvidence.CitationAudit;
+            if (audit is null)
+            {
+                return false;
+            }
+            return audit.EvidenceSupport.Count == 0;
+        }
+    }
+
+    /// <summary>证据条文案，例如「库内原文 5 · 精读网页 1 · 图谱边」或通用知识警告。</summary>
+    public string EvidenceSummaryText
+    {
+        get
+        {
+            var ev = EffectiveEvidence;
+            if (ev.FallbackGeneralKnowledge)
+            {
+                return "本地未命中 · 基于通用知识";
+            }
+            // 零实质引用：诚实标注「检索到但未作引用」，不伪装成已引用
+            if (HasSourcesButZeroCited)
+            {
+                var zeroParts = new List<string>();
+                if (ev.LocalCount > 0)
+                {
+                    zeroParts.Add($"库内检索 {ev.LocalCount} 条");
+                }
+                if (ev.WebFetchedCount > 0)
+                {
+                    zeroParts.Add($"精读网页 {ev.WebFetchedCount} 篇");
+                }
+                if (zeroParts.Count == 0)
+                {
+                    return "检索到资料 · 未作引用";
+                }
+                zeroParts.Add("未作引用");
+                return string.Join(" · ", zeroParts);
+            }
+            var parts = new List<string>();
+            if (ev.LocalCount > 0)
+            {
+                parts.Add($"库内原文 {ev.LocalCount}");
+            }
+            if (ev.WebFetchedCount > 0)
+            {
+                parts.Add($"精读网页 {ev.WebFetchedCount}");
+            }
+            if (ev.GraphInjected)
+            {
+                parts.Add("图谱");
+            }
+            if (parts.Count == 0)
+            {
+                if (ev.WebUnfetchedCount > 0)
+                {
+                    return "仅有未精读网页摘要";
+                }
+                return "";
+            }
+            return string.Join(" · ", parts);
+        }
+    }
+
+    /// <summary>是否呈现通用知识警告样式（本地未命中 fallback）。</summary>
+    public bool HasEvidenceWarning => EffectiveEvidence.FallbackGeneralKnowledge;
+
+    /// <summary>是否显示证据条（有来源证据 或 通用知识警告）。</summary>
+    public bool HasEvidenceBar =>
+        !IsUser
+        && !string.IsNullOrEmpty(EvidenceSummaryText)
+        && !IsLoading
+        && !IsWaitingForFirstToken;
+
+    private bool _isSourcesExpanded = true;
+
+    /// <summary>来源列表是否展开（证据条点击切换）。</summary>
+    public bool IsSourcesExpanded
+    {
+        get => _isSourcesExpanded;
+        set
+        {
+            if (SetField(ref _isSourcesExpanded, value))
+            {
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ShowSourcesList)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(EvidenceExpandHint)));
+            }
+        }
+    }
+
+    /// <summary>来源列表是否可见：有来源且展开；零实质引用时不铺无用切片列表（仅留证据条文字交代）。</summary>
+    public bool ShowSourcesList => HasSources && !HasSourcesButZeroCited && IsSourcesExpanded;
+
+    /// <summary>点击证据条切换来源列表展开/收起（零实质引用时无可展开内容，no-op）。</summary>
+    [RelayCommand]
+    private void ToggleEvidenceBar()
+    {
+        if (!HasSources || HasSourcesButZeroCited)
+        {
+            return;
+        }
+        IsSourcesExpanded = !IsSourcesExpanded;
+    }
+
+    /// <summary>证据条右侧展开指示（有可展开来源时显示 chevron；零实质引用时不显示）。</summary>
+    public string EvidenceExpandHint => HasSources && !HasSourcesButZeroCited
+        ? (IsSourcesExpanded ? "收起来源" : $"展开 {Sources!.Count} 条来源")
+        : "";
 
     /// <summary>模型名（仅 assistant 有）。</summary>
     public string? Model
@@ -1145,6 +1531,13 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CanCopy)));
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingHeaderText)));
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
+                if (!value)
+                {
+                    // 生成完成：自动收起思考区（2026-09-13 豆包问答截图：
+                    // nemotron 英文自我编排推理链整屏泄漏，答完仍占屏）。
+                    // 流式期间保持展开看进度，答完收起，「已思考」入口可再展开。
+                    IsThinkingExpanded = false;
+                }
             }
         }
     }
@@ -1200,8 +1593,11 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
 
     // ===== DeepSeek 风格信息卡片：思考过程 / 搜索摘要 / 状态统计 =====
 
-    /// <summary>流式阶段收集的思考/搜索过程步骤（解析附件、检索知识库、联网搜索、生成…）。</summary>
+    /// <summary>流式阶段收集的思考/搜索过程步骤原文（解析附件、检索知识库、联网搜索、生成…）。</summary>
     public ObservableCollection<string> ThinkingSteps { get; } = new();
+
+    /// <summary>结构化思考步骤 pill（GLM 风格：图标 + 短摘要 + 可展开详情），由 ThinkingSteps 派生。</summary>
+    public ObservableCollection<ThinkingStep> ThinkingStepPills { get; } = new();
 
     /// <summary>是否有思考过程可展示（控制折叠区可见性）。</summary>
     public bool HasThinkingSteps => ThinkingSteps.Count > 0;
@@ -1360,6 +1756,14 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         {
             return;
         }
+        // 规划帧与模型思考帧是两段独立内容，直接拼接会粘成
+        // 「…知识图谱Provide detailed introduction…」。补一个换行分隔。
+        if (ThinkingText.Length > 0
+            && !ThinkingText.EndsWith("\n")
+            && !text.StartsWith("\n"))
+        {
+            ThinkingText += "\n";
+        }
         ThinkingText += text;
     }
 
@@ -1484,9 +1888,19 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         if (text.StartsWith("✔") && ThinkingSteps.Count > 0 && ThinkingSteps[^1].StartsWith("正在"))
         {
             ThinkingSteps[^1] = text;
+            // pill 同步收敛替换：进行中 pill → 完成 pill（GLM 风格紧凑摘要）
+            if (ThinkingStepPills.Count > 0 && ThinkingStepPills[^1].IsRunning)
+            {
+                ThinkingStepPills[^1] = ThinkingStep.Parse(text);
+            }
+            else
+            {
+                ThinkingStepPills.Add(ThinkingStep.Parse(text));
+            }
             return;
         }
         ThinkingSteps.Add(text);
+        ThinkingStepPills.Add(ThinkingStep.Parse(text));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinkingSteps)));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
@@ -1507,21 +1921,74 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             detail = detail[..80] + "…";
         }
         var step = string.IsNullOrEmpty(detail) ? $"✖ {label}" : $"✖ {label}：{detail}";
+        var failPill = ThinkingStep.Parse(step);
         if (ThinkingSteps.Count > 0 && ThinkingSteps[^1].StartsWith("正在", StringComparison.Ordinal))
         {
             ThinkingSteps[^1] = step;
+            if (ThinkingStepPills.Count > 0 && ThinkingStepPills[^1].IsRunning)
+            {
+                ThinkingStepPills[^1] = failPill;
+            }
+            else
+            {
+                ThinkingStepPills.Add(failPill);
+            }
         }
         else if (ThinkingSteps.Count == 0 || ThinkingSteps[^1] != step)
         {
             ThinkingSteps.Add(step);
+            ThinkingStepPills.Add(failPill);
         }
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinkingSteps)));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
     }
 
-    /// <summary>触发引用角标点击（由正文中的角标 Hyperlink 调用）。</summary>
-    public void NotifySourceMarker(int index) => SourceMarkerRequested?.Invoke(index);
+    private int? _highlightedSourceIndex;
+
+    /// <summary>临时高亮的来源角标 index（点击正文 [n] 后 1.5s 自动清除）。</summary>
+    public int? HighlightedSourceIndex
+    {
+        get => _highlightedSourceIndex;
+        set
+        {
+            if (SetField(ref _highlightedSourceIndex, value))
+            {
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HighlightedSourceIndex)));
+            }
+        }
+    }
+
+    private int _highlightVersion;
+
+    /// <summary>触发引用角标点击：展开来源列表 + 临时高亮对应卡片 + 通知打开抽屉。</summary>
+    public void NotifySourceMarker(int index)
+    {
+        if (HasSources)
+        {
+            IsSourcesExpanded = true;
+        }
+        HighlightedSourceIndex = index;
+        var version = ++_highlightVersion;
+        _ = System.Threading.Tasks.Task.Delay(1500).ContinueWith(_ =>
+        {
+            if (_highlightVersion == version)
+            {
+                if (Application.Current?.Dispatcher is { } dispatcher)
+                {
+                    dispatcher.InvokeAsync(() => HighlightedSourceIndex = null);
+                }
+                else
+                {
+                    HighlightedSourceIndex = null;
+                }
+            }
+        }, System.Threading.Tasks.TaskScheduler.Default);
+        SourceMarkerRequested?.Invoke(index);
+    }
+
+    /// <summary>判断指定来源是否处于高亮状态（供卡片样式绑定）。</summary>
+    public bool IsSourceHighlighted(int index) => _highlightedSourceIndex == index;
 
     /// <summary>是否有可复制内容（控制「复制」按钮可见性）。</summary>
     public bool CanCopy => !IsLoading && !string.IsNullOrEmpty(Content);

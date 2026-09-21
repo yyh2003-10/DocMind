@@ -13,6 +13,7 @@ from typing import Any
 from doc2mind.core.llm.base import (
     LLMClient,
     LLMError,
+    is_provider_overloaded_error,
     is_transient_network_error,
     iter_exception_chain,
     merge_stream_retry_text,
@@ -114,6 +115,8 @@ class OpenAIClient(LLMClient):
             hint = "请求过于频繁或额度不足"
         elif status is not None and 500 <= status < 600:
             hint = "服务端错误，请稍后重试"
+        elif is_provider_overloaded_error(e):
+            hint = "上游服务临时过载，请稍后重试"
         elif is_transient_network_error(e):
             hint = "网络连接不稳定或代理超时，请检查网络或稍后重试"
         else:
@@ -159,6 +162,13 @@ class OpenAIClient(LLMClient):
                 ),
             )
             choice = resp.choices[0]
+            finish = getattr(choice, "finish_reason", None)
+            self._last_truncated = finish == "length"
+            if finish == "length":
+                logger.info(
+                    "输出因达到 token 上限被截断（finish_reason=length, model=%s）",
+                    self._model,
+                )
             msg = choice.message
             content = getattr(msg, "content", None) or ""
             return content.strip()
@@ -266,6 +276,13 @@ class OpenAIClient(LLMClient):
                     logger.info("输出达到单次 token 上限(length)，自动发起下一轮无缝续写补全...")
                     continue
 
+                # 续写耗尽仍 length（或正常 finish=stop）→ 上报截断标记供 T6.1 消费
+                self._last_truncated = last_finish_reason == "length"
+                if self._last_truncated:
+                    logger.info(
+                        "续写达上限仍被截断（finish_reason=length, model=%s），上报截断标记",
+                        self._model,
+                    )
                 return
             except LLMError:
                 raise
@@ -316,5 +333,5 @@ class OpenAIClient(LLMClient):
 
     @staticmethod
     def _is_transient_stream_error(e: Exception) -> bool:
-        """判断是否为可重试的瞬时网络错误（连接被对端关闭/截断/重置等）。"""
-        return is_transient_network_error(e)
+        """判断是否为可重试的瞬时错误（网络抖动 / 上游过载）。"""
+        return is_transient_network_error(e) or is_provider_overloaded_error(e)

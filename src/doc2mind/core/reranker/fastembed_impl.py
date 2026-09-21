@@ -1,7 +1,8 @@
-"""fastembed 重排实现 — 本地 ONNX cross-encoder（TextRanking）。
+"""fastembed 重排实现 — 本地 ONNX cross-encoder（TextCrossEncoder）。
 
-默认模型：`Xenova/bge-reranker-v2-m3`（多语言，中英混合检索效果最佳，
-首次使用需联网下载约 1.3GB 到缓存目录；下载失败自动降级为不使用重排）。
+默认模型：`BAAI/bge-reranker-base`（中英可用，首次使用需联网下载约 280MB
+到缓存目录；下载失败自动降级为不使用重排）。
+注意：fastembed 0.8 支持列表不含 Xenova/bge-reranker-v2-m3，配置它将静默降级。
 
 与嵌入器相同的惰性加载策略：构造时不触碰模型，首次 rerank() 才加载；
 加载失败抛 RerankerError，由调用方降级处理。
@@ -55,10 +56,15 @@ class FastEmbedReranker(Reranker):
             os.environ["HF_ENDPOINT"] = self._hf_endpoint or HF_MIRROR
 
         try:
-            from fastembed import TextRanking
+            # fastembed ≥0.8：TextRanking 已改名为 TextCrossEncoder
+            try:
+                from fastembed.rerank.cross_encoder import TextCrossEncoder as _RerankCls
+            except ImportError:
+                from fastembed import TextRanking as _RerankCls  # type: ignore[attr-defined]
         except ImportError as e:
             raise RerankerError(
-                "fastembed 未安装，无法使用重排模型。请运行：pip install fastembed"
+                "fastembed 未安装或版本过旧（无 TextCrossEncoder/TextRanking）。"
+                "请运行：pip install 'fastembed>=0.3'"
             ) from e
 
         kwargs: dict[str, object] = {
@@ -66,20 +72,30 @@ class FastEmbedReranker(Reranker):
             "cache_dir": str(self._cache_dir),
         }
         try:
-            self._load_impl(TextRanking, kwargs)
+            self._load_impl(_RerankCls, kwargs)
         except Exception as e:  # noqa: BLE001
             # 模型下载/加载失败：再试一次（覆盖瞬时网络抖动）
             if _is_download_error(e):
                 logger.warning("重排模型下载/加载失败，重试一次: %s", e)
                 try:
-                    self._load_impl(TextRanking, kwargs)
+                    self._load_impl(_RerankCls, kwargs)
                 except Exception as e2:  # noqa: BLE001
                     raise RerankerError(
                         f"重排模型 {self._model_name} 下载/加载失败：{e2}"
                     ) from e2
             else:
+                # 模型名可能不在当前 fastembed 支持列表
+                supported_hint = ""
+                try:
+                    names = [
+                        m.get("model") if isinstance(m, dict) else getattr(m, "model", "")
+                        for m in _RerankCls.list_supported_models()
+                    ]
+                    supported_hint = "；当前支持：" + ", ".join(str(n) for n in names[:8])
+                except Exception:
+                    pass
                 raise RerankerError(
-                    f"加载重排模型失败 ({self._model_name}): {e}"
+                    f"加载重排模型失败 ({self._model_name}): {e}{supported_hint}"
                 ) from e
 
     def _load_impl(self, ranking_cls, kwargs: dict[str, object]) -> None:
@@ -108,6 +124,12 @@ class FastEmbedReranker(Reranker):
             ranked = list(self._impl.rerank(query, documents, batch_size=batch_size))
         except Exception as e:  # noqa: BLE001
             raise RerankerError(f"重排推理失败: {e}") from e
+
+        # fastembed ≥0.8 TextCrossEncoder.rerank 返回按文档原序的 float 列表
+        # （实测确认：调换文档顺序分数跟随位置，不排序）；旧版返回带
+        # .index/.score 的 RankedDocument。两种返回形态都兼容。
+        if ranked and isinstance(ranked[0], (int, float)):
+            return [float(x) for x in ranked]
 
         scores = [0.0] * len(documents)
         for r in ranked:

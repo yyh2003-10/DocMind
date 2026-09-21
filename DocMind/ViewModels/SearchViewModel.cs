@@ -27,6 +27,7 @@ public partial class SearchViewModel : ViewModelBase
     private SearchResponse? _lastResponse;
     private SearchHit? _selectedHit;
     private bool _showHistory;
+    private string? _lastBackendMessage;
 
     public const string AllCollectionsLabel = "(全部集合)";
     private const int MaxSearchHistory = 20;
@@ -223,9 +224,11 @@ public partial class SearchViewModel : ViewModelBase
     /// <summary>结果区空态是否可见（非忙碌且无结果）。</summary>
     public bool ShowEmptyGuide => !IsBusy && Hits.Count == 0;
 
-    /// <summary>空态引导文案：区分"还没搜过"与"搜了没结果"。</summary>
+    /// <summary>空态引导文案：区分"还没搜过"、"库为空"与"搜了没结果"。</summary>
     public string EmptyGuideText => HasQuery
-        ? "没有匹配的结果。\n建议：尝试更换关键词，或调低「最低相似度」；\n也可以到【导入】页确认文档已加入知识库。"
+        ? !string.IsNullOrWhiteSpace(_lastBackendMessage)
+            ? _lastBackendMessage
+            : "没有匹配的结果。\n建议：尝试更换关键词，或调低「最低相似度」；\n也可以到【导入】页确认文档已加入知识库。"
         : "输入问题或关键词开始搜索。\nDocMind 将基于向量语义与关键词进行混合检索。\n还没导入文档？先到【导入】页添加文件。";
 
     /// <summary>集合名（可选，AllCollectionsLabel 或空表示全部）。</summary>
@@ -324,6 +327,7 @@ public partial class SearchViewModel : ViewModelBase
         StatusMessage = "搜索中…";
         Hits.Clear();
         SelectedHit = null;
+        _lastBackendMessage = null;
 
         var targetCollection = (string.IsNullOrWhiteSpace(Collection) || Collection == AllCollectionsLabel)
             ? null
@@ -364,6 +368,10 @@ public partial class SearchViewModel : ViewModelBase
 
             // 搜索成功后记录历史
             AddToHistory(Query.Trim());
+
+            // 存储后端差异化消息，供 EmptyGuideText 三路分支使用
+            _lastBackendMessage = !string.IsNullOrWhiteSpace(resp.Message) ? resp.Message : null;
+            OnPropertyChanged(nameof(EmptyGuideText));
 
             StatusMessage = !string.IsNullOrWhiteSpace(resp.Message)
                 ? resp.Message + (resp.Degraded ? "（嵌入不可用，仅关键词检索）" : "")

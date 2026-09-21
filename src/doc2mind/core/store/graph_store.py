@@ -148,8 +148,13 @@ class GraphStore:
             return self._upsert_entity_conn(conn, name, etype, collection)
 
     def upsert_relation(self, from_id: str, to_id: str, relation: str) -> None:
-        """插入关系，已存在相同关系则忽略。"""
-        clean_rel = relation.strip() or "related_to"
+        """插入关系，已存在相同关系则忽略。
+
+        空 relation 不再兜底为 related_to（脏边会污染问答）；直接跳过。
+        """
+        clean_rel = (relation or "").strip()
+        if not clean_rel or clean_rel == "related_to":
+            return
         now = _now_iso()
         with self._conn() as conn:
             conn.execute(
@@ -233,7 +238,10 @@ class GraphStore:
             for rel in relations:
                 from_name = str(rel.get("from", "")).strip()
                 to_name = str(rel.get("to", "")).strip()
-                rel_type = str(rel.get("type", rel.get("relation", "related_to"))).strip() or "related_to"
+                rel_type = str(rel.get("type", rel.get("relation", ""))).strip()
+                # 空类型 / related_to 兜底一律不建边，避免脏图污染问答
+                if not rel_type or rel_type == "related_to":
+                    continue
 
                 if not from_name or not to_name or from_name == to_name:
                     continue
@@ -343,6 +351,40 @@ class GraphStore:
                 }
                 for row in edge_cur.fetchall()
             ]
+
+            # 按实体批量聚合来源原文件（chunk_entities → chunks_meta → documents）
+            sources_by_entity: dict[str, dict[str, dict[str, Any]]] = {}
+            try:
+                src_cur = conn.execute(
+                    f"""
+                    SELECT ce.entity_id, cm.document_id, cm.source,
+                           d.title as doc_title, d.summary as doc_summary,
+                           COUNT(*) as chunk_count
+                    FROM chunk_entities ce
+                    JOIN chunks_meta cm ON ce.chunk_id = cm.id
+                    LEFT JOIN documents d ON cm.document_id = d.id
+                    WHERE ce.entity_id IN ({placeholders})
+                    GROUP BY ce.entity_id, cm.source
+                    """,
+                    tuple(node_ids),
+                )
+                for row in src_cur.fetchall():
+                    src = row["source"]
+                    if not src:
+                        continue
+                    sources_by_entity.setdefault(row["entity_id"], {})[src] = {
+                        "source": src,
+                        "title": row["doc_title"] or Path(src).name,
+                        "summary": row["doc_summary"] or "",
+                        "chunk_count": row["chunk_count"],
+                    }
+            except Exception as e:  # noqa: BLE001 — 来源聚合失败不阻断图谱返回
+                logger.debug("get_graph 聚合来源文件失败: %s", e)
+
+            for node in nodes:
+                node["source_documents"] = list(
+                    sources_by_entity.get(node["id"], {}).values()
+                )
 
             return {
                 "nodes": nodes,
@@ -543,4 +585,189 @@ class GraphStore:
                 "snippets": snippets,
                 "source_documents": source_documents,
             }
+
+    def get_topic_context(
+        self,
+        seed_keywords: list[str] | None = None,
+        seed_entity_ids: list[str] | None = None,
+        depth: int = 2,
+        limit_entities: int = 30,
+        collections: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """科研写作 topic 层扩散查询（M3 新增，design 4.C.4 决策 C-4）。
+
+        基于既有 entities / entity_relations / chunk_entities 表 BFS 扩散 depth 层，
+        纯只读（无 DDL / INSERT），老库零迁移；空库/未抽取实体/任何异常返回空 dict 不抛错。
+
+        Args:
+            seed_keywords: 查询关键词（用于按实体名模糊匹配种子实体）
+            seed_entity_ids: 显式种子实体 ID（文献命中切片标题/实体）
+            depth: 扩散深度（0 = 仅种子实体，不扩散）
+            limit_entities: 返回实体数量封顶
+            collections: 限定集合（None = 全部集合）
+
+        Returns:
+            {"topic_edges": [...], "related_sources": [...], "topic_label": str}
+        """
+        if depth < 0:
+            depth = 0
+        seed_keywords = seed_keywords or []
+        seed_entity_ids = seed_entity_ids or []
+
+        try:
+            with self._conn() as conn:
+                # 集合限定子句（None = 全部集合）；两处 JOIN 别名不同，分别构造
+                if collections:
+                    coll_ph = ",".join("?" for _ in collections)
+                    coll_sql = f" AND collection IN ({coll_ph})"
+                    coll_cm_sql = f" AND cm.collection IN ({coll_ph})"
+                    coll_params: tuple[Any, ...] = tuple(collections)
+                else:
+                    coll_sql = ""
+                    coll_cm_sql = ""
+                    coll_params = ()
+
+                # 1. 解析种子实体（关键词模糊匹配 + 显式 ID）
+                seed_ids: set[str] = set(seed_entity_ids)
+                for kw in seed_keywords[:8]:
+                    if not kw or not kw.strip():
+                        continue
+                    pattern = f"%{kw.strip()}%"
+                    try:
+                        cur = conn.execute(
+                            f"SELECT id FROM entities WHERE name LIKE ?{coll_sql} "
+                            "ORDER BY doc_count DESC LIMIT 10",
+                            (pattern,) + coll_params,
+                        )
+                        seed_ids.update(row["id"] for row in cur.fetchall())
+                    except Exception:
+                        continue
+
+                if not seed_ids:
+                    return {"topic_edges": [], "related_sources": [], "topic_label": ""}
+
+                # 2. BFS 扩散 depth 层
+                visited: set[str] = set()
+                frontier = set(seed_ids)
+                for _ in range(depth + 1):
+                    if not frontier:
+                        break
+                    visited.update(frontier)
+                    if len(visited) >= limit_entities:
+                        break
+                    placeholders = ",".join("?" for _ in frontier)
+                    nxt: set[str] = set()
+                    try:
+                        cur = conn.execute(
+                            f"""
+                            SELECT from_id, to_id FROM entity_relations
+                            WHERE from_id IN ({placeholders}) OR to_id IN ({placeholders})
+                            """,
+                            tuple(frontier) + tuple(frontier),
+                        )
+                        for row in cur.fetchall():
+                            for eid in (row["from_id"], row["to_id"]):
+                                if eid not in visited and eid not in nxt:
+                                    nxt.add(eid)
+                    except Exception:
+                        break
+                    frontier = nxt
+                    if not frontier:
+                        break
+
+                if not visited:
+                    return {"topic_edges": [], "related_sources": [], "topic_label": ""}
+
+                # 截断时优先保留种子实体，避免 topic_edges / topic_label 退化为空
+                seed_set = set(seed_ids)
+                entity_ids = sorted(
+                    visited, key=lambda eid: (0 if eid in seed_set else 1, eid)
+                )[:limit_entities]
+
+                # 3. 聚合扩散实体的关联边（topic_edges）
+                edge_placeholders = ",".join("?" for _ in entity_ids)
+                topic_edges: list[dict[str, Any]] = []
+                try:
+                    edge_cur = conn.execute(
+                        f"""
+                        SELECT e1.name AS from_name, e1.type AS from_type,
+                               r.relation,
+                               e2.name AS to_name, e2.type AS to_type
+                        FROM entity_relations r
+                        JOIN entities e1 ON r.from_id = e1.id
+                        JOIN entities e2 ON r.to_id = e2.id
+                        WHERE r.from_id IN ({edge_placeholders}) AND r.to_id IN ({edge_placeholders})
+                        LIMIT 100
+                        """,
+                        tuple(entity_ids) + tuple(entity_ids),
+                    )
+                    for row in edge_cur.fetchall():
+                        topic_edges.append(
+                            {
+                                "from": row["from_name"],
+                                "from_type": row["from_type"],
+                                "relation": row["relation"],
+                                "to": row["to_name"],
+                                "to_type": row["to_type"],
+                            }
+                        )
+                except Exception:
+                    pass
+
+                # 4. 聚合关联文献来源（related_sources）
+                related_sources: list[dict[str, Any]] = []
+                try:
+                    src_cur = conn.execute(
+                        f"""
+                        SELECT cm.source, d.title AS doc_title, COUNT(*) AS chunk_count
+                        FROM chunk_entities ce
+                        JOIN chunks_meta cm ON ce.chunk_id = cm.id
+                        LEFT JOIN documents d ON cm.document_id = d.id
+                        WHERE ce.entity_id IN ({edge_placeholders}){coll_cm_sql}
+                        GROUP BY cm.source
+                        ORDER BY chunk_count DESC
+                        LIMIT 30
+                        """,
+                        tuple(entity_ids) + coll_params,
+                    )
+                    for row in src_cur.fetchall():
+                        if not row["source"]:
+                            continue
+                        related_sources.append(
+                            {
+                                "source": row["source"],
+                                "title": row["doc_title"] or (Path(row["source"]).name if row["source"] else ""),
+                                "chunk_count": row["chunk_count"],
+                            }
+                        )
+                except Exception:
+                    pass
+
+                # 5. topic_label：优先取扩散层中的 topic 类型实体，否则取 doc_count 最高实体
+                topic_label = ""
+                try:
+                    label_cur = conn.execute(
+                        f"""
+                        SELECT name, type, doc_count FROM entities
+                        WHERE id IN ({edge_placeholders})
+                        ORDER BY CASE WHEN type = 'topic' THEN 0 ELSE 1 END, doc_count DESC,
+                                 name ASC
+                        LIMIT 1
+                        """,
+                        tuple(entity_ids),
+                    )
+                    row = label_cur.fetchone()
+                    if row:
+                        topic_label = row["name"]
+                except Exception:
+                    pass
+
+                return {
+                    "topic_edges": topic_edges,
+                    "related_sources": related_sources,
+                    "topic_label": topic_label,
+                }
+        except Exception as e:  # noqa: BLE001 — 科研 topic 查询失败返回空，不阻断主链路
+            logger.debug("get_topic_context 查询失败: %s", e)
+            return {"topic_edges": [], "related_sources": [], "topic_label": ""}
 

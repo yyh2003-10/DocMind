@@ -14,6 +14,7 @@ xmlns:helpers="clr-namespace:DocMind.Helpers">
             <helpers:NullToVisibilityConverter x:Key="StringToVis"/>
             <helpers:BoolToVisibilityInvertConverter x:Key="InvertBoolVis"/>
             <helpers:ZeroToVisibilityConverter x:Key="ZeroToVis"/>
+            <helpers:SourceHighlightConverter x:Key="SourceHighlight"/>
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Styles/Theme.xaml"/>
                 <ResourceDictionary Source="Styles/Icons.xaml"/>

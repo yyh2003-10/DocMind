@@ -9,6 +9,7 @@ from doc2mind.core.agent.planner import (
     AgentPlan,
     ToolPlan,
     plan_with_llm,
+    user_facing_plan_reason,
     TOOLS,
 )
 
@@ -16,5 +17,6 @@ __all__ = [
     "AgentPlan",
     "ToolPlan",
     "plan_with_llm",
+    "user_facing_plan_reason",
     "TOOLS",
 ]

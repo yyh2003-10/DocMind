@@ -23,6 +23,24 @@ public sealed class CustomThemeEntry
     public string Description { get; set; } = string.Empty;
     public string PrimaryHex { get; set; } = "#3B82F6";
     public string BgHex { get; set; } = "#F8FAFC";
+
+    /// <summary>设置页列表色块预览（PrimaryHex）。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Windows.Media.Brush PrimaryBrush
+    {
+        get
+        {
+            try
+            {
+                var c = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(PrimaryHex);
+                return new System.Windows.Media.SolidColorBrush(c);
+            }
+            catch
+            {
+                return System.Windows.Media.Brushes.SteelBlue;
+            }
+        }
+    }
 }
 
 public class AppSettings
@@ -90,6 +108,15 @@ public class AppSettings
     public double LlmTemperature { get; set; } = 0.7;
     /// <summary>最大 token 数（对应 DOC2MIND_LLM_MAX_TOKENS）。</summary>
     public int LlmMaxTokens { get; set; } = 8192;
+    /// <summary>LLM 调用/流式空闲超时（秒，对应 DOC2MIND_LLM_TIMEOUT）。
+    /// 0 = 用后端默认 180s。慢网/大模型（NIM 等）建议 300+。</summary>
+    public double LlmTimeoutSec { get; set; } = 300;
+    /// <summary>联网搜索总预算（秒，对应 DOC2MIND_WEB_SEARCH_TIMEOUT）。
+    /// 多引擎聚合 + 正文精读硬上限；过短会在慢网/反爬下拿不到正文。默认 36。</summary>
+    public double WebSearchTimeoutSec { get; set; } = 36;
+    /// <summary>自建/自选 SearXNG 实例地址（对应 DOC2MIND_WEB_SEARCH_SEARXNG_URL）。
+    /// 空 = 用内置公有实例；可填单个 URL 或逗号分隔多个，如 http://127.0.0.1:8888。</summary>
+    public string? WebSearchSearxngUrl { get; set; }
     /// <summary>检索引用 chunk 数（对应 DOC2MIND_RAG_TOP_K）。</summary>
     public int RagTopK { get; set; } = 5;
     /// <summary>自定义 RAG 系统提示词（对应 DOC2MIND_RAG_SYSTEM_PROMPT；空 = 用后端内置默认提示词）。</summary>
@@ -99,11 +126,16 @@ public class AppSettings
     /// <summary>RAG 问答模式（"strict" = 严格知识库模式；"hybrid" = 混合常识增强模式，未命中本地文档时使用大模型常识解答）。</summary>
     public string RagMode { get; set; } = "hybrid";
 
+    /// <summary>使用档案：docs | notes | agent | library。决定回答风格与检索默认预设。</summary>
+    public string UsageProfile { get; set; } = "docs";
+
     /// <summary>是否启用检索后重排（Reranker / cross-encoder 精排），对应 DOC2MIND_RERANK_ENABLED。
     /// 开启后用重排模型对召回候选逐对打分重排，显著提升知识检索相关性；模型不可用时自动降级为原始 RRF 排序。</summary>
     public bool RerankEnabled { get; set; } = true;
-    /// <summary>重排模型名（fastembed TextRanking 支持列表中的模型），对应 DOC2MIND_RERANK_MODEL。默认多语言模型，首次使用需联网下载约 1.3GB。</summary>
-    public string RerankModel { get; set; } = "Xenova/bge-reranker-v2-m3";
+    /// <summary>重排模型名（fastembed TextCrossEncoder 支持列表中的模型），对应 DOC2MIND_RERANK_MODEL。
+    /// 默认 BAAI/bge-reranker-base（中英可用，首次使用需联网下载约 280MB）。
+    /// 注意：Xenova/bge-reranker-v2-m3 不在支持列表，会被自动纠正。</summary>
+    public string RerankModel { get; set; } = "BAAI/bge-reranker-base";
     /// <summary>送入重排器的候选数上限（对应 DOC2MIND_RERANK_RECALL），默认 20。</summary>
     public int RerankRecall { get; set; } = 20;
 
@@ -123,8 +155,44 @@ public class AppSettings
     /// （裸模型名，用设置页全局配置的 provider/key/地址）。</summary>
     public string? LastChatProfileId { get; set; }
 
-    /// <summary>对话页「🌐 联网搜索」开关是否开启（持久化，重启后保持勾选状态）。</summary>
+    /// <summary>设置页「获取模型列表」拉到的可用模型名（持久化，由设置页保存时镜像 LlmModels 写入）。
+    /// 对话页默认提供商分组的种子来源之一：让用户不必每次都到对话页点刷新，
+    /// 重启后也能直接看到上次拉取的全部模型。始终镜像设置页当前的模型候选，
+    /// 切换服务商时由设置页先 Clear 再重填，故无需额外的来源指纹。</summary>
+    public List<string> LlmAvailableModels { get; set; } = new();
+
+    /// <summary>对话页「🌐 联网搜索」开关是否开启（持久化，重启后保持勾选状态）。
+    /// 兼容旧配置；新字段以 WebSearchMode 为准，两者写入时同步。</summary>
     public bool EnableWebSearch { get; set; } = false;
+
+    /// <summary>联网搜索模式：off / normal / deep（持久化）。
+    /// 空 = 旧配置未写过此字段，启动时按 EnableWebSearch 迁移为 normal/off。</summary>
+    public string WebSearchMode { get; set; } = "";
+
+    /// <summary>解析有效联网模式（兼容旧 EnableWebSearch 布尔字段）。</summary>
+    public string ResolveWebSearchMode()
+    {
+        var m = (WebSearchMode ?? "").Trim().ToLowerInvariant();
+        return m switch
+        {
+            "deep" => "deep",
+            "normal" => "normal",
+            "off" => "off",
+            _ => EnableWebSearch ? "normal" : "off",
+        };
+    }
+
+    /// <summary>写回联网模式，并同步旧布尔字段。</summary>
+    public void SetWebSearchMode(string mode)
+    {
+        var m = (mode ?? "off").Trim().ToLowerInvariant();
+        if (m is not ("off" or "normal" or "deep"))
+        {
+            m = "off";
+        }
+        WebSearchMode = m;
+        EnableWebSearch = m is "normal" or "deep";
+    }
 
     /// <summary>对话页右侧协同抽屉（出处 / 创作物工作台）的宽度（像素，持久化）。
     /// 用户拖动分隔条改变宽度后落盘，下次启动自动还原；有效区间 240~720，

@@ -136,6 +136,8 @@ public partial class ChatViewModel : ViewModelBase
                 OnPropertyChanged(nameof(HasSelectedSource));
                 OnPropertyChanged(nameof(SelectedSourceTitle));
                 OnPropertyChanged(nameof(SelectedSourceSnippet));
+                OnPropertyChanged(nameof(SelectedSourceAnswerSupport));
+                OnPropertyChanged(nameof(HasSelectedSourceAnswerSupport));
             }
         }
     }
@@ -162,6 +164,73 @@ public partial class ChatViewModel : ViewModelBase
                 : "（该切片暂无全文预览或来自早期版本会话，可通过下方动作查看原文）";
         }
     }
+
+    /// <summary>答案侧与该引用对应的表述：从助手消息中抽取含 [n] 角标的句子，供原文件对照。</summary>
+    public string SelectedSourceAnswerSupport
+    {
+        get
+        {
+            var src = SelectedSource;
+            if (src is null)
+            {
+                return string.Empty;
+            }
+
+            var marker = $"[{src.Index}]";
+            for (var i = Messages.Count - 1; i >= 0; i--)
+            {
+                var msg = Messages[i];
+                if (!string.Equals(msg.Role, "assistant", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                if (msg.Sources is not { Count: > 0 })
+                {
+                    continue;
+                }
+
+                var content = msg.Content ?? string.Empty;
+                var idx = content.IndexOf(marker, StringComparison.Ordinal);
+                if (idx < 0)
+                {
+                    continue;
+                }
+
+                var start = idx;
+                while (start > 0)
+                {
+                    var c = content[start - 1];
+                    if (c is '。' or '！' or '？' or '\n' or '；')
+                    {
+                        break;
+                    }
+                    start--;
+                }
+
+                var end = idx + marker.Length;
+                while (end < content.Length)
+                {
+                    var c = content[end];
+                    if (c is '。' or '！' or '？' or '\n' or '；')
+                    {
+                        end++;
+                        break;
+                    }
+                    end++;
+                }
+
+                var sentence = content[start..end].Trim();
+                if (sentence.Length > 0)
+                {
+                    return sentence;
+                }
+            }
+
+            return string.Empty;
+        }
+    }
+
+    public bool HasSelectedSourceAnswerSupport => !string.IsNullOrWhiteSpace(SelectedSourceAnswerSupport);
 
     /// <summary>协同来源预览抽屉是否展开。</summary>
     public bool IsSourceDrawerOpen
@@ -292,6 +361,21 @@ public partial class ChatViewModel : ViewModelBase
         OnPropertyChanged(nameof(SlideAccentSoftBrush));
     }
 
+    /// <summary>自定义主题随导出携带完整色值，后端据此构建 PPT 配色（内置主题走后端库）。</summary>
+    private static Dictionary<string, object>? BuildThemeColorsPayload(PptThemeOption? theme)
+    {
+        if (theme is null || !theme.IsCustom)
+            return null;
+        // 键名与后端 theme_colors / get_theme 约定一致（camelCase 由 JsonPropertyName 负责）
+        return new Dictionary<string, object>
+        {
+            ["name"] = theme.DisplayName,
+            ["description"] = theme.Description ?? "",
+            ["primary"] = theme.PrimaryHex,
+            ["bg"] = theme.BgHex,
+        };
+    }
+
     /// <summary>打开创作物画布抽屉。</summary>
     [RelayCommand]
     public void OpenArtifact(object? param)
@@ -354,6 +438,14 @@ public partial class ChatViewModel : ViewModelBase
         }
 
         var fmt = targetFormat ?? artifact.Type;
+        if (IsBlockedByPptGate(artifact, fmt, out var gateError))
+        {
+            StatusMessage = gateError;
+            _notifications?.Warning(gateError, "导出已拦截");
+            DebugLog.Warn($"PPT 导出门禁拦截: {gateError}", "Chat");
+            return;
+        }
+
         StatusMessage = $"正在编译导出 {fmt.ToUpperInvariant()} 物理文件（主题: {SelectedTheme.DisplayName}）…";
 
         try
@@ -364,6 +456,7 @@ public partial class ChatViewModel : ViewModelBase
                 Format = fmt,
                 Title = artifact.Title,
                 Theme = SelectedTheme.Id,
+                ThemeColors = BuildThemeColorsPayload(SelectedTheme),
             };
 
             var res = await _apiService.ExportCreativeArtifactAsync(req);
@@ -410,6 +503,16 @@ public partial class ChatViewModel : ViewModelBase
             await Task.Delay(500);
 
             var fmt = artifact.Type;
+            if (IsBlockedByPptGate(artifact, fmt, out var gateError))
+            {
+                StatusMessage = gateError;
+                DebugLog.Warn($"自动导出门禁拦截: {gateError}", "Chat");
+                return;
+            }
+
+            var exportTheme = ReferenceEquals(artifact, SelectedArtifact)
+                ? SelectedTheme
+                : AllThemes.FirstOrDefault(t => t.Id == (artifact.Theme ?? "tech_blue")) ?? SelectedTheme;
             var req = new CreativeExportRequest
             {
                 Content = artifact.RawContent,
@@ -417,9 +520,8 @@ public partial class ChatViewModel : ViewModelBase
                 Title = artifact.Title,
                 // 若该创作物正在工作台中预览，则跟随用户当前选定的主题，
                 // 否则自动导出会停留在 artifact 自带的原始 theme，与随后手动导出/网页放映的配色对不上。
-                Theme = ReferenceEquals(artifact, SelectedArtifact)
-                    ? SelectedTheme.Id
-                    : (artifact.Theme ?? "tech_blue"),
+                Theme = exportTheme.Id,
+                ThemeColors = BuildThemeColorsPayload(exportTheme),
             };
 
             var res = await _apiService.ExportCreativeArtifactAsync(req);
@@ -443,6 +545,12 @@ public partial class ChatViewModel : ViewModelBase
             }
             else
             {
+                // 后端硬门禁也可能拒绝：把「结构不合格」直接透出到状态栏
+                var failMsg = string.IsNullOrWhiteSpace(res.Error) ? "自动导出创作物失败" : res.Error;
+                if (failMsg.Contains("结构不合格", StringComparison.Ordinal))
+                {
+                    StatusMessage = failMsg;
+                }
                 DebugLog.Warn($"自动导出创作物失败: {res.Error}", "Chat");
             }
         }
@@ -450,6 +558,129 @@ public partial class ChatViewModel : ViewModelBase
         {
             DebugLog.Warn($"自动导出创作物异常（不影响对话）: {ex.Message}", "Chat");
         }
+    }
+
+    /// <summary>
+    /// PPT 导出硬门禁（客户端预检，与 Python validate_pptx_export 对齐）。
+    /// 拒绝：页码占位标题 / 空正文页 / 残留 Markdown 超阈值。
+    /// </summary>
+    internal static bool IsBlockedByPptGate(ArtifactItem artifact, string fmt, out string error)
+    {
+        error = string.Empty;
+        if (!string.Equals(fmt, "pptx", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(fmt, "ppt", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // 仅当预览侧已解析出幻灯片时才做客户端门禁；
+        // Slides 为空时交给 Python 后端用 raw_content 重新解析并做权威门禁。
+        if (artifact.Slides.Count == 0)
+        {
+            return false;
+        }
+
+        var placeholderPages = new List<int>();
+        var emptyPages = new List<int>();
+        var residuePages = new List<int>();
+        var pageTitleRx = new System.Text.RegularExpressions.Regex(@"^第\s*\d+\s*页$");
+        var mathRx = new System.Text.RegularExpressions.Regex(@"\$[^$\n]{1,40}\$");
+
+        foreach (var s in artifact.Slides)
+        {
+            var title = s.Title?.Trim() ?? string.Empty;
+            if (pageTitleRx.IsMatch(title))
+            {
+                placeholderPages.Add(s.Index);
+            }
+
+            if (!HasRealPptBody(s))
+            {
+                var isCoverish = string.Equals(s.Layout, "cover", StringComparison.OrdinalIgnoreCase) || s.IsCover;
+                if (!(isCoverish && (!string.IsNullOrWhiteSpace(s.Title) || !string.IsNullOrWhiteSpace(s.Subtitle))))
+                {
+                    emptyPages.Add(s.Index);
+                }
+            }
+
+            if (CountMarkdownResidue(s, mathRx) >= 3)
+            {
+                residuePages.Add(s.Index);
+            }
+        }
+
+        var errors = new List<string>();
+        if (placeholderPages.Count > 0)
+        {
+            errors.Add($"存在页码占位标题页（{string.Join("、", placeholderPages)}），请为每页提供 `# 标题`");
+        }
+        if (emptyPages.Count > 0)
+        {
+            errors.Add($"存在空正文页（{string.Join("、", emptyPages)}），请补充要点/表格/金句内容");
+        }
+        if (residuePages.Count > 0)
+        {
+            errors.Add($"正文/表格残留 Markdown 语法（{string.Join("、", residuePages)}），请清理 `**加粗**` 与 `$公式$`");
+        }
+
+        if (errors.Count > 0)
+        {
+            error = "结构不合格，请重生成：" + string.Join("；", errors);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool HasRealPptBody(SlideItem s)
+    {
+        if (s.BulletPoints.Any(b => !string.IsNullOrWhiteSpace(b))) return true;
+        if (s.TableData != null && s.TableData.Any(row => row.Any(c => !string.IsNullOrWhiteSpace(c)))) return true;
+        if (s.Cards.Any(c => !string.IsNullOrWhiteSpace(c.Title)
+            || !string.IsNullOrWhiteSpace(c.Content)
+            || c.Bullets.Any(b => !string.IsNullOrWhiteSpace(b)))) return true;
+        if (s.Metrics.Any(m => !string.IsNullOrWhiteSpace(m.Value) || !string.IsNullOrWhiteSpace(m.Label))) return true;
+        if (s.TimelineNodes.Any(t => !string.IsNullOrWhiteSpace(t.Stage) || !string.IsNullOrWhiteSpace(t.Title))) return true;
+        if (!string.IsNullOrWhiteSpace(s.QuoteText)) return true;
+        return false;
+    }
+
+    private static int CountMarkdownResidue(SlideItem s, System.Text.RegularExpressions.Regex mathRx)
+    {
+        static int Hits(string? text, System.Text.RegularExpressions.Regex mathRx)
+        {
+            if (string.IsNullOrEmpty(text)) return 0;
+            var boldPairs = System.Text.RegularExpressions.Regex.Matches(text, @"\*\*").Count / 2;
+            return boldPairs + mathRx.Matches(text).Count;
+        }
+
+        var total = 0;
+        foreach (var b in s.BulletPoints) total += Hits(b, mathRx);
+        total += Hits(s.QuoteText, mathRx);
+        foreach (var c in s.Cards)
+        {
+            total += Hits(c.Title, mathRx);
+            total += Hits(c.Content, mathRx);
+            foreach (var b in c.Bullets) total += Hits(b, mathRx);
+        }
+        foreach (var m in s.Metrics)
+        {
+            total += Hits(m.Value, mathRx);
+            total += Hits(m.Label, mathRx);
+        }
+        foreach (var t in s.TimelineNodes)
+        {
+            total += Hits(t.Stage, mathRx);
+            total += Hits(t.Title, mathRx);
+        }
+        if (s.TableData != null)
+        {
+            foreach (var row in s.TableData)
+            {
+                foreach (var cell in row) total += Hits(cell, mathRx);
+            }
+        }
+        return total;
     }
 
     private PptInspectionReportDto? _inspectionReport;
@@ -580,6 +811,7 @@ public partial class ChatViewModel : ViewModelBase
                 Format = "html",
                 Title = artifact.Title,
                 Theme = SelectedTheme.Id,
+                ThemeColors = BuildThemeColorsPayload(SelectedTheme),
             };
 
             var res = await _apiService.ExportCreativeArtifactAsync(req);
@@ -615,16 +847,16 @@ public partial class ChatViewModel : ViewModelBase
         SelectedSource = src;
         IsSourceDrawerOpen = true;
 
-        // 若来源是 PDF 且当前抽屉过窄，自适应调整至舒适阅读宽度（560px）
-        if ((string.Equals(src.Format, "pdf", StringComparison.OrdinalIgnoreCase)
-             || src.Source.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
-            && SourceDrawerWidth < 540)
+        // 原文件 × 关键点对照：PDF 需要更宽的阅读面，过窄时自动放宽
+        var isPdf = string.Equals(src.Format, "pdf", StringComparison.OrdinalIgnoreCase)
+                    || src.Source.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
+        if (isPdf && SourceDrawerWidth < 640)
         {
-            SourceDrawerWidth = 560;
+            SourceDrawerWidth = 720;
         }
 
-        StatusMessage = $"查看切片出处：{src.DisplayTitle} ({src.ScoreBadgeText})";
-        DebugLog.Info($"展开引用来源抽屉: index={src.Index} source={src.Source} page={src.Page}", "Chat");
+        StatusMessage = $"原文对照：{src.DisplayTitle} ({src.ScoreBadgeText})";
+        DebugLog.Info($"展开原文对照抽屉: index={src.Index} source={src.Source} page={src.Page}", "Chat");
     }
 
     /// <summary>在浏览器中打开当前选中的网页来源 URL（仅 http/https，防危险协议）。</summary>

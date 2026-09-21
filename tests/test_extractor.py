@@ -65,3 +65,68 @@ def test_extract_and_store_success(tmp_path: Path) -> None:
     graph = store.get_graph("default")
     assert graph["total_nodes"] == 2
     assert len(graph["edges"]) == 1
+
+
+def test_drops_fragment_entity_from_long_model_token() -> None:
+    """ASDA-B3 文档不得抽出碎片实体 AS。"""
+    response = json.dumps({
+        "entities": [
+            {"name": "ASDA-B3", "type": "tech"},
+            {"name": "AS", "type": "concept"},
+            {"name": "AtomCode", "type": "tech"},
+        ],
+        "relations": [
+            {"from": "AS", "to": "ASDA-B3", "type": "uses"},
+            {"from": "ASDA-B3", "to": "AtomCode", "type": "related_to"},
+        ],
+    })
+    text = "DELTA_IA-ASD_ASDA-B3 伺服手册说明 AtomCode 集成。"
+    res = extract_entities(text, MockLLMClient(response=response))
+    names = {e["name"] for e in res["entities"]}
+    assert "AS" not in names
+    assert "ASDA-B3" in names
+    assert "AtomCode" in names
+    # related_to 兜底关系被丢弃
+    assert all(r["type"] != "related_to" for r in res["relations"])
+
+
+def test_drops_latin_entity_not_in_source() -> None:
+    response = json.dumps({
+        "entities": [
+            {"name": "agent skills", "type": "concept"},
+            {"name": "AtomCode", "type": "tech"},
+        ],
+        "relations": [],
+    })
+    res = extract_entities("文档只提到 AtomCode 宿主。", MockLLMClient(response=response))
+    names = {e["name"] for e in res["entities"]}
+    assert "AtomCode" in names
+    # 含空格的短语不按纯拉丁名拦截；但 AS 碎片应被拦
+    response2 = json.dumps({
+        "entities": [{"name": "AS", "type": "concept"}],
+        "relations": [],
+    })
+    res2 = extract_entities(
+        "使用 ASDA-B3 伺服。", MockLLMClient(response=response2)
+    )
+    assert res2["entities"] == []
+
+
+def test_graph_store_skips_related_to_edges(tmp_path: Path) -> None:
+    db_file = tmp_path / "g.db"
+    store = GraphStore(db_file)
+    store.add_document_entities(
+        doc_id="d1",
+        collection="default",
+        entities=[{"name": "A", "type": "tech"}, {"name": "B", "type": "tech"}],
+        relations=[
+            {"from": "A", "to": "B", "type": "uses"},
+            {"from": "A", "to": "B", "type": "related_to"},
+            {"from": "A", "to": "B", "type": ""},
+        ],
+    )
+    graph = store.get_graph("default")
+    rel_types = {e.get("label") for e in graph["edges"]}
+    assert "uses" in rel_types
+    assert "related_to" not in rel_types
+    store.close()

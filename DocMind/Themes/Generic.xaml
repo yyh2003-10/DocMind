@@ -38,4 +38,87 @@
         </Setter>
     </Style>
 
+    <!-- SecretInputControl 默认样式：掩码默认 + 眼睛显隐切换 -->
+    <Style TargetType="c:SecretInputControl">
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+        <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="10,8,32,8"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="CaretBrush" Value="{DynamicResource PrimaryBrush}"/>
+        <Setter Property="SelectionBrush" Value="{DynamicResource PrimaryLightBrush}"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="c:SecretInputControl">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{DynamicResource CornerMd}"
+                            Padding="{TemplateBinding Padding}">
+                        <Grid>
+                            <!-- 文本输入区（TextBox 必需部件） -->
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          Focusable="False"
+                                          HorizontalScrollBarVisibility="Hidden"
+                                          VerticalScrollBarVisibility="Hidden"/>
+                            <!-- 掩码覆盖层：不透明背景遮挡真实文本 -->
+                            <Border x:Name="MaskOverlay"
+                                    Background="{TemplateBinding Background}"
+                                    IsHitTestVisible="False">
+                                <TextBlock Text="{TemplateBinding MaskedText}"
+                                           FontSize="{TemplateBinding FontSize}"
+                                           FontFamily="{TemplateBinding FontFamily}"
+                                           Foreground="{TemplateBinding Foreground}"
+                                           VerticalAlignment="Center"/>
+                            </Border>
+                            <!-- 眼睛显隐按钮 -->
+                            <Button x:Name="PART_EyeButton"
+                                    Width="24" Height="24"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    Cursor="Hand"
+                                    ToolTip="显示"
+                                    Focusable="False"
+                                    TabIndex="-1">
+                                <Grid>
+                                    <Path x:Name="EyeIcon"
+                                          Data="{DynamicResource IconEye}"
+                                          Style="{DynamicResource IconSmStyle}"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"/>
+                                    <Path x:Name="EyeOffIcon"
+                                          Data="{DynamicResource IconEyeOff}"
+                                          Style="{DynamicResource IconSmStyle}"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Visibility="Collapsed"/>
+                                </Grid>
+                            </Button>
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <!-- 明文态：隐藏掩码层 + 切换眼睛图标 -->
+                        <Trigger Property="IsRevealed" Value="True">
+                            <Setter TargetName="MaskOverlay" Property="Visibility" Value="Collapsed"/>
+                            <Setter TargetName="EyeIcon" Property="Visibility" Value="Collapsed"/>
+                            <Setter TargetName="EyeOffIcon" Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="PART_EyeButton" Property="ToolTip" Value="隐藏"/>
+                        </Trigger>
+                        <!-- 交互态：hover / focus 边框高亮 -->
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
 </ResourceDictionary>

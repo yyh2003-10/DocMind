@@ -659,7 +659,7 @@ class TestRagSystemPrompt:
         assert get_settings().rag_system_prompt is None
 
     def test_custom_prompt_used_in_llm_messages(self) -> None:
-        """自定义提示词替换内置 _SYSTEM_PROMPT 进入 LLM 消息列表。"""
+        """自定义提示词进入 LLM 消息列表（包裹主题锚定前缀与档案提示）。"""
         mock_llm = MockLLMClient("回答。")
         s = Settings(llm_provider="openai", llm_api_key="test", rag_system_prompt="用文言文回答。")
         stack = _mock_rag_patches(mock_llm)
@@ -669,7 +669,10 @@ class TestRagSystemPrompt:
             stack.close()
         system_msg = mock_llm.last_messages[0]
         assert system_msg["role"] == "system"
-        assert system_msg["content"] == "用文言文回答。"
+        content = system_msg["content"].strip()
+        assert "用文言文回答。" in content
+        assert content.startswith("【")  # 主题锚定/档案提示前缀
+        assert "【主题锚定" in content
 
     def test_default_prompt_when_unset(self) -> None:
         mock_llm = MockLLMClient("回答。")

@@ -139,6 +139,7 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
             TotalChunks = resp.TotalChunks,
             ElapsedMs = resp.ElapsedMs,
             Sources = resp.Sources,
+            Evidence = resp.Evidence ?? EvidenceSummary.FromSources(resp.Sources),
         };
         onDone?.Invoke(result);
         return result;
@@ -376,6 +377,25 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
 
     public IDisposable SubscribeEvents(Action<EventMessage> onEvent, CancellationToken ct = default)
         => OnSubscribeEvents?.Invoke(onEvent, ct) ?? new DummyDisposable();
+
+    // ── 库状态 / 使用档案 ──
+    public LibraryStatus LibraryStatus { get; set; } = new() { Status = "ok", Summary = "最新可用" };
+
+    public Task<LibraryStatus> GetLibraryStatusAsync(CancellationToken ct = default)
+        => Task.FromResult(LibraryStatus);
+
+    public string? LastProfile { get; private set; }
+
+    public Task<ProfileSwitchResult> SetUsageProfileAsync(string profile, CancellationToken ct = default)
+    {
+        LastProfile = profile;
+        return Task.FromResult(new ProfileSwitchResult
+        {
+            Profile = profile,
+            Preset = new ProfilePreset { Label = profile, Description = "test" },
+            Applied = new ProfileApplied { RagTopK = 4, RagMinScore = 0.35, RagMode = "strict", QueryExpansion = "off" },
+        });
+    }
 
     private sealed class DummyDisposable : IDisposable
     {

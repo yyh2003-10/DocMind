@@ -51,8 +51,8 @@ public class GroundTruthViewerTests
         Assert.True(vm.IsSourceDrawerOpen);
         Assert.False(vm.IsArtifactMode);
         Assert.Equal(pdfSource, vm.SelectedSource);
-        // 宽度应自适应提升至 560px
-        Assert.Equal(560, vm.SourceDrawerWidth);
+        // 原文件 × 关键点对照：PDF 抽屉自适应放宽至 720px
+        Assert.Equal(720, vm.SourceDrawerWidth);
     }
 
     [Fact]
@@ -106,6 +106,34 @@ public class GroundTruthViewerTests
             var markerText = string.Concat(link.Inlines.OfType<Run>().Select(r => r.Text));
             Assert.Contains("1", markerText);
         });
+    }
+
+    [Fact]
+    public void SelectedSourceAnswerSupport_ExtractsSentenceContainingCitationMarker()
+    {
+        var vm = CreateVm();
+        var source = new SourceRef
+        {
+            Index = 1,
+            Source = @"C:\docs\manual.pdf",
+            Format = "pdf",
+            Page = 1,
+            Snippet = "动平衡是通过测量转子不平衡量并校正的过程。",
+        };
+
+        var msg = new ChatMessage
+        {
+            Role = "assistant",
+            Content = "前言略过。动平衡是指对旋转转子进行测量和校正[1]，使其离心力降至允许范围。其余内容。",
+        };
+        msg.Sources = new List<SourceRef> { source };
+        vm.Messages.Add(msg);
+
+        vm.OpenSourceCommand.Execute(source);
+
+        Assert.True(vm.HasSelectedSourceAnswerSupport);
+        Assert.Contains("[1]", vm.SelectedSourceAnswerSupport);
+        Assert.Contains("测量和校正", vm.SelectedSourceAnswerSupport);
     }
 
     private static void RunOnSta(Action action)

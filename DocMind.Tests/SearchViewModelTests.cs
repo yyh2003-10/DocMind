@@ -266,4 +266,49 @@ public class SearchViewModelTests
 
         Assert.Contains("持久化测试", settings.SearchHistory);
     }
+
+    [Fact]
+    public async Task EmptyGuideText_WithQuery_NoBackendMessage_ShowsDefaultNoMatch()
+    {
+        var fake = new FakeDoc2kbApiService
+        {
+            OnSearch = (_, _) => Task.FromResult(new SearchResponse { Total = 0, Hits = new List<SearchHit>() })
+        };
+        var vm = CreateVm(fake);
+        vm.Query = "test";
+
+        await vm.SearchCommand.ExecuteAsync(null);
+
+        Assert.Contains("没有匹配的结果", vm.EmptyGuideText);
+    }
+
+    [Fact]
+    public async Task EmptyGuideText_WithQuery_BackendEmptyDbMessage_ShowsBackendMessage()
+    {
+        var fake = new FakeDoc2kbApiService
+        {
+            OnSearch = (_, _) => Task.FromResult(new SearchResponse
+            {
+                Total = 0,
+                Hits = new List<SearchHit>(),
+                Message = "知识库为空：请先在【导入】页添加文档"
+            })
+        };
+        var vm = CreateVm(fake);
+        vm.Query = "test";
+
+        await vm.SearchCommand.ExecuteAsync(null);
+
+        Assert.Contains("知识库为空", vm.EmptyGuideText);
+        Assert.DoesNotContain("没有匹配的结果", vm.EmptyGuideText);
+    }
+
+    [Fact]
+    public void EmptyGuideText_NoQuery_ShowsInitialGuide()
+    {
+        var fake = new FakeDoc2kbApiService();
+        var vm = CreateVm(fake);
+
+        Assert.Contains("输入问题或关键词开始搜索", vm.EmptyGuideText);
+    }
 }

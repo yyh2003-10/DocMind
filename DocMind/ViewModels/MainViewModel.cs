@@ -187,12 +187,18 @@ public partial class MainViewModel : ViewModelBase
         // 对话页一键直达设置页（如未配置大模型引导）
         _chatViewModel.NavigateToSettingsRequested += NavigateToSettings;
 
+        // 图谱页一键直达设置页（如未配置大模型引导）
+        _graphViewModel.NavigateToSettingsRequested += NavigateToSettings;
+
         // 对话页来源抽屉「在搜索页查找」→ 本地来源跳搜索页检索、web 来源浏览器打开
         _chatViewModel.SourceSearchRequested += OnSourceSearchRequested;
 
         // 设置页服务商配置变更 → 对话页重建模型候选。由 Main 统一订阅静态事件，
         // ChatViewModel 不再自订阅（静态事件长期持有 VM 引用无法退订）
         SettingsViewModel.ProviderConfigChanged += _chatViewModel.ApplyProviderConfigChanged;
+
+        // 设置页服务商配置变更 → 图谱页刷新 LLM 配置状态（抽取按钮禁用态联动）
+        SettingsViewModel.ProviderConfigChanged += _graphViewModel.NotifyLlmConfigChanged;
 
         // 导入完成 → 文档库/图谱/质量看板缓存失效并刷新
         _importViewModel.ImportCompleted += OnImportCompleted;

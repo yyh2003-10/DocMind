@@ -42,11 +42,24 @@ public partial class GraphViewModel : ViewModelBase
         AdaptiveQuickPrompts = new ObservableCollection<string>();
         DistilledTags = new ObservableCollection<string>();
         EntityQuickJumpNames = new ObservableCollection<string>();
+
+        // 图谱实体问答历史上默认开启联网；用户改过模式后沿用持久化值
+        if (_appSettings is not null && !string.IsNullOrWhiteSpace(_appSettings.WebSearchMode))
+        {
+            _selectedWebSearchMode = WebSearchModeChoice.FromKey(_appSettings.WebSearchMode);
+        }
+        else if (_appSettings?.EnableWebSearch == true)
+        {
+            _selectedWebSearchMode = WebSearchModeChoice.Normal;
+        }
+        else
+        {
+            _selectedWebSearchMode = WebSearchModeChoice.Normal;
+        }
     }
 
     private CancellationTokenSource? _chatCts;
     private string _entityChatInput = string.Empty;
-    private bool _isWebSearchEnabled = true;
     private bool _isEntityAiGenerating;
     private string? _currentEntityChatId;
     private bool _isDistillDialogOpen;
@@ -111,8 +124,51 @@ public partial class GraphViewModel : ViewModelBase
 
     public bool IsWebSearchEnabled
     {
-        get => _isWebSearchEnabled;
-        set => SetProperty(ref _isWebSearchEnabled, value);
+        get => SelectedWebSearchMode.Key is "normal" or "deep";
+        set
+        {
+            if (value)
+            {
+                if (SelectedWebSearchMode.Key == "off")
+                {
+                    SelectedWebSearchMode = WebSearchModeChoice.Normal;
+                }
+            }
+            else if (SelectedWebSearchMode.Key != "off")
+            {
+                SelectedWebSearchMode = WebSearchModeChoice.Off;
+            }
+        }
+    }
+
+    public ObservableCollection<WebSearchModeChoice> WebSearchModes { get; } =
+        new(WebSearchModeChoice.All);
+
+    private WebSearchModeChoice _selectedWebSearchMode = WebSearchModeChoice.Normal;
+
+    public WebSearchModeChoice SelectedWebSearchMode
+    {
+        get => _selectedWebSearchMode;
+        set
+        {
+            var next = value ?? WebSearchModeChoice.Off;
+            if (SetProperty(ref _selectedWebSearchMode, next))
+            {
+                OnPropertyChanged(nameof(IsWebSearchEnabled));
+                if (_appSettings is not null)
+                {
+                    _appSettings.SetWebSearchMode(next.Key);
+                    try
+                    {
+                        _appSettings.Save();
+                    }
+                    catch
+                    {
+                        // 落盘失败不阻断图谱对话
+                    }
+                }
+            }
+        }
     }
 
     public bool IsEntityAiGenerating
@@ -149,6 +205,13 @@ public partial class GraphViewModel : ViewModelBase
     public event Action<string>? GraphDataRenderRequested;
     public event Action<string>? ThemeChangeRequested;
     public event Action<string>? NodeFocusRequested;
+    public event Action? NavigateToSettingsRequested;
+
+    /// <summary>LLM 是否已配置（抽取图谱事前禁用判据）。复用 GetActiveProviderConfig 逻辑。</summary>
+    public bool IsLlmConfigured => GetActiveProviderConfig() is not null;
+
+    [RelayCommand]
+    private void NavigateToSettings() => NavigateToSettingsRequested?.Invoke();
 
     public string? Collection
     {
@@ -181,6 +244,9 @@ public partial class GraphViewModel : ViewModelBase
             }
         }
     }
+
+    /// <summary>通知 LLM 配置状态变更（设置页保存后调用）。</summary>
+    public void NotifyLlmConfigChanged() => OnPropertyChanged(nameof(IsLlmConfigured));
 
     public string StatusMessage
     {
@@ -385,8 +451,16 @@ public partial class GraphViewModel : ViewModelBase
     [RelayCommand(CanExecute = nameof(CanOperate))]
     public async Task ExtractGraphAsync()
     {
+        // 事前拦截：LLM 未配置时直接引导配置，不发注定失败的请求
+        if (!IsLlmConfigured)
+        {
+            StatusMessage = "尚未配置大模型：请到【设置 → 大模型】完成配置后重试";
+            _notifications?.Warning("尚未配置大模型，无法抽取图谱：请到【设置 → 大模型】完成配置", "需要配置");
+            return;
+        }
+
         IsBusy = true;
-        StatusMessage = "大模型正在从文档中抽取实体与关系网，请稍候...";
+        StatusMessage = "大模型正在从文档中抽取实体与关系网，请候...";
         try
         {
             string? targetColl = (_collection == "全部集合" || string.IsNullOrWhiteSpace(_collection)) ? null : _collection;
@@ -441,7 +515,7 @@ public partial class GraphViewModel : ViewModelBase
         }
     }
 
-    private bool CanOperate() => !IsBusy;
+    private bool CanOperate() => !IsBusy && IsLlmConfigured;
 
     public async Task SelectNodeAsync(string nodeId)
     {
@@ -706,6 +780,7 @@ var trimmed = q.Trim().TrimStart(' ', '：', ':');
             Collection = SelectedNode.Collection,
             ChatId = _currentEntityChatId,
             EnableWebSearch = IsWebSearchEnabled,
+            WebSearchMode = IsWebSearchEnabled ? SelectedWebSearchMode.Key : null,
             EntityContext = entityContext,
             Model = GetActiveModel(),
             ProviderConfig = GetActiveProviderConfig(),

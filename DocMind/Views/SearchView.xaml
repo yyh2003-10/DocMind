@@ -9,7 +9,7 @@
              mc:Ignorable="d"
              d:DesignHeight="450" d:DesignWidth="800">
     <UserControl.Resources>
-        <!-- 评分颜色: 高→绿, 中→蓝, 低→灰 -->
+        <!-- 评分颜色: 高=绿, 中=蓝, 低=灰 -->
         <Style x:Key="ScoreBadge" TargetType="Border">
             <Setter Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
             <Setter Property="CornerRadius" Value="4"/>
@@ -25,29 +25,9 @@
 
         <!-- 结果卡片模板 -->
         <DataTemplate x:Key="HitCardTemplate" DataType="{x:Type m:SearchHit}">
-            <Border Background="{StaticResource CardBrush}"
-                    CornerRadius="10"
+            <Border Style="{StaticResource InteractiveCardStyle}"
                     Padding="14"
-                    Margin="0,0,0,8"
-                    SnapsToDevicePixels="True">
-                <Border.Style>
-                    <!-- 边框属性放 Style 而非本地值：本地值优先级高于触发器，会把选中态的 BorderThickness=2 压制掉 -->
-                    <Style TargetType="Border">
-                        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
-                        <Setter Property="BorderThickness" Value="1"/>
-                        <Style.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
-                            </Trigger>
-                            <!-- 选中高亮：跟随 ListBoxItem.IsSelected -->
-                            <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
-                                         Value="True">
-                                <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
-                                <Setter Property="BorderThickness" Value="2"/>
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </Border.Style>
+                    Margin="0,0,0,8">
 
                 <Grid>
                     <Grid.RowDefinitions>
@@ -73,10 +53,10 @@
                         </Border>
 
                         <!-- 检索引擎徽章 -->
-                        <Border Grid.Column="1" Background="{StaticResource SurfaceBrush}"
-                                CornerRadius="4" Padding="6,2" Margin="0,0,8,0">
+                        <Border Grid.Column="1" Style="{StaticResource BadgeStyle}"
+                                Padding="6,2" Margin="0,0,8,0">
                             <TextBlock Text="{Binding MatchBadgeText, Mode=OneWay}"
-                                       FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                       Style="{StaticResource ChipTextStyle}"/>
                         </Border>
 
                         <!-- 来源文件名 -->
@@ -88,9 +68,8 @@
                                    TextTrimming="CharacterEllipsis"/>
 
                         <!-- 格式标记 -->
-                        <Border Grid.Column="3" CornerRadius="3"
-                                Background="{StaticResource SurfaceBrush}"
-                                Padding="4,1" Margin="4,0,0,0">
+                        <Border Grid.Column="3" Style="{StaticResource BadgeStyle}"
+                                CornerRadius="{StaticResource CornerSm}" Padding="4,1" Margin="4,0,0,0">
                             <TextBlock Text="{Binding Format, Mode=OneWay}"
                                        Style="{StaticResource SmallText}"/>
                         </Border>
@@ -113,7 +92,7 @@
                         </TextBlock>
                         <TextBlock Style="{StaticResource SmallText}" Margin="12,0,0,0"
                                    Visibility="{Binding Page, Converter={StaticResource NullToVis}}">
-                            <Run Text="页码: 第 P"/><Run Text="{Binding Page, Mode=OneWay}"/><Run Text=" 页"/>
+                            <Run Text="页码: P"/><Run Text="{Binding Page, Mode=OneWay}"/><Run Text=""/>
                         </TextBlock>
                     </StackPanel>
                 </Grid>
@@ -121,7 +100,7 @@
         </DataTemplate>
     </UserControl.Resources>
 
-    <Grid Margin="0">
+    <Grid Margin="{StaticResource PageContentMargin}">
         <Grid.RowDefinitions>
             <!-- 搜索条 -->
             <RowDefinition Height="Auto"/>
@@ -148,22 +127,24 @@
 
                 <!-- 1. 主搜索输入框 -->
                 <Grid Grid.Column="0" Margin="0,0,10,0">
-                    <TextBox x:Name="QueryBox"
-                             Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
-                             ToolTip="输入搜索问题或关键词，按回车开始搜索"
-                             VerticalContentAlignment="Center"
-                             Padding="14,8,36,8"
-                             MinHeight="38"
-                             KeyUp="QueryBox_KeyUp"/>
-                    <Button Content="×"
-                            Style="{StaticResource TextButtonStyle}"
+<TextBox x:Name="QueryBox"
+                         Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="输入搜索问题或关键词，按回车开始搜索"
+                         VerticalContentAlignment="Center"
+                         Padding="14,8,36,8"
+                         MinHeight="36"
+                         Style="{StaticResource TextBoxFocusStyle}"
+                         KeyUp="QueryBox_KeyUp"/>
+                    <Button Style="{StaticResource TextButtonStyle}"
                             Command="{Binding ClearCommand}"
                             HorizontalAlignment="Right"
                             VerticalAlignment="Center"
                             Visibility="{Binding HasQuery, Converter={StaticResource BoolToVis}}"
-                            FontSize="16"
                             Padding="6,2"
-                            Margin="0,0,6,0"/>
+                            Margin="0,0,6,0"
+                            ToolTip="清空搜索">
+                        <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource TextSecondaryBrush}"/>
+                    </Button>
                 </Grid>
 
                 <!-- 2. 集合选择下拉框 -->
@@ -264,7 +245,7 @@
                 <StackPanel HorizontalAlignment="Center">
                     <Border Width="64" Height="64"
                             Background="{StaticResource PrimaryLightBrush}"
-                            CornerRadius="32"
+                            CornerRadius="{StaticResource CornerPill}"
                             HorizontalAlignment="Center"
                             Margin="0,0,0,16">
                         <Path Data="{StaticResource IconSearch}" Style="{StaticResource IconSmStyle}" Width="32" Height="32" Stroke="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -273,13 +254,30 @@
                                Style="{StaticResource TitleText}"
                                HorizontalAlignment="Center"
                                Margin="0,0,0,8"/>
+                    <!-- 空态提示加快捷键线索 -->
                     <TextBlock Text="{Binding EmptyGuideText, Mode=OneWay}"
                                Style="{StaticResource BodyText}"
                                Foreground="{StaticResource TextSecondaryBrush}"
                                TextWrapping="Wrap"
                                TextAlignment="Center"
                                LineHeight="22"
-                               Margin="0,0,0,20"/>
+                               Margin="0,0,0,8"/>
+                    <TextBlock Style="{StaticResource SmallText}"
+                               HorizontalAlignment="Center"
+                               Margin="0,0,0,20">
+                        <Run Text="快捷键 "/><Run Text="Ctrl+K" FontWeight="SemiBold"/><Run Text=" 聚焦搜索框"/>
+                    </TextBlock>
+                    <!-- 空态主操作 CTA：前往导入 -->
+                    <Button Command="{Binding NavigateToImportCommand}"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Padding="18,6"
+                            Margin="0,0,0,8"
+                            ToolTip="前往导入页面添加文档到知识库">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Data="{StaticResource IconImport}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextInverseBrush}" Margin="0,0,6,0"/>
+                            <TextBlock Text="前往导入文档"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
             </Border>
 
@@ -343,7 +341,7 @@
                                 <Setter Property="Margin" Value="0"/>
                                 <Setter Property="Background" Value="Transparent"/>
                                 <Setter Property="BorderThickness" Value="0"/>
-                                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                                <Setter Property="FocusVisualStyle" Value="{StaticResource FocusVisualStyle}"/>
                                 <Setter Property="Template">
                                     <Setter.Value>
                                         <ControlTemplate TargetType="ListBoxItem">
@@ -410,9 +408,13 @@
                                         Margin="0,0,0,10"
                                         Visibility="{Binding HasSelectedHit, Converter={StaticResource BoolToVis}}">
                                     <StackPanel>
-                                        <TextBlock Style="{StaticResource CaptionText}" Margin="0,0,0,8" FontWeight="SemiBold">
-                                            <Run Text="来源: "/><Run Text="{Binding SelectedHit.Source, Mode=OneWay}"/>
-                                        </TextBlock>
+                                        <!-- 来源原文件：置于详情最顶部，显著展示 -->
+                                        <TextBlock Text="{Binding SelectedHit.Source, Mode=OneWay}"
+                                                   Style="{StaticResource CaptionText}"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource PrimaryBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,0,0,8"/>
 
                                         <!-- 评分进度条 -->
                                         <Grid Margin="0,0,0,8">

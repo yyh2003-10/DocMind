@@ -39,6 +39,17 @@ public sealed record IngestResult
 
     /// <summary>是否有任何 AI 整理结果可展示。</summary>
     public bool HasCuration => Curation is { Count: > 0 };
+
+    // ── 导入健康 ──
+
+    /// <summary>估算超出嵌入窗口的分块数（嵌入会截断，检索可能只命中前半截）。</summary>
+    public int LongChunkCount { get; init; }
+
+    /// <summary>人话健康警告（后端 long_chunk 等）。</summary>
+    public IReadOnlyList<string> HealthWarnings { get; init; } = [];
+
+    /// <summary>建议试问短句（取自文档标题/首段）。</summary>
+    public string? SuggestQuery { get; init; }
 }
 
 public sealed record IngestResponse
@@ -52,4 +63,15 @@ public sealed record IngestResponse
     public IReadOnlyList<IngestResult> FailedDetails { get; init; } = [];
     public int TotalDocuments { get; init; }
     public int TotalChunks { get; init; }
+
+    /// <summary>整批超窗分块数。</summary>
+    public int LongChunkCount { get; init; }
+
+    /// <summary>整批健康警告。</summary>
+    public IReadOnlyList<string> HealthWarnings { get; init; } = [];
+
+    /// <summary>建议试问短句。</summary>
+    public string? SuggestQuery { get; init; }
+
+    public bool HasHealthWarnings => HealthWarnings is { Count: > 0 } || LongChunkCount > 0;
 }

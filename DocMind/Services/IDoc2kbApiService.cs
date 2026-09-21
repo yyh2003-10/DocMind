@@ -111,4 +111,10 @@ public interface IDoc2kbApiService
 
     /// <summary>订阅后端事件流（SSE GET /v1/events）。返回 IDisposable 用于取消订阅。</summary>
     IDisposable SubscribeEvents(Action<EventMessage> onEvent, CancellationToken ct = default);
+
+    /// <summary>库健康状态（GET /v1/library/status）：ok/empty/warn/reindex_needed。</summary>
+    Task<LibraryStatus> GetLibraryStatusAsync(CancellationToken ct = default);
+
+    /// <summary>切换使用档案（POST /v1/profile）：notes/docs/agent/library。</summary>
+    Task<ProfileSwitchResult> SetUsageProfileAsync(string profile, CancellationToken ct = default);
 }

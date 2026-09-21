@@ -192,6 +192,25 @@ public partial class PdfCitationViewer : UserControl
                 if (evt == "pdfLoaded")
                 {
                     LoadingOverlay.Visibility = Visibility.Collapsed;
+                    LocateFailBanner.Visibility = Visibility.Collapsed;
+                }
+                else if (evt == "citationLocated")
+                {
+                    bool success = doc.RootElement.TryGetProperty("success", out var ok)
+                        && ok.ValueKind == JsonValueKind.True;
+                    // 有 snippet 却未匹配到原文时明确提示，禁止静默失败
+                    if (!success && !string.IsNullOrWhiteSpace(TargetSnippet))
+                    {
+                        var page = doc.RootElement.TryGetProperty("page", out var pg)
+                            && pg.TryGetInt32(out var pgv) ? pgv : (TargetPage ?? 1);
+                        LocateFailText.Text =
+                            $"未能自动定位到 P{page} 的原文段落，已跳转该页；请对照引用原文核对。";
+                        LocateFailBanner.Visibility = Visibility.Visible;
+                    }
+                    else
+                    {
+                        LocateFailBanner.Visibility = Visibility.Collapsed;
+                    }
                 }
             }
         }
@@ -258,6 +277,7 @@ public partial class PdfCitationViewer : UserControl
         ErrorDetailText.Text = message;
         ErrorOverlay.Visibility = Visibility.Visible;
         LoadingOverlay.Visibility = Visibility.Collapsed;
+        LocateFailBanner.Visibility = Visibility.Collapsed;
     }
 
     private void HideError()

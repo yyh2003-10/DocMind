@@ -11,24 +11,19 @@
 
     <ScrollViewer VerticalScrollBarVisibility="Auto"
                   HorizontalScrollBarVisibility="Disabled"
-                  Padding="0,0,10,12">
+                  Padding="16,12,10,12">
         <Grid Margin="0">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>   <!-- 工具条 (Row 0) -->
                 <RowDefinition Height="Auto"/>   <!-- 概览卡片 (Row 1) -->
-                <RowDefinition Height="Auto"/>   <!-- 图表区 (Row 2) -->
-                <RowDefinition Height="Auto"/>   <!-- 分布 + 警告 (Row 3) -->
-                <RowDefinition Height="Auto"/>   <!-- AI 知识库整理 (Row 4) -->
+                <RowDefinition Height="Auto"/>   <!-- 库状态 (Row 2) -->
+                <RowDefinition Height="Auto"/>   <!-- 图表区 (Row 3) -->
+                <RowDefinition Height="Auto"/>   <!-- 分布 + 警告 (Row 4) -->
+                <RowDefinition Height="Auto"/>   <!-- AI 知识库整理 (Row 5) -->
             </Grid.RowDefinitions>
 
             <!-- ===== 工具条 ===== -->
-            <Border Grid.Row="0"
-                    Background="{StaticResource CardBrush}"
-                    BorderBrush="{StaticResource BorderBrush}"
-                    BorderThickness="1"
-                    CornerRadius="14"
-                    Padding="14,12"
-                    Margin="0,0,0,12">
+            <Border Grid.Row="0" Style="{StaticResource ToolbarBorderStyle}">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -80,11 +75,7 @@
                 </Border>
 
                 <!-- Chunk 总数 -->
-                <Border Padding="16,14" Margin="0,0,10,0"
-                        Background="{StaticResource CardBrush}"
-                        BorderBrush="{StaticResource BorderBrush}"
-                        BorderThickness="1"
-                        CornerRadius="14">
+                <Border Style="{StaticResource StatCardStyle}" Padding="16,14" Margin="0,0,10,0">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal">
                             <Path Data="{StaticResource IconDashboard}" Style="{StaticResource IconSmStyle}" Margin="0,0,8,0"/>
@@ -113,11 +104,7 @@
                 </Border>
 
                 <!-- 质量警告 -->
-                <Border Padding="16,14" Margin="0"
-                        Background="{StaticResource CardBrush}"
-                        BorderBrush="{StaticResource BorderBrush}"
-                        BorderThickness="1"
-                        CornerRadius="14">
+                <Border Style="{StaticResource StatCardStyle}" Padding="16,14" Margin="0">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal">
                             <Path Data="{StaticResource IconWarning}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource WarningBrush}" Margin="0,0,8,0"/>
@@ -132,8 +119,51 @@
                 </Border>
             </UniformGrid>
 
+            <!-- 库状态条：最新 / 待同步 / 索引过期 -->
+            <Border Grid.Row="2"
+                    Style="{StaticResource SectionCardStyle}"
+                    Margin="0,0,0,12">
+                <DockPanel>
+                    <Border DockPanel.Dock="Left"
+                            Style="{StaticResource BadgePrimaryStyle}"
+                            Padding="10,4"
+                            VerticalAlignment="Center"
+                            Margin="0,0,12,0">
+                        <TextBlock Text="{Binding LibraryStatusBadge, Mode=OneWay}"
+                                   FontWeight="SemiBold"
+                                   Foreground="{StaticResource PrimaryBrush}"/>
+                    </Border>
+                    <StackPanel>
+                        <TextBlock Text="{Binding LibraryStatusText, Mode=OneWay}"
+                                   Style="{StaticResource CaptionText}"
+                                   TextWrapping="Wrap"/>
+                        <ItemsControl ItemsSource="{Binding LibraryStatus.Issues}"
+                                      Margin="0,6,0,0"
+                                      Visibility="{Binding HasLibraryIssues, Converter={StaticResource BoolToVis}}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Message}"
+                                               Style="{StaticResource SmallText}"
+                                               Foreground="{DynamicResource WarningBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,2"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <Button Content="一键重建索引"
+                                Command="{Binding ReindexFromStatusCommand}"
+                                HorizontalAlignment="Left"
+                                Margin="0,10,0,0"
+                                Padding="12,6"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Visibility="{Binding NeedsReindex, Converter={StaticResource BoolToVis}}"
+                                ToolTip="按当前嵌入模型重新计算全部向量；大库耗时较长"/>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
             <!-- ===== 图表区：格式分布饼图 + 分组文档数柱状图 ===== -->
-            <Grid Grid.Row="2" Margin="0,0,0,16">
+            <Grid Grid.Row="3" Margin="0,0,0,16">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="12"/>
@@ -145,7 +175,7 @@
                         Background="{StaticResource CardBrush}"
                         BorderBrush="{StaticResource BorderBrush}"
                         BorderThickness="1"
-                        CornerRadius="14"
+                        CornerRadius="{StaticResource CornerLg}"
                         Padding="16">
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Top"
@@ -162,7 +192,7 @@
                         Background="{StaticResource CardBrush}"
                         BorderBrush="{StaticResource BorderBrush}"
                         BorderThickness="1"
-                        CornerRadius="14"
+                        CornerRadius="{StaticResource CornerLg}"
                         Padding="16">
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Top"
@@ -176,7 +206,7 @@
             </Grid>
 
             <!-- ===== 分组分布 + 警告 ===== -->
-            <Grid Grid.Row="3">
+            <Grid Grid.Row="4">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1.4*"/>
                     <ColumnDefinition Width="12"/>
@@ -188,7 +218,7 @@
                         Background="{StaticResource CardBrush}"
                         BorderBrush="{StaticResource BorderBrush}"
                         BorderThickness="1"
-                        CornerRadius="14"
+                        CornerRadius="{StaticResource CornerLg}"
                         Padding="16"
                         MinHeight="220">
                     <DockPanel>
@@ -204,7 +234,7 @@
                             <ListBox.ItemTemplate>
                                 <DataTemplate DataType="{x:Type m:CollectionStats}">
                                     <Border Background="{StaticResource SurfaceBrush}"
-                                            CornerRadius="6"
+                                            CornerRadius="{StaticResource CornerMd}"
                                             Padding="10,8"
                                             Margin="0,0,0,6">
                                         <Grid>
@@ -245,7 +275,7 @@
                         Background="{StaticResource DangerLightBrush}"
                         BorderBrush="{StaticResource DangerBrush}"
                         BorderThickness="1"
-                        CornerRadius="14"
+                        CornerRadius="{StaticResource CornerLg}"
                         Padding="14"
                         MinHeight="220">
                     <DockPanel>
@@ -269,7 +299,7 @@
                                     <Border Background="{StaticResource CardBrush}"
                                             BorderBrush="{StaticResource DangerBrush}"
                                             BorderThickness="1"
-                                            CornerRadius="6"
+                                            CornerRadius="{StaticResource CornerMd}"
                                             Padding="10,8"
                                             Margin="0,0,0,6">
                                         <TextBlock Text="{Binding}"
@@ -282,7 +312,7 @@
                         </ListBox>
 
                         <!-- 暂无警告空态 -->
-                        <TextBlock Text="暂无质量警告，数据状态良好 ✨"
+                        <TextBlock Text="暂无质量警告，数据状态良好"
                                    Style="{StaticResource SmallText}"
                                    HorizontalAlignment="Center"
                                    VerticalAlignment="Center"
@@ -293,16 +323,17 @@
             </Grid>
 
             <!-- ===== AI 知识库整理（curate）===== -->
-            <Border Grid.Row="4"
+            <Border Grid.Row="5"
                     Background="{StaticResource CardBrush}"
                     BorderBrush="{StaticResource BorderBrush}"
                     BorderThickness="1"
-                    CornerRadius="14"
+                    CornerRadius="{StaticResource CornerLg}"
                     Padding="16,12"
                     Margin="0,16,0,0">
                 <StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                        <TextBlock Text="🧹 AI 知识库整理"
+                        <Path Data="{StaticResource IconSparkles}" Style="{StaticResource IconSmStyle}" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="AI 知识库整理"
                                    Style="{StaticResource SubtitleText}"
                                    VerticalAlignment="Center"/>
                         <TextBlock Text="（需要已配置大模型）"
@@ -319,19 +350,27 @@
 
                     <StackPanel Orientation="Horizontal">
                         <!-- 只读预览（dry_run=true，零写入） -->
-                        <Button Content="👁 只读预览"
-                                Command="{Binding PreviewCurateCommand}"
+                        <Button Command="{Binding PreviewCurateCommand}"
                                 Style="{StaticResource PrimaryButtonStyle}"
                                 Padding="16,6"
-                                MinHeight="36"/>
+                                MinHeight="36">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconEye}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                <TextBlock Text="只读预览"/>
+                            </StackPanel>
+                        </Button>
 
                         <!-- 执行（dry_run=false，需先完成一次预览） -->
-                        <Button Content="🚀 执行整理"
-                                Command="{Binding ExecuteCurateCommand}"
+                        <Button Command="{Binding ExecuteCurateCommand}"
                                 Style="{StaticResource SecondaryButtonStyle}"
                                 Padding="16,6"
                                 MinHeight="36"
-                                Margin="10,0,0,0"/>
+                                Margin="10,0,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconRocket}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                <TextBlock Text="执行整理"/>
+                            </StackPanel>
+                        </Button>
 
                         <!-- 进度 -->
                         <ProgressBar Width="180"
@@ -352,7 +391,7 @@
 
                     <!-- 整理报告摘要 -->
                     <Border Background="{StaticResource SurfaceBrush}"
-                            CornerRadius="6"
+                            CornerRadius="{StaticResource CornerMd}"
                             Padding="10,8"
                             Margin="0,10,0,0"
                             Visibility="{Binding HasCurateSummary, Converter={StaticResource BoolToVis}}">
@@ -362,12 +401,15 @@
                     </Border>
 
                     <!-- 预览完成提示（执行按钮 CanonExecute 由 VM 控制，这里给用户可见的下一步提示） -->
-                    <TextBlock Text="💡 预览无问题后可点击「执行整理」正式落地（请在预览有损结论前确认分组范围）。"
-                               Style="{StaticResource SmallText}"
-                               Foreground="{StaticResource WarningBrush}"
-                               Margin="0,8,0,0"
-                               TextWrapping="Wrap"
-                               Visibility="{Binding HasCurateSummary, Converter={StaticResource BoolToVis}}"/>
+                    <StackPanel Orientation="Horizontal"
+                                Visibility="{Binding HasCurateSummary, Converter={StaticResource BoolToVis}}"
+                                Margin="0,8,0,0">
+                        <Path Data="{StaticResource IconLightbulb}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource WarningBrush}" VerticalAlignment="Top" Margin="0,2,6,0"/>
+                        <TextBlock Text="预览无问题后可点击「执行整理」正式落地（请在预览有损结论前确认分组范围）。"
+                                   Style="{StaticResource SmallText}"
+                                   Foreground="{StaticResource WarningBrush}"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
                 </StackPanel>
             </Border>
         </Grid>
