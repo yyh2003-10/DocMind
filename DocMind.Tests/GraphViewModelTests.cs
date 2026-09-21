@@ -460,4 +460,58 @@ public class GraphViewModelTests
         Assert.True(vm.IsDetailOpen);
         Assert.Equal("n2", vm.SelectedNode?.Id);
     }
+
+    [Fact]
+    public void IsLlmConfigured_UnconfiguredAppSettings_ReturnsFalse()
+    {
+        var fake = new FakeDoc2kbApiService();
+        var settings = new AppSettings(); // 默认 LlmProvider = "none"
+        var vm = new GraphViewModel(fake, null, settings);
+
+        Assert.False(vm.IsLlmConfigured);
+    }
+
+    [Fact]
+    public void IsLlmConfigured_ConfiguredProvider_ReturnsTrue()
+    {
+        var fake = new FakeDoc2kbApiService();
+        var settings = new AppSettings { LlmProvider = "openai", LlmApiKey = "test-key" };
+        var vm = new GraphViewModel(fake, null, settings);
+
+        Assert.True(vm.IsLlmConfigured);
+    }
+
+    [Fact]
+    public async Task ExtractGraphAsync_Unconfigured_DoesNotCallApi()
+    {
+        var fake = new FakeDoc2kbApiService();
+        var extracted = false;
+        fake.OnExtractGraph = (_, _, _) =>
+        {
+            extracted = true;
+            return Task.FromResult(new GraphExtractResult(true, 0, 0, new List<string>(), 0));
+        };
+        var settings = new AppSettings(); // 未配置 LLM
+        var vm = new GraphViewModel(fake, null, settings);
+
+        await vm.ExtractGraphCommand.ExecuteAsync(null);
+
+        Assert.False(extracted);
+        Assert.Contains("尚未配置大模型", vm.StatusMessage);
+    }
+
+    [Fact]
+    public void NavigateToSettingsRequested_FiresOnCommand()
+    {
+        var fake = new FakeDoc2kbApiService();
+        var settings = new AppSettings();
+        var vm = new GraphViewModel(fake, null, settings);
+
+        var fired = false;
+        vm.NavigateToSettingsRequested += () => fired = true;
+
+        vm.NavigateToSettingsCommand.Execute(null);
+
+        Assert.True(fired);
+    }
 }

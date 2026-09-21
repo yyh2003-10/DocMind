@@ -25,6 +25,7 @@ class QueryIntent(str, Enum):
     CONCEPT = "concept"             # Concept explanation
     HOW_TO = "how_to"              # How-to instructions
     OPINION = "opinion"             # Opinion/recommendation requests
+    RESEARCH = "research"           # 科研写作：综述/观点对比/带引用草稿（M1 新增）
 
 
 @dataclass
@@ -75,7 +76,7 @@ _CREATIVE_PATTERNS = re.compile(
 _CREATIVE_MODE_MAP: list[tuple[str, tuple[str, ...]]] = [
     ("ppt", ("ppt", "幻灯片", "演示", "slide")),
     ("lesson", ("课件", "教案", "课程", "教学", "lesson")),
-    ("table", ("对比", "矩阵", "排期", "甘特", "matrix", "gantt", "表格", "excel", "xlsx")),
+    ("table", ("对比表", "对比表格", "矩阵", "排期", "甘特", "matrix", "gantt", "表格", "excel", "xlsx")),
     ("web", ("看板", "网页", "html", "dashboard", "web", "大屏")),
     ("doc", ("研报", "报告", "公文", "方案", "汇报", "doc", "word", "report", "立项", "标书")),
 ]
@@ -106,8 +107,108 @@ def map_creative_mode(text: str) -> str | None:
     return None
 
 
+# --- 科研写作意图（M1）---
+# 科研路由识别常量：单一来源，供 decision-gate / planner / arbiter 复用，防关键词漂移。
+_RESEARCH_LITERATURE_CTX = (
+    "文献", "论文", "综述", "这几篇", "这些文献", "文献集合", "参考文献",
+    "研究资料", "学术", "引用",
+)
+_RESEARCH_TASK_WORDS = (
+    "综述", "观点对比", "对比分析", "对比", "带引用", "草稿", "梳理",
+    "总结观点", "归纳观点", "引用支撑",
+)
+# 独立触发的完整短语（不依赖任务词，本身即科研写作诉求）
+_RESEARCH_LITERATURE_ONLY = (
+    "帮我写综述", "写综述大纲", "文献综述", "观点对比一下", "对比这些文献",
+)
+# 防误判：「对比」单独出现（无文献语境且无明确产物）不得触发科研/创作路由
+_RESEARCH_COMPARE_WORDS = ("对比", "比较", "区别", "差异", "不同")
+
+
+def _looks_like_research(query: str, history: list[dict[str, str]] | None = None) -> bool:
+    """判断查询是否为科研写作诉求（综述 / 观点对比 / 带引用草稿）。
+
+    触发规则（design 4.A.2 决策 A-2）：
+    1. 强命中：query 含「文献语境」+「任务词」；
+    2. 弱命中：query 仅有任务词但对话历史上文已出现文献语境（多轮场景）；
+    3. 防误判：query 仅含「对比」而无文献语境且无明确产物 → 不触发。
+
+    Args:
+        query: 用户查询文本
+        history: 可选多轮对话历史（[{"role", "content"}, ...]）
+
+    Returns:
+        True = 科研写作诉求；False = 不触发。
+    """
+    if not query:
+        return False
+    q = query.strip()
+    has_lit = any(w in q for w in _RESEARCH_LITERATURE_CTX)
+    has_task = any(w in q for w in _RESEARCH_TASK_WORDS)
+    # 独立短语强命中（如「帮我写综述」本身即明确诉求）
+    if any(p in q for p in _RESEARCH_LITERATURE_ONLY):
+        return True
+    # 防误判：仅「对比/比较/区别」类比较词，无文献语境且无明确产物 → 不触发
+    if not has_lit and not has_task:
+        return False
+    # 强命中：文献语境 + 任务词
+    if has_lit and has_task:
+        return True
+    # 弱命中：仅任务词，但历史上文已含文献语境（多轮「这几篇文献」→「整理成对比报告」）
+    if has_task and not has_lit and history:
+        recent = history[-4:]
+        if any(
+            any(lit in (m.get("content") or "") for lit in _RESEARCH_LITERATURE_CTX)
+            for m in recent if m.get("role") == "user"
+        ):
+            return True
+    return False
+
+
+def map_research_task(query: str) -> str | None:
+    """将科研写作自然语言映射到子任务类型（design 4.A.1 决策 A-1）。
+
+    Args:
+        query: 用户查询文本
+
+    Returns:
+        "review"（综述/大纲）| "compare"（观点对比）| "draft"（带引用草稿）之一；
+        无法判定时返回 None。
+    """
+    if not query:
+        return None
+    q = query.strip()
+    # review：综述/大纲（优先级最高，「综述」出现即综述）
+    if any(k in q for k in ("综述", "大纲", "review")):
+        return "review"
+    # compare：观点对比 / 对比分析（注意与普通「对比 A 和 B 的区别」区分——调用方
+    # 应在 _looks_like_research 已确认为科研诉求后才调用本函数）
+    if any(k in q for k in ("观点对比", "对比分析", "对比一下", "对比")):
+        return "compare"
+    # draft：带引用草稿 / 引用支撑
+    if any(k in q for k in ("带引用", "草稿", "引用支撑", "引用")):
+        return "draft"
+    return None
+
+
+def research_tool_priority(query: str, web_crosscheck: bool = False) -> list[str]:
+    """科研写作工具优先级预设（design 4.B.1）。
+
+    Args:
+        query: 用户查询文本（用于判断 draft 子任务）
+        web_crosscheck: research_web_crosscheck 开关（仅 draft + 开关时才追加联网）
+
+    Returns:
+        工具优先级列表：knowledge_base=1、entity_graph=2、web_search=3（仅
+        draft 且 web_crosscheck=True 时）。
+    """
+    if web_crosscheck and map_research_task(query) == "draft":
+        return ["knowledge_base", "entity_graph", "web_search"]
+    return ["knowledge_base", "entity_graph"]
+
+
 _SUMMARY_PATTERNS = re.compile(
-    r'(总结|概括|归纳|提炼|梳理|摘要|要点|关键|核心|精华|浓缩)',
+    r'(总结|概括|归纳|提炼|梳理|摘要|要点|关键|核心|精华|浓缩|概述)',
     re.IGNORECASE
 )
 
@@ -122,12 +223,18 @@ _HOW_TO_PATTERNS = re.compile(
 )
 
 
-def classify_intent(query: str, history: list[dict[str, str]] | None = None) -> tuple[QueryIntent, ToolConfig]:
+def classify_intent(
+    query: str,
+    history: list[dict[str, str]] | None = None,
+    research_enabled: bool = False,
+) -> tuple[QueryIntent, ToolConfig]:
     """Classify query intent and determine tool configuration.
     
     Args:
         query: User's query text
         history: Optional conversation history for context
+        research_enabled: 科研写作路由总开关（intent_research_enabled）；
+            关闭时 research 意图不生效（回落后续常规分支），科研子链路零运行开销。
         
     Returns:
         Tuple of (QueryIntent, ToolConfig)
@@ -143,6 +250,17 @@ def classify_intent(query: str, history: list[dict[str, str]] | None = None) -> 
             enable_pitfall_advisor=False,
             complexity=1,
             tool_priority=[],
+        )
+    
+    # 1b. 科研写作（仅开关开启时识别；置于创作/问答之前，文献+任务词优先于泛创作）
+    if research_enabled and _looks_like_research(q, history):
+        return QueryIntent.RESEARCH, ToolConfig(
+            enable_knowledge_base=True,
+            enable_web_search=False,  # 科研默认以文献集合为唯一依据（draft+开关才加 web）
+            enable_entity_graph=True,
+            enable_pitfall_advisor=False,
+            complexity=3,
+            tool_priority=research_tool_priority(q, web_crosscheck=False),
         )
     
     # 2. Check for troubleshooting (highest priority - often needs web search)
@@ -276,6 +394,12 @@ def get_status_message(intent: QueryIntent, tool_name: str) -> str:
             "knowledge_base": "正在检索创作素材...",
             "entity_graph": "正在分析知识结构...",
             "llm": "正在创作内容...",
+        },
+        QueryIntent.RESEARCH: {
+            "knowledge_base": "正在检索文献集合...",
+            "entity_graph": "正在分析文献主题与关系...",
+            "web_search": "正在联网交叉验证前沿观点...",
+            "llm": "正在组织科研写作内容...",
         },
         QueryIntent.SUMMARY: {
             "knowledge_base": "正在检索需要总结的内容...",

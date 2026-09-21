@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 
 from doc2mind.core.creator.models import (
@@ -22,6 +23,137 @@ from doc2mind.core.creator.models import (
     SlideModel,
     TimelineNodeItem,
 )
+
+# 段落进入 bullets 的长度阈值；超长按句读拆分（两侧需对齐）
+PARAGRAPH_MAX_LEN = int(os.environ.get("DOC2MIND_PPT_PARAGRAPH_MAX_LEN", "140"))
+
+# $...$ 内简单 LaTeX 记号 → Unicode（够用即可，不做完整 MathJax）
+_LATEX_CMD_MAP = {
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "Delta": "Δ",
+    "epsilon": "ε", "zeta": "ζ", "eta": "η", "theta": "θ", "Theta": "Θ",
+    "iota": "ι", "kappa": "κ", "lambda": "λ", "mu": "μ", "nu": "ν",
+    "xi": "ξ", "pi": "π", "rho": "ρ", "sigma": "σ", "tau": "τ",
+    "phi": "φ", "chi": "χ", "psi": "ψ", "omega": "ω",
+    "le": "≤", "ge": "≥", "neq": "≠", "approx": "≈", "equiv": "≡",
+    "times": "×", "cdot": "·", "pm": "±", "mp": "∓",
+    "infty": "∞", "partial": "∂", "nabla": "∇",
+    "sum": "∑", "prod": "∏", "int": "∫", "sqrt": "√",
+    "leftarrow": "←", "rightarrow": "→", "Rightarrow": "⇒",
+    "Leftrightarrow": "⇔", "uparrow": "↑", "downarrow": "↓",
+}
+_SUP_DIGITS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+_SUB_DIGITS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+_TABLE_ALIGN_RE = re.compile(r"^\|?[\s\-:|]+\|?$")
+_MATH_INLINE_RE = re.compile(r"\$([^$\n]{1,80})\$")
+_SENT_SPLIT_RE = re.compile(r"(?<=[。；;！!？?])")
+
+
+def clean_markdown_inline(text: str) -> str:
+    """清洗单元格/正文中的 Markdown 残留与简易 $公式$。"""
+    if not text:
+        return ""
+
+    def _math_sub(m: re.Match[str]) -> str:
+        inner = m.group(1).strip()
+        inner = re.sub(
+            r"\\([a-zA-Z]+)",
+            lambda cm: _LATEX_CMD_MAP.get(cm.group(1), cm.group(1)),
+            inner,
+        )
+        inner = re.sub(r"\^\{([^}]+)\}", lambda cm: cm.group(1).translate(_SUP_DIGITS), inner)
+        inner = re.sub(r"\^(\w+)", lambda cm: cm.group(1).translate(_SUP_DIGITS), inner)
+        inner = re.sub(r"_\{([^}]+)\}", lambda cm: cm.group(1).translate(_SUB_DIGITS), inner)
+        inner = re.sub(r"_(\w+)", lambda cm: cm.group(1).translate(_SUB_DIGITS), inner)
+        inner = inner.replace("{", "").replace("}", "").replace("\\", "")
+        return inner.strip() or m.group(0)
+
+    t = _MATH_INLINE_RE.sub(_math_sub, text)
+    t = re.sub(r"\*\*(.+?)\*\*", r"\1", t)
+    t = re.sub(r"__(.+?)__", r"\1", t)
+    t = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"\1", t)
+    t = re.sub(r"(?<!_)_([^_]+)_(?!_)", r"\1", t)
+    t = re.sub(r"`([^`]+)`", r"\1", t)
+    return t.strip()
+
+
+def split_long_paragraph(text: str, max_len: int | None = None) -> list[str]:
+    """超长段落按句读拆成多条要点，禁止静默丢弃。"""
+    limit = PARAGRAPH_MAX_LEN if max_len is None else max_len
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    if len(raw) <= limit:
+        return [raw]
+
+    parts = [p.strip() for p in _SENT_SPLIT_RE.split(raw) if p and p.strip()]
+    if len(parts) <= 1:
+        # 无句读时硬切，保证不丢
+        return [raw[i : i + limit] for i in range(0, len(raw), limit)]
+
+    bullets: list[str] = []
+    buf = ""
+    for p in parts:
+        if not buf:
+            buf = p
+        elif len(buf) + len(p) <= limit:
+            buf += p
+        else:
+            bullets.append(buf)
+            buf = p
+    if buf:
+        bullets.append(buf)
+
+    result: list[str] = []
+    for b in bullets:
+        if len(b) <= limit:
+            result.append(b)
+        else:
+            result.extend(b[i : i + limit] for i in range(0, len(b), limit))
+    return result
+
+
+def _is_table_row(line: str) -> bool:
+    return "|" in line and line.count("|") >= 2
+
+
+def _split_table_blocks(table_lines: list[str]) -> list[list[str]]:
+    """识别同页多表：在「新表头 + 对齐行」处切开，禁止把不同表硬拼。"""
+    if not table_lines:
+        return []
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    i = 0
+    n = len(table_lines)
+    while i < n:
+        line = table_lines[i]
+        is_align = bool(_TABLE_ALIGN_RE.match(line))
+        next_is_align = i + 1 < n and bool(_TABLE_ALIGN_RE.match(table_lines[i + 1]))
+        if current and not is_align and next_is_align and _table_block_complete(current):
+            blocks.append(current)
+            current = [line]
+        else:
+            current.append(line)
+        i += 1
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def _table_block_complete(block: list[str]) -> bool:
+    has_align = any(_TABLE_ALIGN_RE.match(l) for l in block)
+    data_rows = [l for l in block if not _TABLE_ALIGN_RE.match(l)]
+    return has_align and len(data_rows) >= 1
+
+
+def _parse_table_block(block: list[str]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for t_line in block:
+        if _TABLE_ALIGN_RE.match(t_line):
+            continue
+        cols = [clean_markdown_inline(c) for c in t_line.strip().strip("|").split("|")]
+        if any(cols):
+            rows.append(cols)
+    return rows
 
 
 def _clean_conversational_fluff(text: str) -> str:
@@ -162,12 +294,12 @@ def extract_artifact(text: str, default_type: str = "docx") -> ArtifactModel:
 
     # 若为 PPTX 格式，解析 Slide 切片
     if atype == ArtifactType.PPTX:
-        artifact.slides = parse_pptx_slides(raw_content)
+        artifact.slides = parse_pptx_slides(raw_content, deck_title=title)
 
     return artifact
 
 
-def parse_pptx_slides(content: str) -> list[SlideModel]:
+def parse_pptx_slides(content: str, deck_title: str = "") -> list[SlideModel]:
     """将 Marp 或破损格式的 Markdown 内容解析为具有专业板式原型的 Slide 列表。"""
     if not content or not content.strip():
         return []
@@ -190,15 +322,46 @@ def parse_pptx_slides(content: str) -> list[SlideModel]:
         if not page_clean:
             continue
 
-        slide = _parse_single_slide(page_clean, slide_idx)
-        slides.append(slide)
-        slide_idx += 1
+        page_slides = _parse_single_slide(page_clean, slide_idx, deck_title=deck_title)
+        for s in page_slides:
+            s.index = slide_idx
+            slides.append(s)
+            slide_idx += 1
 
     return slides
 
 
-def _parse_single_slide(page_text: str, index: int) -> SlideModel:
-    """解析单页幻灯片内容并进行深度板式嗅探与容错。"""
+def _resolve_slide_title(
+    index: int,
+    title: str,
+    deck_title: str,
+    subtitle: str,
+    bullet_points: list[str],
+    quote_text: str,
+) -> str:
+    """禁止使用「第 N 页」作为展示标题；按优先级兜底。"""
+    if title:
+        return title
+    if index == 1 and deck_title and deck_title not in ("知识创作交付物", "未命名交付物"):
+        return deck_title
+    for b in bullet_points:
+        bb = b.strip()
+        if bb and len(bb) <= 40:
+            return bb
+    if subtitle and len(subtitle) <= 40:
+        return subtitle
+    if quote_text:
+        first_q = quote_text.split("\n", 1)[0].strip()
+        if first_q and len(first_q) <= 40:
+            return first_q
+    return f"内容页 {index}"
+
+
+def _parse_single_slide(page_text: str, index: int, deck_title: str = "") -> list[SlideModel]:
+    """解析单页幻灯片内容并进行深度板式嗅探与容错。
+
+    同页多表时返回多张 Slide（禁止列数不一致硬拼）。
+    """
     speaker_notes = ""
     explicit_layout: SlideLayoutType | None = None
 
@@ -220,7 +383,7 @@ def _parse_single_slide(page_text: str, index: int) -> SlideModel:
         page_text = page_text[: layout_match.start()] + page_text[layout_match.end() :]
         page_text = page_text.strip()
 
-    title = f"第 {index} 页"
+    title = ""  # 空表示尚未识别；禁止再用「第 N 页」当展示标题
     subtitle = ""
     bullet_points: list[str] = []
     table_lines: list[str] = []
@@ -234,35 +397,55 @@ def _parse_single_slide(page_text: str, index: int) -> SlideModel:
     lines = page_text.splitlines()
     current_card: SlideCardItem | None = None
 
+    def _add_bullet(item_text: str) -> None:
+        cleaned = clean_markdown_inline(item_text)
+        if not cleaned:
+            return
+        for piece in split_long_paragraph(cleaned):
+            if current_card is not None:
+                current_card.bullets.append(piece)
+            else:
+                bullet_points.append(piece)
+
     for line in lines:
         ls = line.strip()
         if not ls:
             continue
 
         # 标题识别（支持 # 标题、第X页：标题、Slide X: 标题）
-        if (ls.startswith("# ") or re.match(r"^(?:第[0-9一二三四五六七八九十]+页|Slide\s*\d+)[:：]\s*", ls)) and title == f"第 {index} 页":
+        if (ls.startswith("# ") or re.match(r"^(?:第[0-9一二三四五六七八九十]+页|Slide\s*\d+)[:：]\s*", ls)) and not title:
             if ls.startswith("# "):
-                title = ls[2:].strip()
+                title = clean_markdown_inline(ls[2:].strip())
             else:
-                title = re.sub(r"^(?:第[0-9一二三四五六七八九十]+页|Slide\s*\d+)[:：]\s*", "", ls).strip()
+                title = clean_markdown_inline(
+                    re.sub(r"^(?:第[0-9一二三四五六七八九十]+页|Slide\s*\d+)[:：]\s*", "", ls).strip()
+                )
             continue
 
-        # 封面副标题
-        if ls.startswith("## ") and is_cover and not subtitle:
-            subtitle = ls[3:].strip()
+        # 二级标题：封面作副标题；非封面禁止丢弃，降级为弱标题或要点
+        if ls.startswith("## "):
+            h2 = clean_markdown_inline(ls[3:].strip())
+            if not h2:
+                continue
+            if is_cover and not subtitle:
+                subtitle = h2
+            elif not title and len(h2) <= 40:
+                title = h2
+            else:
+                _add_bullet(h2)
             continue
 
-        # 卡片分割 ### Card Title 或 **模块名**
+        # 卡片分割 ### Card Title
         if ls.startswith("### "):
             if current_card:
                 cards.append(current_card)
-            c_title = ls[4:].strip()
+            c_title = clean_markdown_inline(ls[4:].strip())
             current_card = SlideCardItem(title=c_title)
             continue
 
         # 引用块 > quote
         if ls.startswith(">"):
-            q_clean = ls.lstrip(">").strip()
+            q_clean = clean_markdown_inline(ls.lstrip(">").strip())
             if q_clean:
                 if not quote_text:
                     quote_text = q_clean
@@ -271,52 +454,62 @@ def _parse_single_slide(page_text: str, index: int) -> SlideModel:
             continue
 
         # 表格行（支持容错：两端或中间带竖线的行）
-        if "|" in ls and ls.count("|") >= 2:
+        if _is_table_row(ls):
             table_lines.append(ls)
             continue
 
         # 列表项（支持 -, *, +, •, 以及小模型爱用的 emoji 列表 🔹, 📌, 1.）
         if ls.startswith(("- ", "* ", "+ ", "• ", "🔹 ", "📌 ", "▪ ")):
             item_text = re.sub(r"^[-*+•🔹📌▪]\s*", "", ls).strip()
-            if current_card is not None:
-                current_card.bullets.append(item_text)
-            else:
-                bullet_points.append(item_text)
+            _add_bullet(item_text)
             continue
 
         # 有序列表项 1. 2. 3.
         if re.match(r"^\d+[\.、\)]\s*", ls):
             item_text = re.sub(r"^\d+[\.、\)]\s*", "", ls).strip()
-            if current_card is not None:
-                current_card.bullets.append(item_text)
-            else:
-                bullet_points.append(item_text)
+            _add_bullet(item_text)
             continue
 
-        # 普通段落（小模型经常直接输出段落文字）
+        # 普通段落（小模型经常直接输出段落文字）；超长按句读拆，禁止静默丢
         if not ls.startswith("#") and not ls.startswith("<!--"):
             if current_card is not None:
+                cleaned = clean_markdown_inline(ls)
                 if not current_card.content:
-                    current_card.content = ls
+                    current_card.content = cleaned
                 else:
-                    current_card.bullets.append(ls)
+                    for piece in split_long_paragraph(cleaned):
+                        current_card.bullets.append(piece)
             else:
-                if len(ls) < 140:
-                    bullet_points.append(ls)
+                _add_bullet(ls)
 
     if current_card:
         cards.append(current_card)
 
-    # 表格容错解析（自动过滤对齐分隔线，自动补齐列）
-    table_data = None
-    if len(table_lines) >= 2:
-        table_data = []
-        for t_line in table_lines:
-            if re.match(r"^\|?[\s\-:|]+\|?$", t_line):
-                continue
-            cols = [c.strip() for c in t_line.strip("|").split("|")]
-            if any(cols):
-                table_data.append(cols)
+    # 表格容错解析：多表切分 + 单元格清洗
+    parsed_tables: list[list[list[str]]] = []
+    for block in _split_table_blocks(table_lines):
+        rows = _parse_table_block(block)
+        if rows:
+            parsed_tables.append(rows)
+
+    table_data: list[list[str]] | None = None
+    extra_table_slides: list[SlideModel] = []
+    if parsed_tables:
+        table_data = parsed_tables[0]
+        # 同页多表：主表留在本页，其余表拆成独立 TABLE 页，避免列数硬拼
+        for ti, extra_rows in enumerate(parsed_tables[1:], start=2):
+            extra_table_slides.append(
+                SlideModel(
+                    index=index + ti - 1,
+                    title=f"内容页 {index}（续表 {ti - 1}）",
+                    subtitle="",
+                    layout=SlideLayoutType.TABLE,
+                    bullet_points=[],
+                    speaker_notes=speaker_notes if ti == 2 else "",
+                    table_data=extra_rows,
+                    is_cover=False,
+                )
+            )
 
     # 3. 启发式大数字 KPI 提取 (如 "99.8% 可用性", "10x 性能提升", "35ms 低延迟")
     metric_regex = r"^([0-9]+(?:\.[0-9]+)?(?:%|x|X|ms|s|MB|GB|KB|倍|万|亿)?)\s*[:：\-—]\s*(.*)$"
@@ -340,6 +533,9 @@ def _parse_single_slide(page_text: str, index: int) -> SlideModel:
     has_body_content = bool(bullet_points or cards or table_data or metrics or timeline_nodes or quote_text)
     is_real_cover = (index == 1) and (not has_body_content or (bool(subtitle) and len(bullet_points) <= 1))
 
+    # 标题兜底：禁止输出「第 N 页」
+    title = _resolve_slide_title(index, title, deck_title, subtitle, bullet_points, quote_text)
+
     # 5. 智能板式裁决 (Inference)
     layout = explicit_layout or SlideLayoutType.GENERAL
     if not explicit_layout:
@@ -362,7 +558,7 @@ def _parse_single_slide(page_text: str, index: int) -> SlideModel:
             layout = SlideLayoutType.CARDS
             cards = [SlideCardItem(title=f"核心要点 0{i+1}", content=b) for i, b in enumerate(bullet_points)]
 
-    return SlideModel(
+    primary = SlideModel(
         index=index,
         title=title,
         subtitle=subtitle,
@@ -377,3 +573,7 @@ def _parse_single_slide(page_text: str, index: int) -> SlideModel:
         quote_text=quote_text,
         quote_author=quote_author,
     )
+    # 续表页标题依赖主表 title，补齐
+    for extra in extra_table_slides:
+        extra.title = f"{title}（续表）"
+    return [primary, *extra_table_slides]

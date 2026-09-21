@@ -75,7 +75,7 @@
             Background="{StaticResource BackgroundBrush}"
             BorderBrush="{StaticResource BorderBrush}"
             BorderThickness="1"
-            CornerRadius="10"
+            CornerRadius="{StaticResource CornerLg}"
             SnapsToDevicePixels="True"
             Margin="0">
 
@@ -105,23 +105,39 @@
                     <!-- 左侧: 品牌 + 连接状态 (可拖动) -->
                     <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center"
                                 x:Name="BrandPanel">
-                        <TextBlock Text="DocMind" Style="{StaticResource SubtitleText}"
-                                   Foreground="{StaticResource TextPrimaryBrush}"
-                                   VerticalAlignment="Center"
-                                   FontSize="15"
-                                   FontWeight="Bold"/>
+                        <Border Background="{DynamicResource PrimaryLightBrush}"
+                                CornerRadius="{DynamicResource CornerSm}"
+                                Padding="6,2"
+                                VerticalAlignment="Center">
+                            <TextBlock Text="DocMind"
+                                       FontSize="12.5"
+                                       FontWeight="Bold"
+                                       Foreground="{DynamicResource PrimaryBrush}"
+                                       VerticalAlignment="Center"/>
+                        </Border>
                         <!-- 版本号 -->
-                        <TextBlock Text="v1.0"
-                                   Style="{StaticResource SmallText}"
-                                   VerticalAlignment="Center"
-                                   Margin="8,0,0,0"/>
-                        <Ellipse Width="6" Height="6"
-                                 Fill="{Binding BackendStatusBrush, Mode=OneWay}"
-                                 Margin="16,0,6,0"
-                                 VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding BackendStatusText, Mode=OneWay}"
-                                   Style="{StaticResource SmallText}"
-                                   VerticalAlignment="Center"/>
+                        <Border Style="{DynamicResource BadgeStyle}"
+                                VerticalAlignment="Center"
+                                Margin="6,0,0,0">
+                            <TextBlock Text="v1.0"
+                                       Style="{DynamicResource ChipTextStyle}"
+                                       FontSize="10.5"/>
+                        </Border>
+                        <Border Style="{DynamicResource StatusPillStyle}"
+                                Background="{DynamicResource SurfaceBrush}"
+                                Margin="12,0,0,0"
+                                VerticalAlignment="Center"
+                                ToolTip="{Binding BackendStatusText, Mode=OneWay}">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Ellipse Width="6" Height="6"
+                                         Fill="{Binding BackendStatusBrush, Mode=OneWay}"
+                                         Margin="0,0,6,0"
+                                         VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding BackendStatusText, Mode=OneWay}"
+                                           Style="{DynamicResource ChipTextStyle}"
+                                           FontSize="10.5"/>
+                            </StackPanel>
+                        </Border>
                         <!-- 离线时的一键启动/重连操作 -->
                         <Button Content="启动服务"
                                 WindowChrome.IsHitTestVisibleInChrome="True"
@@ -130,6 +146,7 @@
                                 FontSize="11"
                                 Padding="8,2"
                                 Height="22"
+                                MinHeight="22"
                                 Margin="8,0,0,0"
                                 Visibility="{Binding CanStartBackend, Converter={StaticResource BoolToVis}}"
                                 ToolTip="尝试启动本地 Python 后端服务并重连"/>
@@ -141,6 +158,7 @@
                                 FontSize="11"
                                 Padding="8,2"
                                 Height="22"
+                                MinHeight="22"
                                 Margin="12,0,0,0"
                                 Visibility="{Binding HasBackgroundTask, Converter={StaticResource BoolToVis}}"
                                 ToolTip="点击快速跳转至进行中的后台任务">
@@ -197,7 +215,7 @@
                                         <Setter.Value>
                                             <ControlTemplate TargetType="Button">
                                                 <Border x:Name="Root" Background="{TemplateBinding Background}"
-                                                        CornerRadius="6" Padding="8,0">
+                                                        CornerRadius="{StaticResource CornerMd}" Padding="8,0">
                                                     <ContentPresenter HorizontalAlignment="Center"
                                                                       VerticalAlignment="Center"/>
                                                 </Border>
@@ -274,8 +292,8 @@
                 <Grid.ColumnDefinitions>
                     <!-- Col 0: 主导航极窄轨 (54px) -->
                     <ColumnDefinition Width="54"/>
-                    <!-- Col 1: 工作区二级侧栏抽屉 (Drawer) -->
-                    <ColumnDefinition Width="{Binding DrawerWidth, Mode=OneWay}"/>
+                    <!-- Col 1: 工作区二级侧栏抽屉 (Drawer) — 宽度由 Border 动画驱动 -->
+                    <ColumnDefinition Width="Auto"/>
                     <!-- Col 2: 主工作区画卷 (Canvas) -->
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
@@ -359,13 +377,54 @@
 
                         <!-- 底部控制按钮：抽屉折叠/展开 + 设置 -->
                         <StackPanel Grid.Row="2" HorizontalAlignment="Center" Margin="0,4,0,0">
-                            <!-- 折叠/展开抽屉 -->
+                            <!-- 折叠/展开抽屉：图标随开合旋转 180° -->
                             <Button Command="{Binding ToggleDrawerCommand}"
                                     Style="{DynamicResource IconButtonStyle}"
                                     Width="36" Height="36"
                                     Margin="0,2"
                                     ToolTip="{Binding DrawerToggleTooltip}">
-                                <TextBlock Text="{Binding DrawerToggleIcon}" FontSize="13" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                <Path Data="{StaticResource IconPanelLeft}"
+                                      RenderTransformOrigin="0.5,0.5">
+                                    <Path.RenderTransform>
+                                        <RotateTransform Angle="0"/>
+                                    </Path.RenderTransform>
+                                    <Path.Style>
+                                        <Style TargetType="Path" BasedOn="{StaticResource IconSmStyle}">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsDrawerOpen}" Value="False">
+                                                    <DataTrigger.EnterActions>
+                                                        <BeginStoryboard>
+                                                            <Storyboard>
+                                                                <DoubleAnimation
+                                                                    Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                    To="180"
+                                                                    Duration="0:0:0.2">
+                                                                    <DoubleAnimation.EasingFunction>
+                                                                        <CubicEase EasingMode="EaseOut"/>
+                                                                    </DoubleAnimation.EasingFunction>
+                                                                </DoubleAnimation>
+                                                            </Storyboard>
+                                                        </BeginStoryboard>
+                                                    </DataTrigger.EnterActions>
+                                                    <DataTrigger.ExitActions>
+                                                        <BeginStoryboard>
+                                                            <Storyboard>
+                                                                <DoubleAnimation
+                                                                    Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                    To="0"
+                                                                    Duration="0:0:0.2">
+                                                                    <DoubleAnimation.EasingFunction>
+                                                                        <CubicEase EasingMode="EaseOut"/>
+                                                                    </DoubleAnimation.EasingFunction>
+                                                                </DoubleAnimation>
+                                                            </Storyboard>
+                                                        </BeginStoryboard>
+                                                    </DataTrigger.ExitActions>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Path.Style>
+                                </Path>
                             </Button>
                         </StackPanel>
                     </Grid>
@@ -374,12 +433,55 @@
                 <!-- ═══════════════════════════════════════════════════════════════
                      Col 1: 工作区二级侧栏抽屉 (Drawer) — 对话页显示会话历史
                      ═══════════════════════════════════════════════════════════════ -->
-                <Border Grid.Column="1"
+                <Border x:Name="DrawerHost"
+                        Grid.Column="1"
                         Background="{DynamicResource DrawerBackgroundBrush}"
                         BorderBrush="{DynamicResource BorderLightBrush}"
                         BorderThickness="0,0,1,0"
                         SnapsToDevicePixels="True"
-                        ClipToBounds="True">
+                        ClipToBounds="True"
+                        Width="0">
+                    <Border.Style>
+                        <!-- 对话页且展开时滑出 240px；收起/离开对话页滑回 0 -->
+                        <Style TargetType="Border">
+                            <Style.Triggers>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsChatActive}" Value="True"/>
+                                        <Condition Binding="{Binding IsDrawerOpen}" Value="True"/>
+                                    </MultiDataTrigger.Conditions>
+                                    <MultiDataTrigger.EnterActions>
+                                        <BeginStoryboard>
+                                            <Storyboard>
+                                                <DoubleAnimation
+                                                    Storyboard.TargetProperty="Width"
+                                                    To="240"
+                                                    Duration="0:0:0.2">
+                                                    <DoubleAnimation.EasingFunction>
+                                                        <CubicEase EasingMode="EaseOut"/>
+                                                    </DoubleAnimation.EasingFunction>
+                                                </DoubleAnimation>
+                                            </Storyboard>
+                                        </BeginStoryboard>
+                                    </MultiDataTrigger.EnterActions>
+                                    <MultiDataTrigger.ExitActions>
+                                        <BeginStoryboard>
+                                            <Storyboard>
+                                                <DoubleAnimation
+                                                    Storyboard.TargetProperty="Width"
+                                                    To="0"
+                                                    Duration="0:0:0.18">
+                                                    <DoubleAnimation.EasingFunction>
+                                                        <CubicEase EasingMode="EaseOut"/>
+                                                    </DoubleAnimation.EasingFunction>
+                                                </DoubleAnimation>
+                                            </Storyboard>
+                                        </BeginStoryboard>
+                                    </MultiDataTrigger.ExitActions>
+                                </MultiDataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
                     <Grid Margin="12,12,12,8">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -398,10 +500,12 @@
                                     Command="{Binding ChatViewModel.NewChatCommand}"
                                     Style="{DynamicResource PrimaryButtonStyle}"
                                     Height="34"
+                                    MinHeight="34"
+                                    Padding="12,6"
                                     HorizontalContentAlignment="Center"
                                     ToolTip="开启新会话">
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                    <TextBlock Text="＋" FontSize="14" FontWeight="Bold" Margin="0,0,6,0"/>
+                                    <Path Data="{StaticResource IconPlus}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextInverseBrush}" Margin="0,0,6,0"/>
                                     <TextBlock Text="新建对话" FontSize="13" FontWeight="SemiBold"/>
                                 </StackPanel>
                             </Button>
@@ -411,7 +515,7 @@
                                     Width="32" Height="34"
                                     Margin="6,0,0,0"
                                     ToolTip="收起侧边栏">
-                                <TextBlock Text="◧" FontSize="12" Foreground="{DynamicResource TextTertiaryBrush}"/>
+                                <Path Data="{StaticResource IconPanelLeft}" Style="{StaticResource IconSmStyle}" Width="14" Height="14"/>
                             </Button>
                         </Grid>
 
@@ -425,12 +529,14 @@
                                      Background="{DynamicResource CardBrush}"
                                      BorderBrush="{DynamicResource BorderLightBrush}"
                                      BorderThickness="1"/>
-                            <TextBlock Text="🔍" FontSize="11"
-                                       Foreground="{DynamicResource TextMutedBrush}"
-                                       VerticalAlignment="Center"
-                                       HorizontalAlignment="Left"
-                                       Margin="8,0,0,0"
-                                       IsHitTestVisible="False"/>
+                            <Path Data="{StaticResource IconSearch}"
+                                  Style="{StaticResource IconSmStyle}"
+                                  Width="12" Height="12"
+                                  Stroke="{DynamicResource TextMutedBrush}"
+                                  VerticalAlignment="Center"
+                                  HorizontalAlignment="Left"
+                                  Margin="8,0,0,0"
+                                  IsHitTestVisible="False"/>
                             <TextBlock Text="搜索会话…"
                                        FontSize="11.5"
                                        Foreground="{DynamicResource TextMutedBrush}"
@@ -493,14 +599,13 @@
                                         <!-- 仅在悬停/选中时显示的删除按钮 -->
                                         <Button Grid.Column="1"
                                                 x:Name="DeleteSessionBtn"
-                                                Content="✕"
                                                 Command="{Binding DataContext.ChatViewModel.DeleteSessionCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
                                                 CommandParameter="{Binding}"
                                                 Width="22" Height="22"
-                                                FontSize="10"
                                                 VerticalAlignment="Center"
                                                 Margin="2,0,0,0"
                                                 ToolTip="删除此会话">
+                                            <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource TextSecondaryBrush}"/>
                                             <Button.Style>
                                                 <Style TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
                                                     <Setter Property="Opacity" Value="0"/>
@@ -543,10 +648,12 @@
                 <!-- ═══════════════════════════════════════════════════════════════
                      Col 2: 主工作区画卷 (Content Canvas)
                      ═══════════════════════════════════════════════════════════════ -->
-                <cc:TransitioningContentControl Grid.Column="2"
-                                                Content="{Binding CurrentPage}"
-                                                Margin="0"
-                                                Focusable="False"/>
+                <!-- 画布底色：防深色页面首帧露白 -->
+                <Border Grid.Column="2" Background="{DynamicResource CanvasBackgroundBrush}">
+                    <cc:TransitioningContentControl Content="{Binding CurrentPage}"
+                                                    Margin="0"
+                                                    Focusable="False"/>
+                </Border>
             </Grid>
 
             <!-- =====================================================================
@@ -579,14 +686,25 @@
                                Style="{StaticResource SmallText}"
                                VerticalAlignment="Center"/>
 
-                    <!-- 忙碌指示器 -->
-                    <ProgressBar Grid.Column="2"
-                                 IsIndeterminate="True"
-                                 Width="80" Height="4"
-                                 MinHeight="4"
-                                 Visibility="{Binding CurrentIsBusy, Converter={StaticResource BoolToVis}}"
-                                 VerticalAlignment="Center"
-                                 Margin="8,0,0,0"/>
+                    <!-- 忙碌指示器：小胶囊，避免裸进度条贴边 -->
+                    <Border Grid.Column="2"
+                            Style="{DynamicResource StatusPillStyle}"
+                            Background="{DynamicResource PrimaryLightBrush}"
+                            Visibility="{Binding CurrentIsBusy, Converter={StaticResource BoolToVis}}"
+                            VerticalAlignment="Center"
+                            Margin="8,0,0,0"
+                            Padding="8,2">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Ellipse Width="6" Height="6"
+                                     Fill="{DynamicResource PrimaryBrush}"
+                                     Margin="0,0,6,0"
+                                     VerticalAlignment="Center"/>
+                            <TextBlock Text="处理中"
+                                       Style="{DynamicResource ChipTextStyle}"
+                                       Foreground="{DynamicResource PrimaryBrush}"
+                                       FontSize="10.5"/>
+                        </StackPanel>
+                    </Border>
                 </Grid>
             </Border>
 

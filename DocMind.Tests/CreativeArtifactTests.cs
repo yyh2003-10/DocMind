@@ -475,4 +475,246 @@ public class CreativeArtifactTests
 
         Assert.True(apiCalled);
     }
+
+    [Fact]
+    public void ChatMessage_PptSlideTitles_NeverUsePageNumberPlaceholder()
+    {
+        var msg = new ChatMessage { Role = "assistant" };
+        // 复现坏 artifact：无逐页 # 标题，仅 artifact 标题 + 内容
+        var text = @"
+:::artifact type=""pptx"" title=""结构刚度关键指标——挠度深度解析""
+---
+## 结构刚度关键指标——挠度深度解析
+基于 DocMind 智能知识库生成
+---
+挠度是梁在荷载下竖向位移的度量
+结构设计中必须控制在允许范围内
+---
+> 挠度控制是结构刚度设计的核心结论
+:::
+";
+        msg.AppendToken(text);
+        msg.ForceRefreshRender();
+
+        Assert.True(msg.HasArtifact);
+        Assert.NotNull(msg.Artifact);
+        Assert.True(msg.Artifact.SlideCount >= 3);
+
+        var cover = msg.Artifact.Slides[0];
+        Assert.Equal("结构刚度关键指标——挠度深度解析", cover.Title);
+
+        foreach (var s in msg.Artifact.Slides)
+        {
+            Assert.NotEqual($"第 {s.Index} 页", s.Title);
+            Assert.DoesNotMatch(@"^第\s*\d+\s*页$", s.Title);
+        }
+
+        // 内容页应落到首条短要点或「内容页 N」
+        var s2 = msg.Artifact.Slides[1];
+        Assert.Equal("挠度是梁在荷载下竖向位移的度量", s2.Title);
+    }
+
+    [Fact]
+    public void PptExportGate_BlocksEmptyBodyAndPlaceholderTitles()
+    {
+        var empty = new ArtifactItem
+        {
+            Type = "pptx",
+            Title = "空壳",
+            RawContent = "x",
+            Slides = new List<SlideItem>
+            {
+                new() { Index = 1, Title = "封面", Subtitle = "副标题", Layout = "cover" },
+                new() { Index = 2, Title = "空页", Layout = "general" },
+            }
+        };
+        Assert.True(ChatViewModel.IsBlockedByPptGate(empty, "pptx", out var err1));
+        Assert.Contains("结构不合格", err1);
+        Assert.Contains("空正文页", err1);
+
+        var placeholder = new ArtifactItem
+        {
+            Type = "pptx",
+            Title = "占位标题",
+            RawContent = "x",
+            Slides = new List<SlideItem>
+            {
+                new() { Index = 1, Title = "第 2 页", Layout = "general", BulletPoints = new List<string> { "有内容" } },
+            }
+        };
+        Assert.True(ChatViewModel.IsBlockedByPptGate(placeholder, "pptx", out var err2));
+        Assert.Contains("页码占位", err2);
+
+        var residue = new ArtifactItem
+        {
+            Type = "pptx",
+            Title = "残留",
+            RawContent = "x",
+            Slides = new List<SlideItem>
+            {
+                new()
+                {
+                    Index = 1,
+                    Title = "表格",
+                    Layout = "table",
+                    TableData = new List<List<string>>
+                    {
+                        new() { "$q$", "**四次方正比**", "$E I$", "$δ$" },
+                    }
+                },
+            }
+        };
+        Assert.True(ChatViewModel.IsBlockedByPptGate(residue, "pptx", out var err3));
+        Assert.Contains("Markdown", err3);
+
+        var good = new ArtifactItem
+        {
+            Type = "pptx",
+            Title = "合格",
+            RawContent = "x",
+            Slides = new List<SlideItem>
+            {
+                new() { Index = 1, Title = "合格封面", Subtitle = "副标题", Layout = "cover" },
+                new() { Index = 2, Title = "核心结论", Layout = "general", BulletPoints = new List<string> { "挠度限值 L/250" } },
+            }
+        };
+        Assert.False(ChatViewModel.IsBlockedByPptGate(good, "pptx", out _));
+        // 非 pptx 不走门禁
+        Assert.False(ChatViewModel.IsBlockedByPptGate(good, "docx", out _));
+    }
+
+    [Fact]
+    public void ChatMessage_H2NonCover_NotDropped()
+    {
+        var msg = new ChatMessage { Role = "assistant" };
+        var text = @"
+:::artifact type=""pptx"" title=""二级标题保留""
+---
+# 封面主标题
+## 封面副标题
+---
+## 非封面章节名
+- 要点一
+- 要点二
+---
+# 正式页
+## 会被降级为要点的二级标题
+- 其他要点
+:::
+";
+        msg.AppendToken(text);
+        msg.ForceRefreshRender();
+
+        Assert.NotNull(msg.Artifact);
+        Assert.Equal(3, msg.Artifact.SlideCount);
+        Assert.Equal("非封面章节名", msg.Artifact.Slides[1].Title);
+        Assert.Contains("要点一", msg.Artifact.Slides[1].BulletPoints);
+
+        var s3 = msg.Artifact.Slides[2];
+        Assert.Equal("正式页", s3.Title);
+        Assert.Contains(s3.BulletPoints, b => b.Contains("会被降级为要点"));
+    }
+
+    [Fact]
+    public void ChatMessage_LongParagraph_SplitNotDropped()
+    {
+        var longPara = string.Concat(Enumerable.Repeat("挠度是梁在荷载作用下产生的竖向位移。", 12));
+        var msg = new ChatMessage { Role = "assistant" };
+        var text = $@"
+:::artifact type=""pptx"" title=""长段落""
+---
+# 封面页
+## 副标题
+---
+# 长段落页
+{longPara}
+:::
+";
+        msg.AppendToken(text);
+        msg.ForceRefreshRender();
+
+        Assert.NotNull(msg.Artifact);
+        var s2 = msg.Artifact.Slides[1];
+        Assert.True(s2.BulletPoints.Count >= 2);
+        var joined = string.Join("", s2.BulletPoints);
+        Assert.Contains("挠度", joined);
+    }
+
+    [Fact]
+    public void ChatMessage_TableCells_Cleaned()
+    {
+        var msg = new ChatMessage { Role = "assistant" };
+        var text = @"
+:::artifact type=""pptx"" title=""表格清洗""
+---
+# 封面页
+## 副标题
+---
+# 指标表
+| 符号 | 含义 | 限值 |
+| --- | --- | --- |
+| $q$ | **均布荷载** | — |
+| $\delta$ | 挠度 | $L/250$ |
+:::
+";
+        msg.AppendToken(text);
+        msg.ForceRefreshRender();
+
+        Assert.NotNull(msg.Artifact);
+        var table = msg.Artifact.Slides[1].TableData;
+        Assert.NotNull(table);
+        var flat = table!.SelectMany(r => r).ToList();
+        Assert.DoesNotContain(flat, c => c.Contains("**"));
+        Assert.DoesNotContain(flat, c => c.Contains("$"));
+        Assert.Contains("q", flat);
+        Assert.Contains("δ", flat);
+        Assert.Contains(flat, c => c.Contains("L/250"));
+    }
+
+    [Fact]
+    public void ChatMessage_MultiTable_SplitToExtraSlides()
+    {
+        var msg = new ChatMessage { Role = "assistant" };
+        var text = @"
+:::artifact type=""pptx"" title=""多表切分""
+---
+# 数据对比
+| 维度 | A | B |
+| --- | --- | --- |
+| 造价 | 高 | 低 |
+| 工期 | 长 | 短 |
+
+| 项目 | 旧方案 | 新方案 |
+| --- | --- | --- |
+| 刚度 | 低 | 高 |
+| 维护 | 复杂 | 简单 |
+:::
+";
+        msg.AppendToken(text);
+        msg.ForceRefreshRender();
+
+        Assert.NotNull(msg.Artifact);
+        var tableSlides = msg.Artifact.Slides.Where(s => s.TableData is { Count: > 0 }).ToList();
+        Assert.True(tableSlides.Count >= 2);
+        var first = tableSlides[0].TableData!;
+        var second = tableSlides[1].TableData!;
+        Assert.All(first, r => Assert.Equal(first[0].Count, r.Count));
+        Assert.All(second, r => Assert.Equal(second[0].Count, r.Count));
+        Assert.Contains("续表", tableSlides[1].Title);
+        var firstFlat = string.Join(" ", first.SelectMany(r => r));
+        Assert.DoesNotContain("旧方案", firstFlat);
+    }
+
+    [Fact]
+    public void P1Helpers_MatchPythonBehavior()
+    {
+        Assert.Equal("四次方正比", ChatMessage.CleanMarkdownInline("**四次方正比**"));
+        Assert.Equal("q", ChatMessage.CleanMarkdownInline("$q$"));
+        Assert.Equal("δ", ChatMessage.CleanMarkdownInline("$\\delta$"));
+
+        var longPara = string.Concat(Enumerable.Repeat("挠度是梁在荷载作用下产生的竖向位移。", 12));
+        var pieces = ChatMessage.SplitLongParagraph(longPara);
+        Assert.True(pieces.Count >= 2);
+        Assert.All(pieces, p => Assert.True(p.Length <= 140));
+    }
 }

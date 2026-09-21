@@ -10,7 +10,7 @@ namespace DocMind.Tests;
 public class QualityViewModelTests
 {
     private static QualityViewModel CreateVm(FakeDoc2kbApiService fake)
-        => new(fake);
+        => new(fake, new NotificationService());
 
     [Fact]
     public async Task EnsureLoadedAsync_LoadsOnceAndIsIdempotent()

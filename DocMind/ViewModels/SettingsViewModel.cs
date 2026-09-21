@@ -91,12 +91,136 @@ public partial class SettingsViewModel : ViewModelBase
     private string _llmModel = "";
     private double _llmTemperature = 0.7;
     private int _llmMaxTokens = 8192;
+    private double _llmTimeoutSec = 300;
+    private double _webSearchTimeoutSec = 36;
+    private string? _webSearchSearxngUrl;
     private int _ragTopK = 5;
     private string? _ragSystemPrompt;
     private int _ragMaxHistoryTokens = 4096;
     private string _ragMode = "hybrid";
+    private string _usageProfile = "docs";
+    private string _pendingUsageProfile = "docs";
     private bool _rerankEnabled = true;
-    private string _rerankModel = "Xenova/bge-reranker-v2-m3";
+
+    /// <summary>已应用的使用档案（与后端一致）。</summary>
+    public string UsageProfile
+    {
+        get => _usageProfile;
+        private set
+        {
+            if (SetProperty(ref _usageProfile, value))
+            {
+                OnPropertyChanged(nameof(UsageProfileDescription));
+                OnPropertyChanged(nameof(HasPendingProfileChange));
+            }
+        }
+    }
+
+    /// <summary>下拉框当前选中（可能尚未应用）。</summary>
+    public string PendingUsageProfile
+    {
+        get => _pendingUsageProfile;
+        set
+        {
+            if (SetProperty(ref _pendingUsageProfile, value))
+            {
+                OnPropertyChanged(nameof(PendingUsageProfileDescription));
+                OnPropertyChanged(nameof(HasPendingProfileChange));
+            }
+        }
+    }
+
+    public bool HasPendingProfileChange =>
+        !string.Equals(PendingUsageProfile, UsageProfile, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>当前档案的一句话说明。</summary>
+    public string UsageProfileDescription => ProfileLabel(UsageProfile);
+
+    public string PendingUsageProfileDescription => ProfileLabel(PendingUsageProfile);
+
+    private static string ProfileLabel(string? profile) => profile switch
+    {
+        "notes" => "个人沉淀：短答、诚实引用，不硬凑架构洞察与行动列表",
+        "agent" => "Agent 记忆：稳定事实 + 编号，少闲聊，适合 MCP 工具调用",
+        "library" => "库管理：批量入库与整理优先，对话偏清单步骤",
+        _ => "项目文档：参数/流程可核对，强调出处",
+    };
+
+    /// <summary>可选档案列表（供下拉）。</summary>
+    public IReadOnlyList<KeyValuePair<string, string>> UsageProfileOptions { get; } = new List<KeyValuePair<string, string>>
+    {
+        new("docs", "项目文档"),
+        new("notes", "个人沉淀"),
+        new("agent", "Agent 记忆"),
+        new("library", "库管理"),
+    };
+
+    private bool _isSwitchingProfile;
+
+    [RelayCommand]
+    private async Task SwitchUsageProfileAsync(string? profile)
+    {
+        if (string.IsNullOrWhiteSpace(profile) || _isSwitchingProfile)
+        {
+            return;
+        }
+
+        var target = profile.Trim().ToLowerInvariant();
+        if (string.Equals(target, UsageProfile, StringComparison.OrdinalIgnoreCase))
+        {
+            _notifications.Info("已是当前档案，无需切换", "使用档案");
+            return;
+        }
+
+        // 二次确认：切换会覆盖手调过的 rag_top_k / rag_mode 等参数
+        var label = UsageProfileOptions.FirstOrDefault(p =>
+            string.Equals(p.Key, target, StringComparison.OrdinalIgnoreCase)).Value;
+        var confirm = System.Windows.MessageBox.Show(
+            $"切换到「{label ?? target}」会覆盖当前的检索默认（Top-K、问答模式等）。\n\n" +
+            $"当前：{UsageProfileDescription}\n" +
+            "确定继续吗？",
+            "确认切换使用档案",
+            System.Windows.MessageBoxButton.YesNo,
+            System.Windows.MessageBoxImage.Question);
+        if (confirm != System.Windows.MessageBoxResult.Yes)
+        {
+            // 用户取消：下拉回弹到已应用档案
+            PendingUsageProfile = UsageProfile;
+            return;
+        }
+
+        _isSwitchingProfile = true;
+        try
+        {
+            var result = await _apiService.SetUsageProfileAsync(target);
+            UsageProfile = result.Profile;
+            PendingUsageProfile = result.Profile;
+            if (result.Applied is { } applied)
+            {
+                RagTopK = applied.RagTopK;
+                RagMode = applied.RagMode;
+            }
+            _appSettings.UsageProfile = UsageProfile;
+            if (result.Applied is { } a)
+            {
+                _appSettings.RagTopK = a.RagTopK;
+                _appSettings.RagMode = a.RagMode;
+            }
+            IsDirty = false;
+            _notifications.Success(
+                $"已切换到「{result.Preset?.Label ?? target}」：{result.Preset?.Description ?? UsageProfileDescription}");
+        }
+        catch (Exception ex)
+        {
+            _notifications.Error($"切换使用档案失败：{ex.Message}");
+            PendingUsageProfile = UsageProfile;
+        }
+        finally
+        {
+            _isSwitchingProfile = false;
+        }
+    }
+    private string _rerankModel = "BAAI/bge-reranker-base";
     private int _rerankRecall = 20;
     private bool _showRestartBanner;
     private string _restartBannerText = "";
@@ -215,7 +339,19 @@ public partial class SettingsViewModel : ViewModelBase
         _llmModel = _appSettings.LlmModel;
         _llmTemperature = _appSettings.LlmTemperature;
         _llmMaxTokens = _appSettings.LlmMaxTokens;
+        _llmTimeoutSec = _appSettings.LlmTimeoutSec > 0 ? _appSettings.LlmTimeoutSec : 300;
+        _webSearchTimeoutSec = _appSettings.WebSearchTimeoutSec > 0 ? _appSettings.WebSearchTimeoutSec : 36;
+        _webSearchSearxngUrl = _appSettings.WebSearchSearxngUrl;
         _ragTopK = _appSettings.RagTopK;
+        _usageProfile = string.IsNullOrWhiteSpace(_appSettings.UsageProfile)
+            ? "docs"
+            : _appSettings.UsageProfile.Trim().ToLowerInvariant();
+        _pendingUsageProfile = _usageProfile;
+        OnPropertyChanged(nameof(UsageProfile));
+        OnPropertyChanged(nameof(PendingUsageProfile));
+        OnPropertyChanged(nameof(UsageProfileDescription));
+        OnPropertyChanged(nameof(PendingUsageProfileDescription));
+        OnPropertyChanged(nameof(HasPendingProfileChange));
         _ragSystemPrompt = _appSettings.RagSystemPrompt;
         _ragMaxHistoryTokens = _appSettings.RagMaxHistoryTokens;
         _ragMode = _appSettings.RagMode;
@@ -274,6 +410,9 @@ public partial class SettingsViewModel : ViewModelBase
 
         // 重建合并服务商下拉（内置预设 + 自定义服务商）；重建期间只高亮不应用
         RebuildProviderOptions();
+
+        // 已配置的模型补进下拉候选并选中：否则打开设置页时下拉首屏选中态空白
+        SyncSelectedModelCandidate();
 
         // 密文解密失败（换 Windows 用户/文件损坏）：显式提醒重输，而不是静默当作未配置
         // （静默变空曾让用户改其他参数一保存就把已配置的 Key 永久抹掉）
@@ -690,9 +829,34 @@ public partial class SettingsViewModel : ViewModelBase
         {
             if (SetDirty(ref _llmModel, value))
             {
+                SyncSelectedModelCandidate();
                 ScheduleLlmAutoApply();
             }
         }
+    }
+
+    /// <summary>把当前模型名（LlmModel）同步为模型下拉的选中项：命中候选则直接选中，
+    /// 未命中则先补一个候选再选中。
+    /// 背景：下拉的 Text 绑定 LlmModel、SelectedItem 绑定 SelectedModelCandidate，
+    /// 两者原本互不同步，导致代码赋值 LlmModel 后下拉没有选中态高亮，
+    /// 表现为「看不出当前用的是哪个模型」。
+    /// 构造期与 setter 共用；只写 SelectedModelCandidate（SetProperty，不标脏），
+    /// 因此构造函数调用不会影响「加载后 IsDirty=false」的既有约定。</summary>
+    private void SyncSelectedModelCandidate()
+    {
+        var name = _llmModel?.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            SelectedModelCandidate = null;
+            return;
+        }
+        var hit = LlmModels.FirstOrDefault(m => string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (hit is null)
+        {
+            hit = new LlmModelItem(name);
+            LlmModels.Insert(0, hit);
+        }
+        SelectedModelCandidate = hit;
     }
 
     /// <summary>温度参数（0-2，默认 0.7）。</summary>
@@ -707,6 +871,27 @@ public partial class SettingsViewModel : ViewModelBase
     {
         get => _llmMaxTokens;
         set => SetDirty(ref _llmMaxTokens, value);
+    }
+
+    /// <summary>LLM 调用/流式空闲超时（秒）。慢网/大模型建议 300+。</summary>
+    public double LlmTimeoutSec
+    {
+        get => _llmTimeoutSec;
+        set => SetDirty(ref _llmTimeoutSec, value);
+    }
+
+    /// <summary>联网搜索总预算（秒）。慢网/反爬环境建议 24~40。</summary>
+    public double WebSearchTimeoutSec
+    {
+        get => _webSearchTimeoutSec;
+        set => SetDirty(ref _webSearchTimeoutSec, value);
+    }
+
+    /// <summary>自建/自选 SearXNG 实例地址；空 = 内置公有实例。</summary>
+    public string? WebSearchSearxngUrl
+    {
+        get => _webSearchSearxngUrl;
+        set => SetDirty(ref _webSearchSearxngUrl, value);
     }
 
     /// <summary>检索引用 chunk 数（默认 5）。</summary>
@@ -1417,8 +1602,21 @@ public partial class SettingsViewModel : ViewModelBase
             _appSettings.GithubToken = effectiveGithubToken;
             _appSettings.LlmBaseUrl = LlmBaseUrl;
             _appSettings.LlmModel = LlmModel;
+            // 镜像当前模型候选到持久化字段：对话页默认分组据此播种，
+            // 使设置页点过「获取模型列表」后对话页能直接点选全部模型（重启后仍有效），
+            // 无需用户再到对话页点一次刷新。语义为始终镜像设置页当前候选。
+            _appSettings.LlmAvailableModels = LlmModels
+                .Where(m => !string.IsNullOrWhiteSpace(m.Name))
+                .Select(m => m.Name.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
             _appSettings.LlmTemperature = LlmTemperature;
             _appSettings.LlmMaxTokens = LlmMaxTokens;
+            _appSettings.LlmTimeoutSec = LlmTimeoutSec > 0 ? LlmTimeoutSec : 300;
+            _appSettings.WebSearchTimeoutSec = WebSearchTimeoutSec > 0 ? WebSearchTimeoutSec : 36;
+            _appSettings.WebSearchSearxngUrl = string.IsNullOrWhiteSpace(WebSearchSearxngUrl)
+                ? null
+                : WebSearchSearxngUrl.Trim();
             _appSettings.RagTopK = RagTopK;
             _appSettings.RagSystemPrompt = string.IsNullOrWhiteSpace(RagSystemPrompt) ? null : RagSystemPrompt;
             _appSettings.RagMaxHistoryTokens = RagMaxHistoryTokens;
@@ -1490,6 +1688,8 @@ public partial class SettingsViewModel : ViewModelBase
                         : LlmModel.Trim(),
                     LlmTemperature = LlmTemperature,
                     LlmMaxTokens = LlmMaxTokens,
+                    LlmTimeout = (float)(LlmTimeoutSec > 0 ? LlmTimeoutSec : 300),
+                    WebSearchTimeout = (float)(WebSearchTimeoutSec > 0 ? WebSearchTimeoutSec : 36),
                     RagTopK = RagTopK,
                     RagMode = RagMode,
                     RerankEnabled = RerankEnabled,
@@ -1561,6 +1761,16 @@ public partial class SettingsViewModel : ViewModelBase
             }
             DebugLog.Info($"设置保存成功: {settingsPath}", "Settings");
 
+            // 顶部「当前生效配置」状态卡展示后端真实值：推送成功后重新拉取，
+            // 否则卡片停留在打开设置页那一刻的旧值（表现为「改了默认模型却不刷新」）。
+            // LoadBackendConfigAsync 内部 try/catch 静默，后端不可达不影响保存结果。
+            // 刻意置于 StatusMessage 赋值之后：后端 ConfigError 可穿透覆盖「已保存」提示
+            // （其分支无条件赋值），而 Notice 因 IsNullOrWhiteSpace 判断不会覆盖保存结果。
+            if (!pushFailed)
+            {
+                await LoadBackendConfigAsync();
+            }
+
             // 通知对话页同步默认提供商/模型（否则改默认模型保存后，对话页仍用旧默认/上次选择）
             RaiseProviderConfigChanged();
 
@@ -1618,6 +1828,9 @@ public partial class SettingsViewModel : ViewModelBase
         LlmModel = _appSettings.LlmModel;
         LlmTemperature = _appSettings.LlmTemperature;
         LlmMaxTokens = _appSettings.LlmMaxTokens;
+        LlmTimeoutSec = _appSettings.LlmTimeoutSec > 0 ? _appSettings.LlmTimeoutSec : 300;
+        WebSearchTimeoutSec = _appSettings.WebSearchTimeoutSec > 0 ? _appSettings.WebSearchTimeoutSec : 36;
+        WebSearchSearxngUrl = _appSettings.WebSearchSearxngUrl;
         RagTopK = _appSettings.RagTopK;
         RagSystemPrompt = _appSettings.RagSystemPrompt;
         RagMaxHistoryTokens = _appSettings.RagMaxHistoryTokens;
@@ -1680,6 +1893,9 @@ public partial class SettingsViewModel : ViewModelBase
         LlmModel = defaults.LlmModel;
         LlmTemperature = defaults.LlmTemperature;
         LlmMaxTokens = defaults.LlmMaxTokens;
+        LlmTimeoutSec = defaults.LlmTimeoutSec;
+        WebSearchTimeoutSec = defaults.WebSearchTimeoutSec;
+        WebSearchSearxngUrl = defaults.WebSearchSearxngUrl;
         RagTopK = defaults.RagTopK;
         RagSystemPrompt = defaults.RagSystemPrompt;
         RagMaxHistoryTokens = defaults.RagMaxHistoryTokens;
@@ -1899,6 +2115,9 @@ public partial class SettingsViewModel : ViewModelBase
                 OnPropertyChanged(nameof(SelectedProfileSummary));
                 OnPropertyChanged(nameof(IsSelectedProviderDefault));
                 OnPropertyChanged(nameof(IsSelectedProviderEnabled));
+                // CanApplyProfile 依赖 HasSelectedProfile：选中/清空档案时一并通知，
+                // 否则「应用该服务商」按钮的可用态不会随选中变化刷新
+                OnPropertyChanged(nameof(CanApplyProfile));
             }
         }
     }
@@ -1973,8 +2192,21 @@ public partial class SettingsViewModel : ViewModelBase
     public bool IsApplyingProfile
     {
         get => _isApplyingProfile;
-        set => SetProperty(ref _isApplyingProfile, value);
+        set
+        {
+            if (SetProperty(ref _isApplyingProfile, value))
+            {
+                OnPropertyChanged(nameof(CanApplyProfile));
+            }
+        }
     }
+
+    /// <summary>「应用该服务商」按钮是否可用：需已选中档案且当前不在应用中。
+    /// 该按钮语义是把左侧选中档案「回填」到右侧表单，并非把右侧配置推送到后端——
+    /// 旧版 ToolTip 把方向写反了（写成"应用右侧当前配置到后端"），导致用户点了
+    /// 以为已保存、实际静默 return 什么都没发生。未选档案时禁用，
+    /// 从源头避免「点了没反应」。</summary>
+    public bool CanApplyProfile => HasSelectedProfile && !IsApplyingProfile;
 
     /// <summary>档案一键体检结果列表（每个档案一条：可用性/耗时/错误）。</summary>
     public System.Collections.ObjectModel.ObservableCollection<ProfileCheckResult> ProfileCheckResults { get; } = new();
@@ -2075,7 +2307,17 @@ public partial class SettingsViewModel : ViewModelBase
     [RelayCommand]
     private async Task ApplyProfileAsync()
     {
-        if (SelectedProfile is not { } profile || IsApplyingProfile)
+        if (SelectedProfile is not { } profile)
+        {
+            // 旧版此处静默 return：用户点了按钮毫无反馈，误以为配置已生效
+            StatusMessage = "请先在左侧服务商列表中选中一个档案，再点「应用该服务商」";
+            _notifications.Warning(
+                "请先在左侧选中一个服务商档案。「应用该服务商」的用途是把档案回填到右侧表单，"
+                + "不是把右侧配置保存到后端——推送到后端请用顶部「保存」，存为可复用档案请用「+ 添加为服务商」。",
+                "应用档案");
+            return;
+        }
+        if (IsApplyingProfile)
         {
             return;
         }

@@ -21,6 +21,7 @@ namespace DocMind
         public IServiceProvider ServiceProvider => _serviceProvider;
         private TrayService? _trayService;
         private static Mutex? _mutex;
+        private bool _isPrimaryInstance;
         // 单实例激活：命名事件。第二个实例 Set() 后，第一实例的回调把窗口从托盘/隐藏状态恢复到前台。
         // 比 MainWindowHandle 路径可靠——窗口 Hide() 到托盘后句柄为 0，旧逻辑唤不起来。
         private static EventWaitHandle? _showWindowEvent;
@@ -93,6 +94,29 @@ namespace DocMind
             }
         }
 
+        // 已知不可用的重排模型（fastembed TextCrossEncoder 支持列表外）启动即纠正，
+        // 避免 DOC2MIND_RERANK_MODEL 环境变量注入后每轮对话「检索降级」。
+        // 典型污染源：旧版默认值 Xenova/bge-reranker-v2-m3。
+        var rerankModel = settings.RerankModel?.Trim() ?? "";
+        if (rerankModel.Length == 0
+            || rerankModel.Contains("Xenova", StringComparison.OrdinalIgnoreCase)
+            || rerankModel.EndsWith("/bge-reranker-v2-m3", StringComparison.OrdinalIgnoreCase))
+        {
+            var corrected = "BAAI/bge-reranker-base";
+            DebugLog.Warn(
+                $"重排模型「{settings.RerankModel}」不在 fastembed 支持列表，已自动改为 {corrected}",
+                "App");
+            settings.RerankModel = corrected;
+            try
+            {
+                settings.Save();
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"纠正后的重排模型写回 appsettings 失败：{ex.Message}", "App");
+            }
+        }
+
         return settings;
     }
 
@@ -162,8 +186,44 @@ namespace DocMind
             services.AddSingleton<MainWindow>();
         }
 
+        /// <summary>
+        /// 主题切换等场景的"先启新进程、后退旧进程"重启：新实例先等旧进程真正退出，
+        /// 再去抢单实例 Mutex。否则新实例会撞上旧实例 OnExit 里尚未释放的 Mutex
+        /// （可能长达 10s 的后端停止），被判为已有实例后自行 Shutdown，自动重启失败。
+        /// </summary>
+        private static void WaitForRestartSource(string[] args)
+        {
+            for (var i = 0; i < args.Length - 1; i++)
+            {
+                if (!string.Equals(args[i], "--restart-wait", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!int.TryParse(args[i + 1], out var pid) || pid <= 0)
+                    return;
+
+                try
+                {
+                    using var old = Process.GetProcessById(pid);
+                    // 旧进程 OnExit 同步等后端停止的硬上限约 10s，这里多留余量
+                    old.WaitForExit(15_000);
+                }
+                catch (ArgumentException)
+                {
+                    // 旧进程已退出
+                }
+                catch
+                {
+                    // 取不到进程句柄时继续走 Mutex 路径
+                }
+                return;
+            }
+        }
+
         protected override void OnStartup(StartupEventArgs e)
         {
+            // 主题切换自动重启：先等旧进程退出并释放 Mutex，再进入单实例检测
+            WaitForRestartSource(e.Args);
+
             // ===== 单实例互斥：防止多开争抢后端端口 =====
             var sid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value ?? "anon";
             _instanceStamp = sid;
@@ -196,6 +256,8 @@ namespace DocMind
                 Current.Shutdown();
                 return;
             }
+
+            _isPrimaryInstance = true;
 
             // 第一实例：创建命名事件并注册回调，供后续实例唤起窗口
             _showWindowEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "DocMind_ShowWindow_" + sid);
@@ -241,7 +303,8 @@ namespace DocMind
             {
                 if (mainWindow.WindowState == WindowState.Minimized)
                 {
-                    _trayService.HideToTray();
+                    // 退出流程会把 _trayService 置 null，后台状态回调仍可能进来
+                    _trayService?.HideToTray();
                 }
             };
             // 隐藏到托盘时弹一次系统托盘气泡，引导用户从托盘恢复
@@ -252,7 +315,7 @@ namespace DocMind
             {
                 if (trayHintShown) return;
                 trayHintShown = true;
-                _trayService.ShowNotification(
+                _trayService?.ShowNotification(
                     "最小化到托盘",
                     "DocMind 已最小化到系统托盘，单击托盘图标可恢复窗口；右键菜单可显示或退出");
             };
@@ -266,7 +329,8 @@ namespace DocMind
             var backend = _serviceProvider.GetRequiredService<BackendProcessService>();
             backend.StateChanged += (_, state) =>
             {
-                _trayService.UpdateStatus(state);
+                // OnExit 先 Dispose 并置空托盘再停后端；StateChanged 会从后台线程打进来
+                _trayService?.UpdateStatus(state);
                 // 顶栏/底栏状态灯与真实后端状态联动（安全调度到 UI 线程，防止后台线程触发时跨线程访问 DependencyObject 抛出异常）
                 if (System.Windows.Application.Current?.Dispatcher is { } dispatcher)
                 {
@@ -302,7 +366,7 @@ namespace DocMind
                     if (state == BackendState.Offline && backend.State == BackendState.Offline)
                     {
                         backendFailedShown = true;
-                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
                         {
                             var detail = !string.IsNullOrWhiteSpace(backend.LastErrorMessage)
                                 ? $"【底层错误诊断】\n{backend.LastErrorMessage}\n\n"
@@ -488,6 +552,26 @@ namespace DocMind
         protected override void OnExit(ExitEventArgs e)
         {
             DebugLog.Info($"DocMind 退出 @ {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}", "App");
+
+            // 非主实例（单实例检测失败后的快速退出）：不碰后端/托盘，避免误停主实例资源
+            if (!_isPrimaryInstance)
+            {
+                try { _mutex?.Dispose(); } catch { /* ignore on exit */ }
+                _mutex = null;
+                base.OnExit(e);
+                return;
+            }
+
+            // 先摘托盘：退出期间（尤其等后端停止的数秒内）若用户点托盘图标，
+            // H.NotifyIcon.DoSingleClickAction 内部 Dispatcher.Invoke 会因
+            // Dispatcher 已进入关机而抛 TaskCanceledException
+            try
+            {
+                _trayService?.Dispose();
+                _trayService = null;
+            }
+            catch { /* ignore on exit */ }
+
             try
             {
                 var settings = _serviceProvider.GetRequiredService<AppSettings>();
@@ -525,13 +609,14 @@ namespace DocMind
                 _showWindowEvent = null;
             }
             catch { /* ignore on exit */ }
-            _trayService?.Dispose();
             try { _mutex?.ReleaseMutex(); } catch { /* ignore on exit */ }
+            try { _mutex?.Dispose(); } catch { /* ignore on exit */ }
+            _mutex = null;
             base.OnExit(e);
         }
     }
 
-    /// <summary>Win32 P/Invoke 用于激活已有实例窗口。</summary>
+    /// <summary>Win32 P/Invoke 用于激活已有实例窗口与窗口最大化边界计算。</summary>
     internal static class NativeMethods
     {
         [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -541,5 +626,52 @@ namespace DocMind
         internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
         internal const int SW_RESTORE = 9;
+
+        internal const int WM_GETMINMAXINFO = 0x0024;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        internal static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+        internal const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        internal static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        internal struct POINT
+        {
+            public int x;
+            public int y;
+        }
+
+        /// <summary>ptMaxPosition 是相对显示器左上角的偏移；ptMaxSize 是最大化后的宽高。</summary>
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        internal struct MINMAXINFO
+        {
+            public POINT ptReserved;
+            public POINT ptMaxSize;
+            public POINT ptMaxPosition;
+            public POINT ptMinTrackSize;
+            public POINT ptMaxTrackSize;
+        }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        internal struct RECT
+        {
+            public int left;
+            public int top;
+            public int right;
+            public int bottom;
+        }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        internal struct MONITORINFO
+        {
+            public int cbSize;
+            public RECT rcMonitor;
+            public RECT rcWork;
+            public int dwFlags;
+        }
     }
 }

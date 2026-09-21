@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-# 默认 LLM 调用超时（秒），防 API 挂起阻塞请求线程
-DEFAULT_TIMEOUT = 120
+if TYPE_CHECKING:
+    from doc2mind.core.llm.metadata import ModelMetadata
+
+logger = logging.getLogger(__name__)
+
+# 默认 LLM 调用超时（秒），防 API 挂起阻塞请求线程。
+# 120s 对 NIM/大 MoE + 慢链路偏紧（TTFT/帧间隔易顶满），默认提到 180s；
+# 仍不够时用 DOC2MIND_LLM_TIMEOUT / config.llm_timeout 再调大。
+DEFAULT_TIMEOUT = 180
 
 # 主流 LLM 网关对输出 token 上限的常见硬限制（sensenova 等严格校验网关
 # 实测 [1, 65536]）。超出时选择不传该参数，由服务端取模型默认上限。
@@ -31,6 +39,40 @@ def sanitize_max_tokens(value: int | None) -> int | None:
     if value < 1:
         return 1
     if value > MAX_TOKENS_CEILING:
+        return None
+    return value
+
+
+def sanitize_max_tokens_v2(
+    value: int | None,
+    metadata: ModelMetadata | None = None,
+) -> int | None:
+    """max_tokens 归一 v2（T5 方案 A：天花板随 metadata 声明动态放行）。
+
+    规则：
+      - value < 1 → 1
+      - value > MAX_TOKENS_CEILING(65536)：
+          - 若 metadata 明确声明 max_output_tokens 且 value ≤ 声明值 → 放行（采用 value），留日志
+          - 否则 → None（不传，由服务端取默认）
+      - 其余 → value
+
+    metadata 为 None 时行为退化为原 `sanitize_max_tokens`。
+    """
+    if value is None:
+        return None
+    if value < 1:
+        return 1
+    if value > MAX_TOKENS_CEILING:
+        declared = getattr(metadata, "max_output_tokens", None)
+        if isinstance(declared, int) and declared > 0 and value <= declared:
+            logger.info(
+                "sanitize_max_tokens_v2: max_tokens=%d 超天花板 %d，"
+                "但模型声明输出上限 %d，动态放行",
+                value,
+                MAX_TOKENS_CEILING,
+                declared,
+            )
+            return value
         return None
     return value
 
@@ -180,6 +222,37 @@ def is_transient_network_error(exc: BaseException | None) -> bool:
     return False
 
 
+def is_provider_overloaded_error(exc: BaseException | None) -> bool:
+    """判断是否为上游过载/限流类错误（NVIDIA NIM / OpenAI 等）。
+
+    典型文案：`Service temporarily overloaded`、`503 Service Unavailable`、
+    `The server had an error`。这类错误与网络抖动不同——需要稍长退避后重试，
+    不是裁剪上下文能解决的。
+    """
+    if exc is None:
+        return False
+    for e in iter_exception_chain(exc):
+        status = getattr(e, "status_code", None)
+        if status in (429, 502, 503, 529):
+            return True
+        msg = str(e).lower()
+        if any(
+            k in msg
+            for k in (
+                "temporarily overloaded",
+                "service overloaded",
+                "overloaded",
+                "capacity",
+                "too many requests",
+                "rate limit",
+                "server had an error",
+                "503 service unavailable",
+            )
+        ):
+            return True
+    return False
+
+
 class LLMError(Exception):
     """LLM 调用异常。"""
 
@@ -241,6 +314,20 @@ class LLMClient(ABC):
         OpenAI /models、Anthropic /v1/models、Gemini /v1beta/models）。
         """
         raise LLMError(f"提供商 {self.provider} 暂不支持列出模型，请手动输入模型名")
+
+    @property
+    def last_truncated(self) -> bool:
+        """最近一次调用是否因输出上限被截断（finish_reason=length 等价信号）。
+
+        provider 在 _do_chat / 流式续写末尾设置 _last_truncated；
+        rag 调用层据此发 SSE 截断提示帧（T6.1）与非流式截断日志（T6.2）。
+        未设置的 provider 默认 False（不误报）。
+        """
+        return bool(getattr(self, "_last_truncated", False))
+
+    @last_truncated.setter
+    def last_truncated(self, value: bool) -> None:
+        self._last_truncated = bool(value)
 
     def chat(
         self,

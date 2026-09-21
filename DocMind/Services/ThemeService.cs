@@ -116,6 +116,11 @@ public sealed class ThemeService
     }
 
     /// <summary>重启当前应用。</summary>
+    /// <remarks>
+    /// 必须把旧进程 PID 传给新实例（--restart-wait）：若先 Process.Start 再 Shutdown，
+    /// 新进程几乎必然撞上尚未释放的单实例 Mutex，被判定"已有实例"后自行退出，
+    /// 表现为切主题后程序消失、自动重启失败。新实例在抢 Mutex 前会等待本进程退出。
+    /// </remarks>
     private static void RestartApp()
     {
         var exePath = Environment.ProcessPath;
@@ -125,8 +130,19 @@ public sealed class ThemeService
         var startInfo = new ProcessStartInfo(exePath)
         {
             UseShellExecute = true,
+            Arguments = $"--restart-wait {Environment.ProcessId}",
         };
-        Process.Start(startInfo);
+
+        try
+        {
+            Process.Start(startInfo);
+        }
+        catch
+        {
+            // 拉起失败则不要退出，避免用户丢掉当前会话
+            return;
+        }
+
         Application.Current.Shutdown();
     }
 

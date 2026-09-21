@@ -40,6 +40,7 @@ namespace DocMind.ViewModels;
             Results = new ObservableCollection<IngestResult>();
             Skipped = new ObservableCollection<string>();
             Failed = new ObservableCollection<string>();
+            HealthWarnings = new ObservableCollection<string>();
             AvailableCollections = new ObservableCollection<string> { "default", NewCollectionSentinel };
             // CollectionChanged 订阅在三个集合属性的 setter 里完成（整体替换后对新实例生效）
 
@@ -453,6 +454,56 @@ namespace DocMind.ViewModels;
         set => SetProperty(ref _statusMessage, value);
     }
 
+    // ── 导入健康摘要（完成卡片） ──
+
+    private bool _hasHealthSummary;
+    /// <summary>是否显示导入健康摘要卡片。</summary>
+    public bool HasHealthSummary
+    {
+        get => _hasHealthSummary;
+        private set => SetProperty(ref _hasHealthSummary, value);
+    }
+
+    private string _healthSummaryText = string.Empty;
+    /// <summary>健康摘要主文案（例如「全部分块在嵌入窗口内」或「3 个分块可能被截断」）。</summary>
+    public string HealthSummaryText
+    {
+        get => _healthSummaryText;
+        private set => SetProperty(ref _healthSummaryText, value);
+    }
+
+    private System.Collections.ObjectModel.ObservableCollection<string> _healthWarnings = new();
+    /// <summary>健康警告列表（人话）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<string> HealthWarnings
+    {
+        get => _healthWarnings;
+        private set
+        {
+            if (SetProperty(ref _healthWarnings, value))
+            {
+                OnPropertyChanged(nameof(HasHealthWarnings));
+            }
+        }
+    }
+
+    public bool HasHealthWarnings => HealthWarnings is { Count: > 0 };
+
+    private string? _suggestQuery;
+    /// <summary>建议试问短句；空则隐藏按钮。</summary>
+    public string? SuggestQuery
+    {
+        get => _suggestQuery;
+        private set
+        {
+            if (SetProperty(ref _suggestQuery, value))
+            {
+                OnPropertyChanged(nameof(HasSuggestQuery));
+            }
+        }
+    }
+
+    public bool HasSuggestQuery => !string.IsNullOrWhiteSpace(SuggestQuery);
+
     /// <summary>进度百分比（0-100），由异步 job 轮询推送。</summary>
     public int ProgressPercent
     {
@@ -596,6 +647,10 @@ namespace DocMind.ViewModels;
         Skipped.Clear();
         Failed.Clear();
         ProgressPercent = 0;
+        HasHealthSummary = false;
+        HealthWarnings = new ObservableCollection<string>();
+        SuggestQuery = null;
+        HealthSummaryText = string.Empty;
 
         var opId = $"ingest_{DateTime.Now:yyyyMMdd_HHmmss}_{Path.GetFileNameWithoutExtension(SelectedPath)}";
         DebugLog.Info($"开始导入: Path='{SelectedPath.Trim()}' Collection='{(string.IsNullOrWhiteSpace(Collection) ? "default" : Collection.Trim())}' Recursive={Recursive} opId={opId}", "Import");
@@ -761,6 +816,9 @@ namespace DocMind.ViewModels;
                 : "完成：无新增文档（全部跳过或失败）";
             CurrentProcessingItem = $"导入完成（共处理 {final.Processed} 个文档）";
 
+            // 导入健康摘要：从 Results 聚合超窗块数 / 警告 / 试问建议
+            ApplyHealthSummary(final.Results);
+
             DebugLog.Info(
                 $"导入完成: ingested={ingested} skipped={skipped} failed={failed} " +
                 $"totalDocuments={final.Processed} 耗时{sw.ElapsedMilliseconds}ms",
@@ -835,6 +893,80 @@ namespace DocMind.ViewModels;
             ImportCompleted?.Invoke();
             // 导入后端可能自动新建了集合（如导入到新分组），刷新下拉列表
             _ = LoadCollectionsAsync();
+        }
+    }
+
+    /// <summary>从 job 结果聚合导入健康摘要（超窗块 / 警告 / 试问）。</summary>
+    private void ApplyHealthSummary(IReadOnlyList<IngestResult>? results)
+    {
+        if (results is null || results.Count == 0)
+        {
+            HasHealthSummary = false;
+            return;
+        }
+
+        var longTotal = 0;
+        var warns = new List<string>();
+        string? suggest = null;
+        foreach (var r in results)
+        {
+            if (!string.Equals(r.Status, "ingested", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            longTotal += r.LongChunkCount;
+            foreach (var w in r.HealthWarnings)
+            {
+                if (!string.IsNullOrWhiteSpace(w) && !warns.Contains(w))
+                {
+                    warns.Add(w);
+                }
+            }
+            if (suggest is null && !string.IsNullOrWhiteSpace(r.SuggestQuery))
+            {
+                suggest = r.SuggestQuery;
+            }
+        }
+
+        if (longTotal == 0 && warns.Count == 0)
+        {
+            HealthSummaryText = "导入健康：全部分块在嵌入窗口内，可直接检索";
+        }
+        else if (longTotal > 0)
+        {
+            HealthSummaryText = $"导入健康：{longTotal} 个分块超出嵌入窗口，检索时可能只命中前半截";
+        }
+        else
+        {
+            HealthSummaryText = "导入健康：有配置提醒，请查看下方警告";
+        }
+
+        HealthWarnings = new ObservableCollection<string>(warns);
+        SuggestQuery = suggest;
+        HasHealthSummary = true;
+
+        if (longTotal > 0)
+        {
+            _notifications.Warning(HealthSummaryText);
+        }
+    }
+
+    /// <summary>把建议试问短句复制到剪贴板（用户可去对话页粘贴）。</summary>
+    [RelayCommand]
+    private void CopySuggestQuery()
+    {
+        if (string.IsNullOrWhiteSpace(SuggestQuery))
+        {
+            return;
+        }
+        try
+        {
+            System.Windows.Clipboard.SetText(SuggestQuery);
+            _notifications.Success($"已复制试问句：{SuggestQuery}");
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"复制试问句失败: {ex.Message}", "Import");
         }
     }
 

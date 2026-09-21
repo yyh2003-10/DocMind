@@ -1,5 +1,6 @@
 using System.Text.Json;
 using DocMind.Models;
+using DocMind.Services;
 using DocMind.ViewModels;
 
 namespace DocMind.Tests;
@@ -7,7 +8,7 @@ namespace DocMind.Tests;
 /// <summary>质量看板「AI 知识库整理」（curate）流程测试：dry_run 预览 → 确认 → 执行。</summary>
 public class QualityViewModelCurateTests
 {
-    private static QualityViewModel CreateVm(FakeDoc2kbApiService fake) => new(fake);
+    private static QualityViewModel CreateVm(FakeDoc2kbApiService fake) => new(fake, new NotificationService());
 
     private static JobStatus CompletedCurateJob(bool dryRun) => new()
     {

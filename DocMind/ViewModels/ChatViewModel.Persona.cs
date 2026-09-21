@@ -308,7 +308,7 @@ public partial class ChatViewModel : ViewModelBase
         NewPersonaName = string.Empty;
         NewPersonaIcon = "🤖";
         NewPersonaDescription = string.Empty;
-        StatusMessage = $"已添加自定义角色: {entry.Name}";
+        StatusMessage = $"已添加自定义角色: {entry.Name}（描述将作为系统提示词生效）";
     }
 
     /// <summary>删除自定义角色。</summary>
@@ -325,7 +325,7 @@ public partial class ChatViewModel : ViewModelBase
         StatusMessage = $"已删除自定义角色: {entry.Name}";
     }
 
-    /// <summary>添加自定义主题。</summary>
+    /// <summary>添加自定义 PPT 主题。</summary>
     [RelayCommand]
     private void AddCustomTheme()
     {
@@ -349,7 +349,7 @@ public partial class ChatViewModel : ViewModelBase
         StatusMessage = $"已添加自定义主题: {entry.DisplayName}";
     }
 
-    /// <summary>删除自定义主题。</summary>
+    /// <summary>删除自定义 PPT 主题。</summary>
     [RelayCommand]
     private void RemoveCustomTheme(string? id)
     {

@@ -237,6 +237,7 @@ class FileWatcher:
                 collection=self._collection,
                 recursive=False,
                 store=store,
+                cancel_event=None,
             )
 
         # 写互斥：与 HTTP 侧 ingest / delete / reindex 串行（历史实现

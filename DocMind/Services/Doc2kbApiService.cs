@@ -413,13 +413,70 @@ public class Doc2kbApiService : IDoc2kbApiService
                     Page = s.TryGetProperty("page", out var p) && p.ValueKind == JsonValueKind.Number ? p.GetInt32() : null,
                     Heading = s.TryGetProperty("heading", out var h) ? h.GetString() : null,
                     Score = s.TryGetProperty("score", out var sc) && sc.ValueKind == JsonValueKind.Number ? sc.GetDouble() : 0,
+                    ScoreType = s.TryGetProperty("score_type", out var sct) ? (sct.GetString() ?? string.Empty) : string.Empty,
+                    ConfidenceLabel = s.TryGetProperty("confidence_label", out var cl) ? (cl.GetString() ?? string.Empty) : string.Empty,
                     SourceType = s.TryGetProperty("source_type", out var st) ? (st.GetString() ?? "local") : "local",
                     Url = s.TryGetProperty("url", out var u) ? u.GetString() : null,
                     Title = s.TryGetProperty("title", out var t) ? t.GetString() : null,
                     Snippet = s.TryGetProperty("snippet", out var snip) ? snip.GetString() : null,
                     SourceName = s.TryGetProperty("source_name", out var sn) ? sn.GetString() : null,
+                    Domain = s.TryGetProperty("domain", out var dom) ? dom.GetString() : null,
+                    PublishedAt = s.TryGetProperty("published_at", out var pa) ? pa.GetString() : null,
+                    ContentFetched = s.TryGetProperty("content_fetched", out var cf)
+                        && cf.ValueKind is JsonValueKind.True or JsonValueKind.False
+                        && cf.GetBoolean(),
+                    CorroboratedBy = s.TryGetProperty("corroborated_by", out var cb) && cb.TryGetInt32(out var cbv) ? cbv : 0,
+                    EvidenceLevel = s.TryGetProperty("evidence_level", out var el) ? (el.GetString() ?? "单一来源") : "单一来源",
                 });
             }
+        }
+
+        EvidenceSummary? evidence = null;
+        if (root.TryGetProperty("evidence", out var ev) && ev.ValueKind == JsonValueKind.Object)
+        {
+            CitationAudit? citationAudit = null;
+            if (ev.TryGetProperty("citation_audit", out var ca) && ca.ValueKind == JsonValueKind.Object)
+            {
+                static List<int> ReadIntList(JsonElement el)
+                {
+                    var list = new List<int>();
+                    if (el.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var item in el.EnumerateArray())
+                        {
+                            if (item.TryGetInt32(out var v)) list.Add(v);
+                        }
+                    }
+                    return list;
+                }
+                static List<int> ReadIntListProp(JsonElement parent, string name)
+                    => parent.TryGetProperty(name, out var el) ? ReadIntList(el) : [];
+                citationAudit = new CitationAudit
+                {
+                    Cited = ReadIntListProp(ca, "cited"),
+                    Valid = ReadIntListProp(ca, "valid"),
+                    Invalid = ReadIntListProp(ca, "invalid"),
+                    EvidenceSupport = ReadIntListProp(ca, "evidence_support"),
+                    DisclaimerOnly = ReadIntListProp(ca, "disclaimer_only"),
+                    ValidRatio = ca.TryGetProperty("valid_ratio", out var vr) && vr.ValueKind == JsonValueKind.Number
+                        ? vr.GetDouble() : 1.0,
+                    Ok = !ca.TryGetProperty("ok", out var ok)
+                        || (ok.ValueKind is JsonValueKind.True or JsonValueKind.False && ok.GetBoolean()),
+                };
+            }
+            evidence = new EvidenceSummary
+            {
+                LocalCount = ev.TryGetProperty("local_count", out var lc) && lc.TryGetInt32(out var lcv) ? lcv : 0,
+                WebFetchedCount = ev.TryGetProperty("web_fetched_count", out var wf) && wf.TryGetInt32(out var wfv) ? wfv : 0,
+                WebUnfetchedCount = ev.TryGetProperty("web_unfetched_count", out var wu) && wu.TryGetInt32(out var wuv) ? wuv : 0,
+                GraphInjected = ev.TryGetProperty("graph_injected", out var gi)
+                    && gi.ValueKind is JsonValueKind.True or JsonValueKind.False
+                    && gi.GetBoolean(),
+                FallbackGeneralKnowledge = ev.TryGetProperty("fallback_general_knowledge", out var fg)
+                    && fg.ValueKind is JsonValueKind.True or JsonValueKind.False
+                    && fg.GetBoolean(),
+                CitationAudit = citationAudit,
+            };
         }
 
         return new ChatStreamResult
@@ -438,6 +495,7 @@ public class Doc2kbApiService : IDoc2kbApiService
             MaxOutputTokens = maxOutputTokens,
             IsReasoningModel = isReasoningModel,
             ModelSpecSummary = modelSpecSummary,
+            Evidence = evidence ?? EvidenceSummary.FromSources(sources),
         };
     }
 
@@ -1013,6 +1071,12 @@ public class Doc2kbApiService : IDoc2kbApiService
         var body = new { content };
         return await SendAsync<PptInspectionReportDto>(HttpMethod.Post, "v1/creative/inspect", body, ct);
     }
+
+    public Task<LibraryStatus> GetLibraryStatusAsync(CancellationToken ct = default)
+        => SendAsync<LibraryStatus>(HttpMethod.Get, "v1/library/status", null, ct);
+
+    public Task<ProfileSwitchResult> SetUsageProfileAsync(string profile, CancellationToken ct = default)
+        => SendAsync<ProfileSwitchResult>(HttpMethod.Post, "v1/profile", new { profile }, ct);
 
     public IDisposable SubscribeEvents(Action<EventMessage> onEvent, CancellationToken ct = default)
     {

@@ -154,8 +154,9 @@ public class UserMemoryServiceTests : IDisposable
         await _service.AddAsync("项目使用C#开发", "memory");
 
         var injection = await _service.BuildSystemPromptInjectionAsync("回答关于项目的问题");
-        Assert.Contains("[用户记忆]", injection);
-        Assert.Contains("简洁回答", injection);
+        // 只返回条目列表；[用户记忆] 框定由后端统一注入
+        Assert.DoesNotContain("[用户记忆]", injection);
+        Assert.Contains("项目", injection);
     }
 
     [Fact]
@@ -163,6 +164,21 @@ public class UserMemoryServiceTests : IDisposable
     {
         var injection = await _service.BuildSystemPromptInjectionAsync("完全不相关的问题xyz");
         Assert.Equal(string.Empty, injection);
+    }
+
+    [Fact]
+    public async Task SearchAsync_SingleCjkCharsDoNotMatchEverything()
+    {
+        // 收紧 FTS：中文单字 OR 不再命中整库；双字/词仍可召回
+        await _service.AddAsync("豆包是字节跳动的大模型", "memory");
+        await _service.AddAsync("用户喜欢简洁回答", "user");
+
+        var gptHits = await _service.SearchAsync("你知道gpt吗");
+        // 无可靠 token 时应接近空结果，不得因为单字「你/知/道」注入豆包记忆
+        Assert.DoesNotContain(gptHits, r => r.Entry.Content.Contains("豆包"));
+
+        var doubaoHits = await _service.SearchAsync("介绍一下豆包");
+        Assert.Contains(doubaoHits, r => r.Entry.Content.Contains("豆包"));
     }
 
     [Fact]

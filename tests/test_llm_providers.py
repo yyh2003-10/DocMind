@@ -934,3 +934,196 @@ class TestWrapApiError404Hint:
         msg = str(OpenAIClient._wrap_api_error(self._ApiErr("not found"), "流式调用"))
         assert "模型名或 API 地址不存在" in msg
         assert "base_url 需含 /v1" in msg
+
+# --- 截断信号读取（tasks T5 / 验收 A8） ---
+class TestTruncationSignal:
+    """四 provider 读取 finish_reason 等价截断信号并暴露 last_truncated。"""
+
+    def test_initial_state_not_truncated(self) -> None:
+        pytest.importorskip("openai")
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+        assert client.last_truncated is False
+
+    def test_openai_nonstream_length_sets_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create",
+            lambda *a, **kw: SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="被截断的回答"),
+                finish_reason="length",
+            )]),
+            raising=False,
+        )
+        assert client.chat([{"role": "user", "content": "q"}]) == "被截断的回答"
+        assert client.last_truncated is True
+
+    def test_openai_nonstream_stop_clears_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create",
+            lambda *a, **kw: SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="完整回答"),
+                finish_reason="stop",
+            )]),
+            raising=False,
+        )
+        client.chat([{"role": "user", "content": "q"}])
+        assert client.last_truncated is False
+
+    def test_openai_nonstream_missing_finish_no_false_positive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create",
+            lambda *a, **kw: SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="回答"),
+                finish_reason=None,
+            )]),
+            raising=False,
+        )
+        client.chat([{"role": "user", "content": "q"}])
+        assert client.last_truncated is False
+
+    def test_openai_stream_length_exhausted_sets_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """续写 3 次仍 length → last_truncated=True（T6.1 触发条件）。"""
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+
+        def len_frame():
+            return SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(reasoning_content=None, content=None),
+                finish_reason="length",
+            )])
+
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create",
+            lambda *a, **kw: [len_frame()],
+            raising=False,
+        )
+        list(client.stream_chat_tagged([{"role": "user", "content": "q"}], timeout=5))
+        assert client.last_truncated is True
+
+    def test_openai_stream_normal_stop_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+
+        def stop_frame(content):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(reasoning_content=None, content=content),
+                finish_reason=None,
+            )])
+
+        final = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(reasoning_content=None, content=None),
+            finish_reason="stop",
+        )])
+
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create",
+            lambda *a, **kw: [stop_frame("完整回答"), final],
+            raising=False,
+        )
+        list(client.stream_chat_tagged([{"role": "user", "content": "q"}], timeout=5))
+        assert client.last_truncated is False
+
+    def test_anthropic_nonstream_max_tokens_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda *a, **kw: _resp(200, {
+                "content": [{"type": "text", "text": "被截断"}],
+                "stop_reason": "max_tokens",
+            }),
+        )
+        client = AnthropicClient(api_key="k")
+        assert client.chat([{"role": "user", "content": "q"}]) == "被截断"
+        assert client.last_truncated is True
+
+    def test_anthropic_nonstream_end_turn_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda *a, **kw: _resp(200, {
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+            }),
+        )
+        client = AnthropicClient(api_key="k")
+        client.chat([{"role": "user", "content": "q"}])
+        assert client.last_truncated is False
+
+    def test_gemini_nonstream_max_tokens_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda *a, **kw: _resp(200, {
+                "candidates": [{
+                    "content": {"parts": [{"text": "被截断"}]},
+                    "finishReason": "MAX_TOKENS",
+                }],
+            }),
+        )
+        client = GeminiClient(api_key="k")
+        assert client.chat([{"role": "user", "content": "q"}]) == "被截断"
+        assert client.last_truncated is True
+
+    def test_gemini_nonstream_stop_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda *a, **kw: _resp(200, {
+                "candidates": [{
+                    "content": {"parts": [{"text": "ok"}]},
+                    "finishReason": "STOP",
+                }],
+            }),
+        )
+        client = GeminiClient(api_key="k")
+        client.chat([{"role": "user", "content": "q"}])
+        assert client.last_truncated is False
+
+    def test_ollama_nonstream_length_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda *a, **kw: _resp(200, {
+                "message": {"content": "被截断"},
+                "done_reason": "length",
+                "done": True,
+            }),
+        )
+        client = OllamaClient(model="qwen2.5-7b")
+        assert client.chat([{"role": "user", "content": "q"}]) == "被截断"
+        assert client.last_truncated is True
+
+    def test_ollama_nonstream_stop_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda *a, **kw: _resp(200, {
+                "message": {"content": "ok"},
+                "done_reason": "stop",
+                "done": True,
+            }),
+        )
+        client = OllamaClient(model="qwen2.5-7b")
+        client.chat([{"role": "user", "content": "q"}])
+        assert client.last_truncated is False

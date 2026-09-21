@@ -21,12 +21,16 @@
                 HorizontalAlignment="Stretch"
                 VerticalAlignment="Stretch">
             <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="320">
-                <TextBlock Text="⚠️ 无法加载 PDF 阅览器"
-                           FontSize="15"
-                           FontWeight="Bold"
-                           Foreground="{DynamicResource TextPrimaryBrush}"
-                           HorizontalAlignment="Center"
-                           Margin="0,0,0,8"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,8">
+                    <Path Data="{StaticResource IconWarning}" Style="{StaticResource IconSmStyle}"
+                          Stroke="{StaticResource WarningBrush}" VerticalAlignment="Center"
+                          Margin="0,0,6,0"/>
+                    <TextBlock Text="无法加载 PDF 阅览器"
+                               FontSize="15"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
                 <TextBlock x:Name="ErrorDetailText"
                            Text="未检测到 WebView2 运行时或文件无法读取。"
                            FontSize="12"
@@ -41,6 +45,22 @@
                         HorizontalAlignment="Center"
                         Padding="12,6"/>
             </StackPanel>
+        </Border>
+
+        <!-- 2b. 定位失败提示条：禁止静默失败，至少展示 snippet 供人工核对 -->
+        <Border x:Name="LocateFailBanner"
+                Visibility="Collapsed"
+                Background="{DynamicResource WarningLightBrush}"
+                Padding="8,6"
+                Margin="8"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Top"
+                Panel.ZIndex="10">
+            <TextBlock x:Name="LocateFailText"
+                       Text="未能自动定位到原文段落，已跳转到引用页；可对照下方引用原文核对。"
+                       FontSize="11"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource WarningBrush}"/>
         </Border>
 
         <!-- 3. 加载中遮罩 -->

@@ -144,6 +144,21 @@
     <!-- 眼睛 -->
     <Geometry x:Key="IconEye">M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z</Geometry>
 
+    <!-- 眼睛关闭（密钥掩码切换） -->
+    <Geometry x:Key="IconEyeOff">M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24M1 1l22 22</Geometry>
+
+    <!-- 全屏扩展 (⛶) -->
+    <Geometry x:Key="IconExpand">M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7</Geometry>
+
+    <!-- 下拉箭头 (▾) -->
+    <Geometry x:Key="IconChevronDown">M6 9l6 6 6-6</Geometry>
+
+    <!-- 右箭头 (▸) -->
+    <Geometry x:Key="IconChevronRight">M9 6l6 6-6 6</Geometry>
+
+    <!-- 左箭头 (◀) -->
+    <Geometry x:Key="IconChevronLeft">M15 6l-6 6 6 6</Geometry>
+
     <!-- 外链 -->
     <Geometry x:Key="IconExternal">M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3</Geometry>
 
@@ -225,10 +240,10 @@
         <Setter Property="Stroke" Value="{DynamicResource TextSecondaryBrush}"/>
     </Style>
 
-    <!-- 导航轨图标：22x22 -->
+    <!-- 导航轨图标：20x20 -->
     <Style x:Key="NavIconStyle" TargetType="Path" BasedOn="{StaticResource IconPathStyle}">
-        <Setter Property="Width" Value="22"/>
-        <Setter Property="Height" Value="22"/>
+        <Setter Property="Width" Value="20"/>
+        <Setter Property="Height" Value="20"/>
     </Style>
 
     <!-- 小图标：16x16 -->

@@ -60,6 +60,12 @@ class IngestResult:
     # 入库后 AI 自动整理的结果（enrich/categorize）；未触发或失败时为 None。
     # collection 字段反映整理后的最终集合（可能被自动归类移动过）。
     curation: dict | None = None
+    # 导入健康：估算 token 超过 embed_max_length 的分块数（嵌入会截断）
+    long_chunk_count: int = 0
+    # 导入健康提示（人话，给导入完成卡片）
+    health_warnings: tuple[str, ...] = ()
+    # 建议试问的短句（取自文档标题/首段），供「试问一句」入口
+    suggest_query: str | None = None
 
 
 @dataclass
@@ -76,6 +82,74 @@ class IngestSummary:
     # 结束后交给 run_background_curate 后台执行，导入速度不再受 LLM
     # 串行调用拖累。
     curatable_document_ids: list[str] = field(default_factory=list)
+    # 导入健康汇总（整批）
+    long_chunk_count: int = 0
+    health_warnings: tuple[str, ...] = ()
+    # 第一条可试问的建议查询（来自成功摄入的文档）
+    suggest_query: str | None = None
+
+
+def _estimate_chunk_tokens(text: str) -> int:
+    """与 semantic chunker 同启发式估算 token（CJK≈1，其他≈4字符）。"""
+    if not text:
+        return 0
+    cjk = sum(1 for c in text if "一" <= c <= "鿿")
+    other = len(text) - cjk
+    return cjk + (other + 3) // 4
+
+
+def _chunk_health(
+    chunks: list,
+    settings: Settings,
+) -> tuple[int, list[str], str | None]:
+    """计算分块健康信息：(超窗块数, 人话警告, 建议试问短句)。"""
+    embed_max = int(getattr(settings, "embed_max_length", 512) or 512)
+    long_count = 0
+    for ch in chunks:
+        content = getattr(ch, "content", "") or ""
+        if _estimate_chunk_tokens(content) > embed_max:
+            long_count += 1
+
+    warnings: list[str] = []
+    if long_count:
+        warnings.append(
+            f"{long_count} 个分块超出嵌入窗口 {embed_max} token，检索时可能只命中前半截；"
+            "建议调小 chunk_max_tokens 或换长窗口嵌入模型后重建索引"
+        )
+    if int(getattr(settings, "chunk_max_tokens", 0) or 0) > embed_max:
+        warnings.append(
+            f"当前配置 chunk_max_tokens={settings.chunk_max_tokens} 大于 "
+            f"embed_max_length={embed_max}，新导入仍可能截断"
+        )
+
+    suggest = None
+    if chunks:
+        first = getattr(chunks[0], "content", "") or ""
+        # 试问：取第一行或前 24 字
+        line = first.strip().splitlines()[0].strip() if first.strip() else ""
+        line = line.lstrip("#*·- ").strip()
+        if len(line) > 24:
+            line = line[:24]
+        if line:
+            suggest = line
+    return long_count, warnings, suggest
+
+
+def _aggregate_health(summary: IngestSummary) -> None:
+    """把单文档健康信息汇总到 IngestSummary。"""
+    long_total = 0
+    warn_set: list[str] = []
+    for r in summary.results:
+        if r.status not in ("ingested", "updated"):
+            continue
+        long_total += r.long_chunk_count
+        for w in r.health_warnings:
+            if w not in warn_set:
+                warn_set.append(w)
+        if summary.suggest_query is None and r.suggest_query:
+            summary.suggest_query = r.suggest_query
+    summary.long_chunk_count = long_total
+    summary.health_warnings = tuple(warn_set)
 
 
 # --- 文件内阶段进度 ---
@@ -131,6 +205,7 @@ def ingest_path(
     force: bool = False,
     store: VectorStore | None = None,
     progress: Callable[[int, int], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> IngestSummary:
     """摄入一个文件或目录。
 
@@ -144,6 +219,8 @@ def ingest_path(
         progress: 进度回调 (done, total[, current_file, stage, stage_progress])，
             每处理完一个文件调用一次；文件处理中还会带 stage 上报文件内阶段。
             None 表示不回调
+        cancel_event: 可选取消事件；线程间共享，某线程 set() 后 ingest 在
+            下一个文件级/批次级检查点抛出 IngestCancelled。
 
     Returns:
         `IngestSummary`
@@ -238,16 +315,20 @@ def ingest_path(
         if workers > 1 and len(files) > 1:
             _ingest_parallel(
                 files, settings, collection, force, store, embedder,
-                progress, summary, workers,
+                progress, summary, workers, cancel_event,
             )
         else:
             for idx, f in enumerate(files, start=1):
+                # 文件级取消检查点：在处理每个文件前检查
+                if cancel_event is not None and cancel_event.is_set():
+                    raise IngestCancelled("任务已被取消")
                 res = _ingest_one(
                     f, settings, collection, force, store, embedder,
                     report_stage=(
                         None if progress is None
                         else _make_stage_reporter(progress, idx - 1, total, f.name)
                     ),
+                    cancel_event=cancel_event,
                 )
                 _record_result(summary, res)
                 if progress is not None:
@@ -268,6 +349,7 @@ def ingest_path(
             summary.failed, summary.total_documents, summary.total_chunks,
             len(summary.curatable_document_ids),
         )
+        _aggregate_health(summary)
         return summary
     finally:
         if owns_store:
@@ -306,6 +388,7 @@ def _ingest_parallel(
     progress: Callable[[int, int], None] | None,
     summary: IngestSummary,
     workers: int,
+    cancel_event: threading.Event | None = None,
 ) -> None:
     """两段式文件级并行（ingest_workers>1 时启用）。
 
@@ -331,13 +414,16 @@ def _ingest_parallel(
             chunk_end = start + len(chunk)
             futures = []
             for idx, f in enumerate(chunk, start=start + 1):
+                # 文件级取消检查点：在提交任务前检查
+                if cancel_event is not None and cancel_event.is_set():
+                    raise IngestCancelled("任务已被取消")
                 reporter = (
                     None if progress is None
                     else _make_stage_reporter(progress, idx - 1, total, f.name)
                 )
                 futures.append(
                     pool.submit(_prepare_one, f, settings, collection, force,
-                                store, embedder, reporter)
+                                store, embedder, reporter, cancel_event)
                 )
             for idx, fut in zip(range(start + 1, chunk_end + 1), futures):
                 try:
@@ -523,6 +609,7 @@ def ingest_text(
             store, settings, document_id, allow_categorize=auto_categorize
         )
         final_doc = store.get_document_by_id(document_id)
+        long_count, health_warnings, suggest = _chunk_health(chunks, settings)
         return IngestResult(
             source=source,
             collection=final_doc.collection if final_doc else collection,
@@ -530,6 +617,9 @@ def ingest_text(
             chunk_count=len(chunks),
             elapsed_ms=int((time.perf_counter() - t0) * 1000),
             status="ingested", document_id=document_id, curation=curation,
+            long_chunk_count=long_count,
+            health_warnings=tuple(health_warnings),
+            suggest_query=suggest or display,
         )
     except Exception as e:  # noqa: BLE001
         return _fail(Path(source), collection, f"写库失败: {e}", t0)
@@ -572,6 +662,7 @@ class _Prepared:
     document_id: str
     created_at: str
     t0: float
+    settings: Settings | None = None
 
 
 def _prepare_one(
@@ -582,6 +673,7 @@ def _prepare_one(
     store: VectorStore,
     embedder,
     report_stage: Callable[[str, float | None], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> "_Prepared | IngestResult":
     """摄入单文件的准备段：解析 → 去重 → 分块 → 嵌入（不写库）。
 
@@ -591,6 +683,8 @@ def _prepare_one(
 
     report_stage: 文件内阶段上报 (stage, stage_progress)，供异步 job
     展示解析/切片/嵌入等子进度；None 表示不上报。
+    cancel_event: 可选取消事件；线程间共享，某线程 set() 后 ingest 在
+        下一个批次级检查点抛出 IngestCancelled。
     """
     t0 = time.perf_counter()
 
@@ -633,6 +727,9 @@ def _prepare_one(
     # 页级进度：PDF 逐页解析 / 扫描件逐页 OCR 时上报 (已完成页, 总页)，
     # 折算成 parsing 阶段进度；total<=0 表示总页数未知（不定进度）。
     def _page_cb(done: int, page_total: int) -> None:
+        # 页级取消检查点：每页解析/OCR完成后检查
+        if cancel_event is not None and cancel_event.is_set():
+            raise IngestCancelled("任务已被取消")
         _emit("parsing", (done / page_total) if page_total > 0 else None)
 
     try:
@@ -686,6 +783,9 @@ def _prepare_one(
     embedded = 0
     try:
         for item in embedder.embed(chunks):
+            # 批次级取消检查点：每批次嵌入完成后检查
+            if cancel_event is not None and cancel_event.is_set():
+                raise IngestCancelled("任务已被取消")
             if (
                 isinstance(item, (list, tuple))
                 and item
@@ -719,6 +819,7 @@ def _prepare_one(
         document_id=uuid.uuid4().hex,
         created_at=_now_iso(),
         t0=t0,
+        settings=settings,
     )
 
 
@@ -771,12 +872,18 @@ def _write_prepared(
     except Exception as e:  # noqa: BLE001
         return _fail(prep.path, prep.collection, f"写库失败: {e}", prep.t0)
 
+    long_count, health_warnings, suggest = _chunk_health(
+        prep.chunks, prep.settings or get_settings()
+    )
     return IngestResult(
         source=prep.doc.source, collection=prep.collection,
         format=prep.doc.format.value, size_bytes=prep.doc.size_bytes,
         chunk_count=len(prep.chunks),
         elapsed_ms=int((time.perf_counter() - prep.t0) * 1000),
         status="ingested", document_id=prep.document_id,
+        long_chunk_count=long_count,
+        health_warnings=tuple(health_warnings),
+        suggest_query=suggest,
     )
 
 
@@ -788,10 +895,11 @@ def _ingest_one(
     store: VectorStore,
     embedder,
     report_stage: Callable[[str, float | None], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> IngestResult:
     """摄入单个文件（顺序路径）：准备段 + 写库段串联。"""
     prep = _prepare_one(path, settings, collection, force, store, embedder,
-                        report_stage=report_stage)
+                        report_stage=report_stage, cancel_event=cancel_event)
     if isinstance(prep, IngestResult):
         return prep
     return _write_prepared(store, prep, report_stage=report_stage)

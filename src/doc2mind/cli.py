@@ -26,7 +26,7 @@ from rich.console import Console
 from rich.table import Table
 
 from doc2mind import __version__
-from doc2mind.core.config import get_settings
+from doc2mind.core.config import get_settings, set_settings
 from doc2mind.core.converter import (
     SUPPORTED_FORMATS,
     ConversionError,
@@ -124,6 +124,7 @@ def ingest(
             collection=collection,
             recursive=recursive,
             force=force,
+            cancel_event=None,
         )
 
     # 渲染结果表
@@ -170,16 +171,17 @@ def search(
 
     store, embedder = _open_store()
     try:
+        _s = get_settings()
         retriever = Retriever(
             store=store,
             embedder=embedder,
-            reranker=get_reranker(get_settings()),
-            rerank_recall=get_settings().rerank_recall,
-            rrf_weights=parse_rrf_weights(get_settings().rrf_weights),
-            fusion_mode=get_settings().fusion_mode,
-            rerank_calibration_temperature=(
-                get_settings().rerank_calibration_temperature
-            ),
+            reranker=get_reranker(_s),
+            rerank_recall=_s.rerank_recall,
+            query_instruction=_s.query_instruction,
+            semantic_floor=_s.semantic_floor,
+            rrf_weights=parse_rrf_weights(_s.rrf_weights),
+            fusion_mode=_s.fusion_mode,
+            rerank_calibration_temperature=_s.rerank_calibration_temperature,
         )
         hits, stats = retriever.search(
             query=query, collection=collection, top_k=top_k
@@ -512,6 +514,10 @@ def _run_chat_once(
                             loc_str += f"（{heading}）"
                         rprint(f"  [{idx}] {loc_str}  [dim]score={score:.2f}[/dim]")
 
+                warning = final_frame.get("warning")
+                if warning:
+                    rprint(f"[yellow]⚠ {warning}[/yellow]")
+
                 rprint(
                     f"[dim]模型: {final_frame.get('model')} ({final_frame.get('provider')}) | "
                     f"引用 {final_frame.get('total_chunks')} 块 | {final_frame.get('elapsed_ms')}ms[/dim]"
@@ -802,15 +808,54 @@ def config(
     model: str | None = typer.Option(
         None, "--model", "-M", help="临时指定嵌入模型（仅本次进程，不持久化）。"
     ),
+    recommended_retrieval: bool = typer.Option(
+        False,
+        "--recommended-retrieval",
+        help="预览推荐检索配置 diff；加 --apply 写回持久化。",
+    ),
+    apply: bool = typer.Option(
+        False, "--apply", help="与 --recommended-retrieval 连用：写回配置。"
+    ),
 ) -> None:
-    """查看 / 切换嵌入模型配置。
+    """查看 / 切换嵌入模型配置；应用推荐检索参数。
 
     示例：
         doc2mind config --show               # 查看当前配置
-        doc2mind config --set-model BAAI/bge-small-en-v1.5   # 切换模型（持久化）
-        doc2mind config --model <名称>       # 临时用某个模型跑一次
+        doc2mind config --set-model BAAI/bge-small-en-v1.5
+        doc2mind config --recommended-retrieval          # 只预览
+        doc2mind config --recommended-retrieval --apply  # 应用并持久化
     """
     from doc2mind.core.embedder.catalog import get_model_info, render_catalog_table
+
+    if recommended_retrieval:
+        from doc2mind.core.config import (
+            apply_recommended_retrieval,
+            recommended_retrieval_preview,
+        )
+
+        s = get_settings()
+        preview = recommended_retrieval_preview(s)
+        rprint(f"[bold]{preview['label']}[/bold] — {preview['description']}")
+        if preview["aligned"]:
+            rprint("[green]当前配置已与推荐检索参数对齐[/green]")
+            return
+        rprint("将变更字段：")
+        for ch in preview["changes"]:
+            rprint(
+                f"  [yellow]{ch['field']}[/yellow]: "
+                f"{ch['from']!r} → [green]{ch['to']!r}[/green]"
+            )
+        if not apply:
+            rprint(
+                "\n[dim]仅预览。确认后加 --apply 写回 config.toml。[/dim]"
+            )
+            return
+        updated, changes = apply_recommended_retrieval(s)
+        if not _save_settings_or_warn(updated):
+            raise typer.Exit(code=1)
+        set_settings(updated)
+        rprint(f"[green]已应用 {len(changes)} 项推荐检索参数并持久化[/green]")
+        return
 
     if model:
         # 临时覆盖：仅本次进程

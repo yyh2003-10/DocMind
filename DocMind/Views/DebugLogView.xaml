@@ -6,19 +6,15 @@
              mc:Ignorable="d"
              d:DesignHeight="450" d:DesignWidth="800">
 
-    <Grid>
+    <Grid Margin="{StaticResource PageContentMargin}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
         <!-- ===== 顶部工具条 ===== -->
-        <Border Grid.Row="0"
-                Background="{StaticResource CardBrush}"
-                BorderBrush="{StaticResource BorderBrush}"
-                BorderThickness="0,0,0,1"
-                Padding="0,8,0,8">
-            <Grid Margin="0,0,0,0">
+        <Border Grid.Row="0" Style="{StaticResource ToolbarBorderStyle}">
+            <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
@@ -29,17 +25,23 @@
 
                 <Button Grid.Column="0" Content="清空缓冲"
                         Command="{Binding ClearCommand}"
-                        Style="{StaticResource TextButtonStyle}"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Padding="12,6"
+                        MinHeight="36"
                         Margin="0,0,8,0"/>
 
                 <Button Grid.Column="1" Content="打开日志文件"
                         Command="{Binding OpenLogFileCommand}"
-                        Style="{StaticResource TextButtonStyle}"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Padding="12,6"
+                        MinHeight="36"
                         Margin="0,0,8,0"/>
 
                 <Button Grid.Column="2" Content="打开日志文件夹"
                         Command="{Binding OpenLogFolderCommand}"
-                        Style="{StaticResource TextButtonStyle}"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Padding="12,6"
+                        MinHeight="36"
                         Margin="0,0,12,0"/>
 
                 <TextBlock Grid.Column="4"
@@ -61,6 +63,7 @@
                  Background="{StaticResource BackgroundBrush}"
                  ScrollViewer.HorizontalScrollBarVisibility="Auto"
                  ScrollViewer.VerticalScrollBarVisibility="Auto"
+                 Margin="0,12,0,0"
                  VirtualizingStackPanel.IsVirtualizing="False">
             <ListBox.ItemContainerStyle>
                 <Style TargetType="ListBoxItem">

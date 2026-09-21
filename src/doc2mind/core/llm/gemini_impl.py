@@ -208,7 +208,16 @@ class GeminiClient(LLMClient):
                 timeout=self._timeout,
             )
             self._raise_for_status(resp)
-            return self._extract_text(resp.json()).strip()
+            data = resp.json()
+            candidates = data.get("candidates") or []
+            finish_reason = candidates[0].get("finishReason") if candidates else None
+            self._last_truncated = finish_reason == "MAX_TOKENS"
+            if self._last_truncated:
+                logger.info(
+                    "输出因达到 token 上限被截断（finishReason=MAX_TOKENS, model=%s）",
+                    self._model,
+                )
+            return self._extract_text(data).strip()
         except LLMError:
             raise
         except httpx.RequestError as e:
@@ -267,6 +276,7 @@ class GeminiClient(LLMClient):
                     headers=self._headers(),
                 ) as response:
                     self._raise_for_status(response)
+                    last_finish_reason: str | None = None
                     for line in response.iter_lines():
                         if stop_event is not None and stop_event.is_set():
                             return
@@ -279,6 +289,11 @@ class GeminiClient(LLMClient):
                             event = json.loads(raw)
                         except json.JSONDecodeError:
                             continue
+                        cands = event.get("candidates") or []
+                        if cands:
+                            fr = cands[0].get("finishReason")
+                            if fr:
+                                last_finish_reason = fr
                         for kind, text in self._extract_parts(event):
                             if kind == "content" and text:
                                 if retry_mode:
@@ -288,6 +303,12 @@ class GeminiClient(LLMClient):
                                     emitted_parts.append(text)
                             if text:
                                 yield (kind, text)
+                self._last_truncated = last_finish_reason == "MAX_TOKENS"
+                if self._last_truncated:
+                    logger.info(
+                        "流式输出因达到 token 上限被截断（finishReason=MAX_TOKENS, model=%s）",
+                        self._model,
+                    )
                 return
             except LLMError:
                 raise

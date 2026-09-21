@@ -342,6 +342,8 @@ public sealed class UserMemoryService : IDisposable
     /// <summary>
     /// 构建系统提示注入文本：将相关记忆注入到 LLM 系统提示中。
     /// 灵感：Hermes Agent 的 MEMORY.md 注入模式。
+    /// 仅返回条目列表；由后端统一框定为「用户记忆（仅作偏好参考）」，
+    /// 避免与检索 query 混写导致主题污染。
     /// </summary>
     public async Task<string> BuildSystemPromptInjectionAsync(string userMessage, int maxEntries = 8)
     {
@@ -351,7 +353,6 @@ public sealed class UserMemoryService : IDisposable
         if (results.Count == 0) return string.Empty;
 
         var sb = new StringBuilder();
-        sb.AppendLine("\n[用户记忆]");
         foreach (var r in results)
         {
             sb.AppendLine($"- {r.Entry.Content}");
@@ -398,7 +399,7 @@ public sealed class UserMemoryService : IDisposable
         UpdatedAt = DateTime.TryParse(reader.GetString(5), out var uat) ? uat : DateTime.MinValue,
     };
 
-    /// <summary>构建 FTS5 查询字符串：对中文按字符拆分并用 OR 连接。</summary>
+    /// <summary>构建 FTS5 查询字符串：对中文按词/双字切分并用 OR 连接。</summary>
     private static string BuildFtsQuery(string query)
     {
         query = query.Trim();
@@ -412,17 +413,36 @@ public sealed class UserMemoryService : IDisposable
         foreach (var seg in segments)
         {
             if (string.IsNullOrWhiteSpace(seg)) continue;
-            // 将段落拆分为 CJK 单字 + Latin 词（与存储时的 SegmentCjk 对齐）
+            // 将段落拆分为 FTS5 token：CJK 逐字，Latin 按词
             var subTokens = SegmentQuerySegment(seg);
             tokens.AddRange(subTokens);
         }
         if (tokens.Count == 0)
             return query; // fallback: 原样返回让 FTS5 尝试
-        if (tokens.Count == 1)
-            return $"\"{tokens[0]}\"*";
+
+        // 收紧：CJK 单字几乎无信息，OR 召回会命中整库（真实故障：问 GPT 却注入豆包记忆）。
+        // 仅保留 Latin 词（≥2 字符）与 CJK 双字组合；若过滤后为空则视为无可靠召回。
+        var meaningful = tokens
+            .Where(t => t.Length >= 2 || !IsCjkToken(t))
+            .Where(t => !(t.Length == 1 && IsCjkToken(t)))
+            .ToList();
+        // CJK 双字滑窗：把连续单字合成 bigram
+        for (var i = 0; i < tokens.Count - 1; i++)
+        {
+            if (IsCjkToken(tokens[i]) && IsCjkToken(tokens[i + 1]))
+                meaningful.Add(tokens[i] + tokens[i + 1]);
+        }
+        meaningful = meaningful.Distinct().ToList();
+        if (meaningful.Count == 0)
+            return "\"__no_match__\""; // 故意无命中，避免单字 OR 污染
+        if (meaningful.Count == 1)
+            return $"\"{meaningful[0]}\"*";
         // 多个 token：用 OR 连接（宽松匹配，召回优先）
-        return string.Join(" OR ", tokens.Distinct().Select(t => $"\"{t}\""));
+        return string.Join(" OR ", meaningful.Select(t => $"\"{t}\""));
     }
+
+    private static bool IsCjkToken(string t) =>
+        t.Length == 1 && IsCjk(t[0]);
 
     /// <summary>将查询段落拆分为 FTS5 token：CJK 逐字，Latin 按词。</summary>
     private static List<string> SegmentQuerySegment(string seg)

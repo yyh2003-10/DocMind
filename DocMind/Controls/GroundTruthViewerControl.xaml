@@ -1,26 +1,52 @@
 <UserControl x:Class="DocMind.Controls.GroundTruthViewerControl"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
-             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:local="clr-namespace:DocMind.Controls"
              xmlns:m="clr-namespace:DocMind.Models"
-             mc:Ignorable="d" 
+             mc:Ignorable="d"
              d:DesignHeight="700" d:DesignWidth="450">
     <Grid>
         <Grid.RowDefinitions>
-            <!-- 1. 抽屉头部 (标题 + 评分徽标 + 半屏切换 + 关闭) -->
+            <!-- 1. 抽屉头部 -->
             <RowDefinition Height="Auto"/>
-            <!-- 2. 出处元数据卡片 (文档名、章节、页码) -->
+            <!-- 2. 出处元数据 -->
             <RowDefinition Height="Auto"/>
-            <!-- 3. 主体内容区 (PDF阅读器 OR 纯文本切片) -->
+            <!-- 3. 关键点对照卡片（答案支撑 + 引用原文） -->
+            <RowDefinition Height="Auto"/>
+            <!-- 4. 原文件主体（PDF 阅读器 / 文本降级） -->
             <RowDefinition Height="*"/>
-            <!-- 4. 底部快捷操作栏 -->
+            <!-- 5. 底部快捷操作 -->
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
+        <!-- 空状态：尚未选中任何引用来源 -->
+        <Border Grid.RowSpan="5"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="20"
+                Visibility="{Binding DataContext.HasSelectedSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource InvertBoolVis}}">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock Text="请选择一条引用来源"
+                           FontSize="14"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextSecondaryBrush}"
+                           HorizontalAlignment="Center"
+                           Margin="0,0,0,6"/>
+                <TextBlock Text="点击回答下方的「对照原文」，在此查看关键点与原文件对照。"
+                           FontSize="12"
+                           Foreground="{DynamicResource TextTertiaryBrush}"
+                           TextWrapping="Wrap"
+                           TextAlignment="Center"
+                           MaxWidth="280"/>
+            </StackPanel>
+        </Border>
+
         <!-- 1. 抽屉头部 -->
-        <Grid Grid.Row="0" Margin="0,0,0,10">
+        <Grid Grid.Row="0" Margin="0,0,0,8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
@@ -29,23 +55,28 @@
             </Grid.ColumnDefinitions>
 
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                <!-- web 来源标题 -->
-                <TextBlock Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}"
-                           Text="🌐 网页检索结果"
-                           FontSize="14"
-                           FontWeight="Bold"
-                           Foreground="{DynamicResource PrimaryBrush}"
-                           VerticalAlignment="Center"/>
-                <!-- 本地来源标题 -->
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                            Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}">
+                    <Path Data="{StaticResource IconGlobe}" Style="{StaticResource IconSmStyle}"
+                          Stroke="{StaticResource PrimaryBrush}" VerticalAlignment="Center"
+                          Margin="0,0,5,0"/>
+                    <TextBlock Text="网页原文对照"
+                               FontSize="14"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource PrimaryBrush}"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
                 <TextBlock Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource InvertBoolVis}}"
-                           Text="📖 原著知识查证"
+                           Text="{Binding SelectedSource.DisplayTitle, RelativeSource={RelativeSource AncestorType=UserControl}, TargetNullValue=原著原文对照}"
                            FontSize="14"
                            FontWeight="Bold"
                            Foreground="{DynamicResource PrimaryBrush}"
-                           VerticalAlignment="Center"/>
+                           VerticalAlignment="Center"
+                           MaxWidth="260"
+                           TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding SelectedSource.Source, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
             </StackPanel>
 
-            <!-- 评分徽标 (本地来源) -->
             <Border Grid.Column="1"
                     Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource InvertBoolVis}}"
                     Background="{DynamicResource PrimaryLightBrush}"
@@ -59,7 +90,6 @@
                            Foreground="{DynamicResource PrimaryBrush}"/>
             </Border>
 
-            <!-- 搜索引擎标签 (Web来源) -->
             <Border Grid.Column="1"
                     Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}"
                     Background="{DynamicResource PrimaryLightBrush}"
@@ -73,42 +103,41 @@
                            Foreground="{DynamicResource PrimaryBrush}"/>
             </Border>
 
-            <!-- 半屏沉浸展开 / 还原切换按钮 -->
             <Button Grid.Column="2"
                     x:Name="ToggleExpandButton"
-                    Content="⛶"
                     Click="ToggleExpandButton_Click"
                     Style="{DynamicResource IconButtonStyle}"
                     Width="26" Height="26"
                     Margin="0,0,4,0"
-                    ToolTip="切换半屏沉浸式阅读"/>
+                    ToolTip="切换半屏沉浸式对照阅读">
+                <Path Data="{StaticResource IconExpand}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextSecondaryBrush}"/>
+            </Button>
 
-            <!-- 关闭按钮 -->
             <Button Grid.Column="3"
-                    Content="✕"
                     Command="{Binding CloseSourceDrawerCommand}"
                     Style="{DynamicResource IconButtonStyle}"
                     Width="26" Height="26"
-                    ToolTip="关闭原著查证 (Esc)"/>
+                    ToolTip="关闭原文对照 (Esc)">
+                <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextSecondaryBrush}"/>
+            </Button>
         </Grid>
 
-        <!-- 2. 出处元数据卡片 -->
+        <!-- 2. 出处元数据（文件 / 章节 / 页码） -->
         <Border Grid.Row="1"
                 Background="{DynamicResource SurfaceBrush}"
                 BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
                 CornerRadius="8"
                 Padding="10,8"
-                Margin="0,0,0,10">
+                Margin="0,0,0,8">
             <StackPanel>
-                <!-- 本地来源元数据 -->
                 <StackPanel Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource InvertBoolVis}}">
                     <Grid Margin="0,0,0,4">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="原著：" Style="{DynamicResource SmallText}" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                        <TextBlock Grid.Column="0" Text="原文件：" Style="{DynamicResource SmallText}" Foreground="{DynamicResource TextSecondaryBrush}"/>
                         <TextBlock Grid.Column="1" Text="{Binding SelectedSource.DisplayTitle, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                    Style="{DynamicResource SmallText}"
                                    FontWeight="Medium"
@@ -132,7 +161,6 @@
                     </Grid>
                 </StackPanel>
 
-                <!-- Web 来源元数据 -->
                 <StackPanel Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}">
                     <TextBlock Text="{Binding SelectedSource.DisplayTitle, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                Style="{DynamicResource SmallText}"
@@ -151,9 +179,84 @@
             </StackPanel>
         </Border>
 
-        <!-- 3. 主体内容区 (PDF 原著视图 或 降级纯文本切片) -->
-        <Grid Grid.Row="2" Margin="0,0,0,10">
-            <!-- 模式 1: PDF 原著嵌入式阅览器 (带精准黄色高亮) -->
+        <!-- 3. 关键点对照卡片：答案表述 ↔ 库内引用原文，始终可见 -->
+        <Border Grid.Row="2"
+                Background="{DynamicResource PrimaryLightBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="10,8"
+                Margin="0,0,0,8">
+            <StackPanel>
+                <DockPanel Margin="0,0,0,6">
+                    <TextBlock Text="关键点对照"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource PrimaryBrush}"
+                               VerticalAlignment="Center"/>
+                    <TextBlock DockPanel.Dock="Right"
+                               Text="{Binding SelectedSource.Index, RelativeSource={RelativeSource AncestorType=UserControl}, StringFormat=引用 [{0}]}"
+                               FontSize="11"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource PrimaryBrush}"
+                               VerticalAlignment="Center"/>
+                </DockPanel>
+
+                <!-- 答案中与该引用对应的表述（从助手消息 [n] 角标附近抽取） -->
+                <TextBlock Text="答案侧表述"
+                           FontSize="10"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextSecondaryBrush}"
+                           Margin="0,0,0,2"
+                           Visibility="{Binding DataContext.HasSelectedSourceAnswerSupport, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}"/>
+                <Border Background="{DynamicResource CardBrush}"
+                        CornerRadius="6"
+                        Padding="8,6"
+                        Margin="0,0,0,6"
+                        Visibility="{Binding DataContext.HasSelectedSourceAnswerSupport, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="{Binding DataContext.SelectedSourceAnswerSupport, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                               FontSize="12"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               TextWrapping="Wrap"
+                               LineHeight="18"/>
+                </Border>
+                <TextBlock Text="答案中未找到对应角标句，可直接对照下方库内原文与原文件高亮段。"
+                           FontSize="11"
+                           Foreground="{DynamicResource TextTertiaryBrush}"
+                           TextWrapping="Wrap"
+                           Margin="0,0,0,6"
+                           Visibility="{Binding DataContext.HasSelectedSourceAnswerSupport, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource InvertBoolVis}}"/>
+
+                <!-- 库内引用原文（切片） -->
+                <TextBlock Text="库内引用原文"
+                           FontSize="10"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextSecondaryBrush}"
+                           Margin="0,0,0,2"/>
+                <Border Background="{DynamicResource CardBrush}"
+                        CornerRadius="6"
+                        Padding="8,6"
+                        MaxHeight="140">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <TextBlock Text="{Binding DataContext.SelectedSourceSnippet, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                   TextWrapping="Wrap"
+                                   LineHeight="18"/>
+                    </ScrollViewer>
+                </Border>
+
+                <TextBlock Text="下方为原文件视图，PDF 将自动跳转到引用页并高亮对应段落。"
+                           FontSize="10"
+                           Foreground="{DynamicResource TextTertiaryBrush}"
+                           TextWrapping="Wrap"
+                           Margin="0,6,0,0"
+                           Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource InvertBoolVis}}"/>
+            </StackPanel>
+        </Border>
+
+        <!-- 4. 原文件主体：PDF 矢量阅览 或 文本降级全文 -->
+        <Grid Grid.Row="3" Margin="0,0,0,10">
             <Border x:Name="PdfViewerContainer"
                     Visibility="Collapsed"
                     Background="{DynamicResource SurfaceBrush}"
@@ -164,7 +267,6 @@
                 <local:PdfCitationViewer x:Name="InnerPdfViewer"/>
             </Border>
 
-            <!-- 模式 2: 非 PDF 格式降级纯文本切片 -->
             <Border x:Name="TextViewerContainer"
                     Visibility="Visible"
                     Background="{DynamicResource SurfaceBrush}"
@@ -172,20 +274,42 @@
                     BorderThickness="1"
                     CornerRadius="8"
                     Padding="8">
-                <TextBox Text="{Binding SelectedSourceSnippet, Mode=OneWay}"
-                         IsReadOnly="True"
-                         TextWrapping="Wrap"
-                         VerticalScrollBarVisibility="Auto"
-                         Background="Transparent"
-                         BorderThickness="0"
-                         FontSize="13"
-                         Foreground="{DynamicResource TextPrimaryBrush}"
-                         Cursor="IBeam"/>
+                <DockPanel>
+                    <Border x:Name="TextLocateBanner"
+                            DockPanel.Dock="Top"
+                            Background="{DynamicResource WarningLightBrush}"
+                            Padding="8,6"
+                            Margin="0,0,0,8"
+                            Visibility="Collapsed">
+                        <TextBlock x:Name="TextLocateBannerText"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Foreground="{DynamicResource WarningBrush}"
+                                   Text="未能自动定位到原文段落，以下为引用原文。"/>
+                    </Border>
+                    <TextBlock x:Name="OriginalFileBodyText"
+                               FontSize="12"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               TextWrapping="Wrap"
+                               LineHeight="18"
+                               Text=""/>
+                    <TextBox x:Name="SnippetFallbackBox"
+                             Text="{Binding DataContext.SelectedSourceSnippet, Mode=OneWay, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                             IsReadOnly="True"
+                             TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             FontSize="12"
+                             Foreground="{DynamicResource TextPrimaryBrush}"
+                             Cursor="IBeam"
+                             Visibility="Collapsed"/>
+                </DockPanel>
             </Border>
         </Grid>
 
-        <!-- 4. 底部快捷操作栏 -->
-        <Grid Grid.Row="3">
+        <!-- 5. 底部快捷操作 -->
+        <Grid Grid.Row="4">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
@@ -196,53 +320,70 @@
             </Grid.ColumnDefinitions>
 
             <Button Grid.Row="0" Grid.Column="0"
-                    Content="📋 复制摘要"
                     Command="{Binding CopySourceSnippetCommand}"
                     Style="{DynamicResource SecondaryButtonStyle}"
                     Padding="8,6"
                     Margin="0,0,4,6"
-                    ToolTip="复制当前切片正文到剪贴板"/>
+                    ToolTip="复制当前引用原文到剪贴板">
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="{StaticResource IconClipboard}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <TextBlock Text="复制原文" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
 
-            <!-- 本地来源：全文检索 -->
             <Button Grid.Row="0" Grid.Column="1"
                     Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource InvertBoolVis}}"
-                    Content="🔍 全文检索"
                     Command="{Binding SearchSourceInSearchPageCommand}"
                     Style="{DynamicResource SecondaryButtonStyle}"
                     Padding="8,6"
                     Margin="4,0,0,6"
-                    ToolTip="跳转至搜索页检索此文档的更多分块"/>
+                    ToolTip="跳转至搜索页检索此文档的更多分块">
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="{StaticResource IconSearch}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <TextBlock Text="全文检索" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
 
-            <!-- Web 来源：在浏览器打开 -->
             <Button Grid.Row="0" Grid.Column="1"
                     Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}"
-                    Content="🌐 在浏览器中打开"
                     Command="{Binding OpenWebSourceCommand}"
                     Style="{DynamicResource SecondaryButtonStyle}"
                     Padding="8,6"
                     Margin="4,0,0,6"
-                    ToolTip="在默认浏览器中打开此网页"/>
+                    ToolTip="在默认浏览器中打开此网页">
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="{StaticResource IconGlobe}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <TextBlock Text="在浏览器中打开" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
 
-            <!-- 本地来源：文件定位 + 打开文件 -->
             <Button Grid.Row="1" Grid.Column="0"
                     Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource InvertBoolVis}}"
-                    Content="📂 文件定位"
                     Command="{Binding RevealSourceInExplorerCommand}"
                     Style="{DynamicResource TextButtonStyle}"
                     FontSize="11"
                     Padding="6,4"
                     Margin="0,0,4,0"
-                    ToolTip="在 Windows 文件资源管理器中选中并定位原文件"/>
+                    ToolTip="在 Windows 文件资源管理器中选中并定位原文件">
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="{StaticResource IconFolder}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <TextBlock Text="文件定位" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
 
             <Button Grid.Row="1" Grid.Column="1"
                     Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource InvertBoolVis}}"
-                    Content="📄 打开文件"
                     Command="{Binding OpenSourceFileCommand}"
                     Style="{DynamicResource TextButtonStyle}"
                     FontSize="11"
                     Padding="6,4"
                     Margin="4,0,0,0"
-                    ToolTip="使用系统默认程序打开此原文件"/>
+                    ToolTip="使用系统默认程序打开此原文件">
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="{StaticResource IconDocumentFull}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <TextBlock Text="打开文件" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
         </Grid>
     </Grid>
 </UserControl>

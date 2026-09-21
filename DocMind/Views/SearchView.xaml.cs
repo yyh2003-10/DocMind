@@ -87,7 +87,7 @@ public partial class SearchView : UserControl
 
                 tb.Inlines.Add(new Run(text[match.Index..(match.Index + match.Length)])
                 {
-                    Background = new SolidColorBrush(Color.FromRgb(255, 243, 205)),
+                    Background = ResolveSearchHighlightBrush(),
                 });
 
                 lastPos = match.Index + match.Length;
@@ -100,6 +100,23 @@ public partial class SearchView : UserControl
         {
             // 正则异常时回退到纯文本
         }
+    }
+
+    private static Brush ResolveSearchHighlightBrush()
+    {
+        try
+        {
+            if (Application.Current?.TryFindResource("WarningLightBrush") is Brush themeBrush)
+                return themeBrush;
+            if (Application.Current?.TryFindResource("HoverBrush") is Brush hover)
+                return hover;
+        }
+        catch
+        {
+            // ignore
+        }
+        // 深色下用半透明琥珀，避免浅黄块
+        return new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0x9F, 0x0A));
     }
 
     /// <summary>激活时自动聚焦搜索框。</summary>

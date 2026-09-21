@@ -416,6 +416,21 @@ public sealed class BackendProcessService : IDisposable
         injectedEnv.Add($"DOC2MIND_LLM_TEMPERATURE={psi.Environment["DOC2MIND_LLM_TEMPERATURE"]}");
         psi.Environment["DOC2MIND_LLM_MAX_TOKENS"] = _settings.LlmMaxTokens.ToString();
         injectedEnv.Add($"DOC2MIND_LLM_MAX_TOKENS={psi.Environment["DOC2MIND_LLM_MAX_TOKENS"]}");
+        if (_settings.LlmTimeoutSec > 0)
+        {
+            psi.Environment["DOC2MIND_LLM_TIMEOUT"] = _settings.LlmTimeoutSec.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            injectedEnv.Add($"DOC2MIND_LLM_TIMEOUT={psi.Environment["DOC2MIND_LLM_TIMEOUT"]}");
+        }
+        if (_settings.WebSearchTimeoutSec > 0)
+        {
+            psi.Environment["DOC2MIND_WEB_SEARCH_TIMEOUT"] = _settings.WebSearchTimeoutSec.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            injectedEnv.Add($"DOC2MIND_WEB_SEARCH_TIMEOUT={psi.Environment["DOC2MIND_WEB_SEARCH_TIMEOUT"]}");
+        }
+        if (!string.IsNullOrWhiteSpace(_settings.WebSearchSearxngUrl))
+        {
+            psi.Environment["DOC2MIND_WEB_SEARCH_SEARXNG_URL"] = _settings.WebSearchSearxngUrl.Trim();
+            injectedEnv.Add("DOC2MIND_WEB_SEARCH_SEARXNG_URL=<已注入，值略>");
+        }
         psi.Environment["DOC2MIND_RAG_TOP_K"] = _settings.RagTopK.ToString();
         injectedEnv.Add($"DOC2MIND_RAG_TOP_K={psi.Environment["DOC2MIND_RAG_TOP_K"]}");
         if (!string.IsNullOrWhiteSpace(_settings.RagSystemPrompt))
