@@ -25,4 +25,7 @@ public sealed record JobStatus
     public IReadOnlyList<IngestResult> Results { get; init; } = [];
     /// <summary>curate 任务完成后的整理报告（其它类型任务为 null）。原始 JSON 保留结构，UI 按需解析。</summary>
     public JsonElement? Report { get; init; }
+    /// <summary>FC-01b：取消时后端人话说明（已导入 N 篇…）；完成任务为 null。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("cancel_note")]
+    public string? CancelNote { get; init; }
 }

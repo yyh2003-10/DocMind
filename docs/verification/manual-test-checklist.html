@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>DocMind 手动功能验证记录表</title>
+<style>
+  :root {
+    --bg: #f4f6f9;
+    --card: #ffffff;
+    --ink: #1f2937;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --accent: #2563eb;
+    --ok: #059669;
+    --bad: #dc2626;
+    --warn: #d97706;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.55;
+  }
+  header {
+    background: #0f172a;
+    color: #fff;
+    padding: 20px 28px;
+  }
+  header h1 { margin: 0 0 6px; font-size: 20px; font-weight: 600; }
+  header p { margin: 0; font-size: 13px; color: #cbd5e1; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
+  .toolbar {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 16px; position: sticky; top: 0; z-index: 20;
+  }
+  .toolbar .stat { font-size: 13px; color: var(--muted); margin-right: 8px; }
+  .toolbar .stat b { color: var(--ink); }
+  button {
+    border: 1px solid var(--line); background: #fff; color: var(--ink);
+    border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { opacity: .92; color: #fff; }
+  .meta {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px; margin-bottom: 18px;
+  }
+  .meta label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .meta input, .meta select, .meta textarea {
+    width: 100%; border: 1px solid var(--line); border-radius: 6px;
+    padding: 7px 9px; font-size: 13px; background: #fff; color: var(--ink);
+  }
+  section.cat { margin-bottom: 22px; }
+  .cat-title {
+    font-size: 15px; font-weight: 700; margin: 0 0 10px;
+    padding-left: 10px; border-left: 4px solid var(--accent);
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; margin-bottom: 12px; overflow: hidden;
+  }
+  .card.done-pass { border-color: #a7f3d0; }
+  .card.done-fail { border-color: #fecaca; }
+  .card.done-block { border-color: #fde68a; }
+  .row {
+    display: grid; grid-template-columns: 42px 1fr; gap: 0;
+  }
+  .row .idx {
+    display: flex; align-items: flex-start; justify-content: center;
+    padding-top: 14px; font-size: 12px; font-weight: 700; color: var(--muted);
+    background: #f8fafc; border-right: 1px solid var(--line);
+  }
+  .body { padding: 12px 14px 14px; }
+  .tid { font-size: 12px; font-weight: 700; color: var(--accent); letter-spacing: .02em; }
+  .title { font-size: 15px; font-weight: 650; margin: 2px 0 8px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+  @media (max-width: 780px) { .grid2 { grid-template-columns: 1fr; } }
+  .block h4 {
+    margin: 0 0 4px; font-size: 12px; font-weight: 700;
+    color: var(--muted); text-transform: none;
+  }
+  .block p, .block ol { margin: 0; font-size: 13px; }
+  .block ol { padding-left: 18px; }
+  .block ol li { margin-bottom: 2px; }
+  .expect {
+    margin-top: 8px; padding: 8px 10px; border-radius: 6px;
+    background: #eff6ff; border: 1px solid #bfdbfe; font-size: 13px;
+  }
+  .expect b { color: #1d4ed8; }
+  .note-area { margin-top: 10px; }
+  .note-area label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .note-area textarea {
+    width: 100%; min-height: 54px; resize: vertical;
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-size: 13px;
+  }
+  .status {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+    margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line);
+  }
+  .status .label { font-size: 12px; color: var(--muted); margin-right: 4px; }
+  .status label.chk { font-size: 13px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+  .status input[type="text"] {
+    flex: 1; min-width: 160px; border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 8px; font-size: 12px;
+  }
+  footer {
+    margin-top: 24px; font-size: 12px; color: var(--muted); text-align: center;
+  }
+  .badge {
+    display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+    background: #e2e8f0; color: #334155; margin-left: 6px; vertical-align: middle;
+  }
+  .badge.p0 { background: #fee2e2; color: #b91c1c; }
+  .badge.p1 { background: #fef3c7; color: #b45309; }
+  .badge.p2 { background: #e0e7ff; color: #3730a3; }
+  .badge.core { background: #dcfce7; color: #166534; }
+  .hidden { display: none !important; }
+  @media print {
+    .toolbar { position: static; }
+    button { display: none; }
+    .note-area textarea { min-height: 48px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>DocMind 手动功能验证记录表</h1>
+  <p>范围：已确认基础能力 + 商用门禁 + Agent 预留（worktree feat/agent-p0-p1）· 请逐项执行并在本页记录结果</p>
+</header>
+<div class="wrap">
+
+  <div class="meta">
+    <div>
+      <label>测试人</label>
+      <input id="tester" placeholder="姓名"/>
+    </div>
+    <div>
+      <label>测试日期</label>
+      <input id="testDate" type="date"/>
+    </div>
+    <div>
+      <label>版本 / 分支 / 提交</label>
+      <input id="version" placeholder="如 worktree agent-p0 · commit xxx"/>
+    </div>
+    <div>
+      <label>运行环境</label>
+      <input id="env" placeholder="Win11 · 后端 8765 · 模型 xxx"/>
+    </div>
+    <div style="grid-column:1/-1">
+      <label>总体备注</label>
+      <textarea id="globalNotes" rows="2" placeholder="环境问题、阻塞项、遗留 bug 编号…"></textarea>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <span class="stat">进度 <b id="statDone">0</b> / <b id="statTotal">0</b></span>
+    <span class="stat">通过 <b id="statPass" style="color:var(--ok)">0</b></span>
+    <span class="stat">失败 <b id="statFail" style="color:var(--bad)">0</b></span>
+    <span class="stat">阻塞 <b id="statBlock" style="color:var(--warn)">0</b></span>
+    <span class="stat">未测 <b id="statTodo">0</b></span>
+    <div style="flex:1"></div>
+    <label style="font-size:12px;color:var(--muted)"><input type="checkbox" id="onlyTodo"/> 只看未测</label>
+    <button type="button" onclick="exportJson()">导出 JSON</button>
+    <button type="button" onclick="window.print()">打印</button>
+    <button type="button" class="primary" onclick="saveLocal()">保存到本机</button>
+    <button type="button" onclick="loadLocal()">读取本机</button>
+    <button type="button" onclick="clearAll()">清空记录</button>
+  </div>
+
+  <div id="list"></div>
+
+  <footer>
+    生成自 DocMind 手动验收清单 · 后端自动测试见 <code>docs/verification/full-test-report.md</code>（pytest 972 通过）<br/>
+    本页数据保存在浏览器 localStorage，键名 <code>docmind_manual_test_v1</code>
+  </footer>
+</div>
+
+<script>
+const CASES = [
+  {
+    cat: "A. 对话 RAG 与长文",
+    items: [
+      {
+        id: "C-01", pri: "core", title: "基础知识库问答（流式）",
+        pre: "后端在线；已配置 LLM；知识库内至少 1 篇相关文档",
+        steps: [
+          "打开【对话】页，勾选对应知识库集合",
+          "输入与库内文档相关的问题",
+          "观察流式输出、来源角标、状态栏模型/引用/耗时"
+        ],
+        expect: "回答流式出现；有 [n] 来源角标可点；状态栏显示模型与引用数；会话出现在历史列表"
+      },
+      {
+        id: "C-02", pri: "core", title: "LLM 未配置时发送拦截",
+        pre: "设置页清空 Provider/Key 或设为 none",
+        steps: [
+          "进入对话页",
+          "尝试发送任意问题"
+        ],
+        expect: "不发网络请求；出现去【设置 → 大模型对话】的引导；可一键跳转设置"
+      },
+      {
+        id: "C-03", pri: "p0", title: "交付/创作轨不再被压成短答",
+        pre: "LLM 已配置；可选：已选 ppt/doc 等创作人设",
+        steps: [
+          "发送：「帮我写一份 800 字以上的方案，包含背景、步骤、风险」",
+          "或发送：「做一个 10 页 PPT 大纲：主题为本地知识库」",
+          "观察回答长度与结构"
+        ],
+        expect: "回答明显长于「一段话」；有分节/大纲结构；done 帧或状态中 prompt_track 可为 delivery（调试日志）"
+      },
+      {
+        id: "C-04", pri: "p0", title: "输出截断提示 + 继续写",
+        pre: "设置中将 LLM 最大输出调到很小（如 256–512），或用易截断模型",
+        steps: [
+          "发送长文/创作类问题",
+          "观察是否出现截断提示与「继续写」按钮",
+          "点击「继续写」（输入框可留空或填补充要求）",
+          "观察正文是否接在原回答后，而非新开气泡"
+        ],
+        expect: "截断可见；点继续写后正文追加完整；来源列表不被清空；状态栏为「已续写」而非引用 0"
+      },
+      {
+        id: "C-05", pri: "p1", title: "续写后重启后端 · 历史不重复",
+        pre: "完成 C-04 续写后",
+        steps: [
+          "重启 DocMind 后端/客户端",
+          "打开同一会话历史",
+          "查看最后一条 assistant 内容"
+        ],
+        expect: "历史中应为合并后的一条回答，不应出现「原回答 + 合并全文」双份重复"
+      }
+    ]
+  },
+  {
+    cat: "B. 搜索与空态",
+    items: [
+      {
+        id: "S-01", pri: "core", title: "正常混合检索命中",
+        pre: "库内有文档",
+        steps: [
+          "打开【搜索】",
+          "输入与文档相关的关键词/问题",
+          "查看结果列表与详情"
+        ],
+        expect: "返回命中分块；可选中详情；可「在文档库查看」/「基于此分块提问」"
+      },
+      {
+        id: "S-02", pri: "p0", title: "空库 vs 无命中分流（FC-07）",
+        pre: "分别准备：① 空知识库 ② 有文档但搜索无关词",
+        steps: [
+          "场景①：空库时搜索任意词",
+          "观察空态文案与是否有「去导入文档」按钮",
+          "点击「去导入」",
+          "场景②：有文档时搜无关词",
+          "观察文案是否引导换词/调低相似度（而非去导入）"
+        ],
+        expect: "空库→提示知识库为空并可跳导入；有库无命中→提示换词；两种文案与出路不同"
+      }
+    ]
+  },
+  {
+    cat: "C. 导入与取消",
+    items: [
+      {
+        id: "I-01", pri: "core", title: "文件/目录导入成功",
+        pre: "后端在线；嵌入模型可用",
+        steps: [
+          "打开【导入】，选择文件或目录",
+          "选择目标集合（可新建）",
+          "开始导入并等待完成",
+          "去【搜索】验证能命中"
+        ],
+        expect: "显示导入 N / 跳过 M / 失败 K；搜索能命中新文档内容"
+      },
+      {
+        id: "I-02", pri: "p0", title: "导入中取消 + 残留明细（FC-01）",
+        pre: "准备较多文件或较大 PDF（导入会持续数秒以上）",
+        steps: [
+          "开始批量/大文件导入",
+          "在进度中点「取消」",
+          "记录状态栏/通知文案",
+          "查看结果明细或文档库",
+          "用搜索确认已入库文件是否可检索"
+        ],
+        expect: "取消后 job 终止；文案类似「已取消：前 N 篇已导入可搜索」；明细列表含已导入文件；未处理文件不在库中"
+      },
+      {
+        id: "I-03", pri: "p1", title: "重复导入跳过",
+        pre: "同一文件已成功导入过",
+        steps: [
+          "不勾选强制重新摄入，再次导入同一文件",
+          "查看结果"
+        ],
+        expect: "状态为 skipped（重复），不产生重复文档；强制重新摄入时可覆盖"
+      }
+    ]
+  },
+  {
+    cat: "D. 文档库与回收站",
+    items: [
+      {
+        id: "D-01", pri: "core", title: "文档列表 / 详情 / 删除",
+        pre: "库内有文档",
+        steps: [
+          "打开【文档库】",
+          "选中文档查看分块详情",
+          "删除选中文档",
+          "刷新列表并搜索确认"
+        ],
+        expect: "删除成功后列表无该文档；搜索不再命中（或提示软删）"
+      },
+      {
+        id: "D-02", pri: "p0", title: "回收站列表与恢复提示",
+        pre: "已删除至少 1 篇文档",
+        steps: [
+          "文档库工具栏点【回收站】",
+          "查看列表是否含刚删除的文档",
+          "选中一条，点【恢复选中】",
+          "阅读提示文案"
+        ],
+        expect: "回收站可见已删文档；恢复后提示「需重新摄入/重建索引才能被检索」；恢复元数据后文档列表可出现该条"
+      },
+      {
+        id: "D-03", pri: "p1", title: "恢复后需重摄入才可检索",
+        pre: "D-02 已恢复元数据",
+        steps: [
+          "直接搜索原文件内容关键词",
+          "若搜不到，对源文件重新导入或重建索引",
+          "再次搜索"
+        ],
+        expect: "仅恢复元数据时检索不到；重摄入/reindex 后可再次命中"
+      },
+      {
+        id: "D-04", pri: "p0", title: "清理回收站二次确认",
+        pre: "回收站非空",
+        steps: [
+          "点击【清理30天前】",
+          "观察是否出现确认条，而不是立刻删除",
+          "点【取消】",
+          "再点清理 →【确认清理】"
+        ],
+        expect: "先确认后才物理删除；取消后列表不变；确认后提示已清理 N 条（不可恢复）"
+      }
+    ]
+  },
+  {
+    cat: "E. 知识图谱 / 质量看板（LLM 前置）",
+    items: [
+      {
+        id: "G-01", pri: "core", title: "图谱加载与实体查看",
+        pre: "已抽取过图谱或库中有实体",
+        steps: [
+          "打开【知识图谱】",
+          "等待加载；点击节点",
+          "查看关系/来源片段"
+        ],
+        expect: "有节点边渲染或明确空态；详情区有关系与来源，错误态与空态文案不同"
+      },
+      {
+        id: "G-02", pri: "p0", title: "LLM 未配置时抽取事前禁用（FC-06）",
+        pre: "设置中 LLM 为 none / 未配置 Key（非 Ollama）",
+        steps: [
+          "打开图谱页",
+          "观察「抽取图谱」按钮是否可用",
+          "若仍可点，观察是否先提示并跳设置，而不是先显示「大模型正在…」"
+        ],
+        expect: "按钮禁用或点击后立即引导设置；不应发起注定失败的抽取请求；有「去配置大模型」路径"
+      },
+      {
+        id: "Q-01", pri: "core", title: "质量报告加载",
+        pre: "库内有文档",
+        steps: ["打开【质量看板】", "查看报告与统计"],
+        expect: "重复率/警告/文档数等展示正常；后端离线时有明确错误而非假空态"
+      },
+      {
+        id: "Q-02", pri: "p0", title: "AI 整理 LLM 前置 + 预览后执行",
+        pre: "① LLM 未配置 ② 然后配置好 LLM",
+        steps: [
+          "场景①：未配置 LLM 时点「只读预览」",
+          "确认是否被拦截并引导设置",
+          "场景②：配置 LLM 后点「只读预览」",
+          "确认未执行前「执行整理」不可用/需先预览",
+          "预览完成后点「执行整理」"
+        ],
+        expect: "未配置 LLM 不能跑整理并有引导；必须先预览再执行；执行完成有摘要计数"
+      }
+    ]
+  },
+  {
+    cat: "F. 设置与生效配置",
+    items: [
+      {
+        id: "ST-01", pri: "core", title: "LLM 配置保存与测试连接",
+        pre: "可用 Provider + Key 或本地 Ollama",
+        steps: [
+          "设置页配置 Provider/Key/模型",
+          "点【测试连接】",
+          "保存",
+          "回对话页提问"
+        ],
+        expect: "测试连接成功；保存有成功提示；对话可正常回答"
+      },
+      {
+        id: "ST-02", pri: "p0", title: "当前生效配置明细（FC-04）",
+        pre: "后端在线",
+        steps: [
+          "打开设置页",
+          "查看「当前生效配置」卡片",
+          "展开「生效明细」列表",
+          "核对嵌入/LLM/RAG/重排等与后端 /v1/config 是否一致",
+          "确认 API Key 只显示已配置/未配置"
+        ],
+        expect: "明细覆盖多类参数；标注实时/重启语义；**不出现 Key 明文**；与后端一致"
+      },
+      {
+        id: "ST-03", pri: "p1", title: "API Key 留空保留 / 清除",
+        pre: "已配置过 Key",
+        steps: [
+          "清空 Key 输入框后保存（不点清除）",
+          "确认对话仍可用（保留原值）",
+          "点【清除】并确认后再保存",
+          "再试对话"
+        ],
+        expect: "留空保存≠清除；清除后未配置拦截或需重新输入；状态徽章更新"
+      }
+    ]
+  },
+  {
+    cat: "G. 离线与错误恢复",
+    items: [
+      {
+        id: "O-01", pri: "p0", title: "后端离线全局横幅（FC-03/08）",
+        pre: "先确认后端在线",
+        steps: [
+          "结束/杀掉 DocMind 后端进程",
+          "在对话/搜索/导入/文档/图谱/质量任一页触发请求",
+          "观察顶部是否出现离线横幅",
+          "点【重新检测】或【启动后端】",
+          "恢复后刷新页面数据"
+        ],
+        expect: "任一页失败后**全局横幅**出现；可重新检测/启动；恢复后集合/会话等能刷新"
+      },
+      {
+        id: "O-02", pri: "p1", title: "导入/搜索离线提示不静默",
+        pre: "后端离线",
+        steps: ["导入页尝试导入", "搜索页尝试搜索"],
+        expect: "有明确失败提示；与全局横幅联动；不是空白或假成功"
+      }
+    ]
+  },
+  {
+    cat: "H. 创作导出（基础）",
+    items: [
+      {
+        id: "A-01", pri: "core", title: "创作对话产出可导出交付物",
+        pre: "LLM 已配置；可选创作人设 ppt/doc",
+        steps: [
+          "发送「制作一份关于 XX 的 PPT/报告」",
+          "等待回答/工作台出现 Artifact",
+          "导出物理文件",
+          "在磁盘打开文件检查"
+        ],
+        expect: "出现可预览交付物；导出路径可打开；文件非空"
+      },
+      {
+        id: "A-02", pri: "p2", title: "PPT 体检（若入口存在）",
+        pre: "已有 PPT 类 Artifact",
+        steps: ["在工作台点击体检/Inspect"],
+        expect: "返回评分与问题列表；失败时有明确错误"
+      }
+    ]
+  },
+  {
+    cat: "I. 商用门禁与 Agent 预留",
+    items: [
+      {
+        id: "B-01", pri: "p0", title: "默认请求不进入 Agent 模式",
+        pre: "AppSettings.AgentModeEnabled = false（默认）",
+        steps: [
+          "正常对话提问",
+          "观察思考区/轨迹是否出现工具链「tool_call」",
+          "查看调试日志请求体是否含 agentMode:true"
+        ],
+        expect: "默认走 RAG；无 agent 工具轨迹；请求不带 agentMode 或为 false"
+      },
+      {
+        id: "B-02", pri: "p0", title: "API 强开 agentMode 时服务端回落",
+        pre: "后端 agent_mode_enabled=false；可用 curl/Postman",
+        steps: [
+          "POST /v1/chat/stream，body 含 agentMode:true 与合法 query/chatId",
+          "观察响应与后端日志"
+        ],
+        expect: "不进入 Agent 工具链；回落 RAG；日志有「回落 RAG」类记录；不报 500"
+      },
+      {
+        id: "B-03", pri: "p2", title: "（可选）启用 Agent 后的轨迹",
+        pre: "前后端均打开 Agent（AppSettings + 后端 agent_mode_enabled=true）",
+        steps: [
+          "发送多步任务（如总结库内要点并写笔记）",
+          "观察是否出现 agent_plan / tool_call / tool_result",
+          "查看 workspace 目录是否有 notes 文件"
+        ],
+        expect: "有工具轨迹帧；done 含 tools_used/artifacts；工作区出现笔记或导出（未开 UI 时看日志/目录）"
+      },
+      {
+        id: "B-04", pri: "p0", title: "HTTP 鉴权（若默认启用）",
+        pre: "未设 DOC2MIND_DISABLE_AUTH=1",
+        steps: [
+          "不带 Token 访问 GET /v1/config",
+          "带 Bearer <server.token> 再访问",
+          "token 文件位于 %LOCALAPPDATA%\\doc2mind\\server.token"
+        ],
+        expect: "无 Token 401；有 Token 200；health 可匿名（若实现如此）"
+      }
+    ]
+  },
+  {
+    cat: "J. 会话与杂项",
+    items: [
+      {
+        id: "M-01", pri: "core", title: "多轮会话与历史",
+        pre: "已完成至少一轮对话",
+        steps: ["同一 chatId 追问", "刷新/重启后打开历史会话"],
+        expect: "追问有上下文；历史可恢复最近对话"
+      },
+      {
+        id: "M-02", pri: "p1", title: "停止生成",
+        pre: "回答生成中",
+        steps: ["点「停止」", "观察状态与已生成内容"],
+        expect: "停止后状态为已停止；部分内容保留；可重新生成"
+      },
+      {
+        id: "M-03", pri: "p2", title: "格式转换不入库",
+        pre: "有可转换文件",
+        steps: ["转换页转换 md/txt", "去文档库/搜索确认"],
+        expect: "转换成功出预览/文件；默认不增加知识库文档数"
+      }
+    ]
+  }
+];
+
+const STORAGE_KEY = "docmind_manual_test_v1";
+let state = { meta: {}, items: {} };
+
+function el(html) {
+  const t = document.createElement("template");
+  t.innerHTML = html.trim();
+  return t.content.firstChild;
+}
+
+function badge(pri) {
+  const map = {
+    core: ["core", "核心"],
+    p0: ["p0", "P0"],
+    p1: ["p1", "P1"],
+    p2: ["p2", "P2"]
+  };
+  const [cls, text] = map[pri] || ["", pri];
+  return `<span class="badge ${cls}">${text}</span>`;
+}
+
+function render() {
+  const root = document.getElementById("list");
+  root.innerHTML = "";
+  const onlyTodo = document.getElementById("onlyTodo").checked;
+  let n = 0;
+  let total = 0;
+  CASES.forEach((cat) => {
+    const visible = cat.items.filter((it) => {
+      total += onlyTodo ? 0 : 1;
+      if (!onlyTodo) return true;
+      const rec = state.items[it.id] || {};
+      return !rec.status;
+    });
+    if (!visible.length) {
+      if (!onlyTodo) return;
+      return;
+    }
+    const sec = document.createElement("section");
+    sec.className = "cat";
+    sec.innerHTML = `<h2 class="cat-title">${cat.cat}</h2>`;
+    visible.forEach((it) => {
+      n++;
+      const rec = state.items[it.id] || {};
+      const status = rec.status || "";
+      const card = el(`
+        <article class="card ${status ? "done-" + status : ""}" data-id="${it.id}">
+          <div class="row">
+            <div class="idx">${n}</div>
+            <div class="body">
+              <div class="tid">${it.id} ${badge(it.pri)}</div>
+              <div class="title">${it.title}</div>
+              <div class="grid2">
+                <div class="block">
+                  <h4>前置条件</h4>
+                  <p>${it.pre}</p>
+                </div>
+                <div class="block">
+                  <h4>操作步骤</h4>
+                  <ol>${it.steps.map((s) => `<li>${s}</li>`).join("")}</ol>
+                </div>
+              </div>
+              <div class="expect"><b>期望结果：</b>${it.expect}</div>
+              <div class="note-area">
+                <label>实测记录 / 证据（路径、截图名、日志摘录）</label>
+                <textarea data-field="notes" data-id="${it.id}" placeholder="实际现象、文件路径、bug 号…">${rec.notes || ""}</textarea>
+              </div>
+              <div class="status">
+                <span class="label">结论</span>
+                <label class="chk"><input type="radio" name="st-${it.id}" value="pass" ${status === "pass" ? "checked" : ""}/> 通过</label>
+                <label class="chk"><input type="radio" name="st-${it.id}" value="fail" ${status === "fail" ? "checked" : ""}/> 失败</label>
+                <label class="chk"><input type="radio" name="st-${it.id}" value="block" ${status === "block" ? "checked" : ""}/> 阻塞</label>
+                <label class="chk"><input type="radio" name="st-${it.id}" value="" ${!status ? "checked" : ""}/> 未测</label>
+                <label class="label">测试人/备注</label>
+                <input type="text" data-field="who" data-id="${it.id}" value="${(rec.who || "").replace(/"/g, "&quot;")}" placeholder="可选"/>
+              </div>
+            </div>
+          </div>
+        </article>
+      `);
+      sec.appendChild(card);
+    });
+    root.appendChild(sec);
+  });
+  if (!onlyTodo) {
+    // total counted in filter incorrectly when onlyTodo false — recompute
+  }
+  bindEvents();
+  updateStats();
+}
+
+function bindEvents() {
+  document.querySelectorAll("[data-field]").forEach((node) => {
+    node.addEventListener("change", () => {
+      const id = node.getAttribute("data-id");
+      const field = node.getAttribute("data-field");
+      state.items[id] = state.items[id] || {};
+      state.items[id][field] = node.value;
+      saveLocal(true);
+      updateStats();
+      updateCardClass(id);
+    });
+    if (node.tagName === "TEXTAREA" || node.tagName === "INPUT") {
+      node.addEventListener("input", () => {
+        const id = node.getAttribute("data-id");
+        const field = node.getAttribute("data-field");
+        state.items[id] = state.items[id] || {};
+        state.items[id][field] = node.value;
+      });
+    }
+  });
+  document.querySelectorAll('input[type="radio"]').forEach((r) => {
+    r.addEventListener("change", () => {
+      const name = r.name; // st-XXX
+      const id = name.slice(3);
+      state.items[id] = state.items[id] || {};
+      state.items[id].status = r.value || "";
+      saveLocal(true);
+      updateStats();
+      updateCardClass(id);
+    });
+  });
+}
+
+function updateCardClass(id) {
+  const card = document.querySelector(`.card[data-id="${id}"]`);
+  if (!card) return;
+  const st = (state.items[id] && state.items[id].status) || "";
+  card.classList.remove("done-pass", "done-fail", "done-block");
+  if (st) card.classList.add("done-" + st);
+}
+
+function allCases() {
+  return CASES.flatMap((c) => c.items);
+}
+
+function updateStats() {
+  const all = allCases();
+  let pass = 0, fail = 0, block = 0, todo = 0, done = 0;
+  all.forEach((it) => {
+    const st = (state.items[it.id] || {}).status || "";
+    if (!st) todo++;
+    else done++;
+    if (st === "pass") pass++;
+    if (st === "fail") fail++;
+    if (st === "block") block++;
+  });
+  document.getElementById("statTotal").textContent = String(all.length);
+  document.getElementById("statDone").textContent = String(done);
+  document.getElementById("statPass").textContent = String(pass);
+  document.getElementById("statFail").textContent = String(fail);
+  document.getElementById("statBlock").textContent = String(block);
+  document.getElementById("statTodo").textContent = String(todo);
+}
+
+function collectMeta() {
+  state.meta = {
+    tester: document.getElementById("tester").value,
+    testDate: document.getElementById("testDate").value,
+    version: document.getElementById("version").value,
+    env: document.getElementById("env").value,
+    globalNotes: document.getElementById("globalNotes").value,
+  };
+}
+
+function applyMeta() {
+  const m = state.meta || {};
+  document.getElementById("tester").value = m.tester || "";
+  document.getElementById("testDate").value = m.testDate || "";
+  document.getElementById("version").value = m.version || "";
+  document.getElementById("env").value = m.env || "";
+  document.getElementById("globalNotes").value = m.globalNotes || "";
+}
+
+function saveLocal(silent) {
+  collectMeta();
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if (!silent) alert("已保存到浏览器 localStorage");
+}
+
+function loadLocal() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) {
+    alert("本机没有已保存记录");
+    return;
+  }
+  try {
+    state = JSON.parse(raw);
+    state.items = state.items || {};
+    state.meta = state.meta || {};
+    applyMeta();
+    render();
+  } catch (e) {
+    alert("读取失败: " + e.message);
+  }
+}
+
+function clearAll() {
+  if (!confirm("确认清空所有手动测试记录？")) return;
+  state = { meta: {}, items: {} };
+  localStorage.removeItem(STORAGE_KEY);
+  applyMeta();
+  render();
+}
+
+function exportJson() {
+  collectMeta();
+  const payload = {
+    product: "DocMind",
+    title: "手动功能验证记录",
+    exported_at: new Date().toISOString(),
+    ...state.meta,
+    summary: (() => {
+      const all = allCases();
+      const s = { total: all.length, pass: 0, fail: 0, block: 0, todo: 0 };
+      all.forEach((it) => {
+        const st = (state.items[it.id] || {}).status || "";
+        if (st === "pass") s.pass++;
+        else if (st === "fail") s.fail++;
+        else if (st === "block") s.block++;
+        else s.todo++;
+      });
+      return s;
+    })(),
+    results: allCases().map((it) => ({
+      id: it.id,
+      title: it.title,
+      priority: it.pri,
+      category: CASES.find((c) => c.items.includes(it))?.cat || "",
+      status: (state.items[it.id] || {}).status || "",
+      notes: (state.items[it.id] || {}).notes || "",
+      who: (state.items[it.id] || {}).who || "",
+      expect: it.expect,
+      steps: it.steps,
+      pre: it.pre,
+    })),
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `DocMind-manual-test-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+document.getElementById("onlyTodo").addEventListener("change", render);
+document.getElementById("testDate").value = new Date().toISOString().slice(0, 10);
+
+// init
+applyMeta();
+render();
+</script>
+</body>
+</html>

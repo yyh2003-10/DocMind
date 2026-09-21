@@ -14,6 +14,54 @@ namespace DocMind.ViewModels;
 public partial class QualityViewModel : ViewModelBase
 {
     private readonly IDoc2kbApiService _apiService;
+    private readonly NotificationService? _notifications;
+    private readonly AppSettings? _appSettings;
+
+    /// <summary>后端不可达 → 全局离线横幅（FC-03/08）。</summary>
+    public event Action? BackendUnreachable;
+
+    /// <summary>LLM 未配置 → 跳转设置页。</summary>
+    public event Action? NavigateToSettingsRequested;
+
+    [RelayCommand]
+    private void NavigateToSettings() => NavigateToSettingsRequested?.Invoke();
+
+    /// <summary>AI 整理事前门禁（FC-06 类）。settings 为空时不阻断（兼容单测）。</summary>
+    public bool IsLlmConfigured
+    {
+        get
+        {
+            if (_appSettings is null)
+            {
+                return true;
+            }
+            var provider = _appSettings.LlmProvider?.Trim() ?? "";
+            if (provider.Length == 0 || string.Equals(provider, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            if (string.Equals(provider, "ollama", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            if (!string.IsNullOrWhiteSpace(_appSettings.LlmApiKey))
+            {
+                return true;
+            }
+            return _appSettings.LlmProfiles?.Any(p => !string.IsNullOrWhiteSpace(p.ApiKey)) == true;
+        }
+    }
+
+    public string LlmConfigHint =>
+        "尚未配置大模型：AI 整理需要 LLM，请到【设置 → 大模型对话】完成配置。\n"
+        + "完全离线可选择 Ollama（本机推理、无需 API Key）。";
+
+    public void NotifyLlmGateChanged()
+    {
+        OnPropertyChanged(nameof(IsLlmConfigured));
+        PreviewCurateCommand.NotifyCanExecuteChanged();
+        ExecuteCurateCommand.NotifyCanExecuteChanged();
+    }
 
     private string? _collection;
     private bool _isBusy;
@@ -27,9 +75,14 @@ public partial class QualityViewModel : ViewModelBase
     private bool _hasPreviewResult;
     private CancellationTokenSource? _curateCts;
 
-    public QualityViewModel(IDoc2kbApiService apiService)
+    public QualityViewModel(
+        IDoc2kbApiService apiService,
+        NotificationService? notifications = null,
+        AppSettings? appSettings = null)
     {
         _apiService = apiService;
+        _notifications = notifications;
+        _appSettings = appSettings;
         Title = "质量看板";
         Warnings = new ObservableCollection<string>();
         Collections = new ObservableCollection<CollectionStats>();
@@ -102,6 +155,94 @@ public partial class QualityViewModel : ViewModelBase
     /// <summary>是否有质量警告。</summary>
     public bool HasWarnings => Warnings.Count > 0;
 
+    // ── 库状态（最新 / 待同步 / 索引过期） ──
+
+    private LibraryStatus? _libraryStatus;
+
+    public LibraryStatus? LibraryStatus
+    {
+        get => _libraryStatus;
+        private set
+        {
+            if (SetProperty(ref _libraryStatus, value))
+            {
+                OnPropertyChanged(nameof(LibraryStatusText));
+                OnPropertyChanged(nameof(LibraryStatusBadge));
+                OnPropertyChanged(nameof(HasLibraryIssues));
+                OnPropertyChanged(nameof(NeedsReindex));
+            }
+        }
+    }
+
+    public string LibraryStatusText =>
+        string.IsNullOrWhiteSpace(LibraryStatus?.Summary) ? "库状态未知" : LibraryStatus!.Summary;
+
+    public string LibraryStatusBadge => LibraryStatus?.Status switch
+    {
+        "ok" => "最新",
+        "empty" => "空库",
+        "warn" => "有提醒",
+        "reindex_needed" => "需重建索引",
+        _ => "未知",
+    };
+
+    public bool HasLibraryIssues => LibraryStatus?.Issues is { Count: > 0 };
+    public bool NeedsReindex => LibraryStatus?.NeedsReindex == true;
+
+    private bool _isReindexingFromStatus;
+
+    /// <summary>库状态提示需重建时，一键触发重建索引（确认后执行，复用 Documents 页同款 API）。</summary>
+    [RelayCommand]
+    private async Task ReindexFromStatusAsync()
+    {
+        if (_isReindexingFromStatus)
+        {
+            return;
+        }
+        var confirm = System.Windows.MessageBox.Show(
+            "确定重建索引吗？\n将按当前嵌入模型重新计算全部分块向量。\n大库可能耗时较长，期间检索可能降级。",
+            "确认重建索引",
+            System.Windows.MessageBoxButton.YesNo,
+            System.Windows.MessageBoxImage.Question);
+        if (confirm != System.Windows.MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        _isReindexingFromStatus = true;
+        try
+        {
+            StatusMessage = "提交重建索引任务…";
+            var job = await _apiService.ReindexAsync(new ReindexRequest { Collection = null });
+            DebugLog.Info($"库状态一键重建: jobId={job.JobId}", "Quality");
+            var final = await _apiService.WatchJobUntilDoneAsync(job.JobId);
+            if (string.Equals(final.Status, "completed", StringComparison.OrdinalIgnoreCase))
+            {
+                _notifications.Success($"重建索引完成（{final.Processed}/{final.Total} 分块）");
+                InvalidateCache();
+                await RefreshAsync();
+            }
+            else if (string.Equals(final.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                _notifications.Info("重建索引已取消", "重建索引");
+            }
+            else
+            {
+                _notifications.Error($"重建索引失败：{final.Error ?? final.Status}");
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"重建索引失败：{ex.Message}";
+            _notifications.Error($"重建索引失败：{ex.Message}");
+            DebugLog.Error($"库状态一键重建失败: {ex.Message}", "Quality", ex);
+        }
+        finally
+        {
+            _isReindexingFromStatus = false;
+        }
+    }
+
     /// <summary>各集合文档/chunk 分布（用于图表/列表展示）。</summary>
     public ObservableCollection<CollectionStats> Collections { get; }
 
@@ -171,6 +312,15 @@ public partial class QualityViewModel : ViewModelBase
             var col = string.IsNullOrWhiteSpace(Collection) ? null : Collection.Trim();
             Report = await _apiService.GetQualityAsync(col);
             Stats = await _apiService.GetStatsAsync(col);
+            try
+            {
+                LibraryStatus = await _apiService.GetLibraryStatusAsync();
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"库状态拉取失败（不影响质量报告）: {ex.Message}", "Quality");
+                LibraryStatus = null;
+            }
 
             sw.Stop();
             foreach (var w in Report.Warnings)
@@ -208,6 +358,7 @@ public partial class QualityViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
             DebugLog.Error($"质量报告后端不可达: {ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Quality", ex);
@@ -274,10 +425,10 @@ public partial class QualityViewModel : ViewModelBase
 
     public bool HasCurateSummary => !string.IsNullOrWhiteSpace(CurateSummary);
 
-    private bool CanRunCurate => !IsCurating;
+    private bool CanRunCurate => !IsCurating && IsLlmConfigured;
 
     /// <summary>执行按钮（dry_run=false）需先完成一次只读预览（dedup/consolidate 有损，先确认再执行）。</summary>
-    private bool CanRunCurateExecute => !IsCurating && _hasPreviewResult;
+    private bool CanRunCurateExecute => !IsCurating && _hasPreviewResult && IsLlmConfigured;
 
     /// <summary>AI 整理只读预览（dry_run=true，零写入）：先看整理方案再决定是否执行。</summary>
     [RelayCommand(CanExecute = nameof(CanRunCurate))]
@@ -294,6 +445,15 @@ public partial class QualityViewModel : ViewModelBase
     {
         if (IsCurating)
         {
+            return;
+        }
+        if (!IsLlmConfigured)
+        {
+            CurateStatus = LlmConfigHint;
+            _notifications?.Warning(LlmConfigHint, "需要配置大模型");
+            NavigateToSettingsRequested?.Invoke();
+            PreviewCurateCommand.NotifyCanExecuteChanged();
+            ExecuteCurateCommand.NotifyCanExecuteChanged();
             return;
         }
 
@@ -379,6 +539,7 @@ public partial class QualityViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             CurateStatus = $"后端不可达：{ex.Message}";
             DebugLog.Error($"AI 整理{mode}后端不可达: {ex.Message}", "Quality", ex);
         }

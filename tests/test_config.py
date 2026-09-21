@@ -25,9 +25,12 @@ class TestSettings:
         s = Settings()
         assert s.embed_model == "BAAI/bge-small-zh-v1.5"
         assert s.embed_dim == 512
-        assert s.chunk_max_tokens == 1500
+        assert s.chunk_max_tokens == 480
         assert s.chunk_min_chars == 50
-        assert s.chunk_overlap_chars == 200
+        assert s.chunk_overlap_chars == 120
+        assert s.embed_max_length == 512
+        assert s.chunk_max_tokens <= s.embed_max_length
+        assert s.usage_profile == "docs"
         assert s.search_top_k == 10
         assert s.rrf_k == 60
         assert s.server_port == 8765
@@ -117,6 +120,24 @@ class TestSettings:
             assert s.server_port == 8765  # 保持默认
         finally:
             del os.environ["DOC2MIND_SERVER_PORT"]
+
+    def test_from_env_sanitizes_unsupported_rerank_model(self) -> None:
+        """已知不可用的重排模型（Xenova/bge-reranker-v2-m3）自动纠偏为 BAAI。"""
+        os.environ["DOC2MIND_RERANK_MODEL"] = "Xenova/bge-reranker-v2-m3"
+        try:
+            s = Settings.from_env()
+            assert s.rerank_model == "BAAI/bge-reranker-base"
+        finally:
+            del os.environ["DOC2MIND_RERANK_MODEL"]
+
+    def test_from_env_keeps_supported_rerank_model(self) -> None:
+        """支持列表内的重排模型名原样保留。"""
+        os.environ["DOC2MIND_RERANK_MODEL"] = "BAAI/bge-reranker-base"
+        try:
+            s = Settings.from_env()
+            assert s.rerank_model == "BAAI/bge-reranker-base"
+        finally:
+            del os.environ["DOC2MIND_RERANK_MODEL"]
 
     def test_from_env_embed_dim_aligned_with_catalog(self) -> None:
         """catalog 已收录模型：embed_dim 自动对齐真实维度，无需加载模型探测。"""
@@ -215,4 +236,77 @@ class TestSettings:
         finally:
             del os.environ["DOC2MIND_WATCH_PATHS"]
             del os.environ["DOC2MIND_WATCH_DEBOUNCE_SECONDS"]
+
+    def test_ai_intent_routing_defaults(self) -> None:
+        """对话 AI 意图路由 10 个 config flags 默认值 = design 5.1 表（「默认 = 旧行为」硬校验）。"""
+        s = Settings()
+        # 1 科研写作路由总开关
+        assert s.intent_research_enabled is False
+        # 2 模糊仲裁模式
+        assert s.intent_conflict_arbitration == "rules"
+        # 3 通识问答自动补搜
+        assert s.web_auto_supplement_general_qa is False
+        # 4 弱命中阈值（参数化，仅环境变量/默认值）
+        assert s.web_auto_supplement_min_score == 0.45
+        # 5 general_qa 细类标签
+        assert s.general_qa_type_enabled is False
+        # 6 引用支撑验证
+        assert s.research_citation_support_check is False
+        # 7 文献集合切片上限
+        assert s.research_max_literature == 20
+        # 8 图谱 topic 扩散深度
+        assert s.research_graph_topic_depth == 2
+        # 9 规划降级可见（纯新增提示，默认开）
+        assert s.planning_degradation_visible is True
+        # 10 科研 draft 联网交叉验证
+        assert s.research_web_crosscheck is False
+
+    def test_ai_intent_routing_persist_fields(self) -> None:
+        """带 ✅ 的 9 个字段入 _PERSIST_FIELDS；参数型阈值 web_auto_supplement_min_score 不入。"""
+        persist = set(_config_mod._PERSIST_FIELDS)
+        for name in (
+            "intent_research_enabled",
+            "intent_conflict_arbitration",
+            "web_auto_supplement_general_qa",
+            "general_qa_type_enabled",
+            "research_citation_support_check",
+            "research_max_literature",
+            "research_graph_topic_depth",
+            "planning_degradation_visible",
+            "research_web_crosscheck",
+        ):
+            assert name in persist, f"{name} 应可持久化到 config.toml"
+        assert "web_auto_supplement_min_score" not in persist
+
+    def test_ai_intent_routing_from_env(self) -> None:
+        """DOC2MIND_<UPPER_FIELD> 通用映射对 10 字段自动生效（无需逐一登记）。"""
+        env = {
+            "DOC2MIND_INTENT_RESEARCH_ENABLED": "true",
+            "DOC2MIND_INTENT_CONFLICT_ARBITRATION": "llm",
+            "DOC2MIND_WEB_AUTO_SUPPLEMENT_GENERAL_QA": "1",
+            "DOC2MIND_WEB_AUTO_SUPPLEMENT_MIN_SCORE": "0.3",
+            "DOC2MIND_GENERAL_QA_TYPE_ENABLED": "true",
+            "DOC2MIND_RESEARCH_CITATION_SUPPORT_CHECK": "1",
+            "DOC2MIND_RESEARCH_MAX_LITERATURE": "12",
+            "DOC2MIND_RESEARCH_GRAPH_TOPIC_DEPTH": "3",
+            "DOC2MIND_PLANNING_DEGRADATION_VISIBLE": "false",
+            "DOC2MIND_RESEARCH_WEB_CROSSCHECK": "true",
+        }
+        for k, v in env.items():
+            os.environ[k] = v
+        try:
+            s = Settings.from_env()
+            assert s.intent_research_enabled is True
+            assert s.intent_conflict_arbitration == "llm"
+            assert s.web_auto_supplement_general_qa is True
+            assert s.web_auto_supplement_min_score == 0.3
+            assert s.general_qa_type_enabled is True
+            assert s.research_citation_support_check is True
+            assert s.research_max_literature == 12
+            assert s.research_graph_topic_depth == 3
+            assert s.planning_degradation_visible is False
+            assert s.research_web_crosscheck is True
+        finally:
+            for k in env:
+                del os.environ[k]
 

@@ -88,7 +88,7 @@
                             Width="Auto"
                             Padding="12,6"
                             Height="32"
-                            ToolTip="从已有文档中通过大模型提取实体与关系网构建图谱"
+                            ToolTip="从已有文档中通过大模型提取实体与关系网构建图谱（需已配置 LLM）"
                             Background="{DynamicResource PrimaryBrush}"
                             Foreground="{DynamicResource TextInverseBrush}"
                             BorderThickness="0"
@@ -98,6 +98,14 @@
                             <TextBlock Text="抽取图谱"/>
                         </StackPanel>
                     </Button>
+                    <TextBlock Text="{Binding LlmConfigHint}"
+                               FontSize="11"
+                               Foreground="{DynamicResource WarningBrush}"
+                               VerticalAlignment="Center"
+                               Margin="8,0,0,0"
+                               TextWrapping="Wrap"
+                               MaxWidth="280"
+                               Visibility="{Binding IsLlmConfigured, Converter={StaticResource InvertBoolVis}}"/>
                 </StackPanel>
 
                 <!-- 统计徽章 -->

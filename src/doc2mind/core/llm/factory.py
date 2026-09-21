@@ -26,7 +26,7 @@ def get_llm_client(settings: Settings | None = None) -> LLMClient | None:
 
     s = settings or get_settings()
     provider = s.llm_provider or "none"
-    timeout = s.llm_timeout if s.llm_timeout and s.llm_timeout > 0 else 120.0
+    timeout = s.llm_timeout if s.llm_timeout and s.llm_timeout > 0 else 180.0
 
     if provider == "none":
         return None

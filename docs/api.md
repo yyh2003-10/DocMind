@@ -244,6 +244,14 @@ RAG 对话问答：从知识库检索相关文档，调用 LLM 生成回答并�
   "provider": "openai",
   "total_chunks": 5,
   "elapsed_ms": 2340,
+  "timing": {
+    "retrieval_ms": 180,
+    "web_ms": 0,
+    "llm_first_token_ms": 2000,
+    "generation_ms": 2000,
+    "total_ms": 2340,
+    "citation_gate": { "citation_min_score": 0.45, "cite_count": 3, "bg_count": 1, "discarded_count": 1 }
+  },
   "sources": [                     // 引用来源列表
     {
       "index": 1,
@@ -257,7 +265,12 @@ RAG 对话问答：从知识库检索相关文档，调用 LLM 生成回答并�
                                // ~0.016-0.033)/web_relevance(网页相关度)/
                                // attachment(附件全文)；空 = 旧数据
     }
-  ]
+  ],
+  "evidence": {
+    "local_count": 5,
+    "citation_gate": { "cite_count": 3, "bg_count": 1, "discarded_count": 1 },
+    "timing": { "retrieval_ms": 180, "generation_ms": 2000, "total_ms": 2340 }
+  }
 }
 ```
 
@@ -267,15 +280,23 @@ RAG 对话问答：从知识库检索相关文档，调用 LLM 生成回答并�
 
 ### `POST /v1/chat/stream`
 
-RAG **流式**对话（SSE）：WPF 对话页实际使用的端点。请求体与 `POST /v1/chat` 完全一致（含 `topK`/`chatId`/`providerConfig`/`enableWebSearch`/`attachments`/`ragMode` 等字段）。响应为 `text/event-stream`，携带 `Cache-Control: no-cache` / `X-Accel-Buffering: no` 头；空闲超 15s 发送心跳注释帧 `: heartbeat` 防代理掐断。
+RAG **流式**对话（SSE）：WPF 对话页实际使用的端点。请求体与 `POST /v1/chat` 完全一致（含 `topK`/`chatId`/`providerConfig`/`enableWebSearch`/`attachments`/`ragMode` 等字段），并新增 P0 字段：`responseMode`（`rag`|`delivery`，可省略自动推断）、`continueWriting`（bool，续写：不重复检索，基于会话历史补全并合并进上一条 assistant），以及 P1：`agentMode`（bool）或 `mode="agent"` — **仅当后端 `agent_mode_enabled=true` 时生效**；为 false 时服务端忽略并回落 RAG（商用默认关闭进阶能力）。启用后 SSE 追加 `agent_plan` / `tool_call` / `tool_result` / `artifact_ready` 帧，done 帧含 `mode:"agent"`、`tools_used`、`artifacts`、`workspace_root`。响应为 `text/event-stream`，携带 `Cache-Control: no-cache` / `X-Accel-Buffering: no` 头；空闲超 15s 发送心跳注释帧 `: heartbeat` 防代理掐断。
 
 **SSE 帧类型（`data: ` 前缀 JSON 行，`data: [DONE]` 结束）：**
+
+**阶段耗时与慢模型提示（兼容：旧客户端忽略未知字段）：**
+
+- done 帧顶层 `stage_*`：`stage_retrieval_ms` / `stage_web_ms` / `stage_tool_ms` / `stage_first_token_ms` / `stage_generation_ms` / `stage_total_ms` + `stage_first_token_mode`（`stream`|`n/a`，非流式 TTFT=-1）
+- `timing.citation_gate`：`dropped_by_score` / `dropped_by_topic` / `cross_check` / `bg_injected` / `bg_overflow`
+- 首 token 等待 ≥ `llm_first_token_slow_ms`（默认 30s）后，status 周期出现「正在生成回答…（已等待 Ns）」
+- 配置：`search_provider=builtin|tavily|bocha|serpapi`（无 key 回落 builtin，密钥不回显）；`background_hit_limit`（0=关背景）；`stage_elapsed_enabled`；`agent_native_tool_calling`
 
 | 帧类型 | 形状 | 说明 |
 |---|---|---|
 | 状态 | `{"type":"status","message":"正在检索知识库..."}` | 检索/联网等阶段进度 |
-| 推理链 | `{"type":"thinking","text":"..."}` | DeepSeek-R1/Qwen3 等模型的思考过程，独立于正文 |
+| 推理链 | `{"type":"thinking","text":"..."}` | DeepSeek-R1/Qwen3 等模型的思考过程，独立于正文；可含 `prompt_track` |
 | 正文 | `{"token":"..."}` | 回答正文增量 |
+| Agent 轨迹 | `{"type":"tool_call"|"tool_result"|"agent_plan", ...}` | 仅 agent_mode 开启时；默认忽略安全 |
 | 错误 | `{"error":"..."}` | 后端 RAG/LLM 出错，随后紧跟 `data: [DONE]` |
 | 终帧 | `{"done":true, ...}` | 见下方字段说明 |
 
@@ -295,13 +316,88 @@ RAG **流式**对话（SSE）：WPF 对话页实际使用的端点。请求体�
   },
   "total_chunks": 5,               // 引用来源数
   "elapsed_ms": 2340,
-  "partial": false,                // true = 部分回答（网络中断/用户停止），未写入会话历史
+  "timing": {                      // 分阶段耗时（ms，T3/T5 可观测）
+    "retrieval_ms": 180,
+    "web_ms": 0,
+    "context_ms": 220,
+    "llm_first_token_ms": 420,    // 首 token；非流式≈整段生成
+    "generation_ms": 2000,
+    "total_ms": 2340,
+    "citation_gate": {             // 弱相关引用门控统计
+      "citation_min_score": 0.45,
+      "bg_floor": 0.27,
+      "reranked_usable": false,
+      "hit_count": 5,
+      "cite_count": 3,
+      "bg_count": 1,
+      "discarded_count": 1,
+      "topic_demoted_count": 0
+    }
+  },
+  "partial": false,                // true = 部分回答（中断/停止/截断）
   "warning": "回答因网络连接中断…",  // partial=true 时附带的人类可读警示
+  "prompt_track": "rag",           // P0：rag | delivery
+  "truncated": false,              // P0：true = 输出 token 上限截断
+  "continue_supported": true,      // P0：客户端可展示「继续写」
+  "response_mode": "normal",       // normal | continue
+  "evidence": {
+    "local_count": 3,
+    "citation_audit": { "ok": true, "evidence_support": [1,2] },
+    "citation_gate": { /* 同 timing.citation_gate */ },
+    "timing": { /* 同上 timing */ }
+  },
   "sources": [ /* 与 /v1/chat 响应的 sources 字段一致（snake_case，18 字段） */ ]
 }
 ```
 
-> 被中断/停止的部分回答不会作为完整 assistant 消息写入会话历史，避免污染后续多轮上下文。
+> 被中断/停止的部分回答不会作为完整 assistant 消息写入会话历史，避免污染后续多轮上下文。截断时 `truncated=true` 且 `partial=true`，并提示「继续写」。
+
+**引用门控与耗时默认值（推荐）：**
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `citation_min_score` | `0.45` | 重排分引用线；低于此值不占 `[n]`。>0.60 在无重排库上易误杀 |
+| `citation_bg_score_ratio` | `0.6` | 背景线 = 引用线 × ratio；更低丢弃不注入（提速且防无效长上下文） |
+| `web_search_timeout` | `36.0` | 联网预算；超时带部分结果返回，不拖死生成 |
+| `llm_first_token_slow_ms` | `30000` | 首 token 超过则 status 提示关联网/换模型 |
+| `llm_timeout` | `0`（不限） | 建议按模型设置；超时文案含检查模型/关联网/换模型 |
+
+**门控误杀风险：** 主题门基于查询与切片词汇重叠；同义改写可能无重叠，此时高分命中降为背景而非丢弃。空命中时状态流明确「无库内引用依据」，不伪造 `[n]`。
+
+---
+
+### `GET/POST /v1/config`（节选新增字段）
+
+```jsonc
+// GET 响应新增（密钥只回显 configured，不回显明文）
+{
+  "search_provider": "builtin",
+  "search_provider_api_key_configured": false,
+  "search_provider_endpoint": null,
+  "citation_min_score": 0.45,
+  "citation_bg_score_ratio": 0.6,
+  "background_hit_limit": 5,
+  "stage_elapsed_enabled": true,
+  "llm_first_token_slow_ms": 30000,
+  "agent_mode_enabled": false,
+  "agent_native_tool_calling": true,
+  "agent_file_write_policy": "session_allow"
+}
+
+// POST 可写字段（None=不改；persist=false 仅运行时生效）
+{
+  "search_provider": "tavily",
+  "search_provider_api_key": "tvly-***",
+  "citation_min_score": 0.45,
+  "background_hit_limit": 5,
+  "stage_elapsed_enabled": true,
+  "agent_mode_enabled": false,
+  "agent_native_tool_calling": true,
+  "persist": true
+}
+```
+
+> 商用红线：`agent_mode_enabled=false` 时，请求中的 `agentMode=true` 会被服务端忽略并回落 RAG。`search_provider_api_key` 永不回显明文。
 
 ---
 

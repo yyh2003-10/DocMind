@@ -9,11 +9,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +81,13 @@ class Settings:
     embed_model_path: str | None = None
 
     # --- 分块 ---
-    chunk_max_tokens: int = 1500
+    # 出厂对齐 embed_max_length=512：chunk 不得超过嵌入窗口，否则大块只嵌前半截
+    # （「库里有却搜不到」根因之一）。默认 480 token（中文约 1200 字）。
+    # 切换长窗口模型（jina 2048 等）时再放宽，并同步调大 embed_max_length。
+    chunk_max_tokens: int = 480
     chunk_min_chars: int = 50
-    chunk_overlap_chars: int = 200
-    chunk_max_chars: int = 4000  # 1500 token × ~2.5 字符/token
+    chunk_overlap_chars: int = 120
+    chunk_max_chars: int = 1200  # 480 token × ~2.5 字符/token
 
     # --- 检索 ---
     search_top_k: int = 10
@@ -108,6 +114,27 @@ class Settings:
     llm_model: str = ""
     llm_temperature: float = 0.7
     llm_max_tokens: int = 8192
+    # ── Agent 进阶能力预留（基础阶段默认关闭/保守）──
+    agent_mode_enabled: bool = False
+    agent_file_write_policy: str = "session_allow"  # ask | session_allow | always_allow_workspace
+    agent_max_steps: int = 8
+    # T8：是否允许 provider 原生 tool-calling（仍受 agent_mode_enabled 总开关约束）
+    agent_native_tool_calling: bool = True
+    # T6：搜索 Provider 插件：builtin（默认，多引擎抓取）| tavily | bocha | serpapi
+    # 无 key 时自动回落 builtin，不崩溃；密钥不回显。
+    search_provider: str = "builtin"
+    search_provider_api_key: str | None = None
+    search_provider_endpoint: str | None = None
+    # T9：对话侧只读 MCP client（默认关闭；agent_mode_enabled=false 时不加载）
+    mcp_client_enabled: bool = False
+    # JSON 数组：[{name,transport,command,args,url,env,enabled,tool_whitelist}]
+    mcp_servers_json: str = "[]"
+    # T12：思考区英文 meta 过滤（默认开；验收 C2 可关）
+    thinking_meta_filter_enabled: bool = True
+    # T10：长文大纲编排开关（默认关，不改 RAG 短答）
+    longform_enabled: bool = False
+    longform_max_sections: int = 8
+    longform_max_chars: int = 12000
 
     # RAG 检索上下文参数
     rag_top_k: int = 5
@@ -118,14 +145,51 @@ class Settings:
     # RAG 问答模式："strict"（严格知识库模式，未命中直接拒绝）或 "hybrid"（混合增强模式，未命中本地文档时使用大模型常识回答）
     rag_mode: str = "strict"
 
+    # --- 对话 AI 意图路由与科研写作（M1~M6，默认全部 = 旧行为）---
+    # 科研写作路由总开关：关闭时 research 意图不生效（回落 question/analysis），
+    # 科研子链路不装配。灰度：M3 里程碑后先内部库验证，观察 eval/intent_v1.jsonl
+    # 科研命中率 ≥ 0.80 与创作误判 ≤ 0.10 双达标再全量。
+    intent_research_enabled: bool = False
+    # 创作/科研/问答模糊仲裁模式："rules"（L0+L1 规则仲裁，零额外 LLM 成本）
+    # | "llm"（追加 L2 LLM 二判）| "none"（关闭仲裁，沿用规划器初判）。
+    # 仲裁器 L1 规则打分 Δ>0.5 高者胜、Δ≤0.5 进 L2 的阈值固化于此注释；
+    # 跑分（tools/eval_intent_routing.py）后可微调，调整记录见 spec 4.A.3。
+    intent_conflict_arbitration: str = "rules"
+    # 通识/百科/外部概念类查询（general_qa 细类）本地未命中或弱命中时自动联网补搜；
+    # 关闭时维持现状行为（用户开总开关 + 知识型查询才补搜）。
+    web_auto_supplement_general_qa: bool = False
+    # 知识型查询自动补搜的本地弱命中阈值（参数化现状硬编码 0.45，不改行为）。
+    web_auto_supplement_min_score: float = 0.45
+    # 规划器产出 general_qa 细类（通识/百科/外部概念）标签；关闭时规划维持旧 query_type 集合。
+    general_qa_type_enabled: bool = False
+    # 科研回答引用支撑验证：开启后 research 场景调用 verify_citation_support 并在
+    # done 帧输出 research_citation_support。先记录基线不卡 FAIL（spec 6.2 双轨节奏）。
+    research_citation_support_check: bool = False
+    # 文献集合切片检索/引用上限（防超大集合打爆上下文）。
+    research_max_literature: int = 20
+    # 图谱 topic 层扩散深度（0 = 不注入 topic，仅文献切片）。
+    research_graph_topic_depth: int = 2
+    # 规划降级对用户可见（status+thinking 提示 + 审计日志）；关闭 = 回到现状静默回退。
+    planning_degradation_visible: bool = True
+    # 科研写作 draft 子任务是否追加 web_search 交叉验证前沿观点。
+    research_web_crosscheck: bool = False
+
+    # --- 使用档案（Usage Profile）---
+    # 决定默认回答风格与参数预设：notes（个人沉淀）/ docs（项目文档，默认）
+    # / agent（MCP 记忆层）/ library（批量库管理）。
+    # 仅在用户显式「切换档案」时改写相关字段；存量配置不会被静默覆盖。
+    usage_profile: str = "docs"
+
     # --- 检索后重排（Reranker / cross-encoder）---
     # 是否启用重排精排：召回（BM25+向量+RRF）后，用 cross-encoder 对候选逐对打分重排，
     # 显著提升相关性（客服/问答场景最有效）。模型不可用（未装 fastembed / 下载失败）
     # 时自动降级为原始 RRF 排序，绝不阻断检索。
     rerank_enabled: bool = True
-    # 重排模型名（须为 fastembed TextRanking 支持列表中的模型）。
-    # 默认多语言模型，中英混合检索最佳；首次使用需联网下载约 1.3GB。
-    rerank_model: str = "Xenova/bge-reranker-v2-m3"
+    # 重排模型名。fastembed 0.8 的 TextCrossEncoder 仅支持列表内模型；
+    # 默认 BAAI/bge-reranker-base（列表内、中英可用、体积 ~280MB）。
+    # 注意：Xenova/bge-reranker-v2-m3 不在支持列表，配置它会在首次推理时
+    # 静默降级为纯 RRF 排序（2026-09 实测确认）。
+    rerank_model: str = "BAAI/bge-reranker-base"
     # 送入重排器的候选数上限（从 RRF 结果截取最靠前若干条），
     # 越大越准但越慢；20 对默认 top_k=5 已绰绰有余。
     rerank_recall: int = 20
@@ -143,11 +207,33 @@ class Settings:
     # 一并并入（前后各 N 块），提升回答完整性；0 = 关闭（仅用命中块）。
     # 检索排序仍以命中为准，邻块仅作补充上下文。
     neighbor_context_window: int = 1
+    # 父子/小到大上下文模式：
+    #   "neighbor"（默认）— 现有邻块 window 行为
+    #   "heading"        — 命中后优先并入同 (source, heading) 兄弟块（章节级父上下文），
+    #                      无 heading 时回退 neighbor；检索排序仍以命中为准
+    #   "off"            — 不做额外上下文
+    parent_context_mode: str = "neighbor"
     # 中文 BM25：开启后 FTS5 用 jieba 分词（unicode61 tokenizer），显著改善
     # 2 字中文词召回；切换会触发一次性 FTS5 索引重建。false 保持原 trigram 路径。
     bm25_jieba_enabled: bool = True
     # 专家把关/避坑检索的相关度阈值（替代旧的硬编码 0.4；为忠实余弦标尺）。
     pitfall_min_score: float = 0.30
+    # 逐条引用门控线（2026-09-13 引用治理）：重排启用时每条命中按自己的
+    # rerank_score（sigmoid 0-1）判定——>= 该值才拿引用编号 [n]；>= 60% 该值
+    # 降为「背景勿引用」；其余丢弃。重排不可用时回退旧组级逻辑（jina 余弦
+    # 标尺正负样本重叠，逐条余弦门不可靠，见 tools/calibrate_citation_threshold.py）。
+    # 推荐默认 0.45：偏低会放行弱相关，偏高（>0.60）在无重排库上误杀明显。
+    # 误杀风险：同义改写无词汇重叠时主题门会降为背景而非直接丢弃。
+    citation_min_score: float = 0.45
+    # 背景线比例：score >= citation_min_score * ratio 但未达引用线 → 仅作
+    # 背景注入（无 [n]）；低于背景线丢弃不注入，避免无效上下文拖慢生成。
+    citation_bg_score_ratio: float = 0.6
+    # 背景注入条数上限（FR-10）：0 = 关闭背景注入；超限按相关度保留前 N。
+    background_hit_limit: int = 5
+    # 阶段耗时埋点开关（FR-13）：关闭时 done 帧不写 stage_*，仅结构化日志。
+    stage_elapsed_enabled: bool = True
+    # 流式生成首 token 慢阈值（毫秒）：超过后 status 周期提示可关联网/换模型。
+    llm_first_token_slow_ms: int = 30000
     # RRF 融合权重 "vec,bm25[,sparse]"（如 "1,1" 中性向量/BM25；"2,1,1" =
     # 向量 2、BM25 1、稀疏 1）。第三位为稀疏向量路（D2），须同时开启
     # sparse_retrieval_enabled 才生效。
@@ -204,8 +290,19 @@ class Settings:
     # 与纯文本类型可读）。
     attachment_allowed_dirs: list[str] = field(default_factory=list)
 
-    # LLM 调用超时（秒），0 = 使用默认值 120s
+    # LLM 调用超时（秒），0 = 使用默认值 180s
     llm_timeout: float = 0.0
+
+    # 联网搜索总预算（秒）：多引擎聚合 + 正文精读的硬上限。
+    # 到点带着已完成结果返回；过短会在慢网/反爬下几乎拿不到正文。
+    # 默认 36s：给免费引擎反爬/慢响应留出精读窗口（旧 16s 常只够候选聚合）。
+    # 环境变量 DOC2MIND_WEB_SEARCH_TIMEOUT 可覆盖。
+    web_search_timeout: float = 36.0
+    # 自建/自选 SearXNG 实例（元搜索主通道，开源免 Key）。
+    # 空 = 使用内置公有实例；可填单个 URL 或逗号分隔多个。
+    # 例：http://127.0.0.1:8888 或 https://searx.example.com,https://searx.be
+    # 环境变量 DOC2MIND_WEB_SEARCH_SEARXNG_URL 可覆盖。
+    web_search_searxng_url: str = ""
 
     # --- 摄入并发 ---
     # 文件级并行 worker 数：两段式流水线（多线程并行 解析→分块→嵌入，
@@ -315,6 +412,8 @@ class Settings:
             except (ValueError, TypeError):
                 pass
         s = cls(**kwargs)  # type: ignore[arg-type]
+        s._sanitize_rerank_model()
+        s._sanitize_citation_gate()
 
         # embed_dim 与 embed_model 对齐：catalog 已收录的模型直接查维度，
         # 避免用预设 512 建 vec_chunks 表后与模型实际输出维度不符（切换
@@ -328,6 +427,68 @@ class Settings:
             if info is not None:
                 s.embed_dim = info.dim
         return s
+
+    def _sanitize_rerank_model(self) -> None:
+        """把已知不可用的重排模型名替换为默认可用模型。
+
+        根因（2026-09-13 实测）：WPF 旧默认 / 用户 appsettings 曾写入
+        `Xenova/bge-reranker-v2-m3`，经 DOC2MIND_RERANK_MODEL 环境变量覆盖
+        config.toml 后，fastembed TextCrossEncoder 直接报 not supported，
+        每次对话都「检索降级：重排模型不可用」。这里在配置加载层静默纠偏，
+        避免用户被半可用状态拖垮。
+        """
+        model = (self.rerank_model or "").strip()
+        if not model:
+            self.rerank_model = "BAAI/bge-reranker-base"
+            return
+        lowered = model.lower()
+        # fastembed 0.8 TextCrossEncoder 支持列表外的常见误配
+        if "xenova" in lowered or lowered.endswith("/bge-reranker-v2-m3"):
+            logger.warning(
+                "重排模型 %s 不在 fastembed TextCrossEncoder 支持列表，"
+                "已自动切换为 BAAI/bge-reranker-base",
+                model,
+            )
+            self.rerank_model = "BAAI/bge-reranker-base"
+
+    def _sanitize_citation_gate(self) -> None:
+        """非法 citation_min_score 归零（关闭逐条门控）并告警，不阻塞对话。
+
+        FR-08：负数或非数值 → 0，行为回退旧组级逻辑。
+        """
+        raw = self.citation_min_score
+        try:
+            value = float(raw)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            logger.warning(
+                "citation_min_score=%r 非法，已按 0 处理（关闭逐条引用门控）",
+                raw,
+            )
+            self.citation_min_score = 0.0
+            return
+        if value < 0:
+            logger.warning(
+                "citation_min_score=%s 为负数，已按 0 处理（关闭逐条引用门控）",
+                value,
+            )
+            self.citation_min_score = 0.0
+        elif value > 1.0:
+            logger.warning(
+                "citation_min_score=%s 超出 [0,1]，已钳制为 1.0",
+                value,
+            )
+            self.citation_min_score = 1.0
+        else:
+            self.citation_min_score = value
+        try:
+            self.background_hit_limit = max(0, int(self.background_hit_limit))
+        except (TypeError, ValueError):
+            logger.warning("background_hit_limit 非法，重置为 5")
+            self.background_hit_limit = 5
+        try:
+            self.llm_first_token_slow_ms = max(1000, int(self.llm_first_token_slow_ms))
+        except (TypeError, ValueError):
+            self.llm_first_token_slow_ms = 30000
 
     def ensure_dirs(self) -> None:
         """确保数据目录存在。"""
@@ -365,6 +526,7 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "rag_top_k",
     "rag_min_score",
     "rag_mode",
+    "usage_profile",
     "rerank_enabled",
     "rerank_model",
     "rerank_recall",
@@ -373,6 +535,15 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "rag_max_history_messages",
     "attachment_allowed_dirs",
     "llm_timeout",
+    "web_search_timeout",
+    "web_search_searxng_url",
+    "search_provider",
+    "mcp_client_enabled",
+    "thinking_meta_filter_enabled",
+    "longform_enabled",
+    "longform_max_sections",
+    "longform_max_chars",
+    "agent_native_tool_calling",
     # AI 自动整理（curate）
     "auto_curate_on_ingest",
     "curate_dedup_score_threshold",
@@ -381,8 +552,14 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     # 检索升级（召回质量核心）
     "query_instruction",
     "semantic_floor",
+    "parent_context_mode",
     "bm25_jieba_enabled",
     "pitfall_min_score",
+    "citation_min_score",
+    "citation_bg_score_ratio",
+    "background_hit_limit",
+    "stage_elapsed_enabled",
+    "llm_first_token_slow_ms",
     "rrf_weights",
     "fusion_mode",
     "rerank_calibration_temperature",
@@ -390,6 +567,18 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "query_expansion",
     "contextual_retrieval",
     "sparse_retrieval_enabled",
+    "neighbor_context_window",
+    # 对话 AI 意图路由与科研写作（默认=旧行为；web_auto_supplement_min_score
+    # 为参数型阈值仅环境变量/默认值生效，不入 config.toml）
+    "intent_research_enabled",
+    "intent_conflict_arbitration",
+    "web_auto_supplement_general_qa",
+    "general_qa_type_enabled",
+    "research_citation_support_check",
+    "research_max_literature",
+    "research_graph_topic_depth",
+    "planning_degradation_visible",
+    "research_web_crosscheck",
     # 文件监控
     "watch_paths",
     "watch_debounce_seconds",
@@ -539,6 +728,201 @@ def parse_rrf_weights(value: str) -> tuple[float, float, float]:
         return (ws[0], ws[1], ws[2])
     except (ValueError, TypeError):
         return (1.0, 1.0, 0.0)
+
+
+# --- 使用档案预设 ---
+# 仅在用户显式切换档案时调用 apply_usage_profile；不静默覆盖用户已改字段。
+USAGE_PROFILES: dict[str, dict[str, Any]] = {
+    "docs": {
+        "label": "项目文档",
+        "description": "手册/需求/设计文档问答，强调出处与可核对",
+        "rag_top_k": 5,
+        "rag_min_score": 0.35,
+        "rag_mode": "strict",
+        "query_expansion": "off",
+        "persona_hint": "docs",
+    },
+    "notes": {
+        "label": "个人沉淀",
+        "description": "笔记/踩坑/经验，短答、诚实引用、不硬凑洞察",
+        "rag_top_k": 4,
+        "rag_min_score": 0.35,
+        "rag_mode": "strict",
+        "query_expansion": "off",
+        "persona_hint": "notes",
+    },
+    "agent": {
+        "label": "Agent 记忆",
+        "description": "MCP/工具检索：稳定、可解析、少闲聊",
+        "rag_top_k": 5,
+        "rag_min_score": 0.30,
+        "rag_mode": "strict",
+        "query_expansion": "off",
+        "persona_hint": "agent",
+    },
+    "library": {
+        "label": "库管理",
+        "description": "批量入库与整理优先，对话为辅",
+        "rag_top_k": 8,
+        "rag_min_score": 0.30,
+        "rag_mode": "strict",
+        "query_expansion": "multi",
+        "persona_hint": "office",
+    },
+}
+
+
+def apply_usage_profile(s: Settings, profile: str) -> Settings:
+    """按档案写入推荐默认（dataclass replace，不原地改全局单例）。
+
+    未知档案名原样返回。已手调过的用户显式切换时会被覆盖——这是切换档案
+    的预期语义，UI 应二次确认。
+    """
+    preset = USAGE_PROFILES.get((profile or "").strip().lower())
+    if not preset:
+        return s
+    return dataclasses.replace(
+        s,
+        usage_profile=profile.strip().lower(),
+        rag_top_k=int(preset["rag_top_k"]),
+        rag_min_score=float(preset["rag_min_score"]),
+        rag_mode=str(preset["rag_mode"]),
+        query_expansion=str(preset["query_expansion"]),
+    )
+
+
+def profile_persona_hint(profile: str) -> str:
+    """返回档案对应的回答风格提示（拼进 system prompt）。"""
+    preset = USAGE_PROFILES.get((profile or "").strip().lower())
+    if not preset:
+        return ""
+    hint = preset.get("persona_hint")
+    if hint == "notes":
+        return (
+            "\n【使用档案：个人沉淀】像私人笔记助手：直接引用笔记原文要点；"
+            "没有就明确说笔记里没找到；禁止硬凑「架构洞察」和 [ACTIONS] 行动列表；回答尽量短。"
+        )
+    if hint == "agent":
+        return (
+            "\n【使用档案：Agent 记忆】作为工具检索层：输出事实与出处编号即可；"
+            "不要寒暄、不要行动建议列表；证据不足时返回「知识库中未找到」。"
+        )
+    if hint == "office":
+        return "\n【使用档案：库管理】回答偏清单与可操作步骤，便于整理知识库。"
+    return (
+        "\n【使用档案：项目文档】优先给出可核对的参数/流程/结论，并标注 [n] 出处编号；"
+        "篇幅以说清为准，禁止为显得专业而拉长；"
+        "若资料中没有高价值延伸，不要输出「架构洞察」段落；"
+        "仅当问题本身是「下一步做什么/怎么推进」时才输出 [ACTIONS: ...]，否则省略该行。"
+    )
+
+
+# --- 推荐检索质量配置（F0：把已验证的根基参数产品化）---
+# 依据：vector-retrieval-foundation-upgrade 阶段 A/B/D + tools/eval_retrieval.py
+# 标定结论。默认 Settings() 保持向后兼容；仅在用户显式「应用推荐」时写入。
+BGE_ZH_QUERY_INSTRUCTION = "为这个句子生成表示以用于检索相关文章："
+
+RECOMMENDED_RETRIEVAL_PRESET: dict[str, Any] = {
+    "label": "推荐检索配置",
+    "description": (
+        "开启 bge 中文检索指令 + 语义下限 + jieba BM25 + 邻块上下文；"
+        "稀疏路/上下文前缀/查询扩展保持关闭（需额外索引或 LLM 成本，按需再开）"
+    ),
+    "query_instruction": BGE_ZH_QUERY_INSTRUCTION,
+    "semantic_floor": 0.15,
+    "bm25_jieba_enabled": True,
+    "neighbor_context_window": 1,
+    "fusion_mode": "rrf",
+    "rrf_weights": "1,1",
+    "pitfall_min_score": 0.30,
+    "sparse_retrieval_enabled": False,
+    "contextual_retrieval": False,
+    "query_expansion": "off",
+    "rerank_enabled": True,
+}
+
+# 应用推荐配置时会改动的字段（preview / apply 白名单，防止误写密钥类字段）
+RECOMMENDED_RETRIEVAL_FIELDS: tuple[str, ...] = (
+    "query_instruction",
+    "semantic_floor",
+    "bm25_jieba_enabled",
+    "neighbor_context_window",
+    "fusion_mode",
+    "rrf_weights",
+    "pitfall_min_score",
+    "sparse_retrieval_enabled",
+    "contextual_retrieval",
+    "query_expansion",
+    "rerank_enabled",
+)
+
+
+def recommended_retrieval_preview(s: Settings | None = None) -> dict[str, Any]:
+    """对比当前配置与推荐检索预设，返回将要变更的字段（只读，不写回）。
+
+    Returns:
+        {
+          "label", "description",
+          "current": {field: value},
+          "recommended": {field: value},
+          "changes": [{field, from, to}],
+          "aligned": bool,
+        }
+    """
+    if s is None:
+        s = get_settings()
+    current: dict[str, Any] = {}
+    recommended: dict[str, Any] = {}
+    changes: list[dict[str, Any]] = []
+    for name in RECOMMENDED_RETRIEVAL_FIELDS:
+        cur = getattr(s, name, None)
+        rec = RECOMMENDED_RETRIEVAL_PRESET.get(name)
+        current[name] = cur
+        recommended[name] = rec
+        if cur != rec:
+            changes.append({"field": name, "from": cur, "to": rec})
+    return {
+        "label": RECOMMENDED_RETRIEVAL_PRESET["label"],
+        "description": RECOMMENDED_RETRIEVAL_PRESET["description"],
+        "current": current,
+        "recommended": recommended,
+        "changes": changes,
+        "aligned": not changes,
+    }
+
+
+def apply_recommended_retrieval(
+    s: Settings | None = None,
+    fields: Sequence[str] | None = None,
+) -> tuple[Settings, list[dict[str, Any]]]:
+    """应用推荐检索配置（dataclass replace，不原地改单例）。
+
+    Args:
+        s: 基准配置；None 时取 get_settings()
+        fields: 仅应用这些字段；None = 全部 RECOMMENDED_RETRIEVAL_FIELDS
+
+    Returns:
+        (new_settings, changes) — changes 与 preview.changes 同构。
+        已对齐时 changes 为空，new_settings 与 s 等价。
+    """
+    if s is None:
+        s = get_settings()
+    allow = (
+        tuple(fields) if fields is not None else RECOMMENDED_RETRIEVAL_FIELDS
+    )
+    updates: dict[str, Any] = {}
+    changes: list[dict[str, Any]] = []
+    for name in allow:
+        if name not in RECOMMENDED_RETRIEVAL_PRESET:
+            continue
+        rec = RECOMMENDED_RETRIEVAL_PRESET[name]
+        cur = getattr(s, name, None)
+        if cur != rec:
+            updates[name] = rec
+            changes.append({"field": name, "from": cur, "to": rec})
+    if not updates:
+        return s, []
+    return dataclasses.replace(s, **updates), changes
 
 
 # --- 全局单例（惰性）---

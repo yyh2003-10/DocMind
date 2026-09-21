@@ -317,13 +317,21 @@
                                TextWrapping="Wrap"
                                Margin="0,0,0,10"/>
 
+                    <TextBlock Text="{Binding LlmConfigHint}"
+                               Style="{StaticResource CaptionText}"
+                               Foreground="{DynamicResource WarningBrush}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,8"
+                               Visibility="{Binding IsLlmConfigured, Converter={StaticResource InvertBoolVis}}"/>
+
                     <StackPanel Orientation="Horizontal">
                         <!-- 只读预览（dry_run=true，零写入） -->
                         <Button Content="👁 只读预览"
                                 Command="{Binding PreviewCurateCommand}"
                                 Style="{StaticResource PrimaryButtonStyle}"
                                 Padding="16,6"
-                                MinHeight="36"/>
+                                MinHeight="36"
+                                ToolTip="{Binding LlmConfigHint}"/>
 
                         <!-- 执行（dry_run=false，需先完成一次预览） -->
                         <Button Content="🚀 执行整理"

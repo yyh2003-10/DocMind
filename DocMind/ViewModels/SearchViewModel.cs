@@ -9,6 +9,10 @@ namespace DocMind.ViewModels;
 
 public partial class SearchViewModel : ViewModelBase
 {
+
+    /// <summary>后端不可达时通知 Main 刷新全局离线横幅（FC-03/08）。</summary>
+    public event Action? BackendUnreachable;
+
     private readonly IDoc2kbApiService _apiService;
     private readonly AppSettings? _appSettings;
 
@@ -223,10 +227,45 @@ public partial class SearchViewModel : ViewModelBase
     /// <summary>结果区空态是否可见（非忙碌且无结果）。</summary>
     public bool ShowEmptyGuide => !IsBusy && Hits.Count == 0;
 
-    /// <summary>空态引导文案：区分"还没搜过"与"搜了没结果"。</summary>
-    public string EmptyGuideText => HasQuery
-        ? "没有匹配的结果。\n建议：尝试更换关键词，或调低「最低相似度」；\n也可以到【导入】页确认文档已加入知识库。"
-        : "输入问题或关键词开始搜索。\nDocMind 将基于向量语义与关键词进行混合检索。\n还没导入文档？先到【导入】页添加文件。";
+    /// <summary>FC-07：最近一次空结果时后端给出的差异化提示（库为空/集合空/无命中）。</summary>
+    private string? _lastEmptyHint;
+
+    /// <summary>FC-07：是否属于「知识库/集合为空」类空态（应引导去导入，而不是换词）。</summary>
+    private bool _isLibraryEmpty;
+
+    /// <summary>空态时是否显示「去导入」动作（FC-07）。</summary>
+    public bool ShowGoImportAction => ShowEmptyGuide && _isLibraryEmpty;
+
+    /// <summary>请求跳转到导入页（MainViewModel 订阅）。</summary>
+    public event Action? GoToImportRequested;
+
+    /// <summary>导航到导入页。</summary>
+    [RelayCommand]
+    private void GoToImport() => GoToImportRequested?.Invoke();
+
+    /// <summary>空态引导文案：区分"还没搜过 / 知识库为空 / 有文档无命中"（FC-07）。</summary>
+    public string EmptyGuideText
+    {
+        get
+        {
+            if (!HasQuery)
+            {
+                return "输入问题或关键词开始搜索。\nDocMind 将基于向量语义与关键词进行混合检索。\n还没导入文档？先到【导入】页添加文件。";
+            }
+            if (_isLibraryEmpty)
+            {
+                var head = string.IsNullOrWhiteSpace(_lastEmptyHint)
+                    ? "知识库为空：请先在【导入】页添加文档"
+                    : _lastEmptyHint;
+                return head + "\n\n下一步：点击「去导入」添加文件，完成后再回来搜索。";
+            }
+            if (!string.IsNullOrWhiteSpace(_lastEmptyHint))
+            {
+                return _lastEmptyHint + "\n\n建议：更换关键词，或调低「最低相似度」后重试。";
+            }
+            return "没有匹配的结果。\n建议：尝试更换关键词，或调低「最低相似度」；\n也可以到【导入】页确认文档已加入知识库。";
+        }
+    }
 
     /// <summary>集合名（可选，AllCollectionsLabel 或空表示全部）。</summary>
     public string? Collection
@@ -360,6 +399,18 @@ public partial class SearchViewModel : ViewModelBase
             if (Hits.Count > 0)
             {
                 SelectedHit = Hits[0];
+                _lastEmptyHint = null;
+                _isLibraryEmpty = false;
+            }
+            else
+            {
+                // FC-07：消费后端差异化空态 message
+                _lastEmptyHint = string.IsNullOrWhiteSpace(resp.Message) ? null : resp.Message.Trim();
+                _isLibraryEmpty = _lastEmptyHint is not null
+                    && (_lastEmptyHint.Contains("知识库为空", StringComparison.Ordinal)
+                        || _lastEmptyHint.Contains("没有任何文档", StringComparison.Ordinal)
+                        || (_lastEmptyHint.Contains("集合", StringComparison.Ordinal)
+                            && _lastEmptyHint.Contains("文档", StringComparison.Ordinal)));
             }
 
             // 搜索成功后记录历史
@@ -371,7 +422,11 @@ public partial class SearchViewModel : ViewModelBase
                     ? $"返回 {resp.Hits.Count}/{resp.Total} 条 · 耗时 {resp.ElapsedMs:F0}ms" + (resp.Degraded ? "（嵌入不可用，仅关键词检索）" : "")
                     : "无匹配结果：请尝试更换关键词或调低最低相似度阈值";
 
-            DebugLog.Info($"搜索完成: hits={resp.Hits.Count} total={resp.Total} elapsed={resp.ElapsedMs:F0}ms 本地耗时{sw.ElapsedMilliseconds}ms", "Search");
+            OnPropertyChanged(nameof(EmptyGuideText));
+            OnPropertyChanged(nameof(ShowEmptyGuide));
+            OnPropertyChanged(nameof(ShowGoImportAction));
+
+            DebugLog.Info($"搜索完成: hits={resp.Hits.Count} total={resp.Total} elapsed={resp.ElapsedMs:F0}ms 本地耗时{sw.ElapsedMilliseconds}ms emptyHint='{_lastEmptyHint}'", "Search");
         }
         catch (ApiException ex)
         {
@@ -381,6 +436,7 @@ public partial class SearchViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
             DebugLog.Error($"搜索后端不可达: {ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Search", ex);
@@ -419,7 +475,12 @@ public partial class SearchViewModel : ViewModelBase
         Hits.Clear();
         SelectedHit = null;
         LastResponse = null;
+        _lastEmptyHint = null;
+        _isLibraryEmpty = false;
         StatusMessage = "就绪";
+        OnPropertyChanged(nameof(EmptyGuideText));
+        OnPropertyChanged(nameof(ShowEmptyGuide));
+        OnPropertyChanged(nameof(ShowGoImportAction));
     }
 
     /// <summary>跳转至文档库查看该文档。</summary>

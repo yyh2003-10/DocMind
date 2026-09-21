@@ -97,6 +97,17 @@
                                 <TextBlock Text="删除选中"/>
                             </StackPanel>
                         </Button>
+                        <Button Command="{Binding ToggleTrashCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="12,6"
+                                MinHeight="32"
+                                Margin="8,0,0,0"
+                                ToolTip="查看软删除的文档；恢复后需重新摄入/重建索引才能被检索">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconUndo}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                <TextBlock Text="回收站"/>
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
 
                     <!-- 右侧：翻页控件 -->
@@ -153,6 +164,64 @@
                         MinHeight="28"
                         ToolTip="停止后端重建任务，不只是停止前端进度显示"/>
             </Grid>
+        </Border>
+
+        <!-- ===== 回收站（软删除；恢复后需重摄入） ===== -->
+        <Border Grid.Row="1"
+                Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="{StaticResource CornerMd}"
+                Padding="12,8"
+                Margin="0,0,0,12"
+                Visibility="{Binding IsTrashOpen, Converter={StaticResource BoolToVis}}">
+            <StackPanel>
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Content="刷新" Command="{Binding LoadTrashCommand}" Style="{StaticResource TextButtonStyle}" Padding="10,4" Margin="0,0,6,0"/>
+                        <Button Content="恢复选中" Command="{Binding RestoreTrashItemCommand}" Style="{StaticResource PrimaryButtonStyle}" Padding="10,4" Margin="0,0,6,0"/>
+                        <Button Content="清理30天前" Command="{Binding RequestPurgeTrashCommand}" Style="{StaticResource DangerButtonStyle}" Padding="10,4"/>
+                    </StackPanel>
+                    <TextBlock Text="回收站" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                </DockPanel>
+                <!-- 商用：物理删除二次确认 -->
+                <Border Background="{DynamicResource WarningLightBrush}"
+                        BorderBrush="{DynamicResource WarningBrush}"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="10,8"
+                        Margin="0,6,0,6"
+                        Visibility="{Binding ShowPurgeTrashConfirm, Converter={StaticResource BoolToVis}}">
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button Content="取消" Command="{Binding CancelPurgeTrashCommand}" Style="{StaticResource TextButtonStyle}" Padding="10,4" Margin="0,0,6,0"/>
+                            <Button Content="确认清理" Command="{Binding ConfirmPurgeTrashCommand}" Style="{StaticResource DangerButtonStyle}" Padding="10,4"/>
+                        </StackPanel>
+                        <TextBlock Text="将物理删除 30 天前的回收站记录，且不可恢复。确定继续？"
+                                   FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                    </DockPanel>
+                </Border>
+                <TextBlock Text="{Binding TrashStatus}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,4,0,6"/>
+                <ListBox ItemsSource="{Binding TrashItems}"
+                         SelectedItem="{Binding SelectedTrashItem}"
+                         MaxHeight="160"
+                         BorderThickness="0">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate DataType="{x:Type m:TrashItem}">
+                            <Grid Margin="2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="120"/>
+                                    <ColumnDefinition Width="100"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{Binding DisplaySource}" FontSize="12" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Collection}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                <TextBlock Grid.Column="2" Text="{Binding DeletedAt}" FontSize="11" Foreground="{StaticResource TextTertiaryBrush}"/>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </StackPanel>
         </Border>
 
         <!-- ===== 列表 + 详情 (Row 2) ===== -->

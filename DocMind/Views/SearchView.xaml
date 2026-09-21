@@ -280,6 +280,13 @@
                                TextAlignment="Center"
                                LineHeight="22"
                                Margin="0,0,0,20"/>
+                    <!-- FC-07：库为空时一键去导入 -->
+                    <Button Content="去导入文档"
+                            Command="{Binding GoToImportCommand}"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            HorizontalAlignment="Center"
+                            Padding="18,8"
+                            Visibility="{Binding ShowGoImportAction, Converter={StaticResource BoolToVis}}"/>
                 </StackPanel>
             </Border>
 

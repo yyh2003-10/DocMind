@@ -62,6 +62,10 @@ public sealed class CreativeExportRequest
 
     [JsonPropertyName("theme")]
     public string? Theme { get; set; }
+
+    /// <summary>自定义主题配色（theme 不在后端内置库时用于构建完整 PPT 配色）。</summary>
+    [JsonPropertyName("themeColors")]
+    public Dictionary<string, object>? ThemeColors { get; set; }
 }
 
 /// <summary>创作交付物导出响应结果。</summary>

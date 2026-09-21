@@ -55,13 +55,22 @@ public sealed record ChatRequest
     [System.Text.Json.Serialization.JsonPropertyName("enableWebSearch")]
     public bool EnableWebSearch { get; init; }
 
+    /// <summary>联网搜索模式："normal"（普通搜索）| "deep"（深度搜索）；null/空 = normal。
+    /// 仅在 EnableWebSearch=true 时有意义。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("webSearchMode")]
+    public string? WebSearchMode { get; init; }
+
     /// <summary>知识图谱实体上下文（High-level 拓扑与背景注入）。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("entityContext")]
     public string? EntityContext { get; init; }
 
-    /// <summary>办公角色人设标识（office/architect/engineer/brainstorm）。</summary>
+    /// <summary>办公角色人设标识（office/architect/engineer/brainstorm 或 custom_xxx）。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("persona")]
     public string? Persona { get; init; }
+
+    /// <summary>自定义角色系统提示词（persona 为 custom_* 时随请求携带，后端据此生效）。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("personaPrompt")]
+    public string? PersonaPrompt { get; init; }
 
     /// <summary>本次对话临时附带的本地文档或图片路径列表（由后端工具实时提取与OCR）。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("attachments")]
@@ -75,4 +84,21 @@ public sealed record ChatRequest
     /// <summary>RAG 问答模式（"strict" / "hybrid"）；null = 沿用后端全局配置。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("ragMode")]
     public string? RagMode { get; init; }
+
+    /// <summary>用户记忆上下文：独立字段，由后端注入生成消息；
+    /// 绝不拼进 Query（避免污染检索与会话历史）。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("memoryContext")]
+    public string? MemoryContext { get; init; }
+
+    /// <summary>提示词双轨（P0）："rag" | "delivery"；null = 后端按意图自动推断。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("responseMode")]
+    public string? ResponseMode { get; init; }
+
+    /// <summary>续写：true 时不重复检索，基于会话历史补全；后端合并进上一条 assistant。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("continueWriting")]
+    public bool ContinueWriting { get; init; }
+
+    /// <summary>Agent 模式（进阶，默认 false）。由 AppSettings.AgentModeEnabled 控制是否发送。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("agentMode")]
+    public bool AgentMode { get; init; }
 }
