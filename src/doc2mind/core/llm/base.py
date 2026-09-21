@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -261,6 +262,26 @@ class LLMTimeoutError(LLMError):
     """LLM 调用超时。"""
 
 
+@dataclass
+class ToolCallDelta:
+    """流式/非流式 tool_calls 解析结果（T8）。"""
+    id: str
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ChatToolTurn:
+    """带 tools 的单轮模型输出：final_text 或 tool_calls 二选一。"""
+    final_text: str = ""
+    tool_calls: list[ToolCallDelta] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def wants_tools(self) -> bool:
+        return bool(self.tool_calls)
+
+
 class LLMClient(ABC):
     """大模型客户端抽象基类。
 
@@ -328,6 +349,26 @@ class LLMClient(ABC):
     @last_truncated.setter
     def last_truncated(self, value: bool) -> None:
         self._last_truncated = bool(value)
+
+    @property
+    def supports_tool_calling(self) -> bool:
+        """是否支持 provider 原生 tools/tool_calls。默认 False（编排降级）。"""
+        return bool(getattr(self, "_supports_tool_calling", False))
+
+    def chat_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> ChatToolTurn:
+        """带 tools 的非流式对话（T8）。不支持时返回空 tool_calls 的普通正文。"""
+        if not tools or not self.supports_tool_calling:
+            text = self.chat(messages, temperature=temperature, max_tokens=max_tokens, timeout=timeout)
+            return ChatToolTurn(final_text=text)
+        raise LLMError(f"提供商 {self.provider} 未实现 chat_with_tools")
 
     def chat(
         self,

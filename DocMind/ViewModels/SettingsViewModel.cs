@@ -74,6 +74,7 @@ public partial class SettingsViewModel : ViewModelBase
     private bool _autoStartBackend = true;
     private bool _stopBackendOnExit = true;
     private bool _autoCurateOnIngest = true;
+    private bool _agentModeEnabled;
     private string? _autoIngestPath;
     private string _autoIngestCollection = "default";
     private bool _autoIngestRecursive;
@@ -315,6 +316,7 @@ public partial class SettingsViewModel : ViewModelBase
         _autoStartBackend = _appSettings.AutoStartBackend;
         _stopBackendOnExit = _appSettings.StopBackendOnExit;
         _autoCurateOnIngest = _appSettings.AutoCurateOnIngest;
+        _agentModeEnabled = _appSettings.AgentModeEnabled;
         _autoIngestPath = _appSettings.AutoIngestPath;
         _autoIngestCollection = _appSettings.AutoIngestCollection;
         _autoIngestRecursive = _appSettings.AutoIngestRecursive;
@@ -548,6 +550,7 @@ public partial class SettingsViewModel : ViewModelBase
             ActiveBackendEmbedModel = cfg.EmbedModel;
             ActiveBackendLlmProvider = cfg.LlmProvider;
             ActiveBackendLlmModel = cfg.LlmModel;
+            RebuildEffectiveConfigItems(cfg);
             IsBackendConfigLoaded = true;
 
             if (!string.IsNullOrWhiteSpace(cfg.ConfigError))
@@ -638,6 +641,14 @@ public partial class SettingsViewModel : ViewModelBase
     {
         get => _autoCurateOnIngest;
         set => SetDirty(ref _autoCurateOnIngest, value);
+    }
+
+    /// <summary>Agent 模式（进阶，默认关闭）。开启后对话请求带 agentMode=true；
+    /// 仍受后端 agent_mode_enabled 约束，后端关闭时服务端回落 RAG。</summary>
+    public bool AgentModeEnabled
+    {
+        get => _agentModeEnabled;
+        set => SetDirty(ref _agentModeEnabled, value);
     }
 
     /// <summary>启动时自动 ingest 的目录路径（空表示不自动导入）。</summary>
@@ -773,6 +784,51 @@ public partial class SettingsViewModel : ViewModelBase
     {
         get => _isBackendConfigLoaded;
         private set => SetProperty(ref _isBackendConfigLoaded, value);
+    }
+
+    /// <summary>FC-04：后端「当前生效配置」明细列表（用户可确认多项参数是否真生效）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<EffectiveConfigItem> EffectiveConfigItems { get; } = new();
+
+    /// <summary>用 GET /v1/config 回填生效配置清单（不覆盖用户正在编辑的字段）。</summary>
+    internal void RebuildEffectiveConfigItems(BackendConfig cfg)
+    {
+        EffectiveConfigItems.Clear();
+        void Add(string cat, string name, string value, string hint)
+            => EffectiveConfigItems.Add(new EffectiveConfigItem { Category = cat, Name = name, Value = value, EffectHint = hint });
+
+        var realtime = "实时（运行时）";
+        var restart = "重启后端后生效";
+        var nextBoot = "下次启动兜底";
+
+        Add("嵌入", "模型", cfg.EmbedModel ?? "—", restart);
+        if (!string.IsNullOrWhiteSpace(cfg.EmbedModelPath))
+            Add("嵌入", "本地路径", cfg.EmbedModelPath!, restart);
+        Add("嵌入", "批大小", cfg.EmbedBatchSize.ToString(), restart);
+
+        Add("分块", "MaxTokens", cfg.ChunkMaxTokens.ToString(), restart);
+        Add("分块", "Min/Overlap/MaxChars", $"{cfg.ChunkMinChars}/{cfg.ChunkOverlapChars}/{cfg.ChunkMaxChars}", restart);
+
+        Add("检索", "Top-K / RRF-k", $"{cfg.SearchTopK} / {cfg.RrfK}", realtime);
+        Add("检索", "重排", cfg.RerankEnabled ? $"{cfg.RerankModel} (recall={cfg.RerankRecall})" : "关闭", restart);
+
+        Add("LLM", "Provider / Model", $"{cfg.LlmProvider} / {(string.IsNullOrWhiteSpace(cfg.LlmModel) ? "—" : cfg.LlmModel)}", realtime);
+        Add("LLM", "Base URL", string.IsNullOrWhiteSpace(cfg.LlmBaseUrl) ? "（默认）" : cfg.LlmBaseUrl!, realtime);
+        Add("LLM", "温度 / MaxTokens", $"{cfg.LlmTemperature} / {cfg.LlmMaxTokens}", realtime);
+        Add("LLM", "超时(秒)", cfg.LlmTimeout > 0 ? cfg.LlmTimeout.ToString("0.#") : "默认", realtime);
+        Add("LLM", "API Key", cfg.LlmApiKeyConfigured ? "已配置" : "未配置", realtime);
+
+        Add("RAG", "Top-K / MinScore / Mode", $"{cfg.RagTopK} / {cfg.RagMinScore} / {cfg.RagMode}", realtime);
+        Add("RAG", "历史 token 预算", cfg.RagMaxHistoryTokens > 0 ? cfg.RagMaxHistoryTokens.ToString() : "不限", realtime);
+        Add("RAG", "自定义系统提示词", string.IsNullOrWhiteSpace(cfg.RagSystemPrompt) ? "（内置默认）" : "已自定义", realtime);
+
+        Add("文件监控", "目录数 / 去抖", $"{cfg.WatchPaths?.Count ?? 0} / {cfg.WatchDebounceSeconds:0.#}s", restart);
+        Add("联网", "搜索超时(秒)", cfg.WebSearchTimeout.ToString("0.#"), realtime);
+        Add("整理", "入库自动 AI 整理", cfg.AutoCurateOnIngest ? "开启" : "关闭", realtime);
+
+        Add("Agent（进阶）", "模式", cfg.AgentModeEnabled ? "已启用" : "未启用（默认）", "需后端 agent_mode_enabled=true");
+        Add("Agent（预留）", "工作区写入策略", cfg.AgentFileWritePolicy, "进阶能力启用后生效");
+
+        OnPropertyChanged(nameof(EffectiveConfigItems));
     }
 
     /// <summary>API Key 状态徽章文案（"已配置 ✓" / "未配置"）。</summary>
@@ -1587,6 +1643,7 @@ public partial class SettingsViewModel : ViewModelBase
             _appSettings.AutoStartBackend = AutoStartBackend;
             _appSettings.StopBackendOnExit = StopBackendOnExit;
             _appSettings.AutoCurateOnIngest = AutoCurateOnIngest;
+            _appSettings.AgentModeEnabled = AgentModeEnabled;
             _appSettings.AutoIngestPath = AutoIngestPath;
             _appSettings.AutoIngestCollection = AutoIngestCollection;
             _appSettings.AutoIngestRecursive = AutoIngestRecursive;

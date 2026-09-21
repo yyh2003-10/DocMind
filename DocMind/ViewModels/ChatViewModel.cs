@@ -83,6 +83,10 @@ public sealed class ChatSessionItem
 
 public partial class ChatViewModel : ViewModelBase
 {
+
+    /// <summary>后端不可达时通知 Main 刷新全局离线横幅（FC-03/08）。</summary>
+    public event Action? BackendUnreachable;
+
     private readonly IDoc2kbApiService _apiService;
     private readonly NotificationService? _notifications;
 
@@ -767,6 +771,7 @@ public partial class ChatViewModel : ViewModelBase
                 SendCommand.NotifyCanExecuteChanged();
                 StopCommand.NotifyCanExecuteChanged();
                 RegenerateCommand.NotifyCanExecuteChanged();
+                ContinueWritingCommand.NotifyCanExecuteChanged();
                 UpdateMessageFlags();
             }
         }
@@ -1405,8 +1410,28 @@ public partial class ChatViewModel : ViewModelBase
         await SendCoreAsync(query, addUserMessage: false);
     }
 
-    /// <summary>发送核心：添加用户消息（可选）+ 流式请求 + 终帧回写。Send 与 Regenerate 共用。</summary>
-    private async Task SendCoreAsync(string query, bool addUserMessage)
+    /// <summary>是否可继续写（最后一条 assistant 存在且非生成中）。</summary>
+    private bool CanContinueWriting()
+        => !IsBusy && Messages.Any(m => m.Role == "assistant" && !string.IsNullOrEmpty(m.Content));
+
+    /// <summary>续写最后一条回答（P0）：不新开用户气泡，向最后一条 assistant 追加正文。
+    /// 输入框若有内容则作为补充要求；否则用默认「继续写」。</summary>
+    [RelayCommand(CanExecute = nameof(CanContinueWriting))]
+    private async Task ContinueWritingAsync()
+    {
+        if (IsBusy)
+            return;
+        var extra = InputText;
+        InputText = string.Empty;
+        OnPropertyChanged(nameof(HasInput));
+        SendCommand.NotifyCanExecuteChanged();
+        var query = string.IsNullOrWhiteSpace(extra) ? "继续写" : extra.Trim();
+        DebugLog.Info($"继续写: extraLen={query.Length} msgCount={Messages.Count}", "Chat");
+        await SendCoreAsync(query, addUserMessage: false, continueWriting: true);
+    }
+
+    /// <summary>发送核心：添加用户消息（可选）+ 流式请求 + 终帧回写。Send 与 Regenerate/Continue 共用。</summary>
+    private async Task SendCoreAsync(string query, bool addUserMessage, bool continueWriting = false)
     {
         // 事前拦截：LLM 未配置时直接引导配置，不发注定失败的请求（覆盖发送/快捷提问/重新生成入口）
         if (!IsLlmConfigured)
@@ -1424,23 +1449,45 @@ public partial class ChatViewModel : ViewModelBase
         OnPropertyChanged(nameof(HasInput));
         SendCommand.NotifyCanExecuteChanged();
 
-        // 添加用户消息
-        if (addUserMessage)
+        ChatMessage assistantMsg;
+        if (continueWriting)
         {
-            var userDisplay = query;
-            if (attachLabels.Count > 0)
+            // 续写：复用最后一条 assistant，不新开气泡
+            var lastAssistant = Messages.LastOrDefault(m => m.Role == "assistant");
+            if (lastAssistant is null)
             {
-                userDisplay = $"[📎 附件: {string.Join(", ", attachLabels)}]\n{query}";
+                StatusMessage = "没有可续写的回答";
+                return;
             }
-            Messages.Add(new ChatMessage { Role = "user", Content = userDisplay });
+            assistantMsg = lastAssistant;
+            assistantMsg.IsLoading = true;
+            assistantMsg.IsWaitingForFirstToken = false;
+            assistantMsg.Truncated = false;
+            assistantMsg.ShowContinueWriting = false;
+        }
+        else
+        {
+            // 添加用户消息
+            if (addUserMessage)
+            {
+                var userDisplay = query;
+                if (attachLabels.Count > 0)
+                {
+                    userDisplay = $"[📎 附件: {string.Join(", ", attachLabels)}]\n{query}";
+                }
+                Messages.Add(new ChatMessage { Role = "user", Content = userDisplay });
+            }
+
+            // 添加流式占位（先空内容，逐 token 追加）
+            assistantMsg = new ChatMessage { Role = "assistant", Content = "", IsLoading = true, IsWaitingForFirstToken = true };
+            Messages.Add(assistantMsg);
         }
 
-        // 添加流式占位（先空内容，逐 token 追加）
-        var assistantMsg = new ChatMessage { Role = "assistant", Content = "", IsLoading = true, IsWaitingForFirstToken = true };
-        Messages.Add(assistantMsg);
-        
-        // 发送开始前，清空输入框
-        InputText = string.Empty;
+        // 发送开始前，清空输入框（续写命令已清空）
+        if (!continueWriting)
+        {
+            InputText = string.Empty;
+        }
 
         // 先建取消令牌再置 IsBusy：消除「停止按钮已可用但 _cts 尚未创建」的竞态空窗
         _cts?.Dispose();
@@ -1479,13 +1526,14 @@ public partial class ChatViewModel : ViewModelBase
         // onStatus/onThinking 回调反复置 True（模型推理链、上下文溢出重试状态帧、
         // 生成结束后的 Agent 自省帧），流中途一旦复位，下一个 token 就会把已累积的
         // 正文整体覆盖，气泡里只剩该帧之后的内容（表现为「回答只剩一个标题」）。
-        var firstTokenApplied = false;
+        // 续写：已有正文时必须从追加开始，绝不能被首 token 覆盖。
+        var firstTokenApplied = continueWriting && !string.IsNullOrEmpty(assistantMsg.Content);
         try
         {
             var selected = SelectedCollections;
             DebugLog.Info(
                 $"发送消息: query='{(query.Length > 100 ? query[..100] + "…" : query)}' " +
-                $"collections=[{string.Join(",", selected)}] chatId='{_chatId ?? "-"}' model='{(SelectedModel == DefaultModelLabel ? "-" : SelectedModel)}' persona='{SelectedPersona?.Id ?? "-"}' msgCount={Messages.Count} attachCount={attachments.Count}",
+                $"collections=[{string.Join(",", selected)}] chatId='{_chatId ?? "-"}' model='{(SelectedModel == DefaultModelLabel ? "-" : SelectedModel)}' persona='{SelectedPersona?.Id ?? "-"}' msgCount={Messages.Count} attachCount={attachments.Count} continue={continueWriting}",
                 "Chat");
             ChatStreamResult? final = null;
 
@@ -1566,6 +1614,14 @@ public partial class ChatViewModel : ViewModelBase
                         : _appSettings.GithubToken.Trim(),
                     RagMode = _appSettings.RagMode,
                     MemoryContext = string.IsNullOrWhiteSpace(memoryContext) ? null : memoryContext,
+                    // P0 双轨：续写/创作人设走 delivery，其余交给后端按意图自动推断
+                    ResponseMode = continueWriting || (SelectedPersona?.Id is "ppt" or "doc" or "lesson" or "table" or "web")
+                        ? "delivery"
+                        : null,
+                    ContinueWriting = continueWriting,
+                    // Agent 升级预留：默认不发送（AppSettings.AgentModeEnabled=false）
+                    // 打开后请求体带 agentMode=true，后端 runtime 接管工具链
+                    AgentMode = !continueWriting && _appSettings.AgentModeEnabled,
                 },
                 onToken: token =>
                 {
@@ -1622,6 +1678,31 @@ public partial class ChatViewModel : ViewModelBase
                         ApplyStatus();
                     }
                 },
+                onAgentEvent: (kind, detail) =>
+                {
+                    void ApplyAgent()
+                    {
+                        // T7：Agent 轨迹（工具名/状态/摘要）进入思考折叠区，默认关闭时不会触发
+                        var label = kind switch
+                        {
+                            "agent_plan" => $"Agent 规划：{detail}",
+                            "tool_call" => $"调用工具 {detail}",
+                            "tool_result" => $"工具结果 {detail}",
+                            "artifact_ready" => $"产物就绪 {detail}",
+                            _ => detail,
+                        };
+                        assistantMsg.AddThinkingStep(label);
+                    }
+
+                    if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
+                    {
+                        dispatcher.InvokeAsync(ApplyAgent);
+                    }
+                    else
+                    {
+                        ApplyAgent();
+                    }
+                },
                 onThinking: thinking =>
                 {
                     void ApplyThinking()
@@ -1674,8 +1755,34 @@ public partial class ChatViewModel : ViewModelBase
                             : result.ModelDisplayName;
                         assistantMsg.Provider = result.Provider;
                         assistantMsg.ElapsedMs = result.ElapsedMs;
-                        assistantMsg.Sources = result.Sources;
-                        assistantMsg.Evidence = result.Evidence;
+                        // P0：截断/续写可见
+                        // 注意：不要把「可继续写」提示拼进 Content——续写会把模型续文
+                        // 接在正文后，而后端历史合并时不包含该提示，会导致 UI 与会话历史不一致。
+                        assistantMsg.Truncated = result.Truncated;
+                        assistantMsg.Partial = result.Partial;
+                        assistantMsg.PromptTrack = result.PromptTrack;
+                        assistantMsg.TruncatedHint = result.Truncated
+                            ? (string.IsNullOrWhiteSpace(result.ContinueHint)
+                                ? "回答可能被输出上限截断，可点击「继续写」补全"
+                                : result.ContinueHint)
+                            : null;
+                        assistantMsg.ShowContinueWriting = result.Truncated
+                            || (result.Partial && result.ContinueSupported && !string.IsNullOrEmpty(assistantMsg.Content));
+                        // 续写 done 帧 sources 为空：不得清空调用前已有的引用列表
+                        if (!(continueWriting && (result.Sources is null || result.Sources.Count == 0)))
+                        {
+                            assistantMsg.Sources = result.Sources;
+                        }
+                        if (result.Evidence is not null)
+                        {
+                            assistantMsg.Evidence = result.Evidence;
+                        }
+                        if (result.Truncated)
+                        {
+                            StatusMessage = string.IsNullOrWhiteSpace(result.ContinueHint)
+                                ? "⚠ 回答可能被输出上限截断，可点击「继续写」补全"
+                                : $"⚠ {result.ContinueHint}";
+                        }
                         // 终帧后强制重新解析 Markdown,确保最终渲染完整(不受流式节流影响)
                         assistantMsg.ForceRefreshRender();
                         // 后端自动路由的创作意图会回传实际生效人设；仅当其为创作模式且与当前
@@ -1716,6 +1823,12 @@ public partial class ChatViewModel : ViewModelBase
             {
                 var isNewChat = _chatId is null && !string.IsNullOrEmpty(final.ChatId);
                 _chatId = final.ChatId ?? _chatId;
+                // 多轮：无 done 帧时后端可能已生成 chat_id，但前端不知道；
+                // 日志便于排查「第二问失忆」。
+                if (string.IsNullOrEmpty(_chatId))
+                {
+                    DebugLog.Warn("本轮未获得 chat_id，下一问将开新会话（多轮上下文会断）", "Chat");
+                }
                 // 状态统计：token 数（流式帧计数）+ 思考耗时文案
                 assistantMsg.TokenCount = tokenCount;
                 if (final.ElapsedMs > 0)
@@ -1723,12 +1836,14 @@ public partial class ChatViewModel : ViewModelBase
                     assistantMsg.ThinkingDurationText = $"用时 {final.ElapsedMs / 1000.0:F1} 秒";
                 }
 
-                StatusMessage = $"模型: {final.Model} ({final.Provider}) · 引用 {final.TotalChunks} 块 · 耗时 {final.ElapsedMs}ms";
+                StatusMessage = continueWriting
+                    ? $"已续写 · 模型 {final.Model} · 耗时 {final.ElapsedMs}ms"
+                    : $"模型: {final.Model} ({final.Provider}) · 引用 {final.TotalChunks} 块 · 耗时 {final.ElapsedMs}ms";
 
                 // ── Phase 1: 异步提取记忆（不阻断 UI） ──
-                // partial（退化拦截 / 用户停止 / 连接中断）的回答不是可靠事实，
-                // 不得进入跨会话记忆，否则会把半成品/拦截文案当结论沉淀下来
-                if (!final.Partial && !string.IsNullOrWhiteSpace(assistantMsg.Content))
+                // partial / 续写轮不提取：续写 query 是「继续写」而非事实问题，
+                // 且 partial 内容不可靠，不得进入跨会话记忆。
+                if (!continueWriting && !final.Partial && !string.IsNullOrWhiteSpace(assistantMsg.Content))
                 {
                     _ = Task.Run(async () => await ExtractAndStoreMemoryAsync(query, assistantMsg.Content));
                 }
@@ -1788,8 +1903,10 @@ public partial class ChatViewModel : ViewModelBase
                 InputText = query;
             }
             assistantMsg.IsLoading = false;
-            // 后端声明的部分回答（网络中断/用户停止等）：追加警示说明，与正常完成区分
-            if (final is not null && final.Partial && !string.IsNullOrEmpty(final.Warning))
+            // 后端声明的部分回答（网络中断/用户停止等）：追加警示说明，与正常完成区分。
+            // 截断（Truncated）的 warning 不写入 Content：续写合并时后端历史不含该行，
+            // 否则 UI 正文与会话库不一致；截断提示走 TruncatedHint + 状态栏。
+            if (final is not null && final.Partial && !final.Truncated && !string.IsNullOrEmpty(final.Warning))
             {
                 assistantMsg.Content += $"\n\n> ⚠️ {final.Warning}";
             }
@@ -1839,6 +1956,7 @@ public partial class ChatViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             sw.Stop();
             StatusMessage = "无法连接到后端";
             DebugLog.Error($"对话连接失败: {ex.Message}", "Chat", ex);
@@ -2031,7 +2149,11 @@ public partial class ChatViewModel : ViewModelBase
             var m = Messages[i];
             m.ShowRegenerate = i == Messages.Count - 1 && m.Role == "assistant" && !IsBusy;
             m.ShowWithdraw = i == lastUserIdx && !IsBusy;
+            var isLastAssistant = i == Messages.Count - 1 && m.Role == "assistant";
+            m.ShowContinueWriting = !IsBusy && isLastAssistant && (m.Truncated || m.Partial);
         }
+        ContinueWritingCommand.NotifyCanExecuteChanged();
+        RegenerateCommand.NotifyCanExecuteChanged();
     }
 
     /// <summary>拉取历史会话列表（后端不可达时静默）。selectChatId 非空时选中该会话。</summary>

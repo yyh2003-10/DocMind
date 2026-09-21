@@ -60,6 +60,12 @@ public sealed record BackendConfig
     /// <summary>入库时是否自动跑 AI 整理（enrich + 可选 categorize + extract）。
     /// 默认 true；关闭后只写元数据，不调 LLM。dedup / consolidate 永不自动跑。</summary>
     public bool AutoCurateOnIngest { get; init; } = true;
+
+    /// <summary>是否启用 Agent 对话模式（需后端 agent_mode_enabled；默认 false）。</summary>
+    public bool AgentModeEnabled { get; init; }
+
+    /// <summary>Agent 工作区写入策略：ask / session_allow / always_allow_workspace。</summary>
+    public string AgentFileWritePolicy { get; init; } = "session_allow";
 }
 
 /// <summary>对应后端 ConfigUpdate：只提交有值的字段（null 表示不修改）。</summary>

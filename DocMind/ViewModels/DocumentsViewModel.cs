@@ -7,6 +7,10 @@ namespace DocMind.ViewModels;
 
 public partial class DocumentsViewModel : ViewModelBase
 {
+
+    /// <summary>后端不可达时通知 Main 刷新全局离线横幅（FC-03/08）。</summary>
+    public event Action? BackendUnreachable;
+
     private readonly IDoc2kbApiService _apiService;
     private readonly NotificationService _notifications;
 
@@ -61,6 +65,199 @@ public partial class DocumentsViewModel : ViewModelBase
 
     /// <summary>外部数据变更（如导入完成）后使缓存失效：下次进入页面自动重新加载。</summary>
     public void InvalidateCache() => _hasLoadedOnce = false;
+
+    // ===================== 回收站（基础数据安全） =====================
+
+    private bool _isTrashOpen;
+    private bool _isTrashLoading;
+    private string _trashStatus = "";
+
+    /// <summary>回收站面板是否展开。</summary>
+    public bool IsTrashOpen
+    {
+        get => _isTrashOpen;
+        set
+        {
+            if (SetProperty(ref _isTrashOpen, value))
+            {
+                ToggleTrashCommand.NotifyCanExecuteChanged();
+                if (value)
+                {
+                    _ = LoadTrashAsync();
+                }
+            }
+        }
+    }
+
+    public bool IsTrashLoading
+    {
+        get => _isTrashLoading;
+        private set => SetProperty(ref _isTrashLoading, value);
+    }
+
+    public string TrashStatus
+    {
+        get => _trashStatus;
+        private set => SetProperty(ref _trashStatus, value);
+    }
+
+    public System.Collections.ObjectModel.ObservableCollection<TrashItem> TrashItems { get; } = new();
+
+    public bool HasTrashItems => TrashItems.Count > 0;
+
+    private bool _showPurgeTrashConfirm;
+
+    /// <summary>清理回收站前的二次确认（商用：物理删除不可恢复）。</summary>
+    public bool ShowPurgeTrashConfirm
+    {
+        get => _showPurgeTrashConfirm;
+        set => SetProperty(ref _showPurgeTrashConfirm, value);
+    }
+
+    private TrashItem? _selectedTrashItem;
+    public TrashItem? SelectedTrashItem
+    {
+        get => _selectedTrashItem;
+        set
+        {
+            if (SetProperty(ref _selectedTrashItem, value))
+            {
+                RestoreTrashItemCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>展开/收起回收站。</summary>
+    [RelayCommand]
+    private void ToggleTrash() => IsTrashOpen = !IsTrashOpen;
+
+    /// <summary>请求清理 30 天前回收站（先弹确认，不直接删）。</summary>
+    [RelayCommand]
+    private void RequestPurgeTrash() => ShowPurgeTrashConfirm = true;
+
+    /// <summary>取消清理确认。</summary>
+    [RelayCommand]
+    private void CancelPurgeTrash() => ShowPurgeTrashConfirm = false;
+
+    /// <summary>确认物理清理（不可恢复）。</summary>
+    [RelayCommand]
+    private async Task ConfirmPurgeTrashAsync()
+    {
+        ShowPurgeTrashConfirm = false;
+        await PurgeTrashAsync();
+    }
+
+    /// <summary>刷新回收站列表。</summary>
+    [RelayCommand]
+    private async Task LoadTrashAsync()
+    {
+        IsTrashLoading = true;
+        try
+        {
+            var resp = await _apiService.ListTrashAsync(100);
+            TrashItems.Clear();
+            foreach (var it in resp.Items)
+            {
+                TrashItems.Add(it);
+            }
+            OnPropertyChanged(nameof(HasTrashItems));
+            TrashStatus = TrashItems.Count == 0
+                ? "回收站为空"
+                : $"回收站 {TrashItems.Count} 条 · 恢复后需重新摄入/重建索引才能被检索命中";
+        }
+        catch (BackendConnectionException ex)
+        {
+            BackendUnreachable?.Invoke();
+            TrashStatus = $"后端不可达：{ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            TrashStatus = $"加载回收站失败：{ex.Message}";
+        }
+        finally
+        {
+            IsTrashLoading = false;
+        }
+    }
+
+    private bool CanRestoreTrash => SelectedTrashItem != null && !IsTrashLoading;
+
+    /// <summary>恢复选中的软删除文档（仅元数据；提示需重摄入）。</summary>
+    [RelayCommand(CanExecute = nameof(CanRestoreTrash))]
+    private async Task RestoreTrashItemAsync()
+    {
+        if (SelectedTrashItem is not { } item)
+        {
+            return;
+        }
+        IsTrashLoading = true;
+        try
+        {
+            var resp = await _apiService.RestoreTrashedDocumentAsync(item.DocumentId);
+            var note = string.IsNullOrWhiteSpace(resp.Note)
+                ? "恢复成功；请重新摄入源文件或重建索引，否则检索不到"
+                : resp.Note;
+            if (resp.Status.Equals("restored", StringComparison.OrdinalIgnoreCase))
+            {
+                _notifications.Success(note, "已恢复文档元数据");
+                TrashStatus = note;
+                await LoadTrashAsync();
+                try
+                {
+                    InvalidateCache();
+                    await RefreshAsync();
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Warn($"恢复后刷新文档列表失败: {ex.Message}", "Documents");
+                }
+            }
+            else
+            {
+                _notifications.Warning(note, "恢复未成功");
+                TrashStatus = note;
+            }
+        }
+        catch (BackendConnectionException ex)
+        {
+            BackendUnreachable?.Invoke();
+            _notifications.Error($"恢复失败：{ex.Message}", "回收站");
+        }
+        catch (Exception ex)
+        {
+            _notifications.Error($"恢复失败：{ex.Message}", "回收站");
+        }
+        finally
+        {
+            IsTrashLoading = false;
+            RestoreTrashItemCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    /// <summary>物理清理 30 天前的回收站（不可恢复；须先经 ConfirmPurgeTrash）。</summary>
+    private async Task PurgeTrashAsync()
+    {
+        IsTrashLoading = true;
+        try
+        {
+            var resp = await _apiService.PurgeTrashAsync(30);
+            _notifications.Info($"已物理清理 {resp.Purged} 条（30 天前，不可恢复）", "回收站");
+            await LoadTrashAsync();
+        }
+        catch (BackendConnectionException ex)
+        {
+            BackendUnreachable?.Invoke();
+            _notifications.Error($"清理失败：{ex.Message}", "回收站");
+        }
+        catch (Exception ex)
+        {
+            _notifications.Error($"清理失败：{ex.Message}", "回收站");
+        }
+        finally
+        {
+            IsTrashLoading = false;
+        }
+    }
 
     public const string AllCollectionsLabel = "(全部集合)";
     public ObservableCollection<string> AvailableCollections { get; } = new() { AllCollectionsLabel, "default" };
@@ -364,6 +561,7 @@ public partial class DocumentsViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
             DebugLog.Error($"文档列表后端不可达: {ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Documents", ex);
@@ -408,6 +606,7 @@ public partial class DocumentsViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             if (seq == _detailLoadSeq)
             {
                 DetailError = $"后端不可达：{ex.Message}";
@@ -594,6 +793,7 @@ public partial class DocumentsViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
             DebugLog.Error($"删除后端不可达: {ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Documents", ex);
@@ -821,6 +1021,7 @@ public partial class DocumentsViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             StatusMessage = $"后端不可达：{ex.Message}";
             DebugLog.Error($"重建索引后端不可达: {ex.Message}", "Documents", ex);
         }

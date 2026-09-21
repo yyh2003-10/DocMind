@@ -1850,6 +1850,12 @@ class VectorStore:
                                 merged[int(str(cid))] = float(score)
 
                     # 2) LIKE 兜底：<3 chars 短词（trigram 无法命中）
+                    if short_tokens:
+                        logger.debug(
+                            "BM25 短词路径: tokenizer=trigram short_tokens=%s "
+                            "(FTS 无法匹配，走 LIKE 子串)",
+                            short_tokens[:8],
+                        )
                     for tok in short_tokens:
                         cur = self._conn.execute(
                             f"""

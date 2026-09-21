@@ -82,6 +82,9 @@ public partial class MainViewModel : ViewModelBase
             // 同理补拉模型种子：构造时 v1/config 可能因令牌竞态 401 失败且无重试，
             // 否则整个会话 _configuredModel 为空，「默认 · xx」退回占位符、默认提供商分组缺模型。
             _ = _chatViewModel.RefreshModelSeedAsync();
+            // 图谱/质量：LLM 配置可能在离线期间变更，恢复后刷新命令可用性
+            _graphViewModel.NotifyLlmGateChanged();
+            _qualityViewModel.NotifyLlmGateChanged();
         }
     }
 
@@ -181,14 +184,36 @@ public partial class MainViewModel : ViewModelBase
         // 搜索详情「基于分块提问」→ 跳转对话页并填入问题
         _searchViewModel.AskInChatRequested += OnSearchAskInChatRequested;
 
+        // FC-07：搜索空库空态 → 一键去导入
+        _searchViewModel.GoToImportRequested += () =>
+        {
+            SelectedNavigationItem = NavigationItems.FirstOrDefault(n => n.ViewModelType == typeof(ImportViewModel));
+            StatusMessage = "请导入文档后再回到搜索页";
+        };
+
         // 转换成功「一键导入」→ 跳转导入页并填入文件路径
         _convertViewModel.ImportRequested += OnConvertImportRequested;
 
         // 对话页一键直达设置页（如未配置大模型引导）
         _chatViewModel.NavigateToSettingsRequested += NavigateToSettings;
 
-        // 图谱页一键直达设置页（如未配置大模型引导）
+        // FC-06 类前置：图谱/质量「LLM 未配置 → 设置页」
         _graphViewModel.NavigateToSettingsRequested += NavigateToSettings;
+        _qualityViewModel.NavigateToSettingsRequested += NavigateToSettings;
+
+        // FC-03/08：各业务页后端不可达 → 统一全局离线横幅
+        void OnPageBackendUnreachable()
+        {
+            UpdateBackendState(BackendState.Offline);
+            StatusMessage = "检测到后端不可达：请使用顶部横幅「重新检测」或「启动后端」";
+        }
+        _chatViewModel.BackendUnreachable += OnPageBackendUnreachable;
+        _searchViewModel.BackendUnreachable += OnPageBackendUnreachable;
+        _importViewModel.BackendUnreachable += OnPageBackendUnreachable;
+        _documentsViewModel.BackendUnreachable += OnPageBackendUnreachable;
+        _convertViewModel.BackendUnreachable += OnPageBackendUnreachable;
+        _graphViewModel.BackendUnreachable += OnPageBackendUnreachable;
+        _qualityViewModel.BackendUnreachable += OnPageBackendUnreachable;
 
         // 对话页来源抽屉「在搜索页查找」→ 本地来源跳搜索页检索、web 来源浏览器打开
         _chatViewModel.SourceSearchRequested += OnSourceSearchRequested;
@@ -196,9 +221,6 @@ public partial class MainViewModel : ViewModelBase
         // 设置页服务商配置变更 → 对话页重建模型候选。由 Main 统一订阅静态事件，
         // ChatViewModel 不再自订阅（静态事件长期持有 VM 引用无法退订）
         SettingsViewModel.ProviderConfigChanged += _chatViewModel.ApplyProviderConfigChanged;
-
-        // 设置页服务商配置变更 → 图谱页刷新 LLM 配置状态（抽取按钮禁用态联动）
-        SettingsViewModel.ProviderConfigChanged += _graphViewModel.NotifyLlmConfigChanged;
 
         // 导入完成 → 文档库/图谱/质量看板缓存失效并刷新
         _importViewModel.ImportCompleted += OnImportCompleted;

@@ -164,6 +164,12 @@ class ThinkingMetaFilter:
         r"answer\s+based\s+on\s+general\s+knowledge|"
         r"provide\s+brief|"
         r"no\s+need\s+for\s+"
+        r"the\s+user\s+want(s|ed)\s+to\s+(define|know|ask)|"
+        r"provide\s+\[actions\]|"
+        r"\[actions\]\s*(line|section|if|unless)|"
+        r"output\s+\[actions\]|"
+        r"omit\s+\[actions\]|"
+        r"skip\s+\[actions\]"
         r")"
     )
     # 泛化编排句式（2026-09-13 豆包问答截图）：不再逐句枚举，改为按
@@ -180,7 +186,9 @@ class ThinkingMetaFilter:
         r"maybe\s+(one|a)\s+(paragraph|sentence|line)|"
         r"\bproceed\b[\s.!?]*$|"
         r"\bproceeding\b|"
-        r"\bproceed\s+with\b"
+        r"\bproceed\s+with\b|"
+        r"the\s+user\s+wants\s+definition|"
+        r"the\s+user\s+wants\s+to\s+\w+"
         r")"
     )
     # 句末边界：西文句号/问号/叹号/换行，或中文句读

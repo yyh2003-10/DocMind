@@ -386,8 +386,27 @@ class ChatRequest(BaseModel):
     rag_mode: str | None = Field(None, validation_alias="ragMode")
     # 用户记忆上下文：独立字段，后端注入生成消息、绝不拼进检索 query
     memory_context: str | None = Field(None, validation_alias="memoryContext")
+    # 提示词双轨（P0）：rag | delivery | None(自动按意图)
+    response_mode: str | None = Field(
+        None, validation_alias=AliasChoices("responseMode", "response_mode")
+    )
+    # 续写：不重复检索，基于会话历史补全可能被截断的长回答
+    continue_writing: bool = Field(
+        False, validation_alias=AliasChoices("continueWriting", "continue_writing")
+    )
+    # Agent 模式（P1）：工具轨迹 + 工作区执行 + 最终回答
+    agent_mode: bool = Field(
+        False, validation_alias=AliasChoices("agentMode", "agent_mode", "mode_agent")
+    )
+    # 兼容：mode 字段 "agent" 也进入 Agent 模式
+    mode: str | None = Field(None, validation_alias=AliasChoices("mode", "response_track"))
 
     model_config = {"populate_by_name": True}
+
+    def is_agent_mode(self) -> bool:
+        if self.agent_mode:
+            return True
+        return (self.mode or "").strip().lower() == "agent"
 
 
 class SourceRefDTO(BaseModel):
@@ -452,6 +471,10 @@ class EvidenceSummaryDTO(BaseModel):
     fallback_general_knowledge: bool = Field(False, validation_alias="fallbackGeneralKnowledge")
     # 答案 [n] 引用审计：cited/valid/invalid/ok；旧客户端可忽略
     citation_audit: dict[str, Any] | None = None
+    # 引用门控三档统计（T3）：cite/bg/discarded 与阈值
+    citation_gate: dict[str, Any] | None = None
+    # 分阶段耗时（检索/联网/首token/生成/总耗时）
+    timing: dict[str, Any] | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -466,6 +489,8 @@ class ChatResponse(BaseModel):
     elapsed_ms: int = 0
     sources: list[SourceRefDTO] = []
     evidence: EvidenceSummaryDTO | None = None
+    # 分阶段耗时（与 SSE done 帧 timing 对齐）
+    timing: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatSessionDTO(BaseModel):
@@ -589,6 +614,20 @@ class ConfigUpdate(BaseModel):
     llm_timeout: float | None = Field(None, ge=0, le=3600)
     # 联网搜索总预算（秒）：多引擎 + 正文精读硬上限
     web_search_timeout: float | None = Field(None, ge=4, le=120)
+    # T6 搜索插件：builtin | tavily | bocha | serpapi（无 key 回落 builtin）
+    search_provider: str | None = None
+    search_provider_api_key: str | None = None
+    search_provider_endpoint: str | None = None
+    # T3/T5 引用门控与阶段耗时
+    citation_min_score: float | None = Field(None, ge=0.0, le=1.0)
+    citation_bg_score_ratio: float | None = Field(None, ge=0.0, le=1.0)
+    background_hit_limit: int | None = Field(None, ge=0, le=64)
+    stage_elapsed_enabled: bool | None = None
+    llm_first_token_slow_ms: int | None = Field(None, ge=1000, le=120000)
+    # T8 Agent 原生 tool-calling（仍受 agent_mode_enabled 总开关约束）
+    agent_mode_enabled: bool | None = None
+    agent_native_tool_calling: bool | None = None
+    agent_file_write_policy: str | None = None
     # --- 文件系统监控 ---
     watch_paths: list[str] | None = None
     watch_debounce_seconds: float | None = None
@@ -775,6 +814,16 @@ class ConfigResponse(BaseModel):
     rerank_recall: int = 20
     llm_timeout: float = 0.0
     web_search_timeout: float = 36.0
+    # T6 搜索插件（密钥只回显 configured，不回显明文）
+    search_provider: str = "builtin"
+    search_provider_api_key_configured: bool = False
+    search_provider_endpoint: str | None = None
+    # T3/T5 门控与阶段耗时
+    citation_min_score: float = 0.45
+    citation_bg_score_ratio: float = 0.6
+    background_hit_limit: int = 5
+    stage_elapsed_enabled: bool = True
+    llm_first_token_slow_ms: int = 30000
     # --- 文件系统监控 ---
     watch_paths: list[str] = []
     watch_debounce_seconds: float = 5.0
@@ -784,6 +833,11 @@ class ConfigResponse(BaseModel):
     notice: str | None = None
     # 启动时 config.toml 解析失败的告警（null = 配置文件正常）
     config_error: str | None = None
+    # Agent 升级预留（基础阶段默认关闭）
+    agent_mode_enabled: bool = False
+    agent_file_write_policy: str = "session_allow"
+    agent_native_tool_calling: bool = True
+    auto_curate_on_ingest: bool | None = None
 
 
 class LlmTestResponse(BaseModel):
@@ -1015,6 +1069,8 @@ class JobStatus(BaseModel):
     report: dict[str, Any] | None = None
     # 当前正在处理的文件名（ingest 类任务实时更新，供前端进度条显示）
     current_file: str | None = None
+    # FC-01b：取消时的人话说明（如「已取消，前 N 篇已导入」）
+    cancel_note: str | None = None
 
 
 class SampleIngestRequest(BaseModel):
@@ -1638,10 +1694,23 @@ def create_app(settings: Settings | None = None) -> Any:
             rerank_recall=int(s.rerank_recall),
             llm_timeout=s.llm_timeout,
             web_search_timeout=getattr(s, "web_search_timeout", 36.0),
+            search_provider=str(getattr(s, "search_provider", "builtin") or "builtin"),
+            search_provider_api_key_configured=bool(getattr(s, "search_provider_api_key", None)),
+            search_provider_endpoint=getattr(s, "search_provider_endpoint", None) or None,
+            citation_min_score=float(getattr(s, "citation_min_score", 0.45) or 0.45),
+            citation_bg_score_ratio=float(getattr(s, "citation_bg_score_ratio", 0.6) or 0.6),
+            background_hit_limit=int(getattr(s, "background_hit_limit", 5) or 0),
+            stage_elapsed_enabled=bool(getattr(s, "stage_elapsed_enabled", True)),
+            llm_first_token_slow_ms=int(getattr(s, "llm_first_token_slow_ms", 30000) or 30000),
             watch_paths=list(s.watch_paths),
             watch_debounce_seconds=s.watch_debounce_seconds,
             llm_api_key_configured=bool(s.llm_api_key),
             config_error=get_config_load_error(),
+            # Agent 升级预留字段（旧前端忽略即可）
+            agent_mode_enabled=bool(getattr(s, "agent_mode_enabled", False)),
+            agent_file_write_policy=str(getattr(s, "agent_file_write_policy", "session_allow") or "session_allow"),
+            agent_native_tool_calling=bool(getattr(s, "agent_native_tool_calling", True)),
+            auto_curate_on_ingest=bool(getattr(s, "auto_curate_on_ingest", False)),
         )
 
     @app.post("/v1/config", response_model=ConfigResponse)
@@ -1674,6 +1743,12 @@ def create_app(settings: Settings | None = None) -> Any:
             # 避免前端旧默认再次推回后每轮「检索降级」
             if "rerank_model" in updates and hasattr(s, "_sanitize_rerank_model"):
                 s._sanitize_rerank_model()
+            if "citation_min_score" in updates and hasattr(s, "_sanitize_citation_gate"):
+                s._sanitize_citation_gate()
+
+        # 空 search_provider_api_key = 显式清除（回落 builtin）
+        if "search_provider_api_key" in req.model_dump(exclude_none=False) and req.search_provider_api_key == "":
+            s.search_provider_api_key = None
 
         # 模型切换引导：维度变化时提示用户重建索引，并同步 settings.embed_dim
         # （否则本进程/其他进程后续新建 store 仍用旧预设维度，重现维度不匹配）
@@ -1733,10 +1808,22 @@ def create_app(settings: Settings | None = None) -> Any:
             rerank_recall=int(s.rerank_recall),
             llm_timeout=s.llm_timeout,
             web_search_timeout=getattr(s, "web_search_timeout", 36.0),
+            search_provider=str(getattr(s, "search_provider", "builtin") or "builtin"),
+            search_provider_api_key_configured=bool(getattr(s, "search_provider_api_key", None)),
+            search_provider_endpoint=getattr(s, "search_provider_endpoint", None) or None,
+            citation_min_score=float(getattr(s, "citation_min_score", 0.45) or 0.45),
+            citation_bg_score_ratio=float(getattr(s, "citation_bg_score_ratio", 0.6) or 0.6),
+            background_hit_limit=int(getattr(s, "background_hit_limit", 5) or 0),
+            stage_elapsed_enabled=bool(getattr(s, "stage_elapsed_enabled", True)),
+            llm_first_token_slow_ms=int(getattr(s, "llm_first_token_slow_ms", 30000) or 30000),
             watch_paths=list(s.watch_paths),
             watch_debounce_seconds=s.watch_debounce_seconds,
             llm_api_key_configured=bool(s.llm_api_key),
             notice=notice,
+            agent_mode_enabled=bool(getattr(s, "agent_mode_enabled", False)),
+            agent_file_write_policy=str(getattr(s, "agent_file_write_policy", "session_allow") or "session_allow"),
+            agent_native_tool_calling=bool(getattr(s, "agent_native_tool_calling", True)),
+            auto_curate_on_ingest=bool(getattr(s, "auto_curate_on_ingest", False)),
         )
 
     # --- POST /v1/llm/test（设置页「测试连接」：验证 LLM 配置是否可用）---
@@ -2011,6 +2098,44 @@ def create_app(settings: Settings | None = None) -> Any:
 
         cancel_event = state.job_cancel_events[job_id]
 
+        # FC-01b：线程安全累计已完成文件明细，取消时原样回报
+        partial_lock = threading.Lock()
+        partial_results: list[IngestResultDTO] = []
+
+        def _on_file_result(res: Any) -> None:
+            dto = IngestResultDTO(
+                source=getattr(res, "source", ""),
+                collection=getattr(res, "collection", collection),
+                format=getattr(res, "format", "unknown"),
+                size_bytes=int(getattr(res, "size_bytes", 0) or 0),
+                chunk_count=int(getattr(res, "chunk_count", 0) or 0),
+                elapsed_ms=int(getattr(res, "elapsed_ms", 0) or 0),
+                status=getattr(res, "status", "unknown"),
+                error=getattr(res, "error", None),
+                document_id=getattr(res, "document_id", None),
+            )
+            with partial_lock:
+                partial_results.append(dto)
+
+        def _fill_cancelled_job(job_obj: JobStatus) -> str:
+            """把已累计明细写入 job.results，返回 cancel_note。"""
+            with partial_lock:
+                snapshot = list(partial_results)
+            job_obj.results = snapshot
+            n_ingested = sum(1 for r in snapshot if r.status == "ingested")
+            n_skipped = sum(1 for r in snapshot if r.status == "skipped")
+            n_failed = sum(1 for r in snapshot if r.status == "failed")
+            job_obj.processed = n_ingested + n_skipped + n_failed
+            job_obj.current_file = None
+            note = f"已取消：前 {n_ingested} 篇已导入可搜索"
+            if n_skipped:
+                note += f"，跳过 {n_skipped}"
+            if n_failed:
+                note += f"，失败 {n_failed}"
+            note += "；其余文件未处理。"
+            job_obj.cancel_note = note
+            return note
+
         def _check_and_update_progress(
             done: int,
             total: int,
@@ -2023,18 +2148,6 @@ def create_app(settings: Settings | None = None) -> Any:
             with state._jobs_lock:
                 if job.status == "cancelled":
                     raise _JobCancelledError("任务已被取消")
-                # 维护已完成文件的明细列表，供取消时填充 job.results
-                if current_file is not None and done > 0:
-                    # 记录当前文件的状态（简化为 ingested，实际状态由 summary 确定）
-                    # 注意：这里只记录文件名，实际状态需要从 summary 中获取
-                    if not hasattr(job, '_completed_files'):
-                        job._completed_files = []
-                    # 避免重复添加同一个文件
-                    if current_file not in [f.get('source') for f in job._completed_files]:
-                        job._completed_files.append({
-                            'source': current_file,
-                            'status': 'ingested',  # 简化状态，实际状态由 summary 确定
-                        })
             _update_ingest_job(state, job, done, total,
                                current_file=current_file, stage=stage,
                                stage_progress=stage_progress)
@@ -2051,36 +2164,29 @@ def create_app(settings: Settings | None = None) -> Any:
                         store=store,
                         progress=_check_and_update_progress,
                         cancel_event=cancel_event,
+                        on_result=_on_file_result,
                     )
                 with state._jobs_lock:
                     if job.status == "cancelled":
-                        # 取消时填充 job.results，让前端显示"已取消，前N篇已导入"
-                        if hasattr(job, '_completed_files') and job._completed_files:
-                            job.results = [
-                                IngestResultDTO(
-                                    source=f['source'],
-                                    collection=collection,
-                                    format="unknown",
-                                    size_bytes=0,
-                                    chunk_count=0,
-                                    elapsed_ms=0,
-                                    status=f['status'],
-                                )
-                                for f in job._completed_files
-                            ]
+                        note = _fill_cancelled_job(job)
+                        logger.info("任务取消（完成路径）: %s %s", job_id, note)
+                        job.finished_at = _now_iso()
+                        _broadcast_job_event(job_id, {
+                            "type": "cancelled", "ts": _now_iso(),
+                            "cancel_note": note,
+                            "processed": job.processed,
+                            "results_count": len(job.results),
+                        })
                         return
                     job.status = "completed"
                     job.progress = 1.0
                     job.processed = summary.total_documents + summary.skipped + summary.failed
                     job.finished_at = _now_iso()
                     job.current_file = None
-                    # 结果明细：每个文件的最终状态（ingested / skipped / failed），
-                    # 供前端轮询完成后直接展示，无需二次同步请求。
+                    job.cancel_note = None
                     job.results = [
                         IngestResultDTO(**r.__dict__) for r in summary.results
                     ]
-                # 后台 AI 整理：导入已完成，整理剥离到独立 job（enrich + 图谱
-                # 抽取），done 事件带上 curate_job_id 供前端展示"后台整理中"。
                 curate_job_id = _spawn_background_curate(
                     state, summary.curatable_document_ids, collection
                 )
@@ -2093,46 +2199,31 @@ def create_app(settings: Settings | None = None) -> Any:
                 )
             except Exception as e:  # noqa: BLE001
                 with state._jobs_lock:
-                    if job.status == "cancelled":
-                        logger.info("任务已取消并终止后台线程: %s", job_id)
-                        # 取消时填充 job.results，让前端显示"已取消，前N篇已导入"
-                        if hasattr(job, '_completed_files') and job._completed_files:
-                            job.results = [
-                                IngestResultDTO(
-                                    source=f['source'],
-                                    collection=collection,
-                                    format="unknown",
-                                    size_bytes=0,
-                                    chunk_count=0,
-                                    elapsed_ms=0,
-                                    status=f['status'],
-                                )
-                                for f in job._completed_files
-                            ]
-                        _broadcast_job_event(job_id, {"type": "cancelled", "ts": _now_iso()})
-                        return
-                    if isinstance(e, _JobCancelledError) or "已被取消" in str(e):
+                    is_cancel = (
+                        job.status == "cancelled"
+                        or isinstance(e, _JobCancelledError)
+                        or "已被取消" in str(e)
+                    )
+                    if is_cancel:
                         job.status = "cancelled"
-                        # 取消时填充 job.results，让前端显示"已取消，前N篇已导入"
-                        if hasattr(job, '_completed_files') and job._completed_files:
-                            job.results = [
-                                IngestResultDTO(
-                                    source=f['source'],
-                                    collection=collection,
-                                    format="unknown",
-                                    size_bytes=0,
-                                    chunk_count=0,
-                                    elapsed_ms=0,
-                                    status=f['status'],
-                                )
-                                for f in job._completed_files
-                            ]
-                        _broadcast_job_event(job_id, {"type": "cancelled", "ts": _now_iso()})
-                    else:
-                        job.status = "failed"
-                        job.error = str(e)
-                        _broadcast_job_event(job_id, {"type": "failed", "ts": _now_iso(), "error": str(e)})
+                        note = _fill_cancelled_job(job)
+                        job.finished_at = _now_iso()
+                        logger.info("任务已取消: %s %s", job_id, note)
+                        _broadcast_job_event(job_id, {
+                            "type": "cancelled", "ts": _now_iso(),
+                            "cancel_note": note,
+                            "processed": job.processed,
+                            "results_count": len(job.results),
+                        })
+                        return
+                    job.status = "failed"
+                    job.error = str(e)
+                    # 失败时也尽量带上已成功明细，便于用户排查部分成功
+                    with partial_lock:
+                        if partial_results and not job.results:
+                            job.results = list(partial_results)
                     job.finished_at = _now_iso()
+                    _broadcast_job_event(job_id, {"type": "failed", "ts": _now_iso(), "error": str(e)})
 
         threading.Thread(target=_run_ingest_job, daemon=True).start()
         return job
@@ -2285,6 +2376,7 @@ def create_app(settings: Settings | None = None) -> Any:
                 if getattr(answer, "evidence", None)
                 else None
             ),
+            timing=dict(getattr(answer, "timing", None) or {}),
         )
 
     # --- POST /v1/chat/stream (SSE) ---
@@ -2320,24 +2412,60 @@ def create_app(settings: Settings | None = None) -> Any:
                 if not stop_event.is_set():
                     yield f"data: {json.dumps({'error': f'LLM 配置错误: {e}'}, ensure_ascii=False)}\n\n"
                 return
-            gen = rag_answer_stream(
-                req.query, req.collection, req.top_k, req.chat_id,
-                collections=req.collections,
-                model_override=req.model,
-                llm_client=llm_client,
-                enable_web_search=req.enable_web_search,
-                web_search_mode=req.resolved_web_search_mode(),
-                entity_context=req.entity_context,
-                persona=req.persona,
-                persona_prompt=req.persona_prompt,
-                store=store,
-                embedder=state.embedder,
-                stop_event=stop_event,
-                attachments=req.attachments,
-                github_token=req.github_token,
-                rag_mode=req.rag_mode,
-                memory_context=req.memory_context,
-            )
+            # 续写优先走 RAG 续写路径；Agent 模式与 continueWriting 同时请求时以续写为准，
+            # 避免「继续写」被 agent 工具链抢走导致语义不符。
+            # 商用门禁：agent_mode_enabled=false 时忽略请求中的 agentMode，
+            # 强制回落 RAG，避免未开放的进阶能力被 API 直接打开。
+            agent_requested = req.is_agent_mode() and not req.continue_writing
+            agent_allowed = bool(getattr(state.settings, "agent_mode_enabled", False))
+            if agent_requested and not agent_allowed:
+                logger.info(
+                    "请求携带 agentMode 但后端 agent_mode_enabled=false，已回落 RAG（query_len=%d）",
+                    len(req.query or ""),
+                )
+            if agent_requested and agent_allowed:
+                from doc2mind.core.agent.runtime.chat_agent import agent_answer_stream
+
+                gen = agent_answer_stream(
+                    req.query,
+                    collection=req.collection,
+                    top_k=req.top_k,
+                    chat_id=req.chat_id,
+                    settings=state.settings,
+                    llm_client=llm_client,
+                    collections=req.collections,
+                    model_override=req.model,
+                    enable_web_search=req.enable_web_search,
+                    store=store,
+                    embedder=state.embedder,
+                    stop_event=stop_event,
+                    persona=req.persona,
+                    persona_prompt=req.persona_prompt,
+                    attachments=req.attachments,
+                    memory_context=req.memory_context,
+                    response_mode=req.response_mode,
+                )
+            else:
+                gen = rag_answer_stream(
+                    req.query, req.collection, req.top_k, req.chat_id,
+                    collections=req.collections,
+                    model_override=req.model,
+                    llm_client=llm_client,
+                    enable_web_search=req.enable_web_search,
+                    web_search_mode=req.resolved_web_search_mode(),
+                    entity_context=req.entity_context,
+                    persona=req.persona,
+                    persona_prompt=req.persona_prompt,
+                    store=store,
+                    embedder=state.embedder,
+                    stop_event=stop_event,
+                    attachments=req.attachments,
+                    github_token=req.github_token,
+                    rag_mode=req.rag_mode,
+                    memory_context=req.memory_context,
+                    response_mode=req.response_mode,
+                    continue_writing=req.continue_writing,
+                )
 
             def _push(chunk: str | None) -> None:
                 """跨线程推送到 asyncio 队列；失败时置位 stop_event 防止挂死。"""

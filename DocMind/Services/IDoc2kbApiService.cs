@@ -29,8 +29,9 @@ public interface IDoc2kbApiService
     Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default);
     /// <summary>流式对话：消费 SSE 逐 token 输出。onToken 每收到一个 token 触发，onDone 在终帧触发，返回终帧元数据。
     /// onStatus 阶段状态；onThinking 推理链增量（DeepSeek-R1/Qwen3 等模型的 reasoning_content）；
-    /// onRestart 后端重启生成（上下文溢出精简后重试）时触发，调用方应丢弃已累积的正文重新开始。</summary>
-    Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, Action? onRestart = null, CancellationToken ct = default);
+    /// onRestart 后端重启生成（上下文溢出精简后重试）时触发，调用方应丢弃已累积的正文重新开始；
+    /// onAgentEvent Agent 轨迹帧（agent_plan/tool_call/tool_result/artifact_ready），默认忽略亦安全。</summary>
+    Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, Action? onRestart = null, Action<string, string>? onAgentEvent = null, CancellationToken ct = default);
     Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", string? q = null, CancellationToken ct = default);
     Task<DocumentDetail> GetDocumentAsync(string id, int chunks = 5, int chunkContentLength = 200, string? collection = null, CancellationToken ct = default);
     Task<DeleteResult> DeleteDocumentAsync(string id, string? collection = null, CancellationToken ct = default);
@@ -117,4 +118,12 @@ public interface IDoc2kbApiService
 
     /// <summary>切换使用档案（POST /v1/profile）：notes/docs/agent/library。</summary>
     Task<ProfileSwitchResult> SetUsageProfileAsync(string profile, CancellationToken ct = default);
+
+    // ── 回收站（软删除恢复，基础数据安全能力）──
+    /// <summary>列出回收站（GET /v1/trash）。</summary>
+    Task<TrashListResponse> ListTrashAsync(int limit = 100, CancellationToken ct = default);
+    /// <summary>恢复软删除文档（POST /v1/trash/{id}/restore）。注意：仅恢复元数据，需重新摄入/reindex 才能被检索。</summary>
+    Task<TrashRestoreResponse> RestoreTrashedDocumentAsync(string documentId, CancellationToken ct = default);
+    /// <summary>物理清理超过 N 天的回收站条目（POST /v1/trash/purge）。</summary>
+    Task<TrashPurgeResponse> PurgeTrashAsync(int olderThanDays = 30, CancellationToken ct = default);
 }

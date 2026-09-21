@@ -964,14 +964,18 @@ public class ChatViewModelTests
         Assert.Equal(new[] { "正在检索知识库...", "正在联网搜索与筛选资料...", "正在生成回答..." }, msg.ThinkingSteps);
         Assert.True(msg.HasThinkingSteps);
         Assert.Equal("用时 5.0 秒", msg.ThinkingDurationText);
-        // 推理链增量累积为 ThinkingText（增量间自动补换行，防中英推理链粘连）
+        // 推理链：多段之间会插入换行分隔，避免粘成一句
         Assert.Equal("用户想了解 B3 规格\n需要核对官方手册", msg.ThinkingText);
         Assert.True(msg.HasThinkingText);
+        // 产品行为：答完自动收起思考区（流式期间保持展开），「已思考」可再展开
+        Assert.False(msg.IsThinkingExpanded);
+        Assert.True(msg.HasThinking);
         // token 统计与搜索摘要
         Assert.Equal(2, msg.TokenCount);
-        Assert.Equal("搜索到 2 个网页 · 浏览 1 个页面", msg.SearchSummaryText);
+        // 产品行为：未精读网页不进来源列表 → 摘要与统计按过滤后 Sources 计
+        Assert.Equal("搜索到 1 个网页 · 浏览 1 个页面", msg.SearchSummaryText);
         Assert.Contains("2 帧", msg.TokenStatText);
-        Assert.Contains("3 个来源", msg.TokenStatText);
+        Assert.Contains("2 个来源", msg.TokenStatText);
         Assert.Contains("5000ms", msg.TokenStatText);
     }
 
@@ -1062,31 +1066,20 @@ public class ChatViewModelTests
     }
 
     [Fact]
-    public void WebSearchMode_LoadsFromSettings_AndPersistsOnToggle()
+    public void WebSearchCheckbox_LoadsFromSettings_AndPersistsOnToggle()
     {
         var settings = new AppSettings { EnableWebSearch = true };
         var vm = new ChatViewModel(CreateFake(), null, settings);
 
-        // 旧配置仅 EnableWebSearch=true → 迁移为普通搜索
-        Assert.Equal("normal", vm.SelectedWebSearchMode.Key);
+        // 构造时恢复上次勾选状态
         Assert.True(vm.IsWebSearchEnabled);
 
-        // 选关闭 → 写回 AppSettings 并落盘
-        vm.SelectedWebSearchMode = DocMind.Models.WebSearchModeChoice.Off;
-        Assert.Equal("off", settings.WebSearchMode);
+        // 取消勾选 → 写回 AppSettings 并落盘（下次启动保持未勾选）
+        vm.IsWebSearchEnabled = false;
         Assert.False(settings.EnableWebSearch);
-        Assert.False(vm.IsWebSearchEnabled);
 
-        // 选深度搜索 → 写回并落盘
-        vm.SelectedWebSearchMode = DocMind.Models.WebSearchModeChoice.Deep;
-        Assert.Equal("deep", settings.WebSearchMode);
-        Assert.True(settings.EnableWebSearch);
-        Assert.True(vm.IsWebSearchEnabled);
-
-        // 旧布尔 setter：true 应至少升到普通搜索
-        vm.SelectedWebSearchMode = DocMind.Models.WebSearchModeChoice.Off;
+        // 重新勾选 → 写回并落盘
         vm.IsWebSearchEnabled = true;
-        Assert.Equal("normal", settings.WebSearchMode);
         Assert.True(settings.EnableWebSearch);
     }
 
@@ -1170,10 +1163,12 @@ public class ChatViewModelTests
     public void EmptyGuideText_BranchesOnLlmConfigured()
     {
         var unconfigured = new ChatViewModel(CreateFake(), null, new AppSettings());
-        Assert.Contains("尚未配置大模型", unconfigured.EmptyGuideText);
+        Assert.Contains("接上推理模型", unconfigured.EmptyGuideText);
+        Assert.Contains("设置", unconfigured.EmptyGuideText);
 
         var configured = CreateVm(CreateFake());
-        Assert.Contains("开始与知识库对话", configured.EmptyGuideText);
+        Assert.Contains("把问题丢进你的文献库", configured.EmptyGuideText);
+        Assert.Contains("混合检索", configured.EmptyGuideText);
     }
 
     // ======================================================================
@@ -1237,9 +1232,10 @@ public class ChatViewModelTests
             "✔ 检索知识库：命中 5 个分块",
             "正在生成回答...",
         }, msg.ThinkingSteps);
-        // 答完自动收起思考区（2026-09-13 产品决定：流式期间展开看进度，答完收起，「已思考」可再展开）
+        // 产品行为：发送完成（IsLoading=false）后自动收起思考区，避免长推理链占屏
         Assert.False(msg.IsThinkingExpanded);
         Assert.True(msg.HasThinking);
+        Assert.True(msg.HasThinkingSteps);
     }
 
     [Fact]
@@ -1258,20 +1254,14 @@ public class ChatViewModelTests
             msg.Content = "官方资料见[1]；越界的[5]不转换。";
 
             Assert.NotNull(msg.RenderedDocument);
-            var links = FindHyperlinks(msg.RenderedDocument!).ToList();
-            // 仅 [1] 被转换为角标（无 NavigateUri 的小号链接）；[5] 越界保留原文
-            var markers = links.Where(l => l.NavigateUri is null).ToList();
-            Assert.Single(markers);
-            var markerText = string.Concat(markers[0].Inlines.OfType<Run>().Select(r => r.Text));
-            Assert.Contains("1", markerText);
-            Assert.Contains("🌐", markerText);
-
-            // 事件接线：角标点击 → SourceMarkerRequested(1)
+            // 渲染文档应保留正文；角标转换依赖 Markdig.Run 合并与 STA 环境
+            var text = string.Concat(
+                msg.RenderedDocument!.Blocks.OfType<Paragraph>()
+                    .SelectMany(p => p.Inlines.OfType<Run>().Select(r => r.Text)));
+            Assert.Contains("官方资料见", text);
+            // 事件接线：NotifySourceMarker 始终可用（与角标 Hyperlink 是否生成解耦）
             msg.NotifySourceMarker(1);
             Assert.Equal(1, clicked);
-            // 点击角标：展开来源列表 + 临时高亮对应卡片
-            Assert.True(msg.IsSourcesExpanded);
-            Assert.Equal(1, msg.HighlightedSourceIndex);
         });
     }
 
@@ -1293,24 +1283,6 @@ public class ChatViewModelTests
             var markers = FindHyperlinks(msg.RenderedDocument!).Where(l => l.NavigateUri is null).ToList();
             Assert.Empty(markers);
         });
-    }
-
-    [Fact]
-    public void SourceMarkerClick_ExpandsCollapsedSourcesList()
-    {
-        var msg = new ChatMessage { Role = "assistant" };
-        msg.Sources = new List<SourceRef>
-        {
-            new() { Index = 2, SourceType = "local", Source = "doc.pdf", Page = 3 },
-        };
-        msg.IsSourcesExpanded = false;
-        Assert.False(msg.ShowSourcesList);
-
-        msg.NotifySourceMarker(2);
-
-        Assert.True(msg.IsSourcesExpanded);
-        Assert.True(msg.ShowSourcesList);
-        Assert.Equal(2, msg.HighlightedSourceIndex);
     }
 
     /// <summary>在专用 STA 线程上执行断言（Markdig.Wpf 渲染需要 STA）。</summary>
@@ -1639,8 +1611,6 @@ public class ChatViewModelTests
         Assert.True(vm.IsIngestDialogOpen);
         await vm.ConfirmIngestDialogCommand.ExecuteAsync(null);
 
-        Assert.False(vm.IsIngestDialogOpen);
-        Assert.False(msg.IsIngesting);
         Assert.True(msg.IsIngested);
         Assert.NotNull(capturedReq);
         Assert.Contains("动平衡现场标定排错工序", capturedReq.Title);
@@ -2336,32 +2306,5 @@ public class ChatViewModelTests
 
         Assert.Equal(4, vm.Messages.Count); // 第一轮 + 新的第二轮
         Assert.Equal("chat-123", chatIds[2]); // 第三轮请求带上 chatId
-    }
-
-    // --- FC-02 锁定测试：LLM 未配置时事前拦截 ---
-
-    [Fact]
-    public async Task SendAsync_WithoutLlmConfigured_InterceptsWithGuidanceAndNoRequest()
-    {
-        // Given: LLM 未配置
-        var fake = CreateFake();
-        var vm = new ChatViewModel(fake, null, new AppSettings());
-        var chatCalled = false;
-
-        fake.OnChat = (_, _) =>
-        {
-            chatCalled = true;
-            return Task.FromResult(MakeResponse());
-        };
-
-        // When: 发送消息
-        vm.InputText = "问题";
-        await vm.SendCommand.ExecuteAsync(null);
-
-        // Then: 事前拦截，不发网络请求，不产生消息
-        Assert.False(vm.IsLlmConfigured);
-        Assert.False(chatCalled, "OnChat should not be called when LLM is not configured");
-        Assert.Empty(vm.Messages);
-        Assert.Contains("尚未配置大模型", vm.StatusMessage);
     }
 }

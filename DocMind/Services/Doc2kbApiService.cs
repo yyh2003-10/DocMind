@@ -147,7 +147,8 @@ public class Doc2kbApiService : IDoc2kbApiService
     public async Task<ChatStreamResult> ChatStreamAsync(
         ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone,
         Action<string>? onStatus = null, Action<string>? onThinking = null,
-        Action? onRestart = null, CancellationToken ct = default)
+        Action? onRestart = null, Action<string, string>? onAgentEvent = null,
+        CancellationToken ct = default)
     {
         var reqBody = JsonSerializer.Serialize(req, JsonOptions);
         DebugLog.Info($"→ POST v1/chat/stream\n  req: {Truncate(RedactSecrets(reqBody), 800)}", "API");
@@ -313,6 +314,23 @@ public class Doc2kbApiService : IDoc2kbApiService
                         continue;
                     }
 
+                    // Agent 轨迹帧（T7）：默认安全忽略；有回调时上报 tool 名与摘要
+                    if (root.TryGetProperty("type", out var typeAgent)
+                        && onAgentEvent is not null)
+                    {
+                        var agentType = typeAgent.GetString() ?? "";
+                        if (agentType is "agent_plan" or "tool_call" or "tool_result" or "artifact_ready")
+                        {
+                            var toolId = root.TryGetProperty("tool_id", out var tid) ? (tid.GetString() ?? "")
+                                : root.TryGetProperty("tool", out var t2) ? (t2.GetString() ?? "") : "";
+                            var summary = root.TryGetProperty("summary", out var sum)
+                                ? (sum.GetString() ?? "")
+                                : root.TryGetProperty("status", out var st) ? (st.GetString() ?? "") : agentType;
+                            onAgentEvent(agentType, string.IsNullOrWhiteSpace(toolId) ? summary : $"{toolId}: {summary}");
+                            continue;
+                        }
+                    }
+
                     if (root.TryGetProperty("done", out var doneElem) && doneElem.ValueKind == JsonValueKind.True)
                     {
                         doneReceived = true;
@@ -366,6 +384,13 @@ public class Doc2kbApiService : IDoc2kbApiService
         int ElapsedMs() => root.TryGetProperty("elapsed_ms", out var v) && v.TryGetInt32(out var n) ? n : 0;
         bool Partial() => root.TryGetProperty("partial", out var v) && v.ValueKind == JsonValueKind.True;
         string? Warning() => root.TryGetProperty("warning", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        // P0 双轨 / 续写（旧后端缺字段时为 null/false）
+        string? PromptTrack() => root.TryGetProperty("prompt_track", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        bool Truncated() => root.TryGetProperty("truncated", out var v) && v.ValueKind == JsonValueKind.True;
+        bool ContinueSupported() => !root.TryGetProperty("continue_supported", out var v)
+            || v.ValueKind is not JsonValueKind.False;
+        string? ResponseMode() => root.TryGetProperty("response_mode", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        string? ContinueHint() => root.TryGetProperty("continue_hint", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         // 后端实际生效人设（创作意图自动路由时可能与请求不同）
         string? Persona() => root.TryGetProperty("persona", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
@@ -490,6 +515,11 @@ public class Doc2kbApiService : IDoc2kbApiService
             Sources = sources,
             Partial = Partial(),
             Warning = Warning(),
+            PromptTrack = PromptTrack(),
+            Truncated = Truncated(),
+            ContinueSupported = ContinueSupported(),
+            ResponseMode = ResponseMode(),
+            ContinueHint = ContinueHint(),
             ModelDisplayName = modelDisplayName,
             ContextWindow = contextWindow,
             MaxOutputTokens = maxOutputTokens,
@@ -1074,6 +1104,15 @@ public class Doc2kbApiService : IDoc2kbApiService
 
     public Task<LibraryStatus> GetLibraryStatusAsync(CancellationToken ct = default)
         => SendAsync<LibraryStatus>(HttpMethod.Get, "v1/library/status", null, ct);
+
+    public Task<TrashListResponse> ListTrashAsync(int limit = 100, CancellationToken ct = default)
+        => SendAsync<TrashListResponse>(HttpMethod.Get, $"v1/trash?limit={limit}", null, ct);
+
+    public Task<TrashRestoreResponse> RestoreTrashedDocumentAsync(string documentId, CancellationToken ct = default)
+        => SendAsync<TrashRestoreResponse>(HttpMethod.Post, $"v1/trash/{Uri.EscapeDataString(documentId)}/restore", null, ct);
+
+    public Task<TrashPurgeResponse> PurgeTrashAsync(int olderThanDays = 30, CancellationToken ct = default)
+        => SendAsync<TrashPurgeResponse>(HttpMethod.Post, "v1/trash/purge", new TrashPurgeRequest { OlderThanDays = olderThanDays }, ct);
 
     public Task<ProfileSwitchResult> SetUsageProfileAsync(string profile, CancellationToken ct = default)
         => SendAsync<ProfileSwitchResult>(HttpMethod.Post, "v1/profile", new { profile }, ct);
