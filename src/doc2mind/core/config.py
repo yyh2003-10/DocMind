@@ -114,6 +114,27 @@ class Settings:
     llm_model: str = ""
     llm_temperature: float = 0.7
     llm_max_tokens: int = 8192
+    # ── Agent 进阶能力预留（基础阶段默认关闭/保守）──
+    agent_mode_enabled: bool = False
+    agent_file_write_policy: str = "session_allow"  # ask | session_allow | always_allow_workspace
+    agent_max_steps: int = 8
+    # T8：是否允许 provider 原生 tool-calling（仍受 agent_mode_enabled 总开关约束）
+    agent_native_tool_calling: bool = True
+    # T6：搜索 Provider 插件：builtin（默认，多引擎抓取）| tavily | bocha | serpapi
+    # 无 key 时自动回落 builtin，不崩溃；密钥不回显。
+    search_provider: str = "builtin"
+    search_provider_api_key: str | None = None
+    search_provider_endpoint: str | None = None
+    # T9：对话侧只读 MCP client（默认关闭；agent_mode_enabled=false 时不加载）
+    mcp_client_enabled: bool = False
+    # JSON 数组：[{name,transport,command,args,url,env,enabled,tool_whitelist}]
+    mcp_servers_json: str = "[]"
+    # T12：思考区英文 meta 过滤（默认开；验收 C2 可关）
+    thinking_meta_filter_enabled: bool = True
+    # T10：长文大纲编排开关（默认关，不改 RAG 短答）
+    longform_enabled: bool = False
+    longform_max_sections: int = 8
+    longform_max_chars: int = 12000
 
     # RAG 检索上下文参数
     rag_top_k: int = 5
@@ -201,7 +222,18 @@ class Settings:
     # rerank_score（sigmoid 0-1）判定——>= 该值才拿引用编号 [n]；>= 60% 该值
     # 降为「背景勿引用」；其余丢弃。重排不可用时回退旧组级逻辑（jina 余弦
     # 标尺正负样本重叠，逐条余弦门不可靠，见 tools/calibrate_citation_threshold.py）。
-    citation_min_score: float = 0.35
+    # 推荐默认 0.45：偏低会放行弱相关，偏高（>0.60）在无重排库上误杀明显。
+    # 误杀风险：同义改写无词汇重叠时主题门会降为背景而非直接丢弃。
+    citation_min_score: float = 0.45
+    # 背景线比例：score >= citation_min_score * ratio 但未达引用线 → 仅作
+    # 背景注入（无 [n]）；低于背景线丢弃不注入，避免无效上下文拖慢生成。
+    citation_bg_score_ratio: float = 0.6
+    # 背景注入条数上限（FR-10）：0 = 关闭背景注入；超限按相关度保留前 N。
+    background_hit_limit: int = 5
+    # 阶段耗时埋点开关（FR-13）：关闭时 done 帧不写 stage_*，仅结构化日志。
+    stage_elapsed_enabled: bool = True
+    # 流式生成首 token 慢阈值（毫秒）：超过后 status 周期提示可关联网/换模型。
+    llm_first_token_slow_ms: int = 30000
     # RRF 融合权重 "vec,bm25[,sparse]"（如 "1,1" 中性向量/BM25；"2,1,1" =
     # 向量 2、BM25 1、稀疏 1）。第三位为稀疏向量路（D2），须同时开启
     # sparse_retrieval_enabled 才生效。
@@ -381,6 +413,7 @@ class Settings:
                 pass
         s = cls(**kwargs)  # type: ignore[arg-type]
         s._sanitize_rerank_model()
+        s._sanitize_citation_gate()
 
         # embed_dim 与 embed_model 对齐：catalog 已收录的模型直接查维度，
         # 避免用预设 512 建 vec_chunks 表后与模型实际输出维度不符（切换
@@ -417,6 +450,45 @@ class Settings:
                 model,
             )
             self.rerank_model = "BAAI/bge-reranker-base"
+
+    def _sanitize_citation_gate(self) -> None:
+        """非法 citation_min_score 归零（关闭逐条门控）并告警，不阻塞对话。
+
+        FR-08：负数或非数值 → 0，行为回退旧组级逻辑。
+        """
+        raw = self.citation_min_score
+        try:
+            value = float(raw)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            logger.warning(
+                "citation_min_score=%r 非法，已按 0 处理（关闭逐条引用门控）",
+                raw,
+            )
+            self.citation_min_score = 0.0
+            return
+        if value < 0:
+            logger.warning(
+                "citation_min_score=%s 为负数，已按 0 处理（关闭逐条引用门控）",
+                value,
+            )
+            self.citation_min_score = 0.0
+        elif value > 1.0:
+            logger.warning(
+                "citation_min_score=%s 超出 [0,1]，已钳制为 1.0",
+                value,
+            )
+            self.citation_min_score = 1.0
+        else:
+            self.citation_min_score = value
+        try:
+            self.background_hit_limit = max(0, int(self.background_hit_limit))
+        except (TypeError, ValueError):
+            logger.warning("background_hit_limit 非法，重置为 5")
+            self.background_hit_limit = 5
+        try:
+            self.llm_first_token_slow_ms = max(1000, int(self.llm_first_token_slow_ms))
+        except (TypeError, ValueError):
+            self.llm_first_token_slow_ms = 30000
 
     def ensure_dirs(self) -> None:
         """确保数据目录存在。"""
@@ -465,6 +537,13 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "llm_timeout",
     "web_search_timeout",
     "web_search_searxng_url",
+    "search_provider",
+    "mcp_client_enabled",
+    "thinking_meta_filter_enabled",
+    "longform_enabled",
+    "longform_max_sections",
+    "longform_max_chars",
+    "agent_native_tool_calling",
     # AI 自动整理（curate）
     "auto_curate_on_ingest",
     "curate_dedup_score_threshold",
@@ -477,6 +556,10 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "bm25_jieba_enabled",
     "pitfall_min_score",
     "citation_min_score",
+    "citation_bg_score_ratio",
+    "background_hit_limit",
+    "stage_elapsed_enabled",
+    "llm_first_token_slow_ms",
     "rrf_weights",
     "fusion_mode",
     "rerank_calibration_temperature",

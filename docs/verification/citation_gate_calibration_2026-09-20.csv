@@ -1,0 +1,31 @@
+﻿query,kind,citation_min_score,hit_count,cite_count,bg_count,discarded_count,dropped_by_score,dropped_by_topic,cross_check,cite_sources,topic_demoted
+什么是挠度,in_kb,0.3,3,1,1,1,0,1,True,mech.md,1
+什么是挠度,in_kb,0.45,3,1,1,1,0,1,True,mech.md,1
+什么是挠度,in_kb,0.55,3,1,1,1,0,1,True,mech.md,1
+DocMind 引用门控默认阈值是多少,in_kb,0.3,2,1,0,1,0,1,True,config.md,0
+DocMind 引用门控默认阈值是多少,in_kb,0.45,2,1,0,1,0,1,True,config.md,0
+DocMind 引用门控默认阈值是多少,in_kb,0.55,2,1,0,1,0,1,True,config.md,0
+知识库 curate 的风险分级是什么,in_kb,0.3,2,1,0,1,0,1,True,curate.md,0
+知识库 curate 的风险分级是什么,in_kb,0.45,2,1,0,1,0,1,True,curate.md,0
+知识库 curate 的风险分级是什么,in_kb,0.55,2,1,0,1,0,1,True,curate.md,0
+多轮对话失败轮为什么要写历史,in_kb,0.3,2,1,0,1,0,1,True,chat.md,0
+多轮对话失败轮为什么要写历史,in_kb,0.45,2,1,0,1,0,1,True,chat.md,0
+多轮对话失败轮为什么要写历史,in_kb,0.55,2,1,0,1,0,1,True,chat.md,0
+什么是豆包大模型,out_of_kb,0.3,2,0,2,0,0,0,True,,2
+什么是豆包大模型,out_of_kb,0.45,2,0,2,0,0,0,True,,1
+什么是豆包大模型,out_of_kb,0.55,2,0,2,0,0,0,True,,1
+nemotron 3 性能如何,out_of_kb,0.3,2,0,2,0,0,0,True,,1
+nemotron 3 性能如何,out_of_kb,0.45,2,0,1,1,0,1,True,,1
+nemotron 3 性能如何,out_of_kb,0.55,2,0,1,1,0,1,True,,1
+北京今天天气怎么样,out_of_kb,0.3,2,0,1,1,0,1,True,,1
+北京今天天气怎么样,out_of_kb,0.45,2,0,1,1,0,1,True,,0
+北京今天天气怎么样,out_of_kb,0.55,2,0,0,2,0,2,True,,0
+导入 PDF 时 OCR 失败怎么办,edge,0.3,2,1,0,1,0,1,True,ocr-faq.md,0
+导入 PDF 时 OCR 失败怎么办,edge,0.45,2,1,0,1,0,1,True,ocr-faq.md,0
+导入 PDF 时 OCR 失败怎么办,edge,0.55,2,1,0,1,0,1,True,ocr-faq.md,0
+点击新建对话导入文档,edge,0.3,2,1,1,0,0,0,True,guide.md,1
+点击新建对话导入文档,edge,0.45,2,1,1,0,0,0,True,guide.md,1
+点击新建对话导入文档,edge,0.55,2,1,1,0,0,0,True,guide.md,1
+BM25 短词检索有什么坑,in_kb,0.3,2,1,0,1,0,1,True,bm25.md,0
+BM25 短词检索有什么坑,in_kb,0.45,2,1,0,1,0,1,True,bm25.md,0
+BM25 短词检索有什么坑,in_kb,0.55,2,1,0,1,0,1,True,bm25.md,0

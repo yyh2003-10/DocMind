@@ -281,6 +281,35 @@
                                 <TextBlock Grid.Row="1" Grid.Column="2" Text="LLM 模型：" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="16,0,0,0"/>
                                 <TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding ActiveBackendLlmModel, FallbackValue='—'}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
                             </Grid>
+
+                            <!-- FC-04：完整生效配置清单 -->
+                            <TextBlock Text="生效明细（与后端运行时一致；标注实时/重启语义）"
+                                       FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,12,0,6"/>
+                            <ItemsControl ItemsSource="{Binding EffectiveConfigItems}" MaxHeight="220">
+                                <ItemsControl.Template>
+                                    <ControlTemplate TargetType="ItemsControl">
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                            <StackPanel IsItemsHost="True"/>
+                                        </ScrollViewer>
+                                    </ControlTemplate>
+                                </ItemsControl.Template>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,2">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="72"/>
+                                                <ColumnDefinition Width="140"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="120"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding Category}" FontSize="11" Foreground="{StaticResource TextTertiaryBrush}"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding Value}" FontSize="11" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                            <TextBlock Grid.Column="3" Text="{Binding EffectHint}" FontSize="10" Foreground="{StaticResource TextTertiaryBrush}" HorizontalAlignment="Right"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </StackPanel>
                     </Border>
 
@@ -1775,6 +1804,18 @@
                                               ToolTip="关闭后入库只写元数据，不调 LLM 跑 enrich/categorize/extract。可在质量看板或由 Agent 主动跑 curate（dedup/consolidate 永不自动跑）。">
                                         <TextBlock Text="入库时自动跑 AI 整理（enrich + 归类 + 图谱实体抽取）" Style="{StaticResource BodyText}"/>
                                     </CheckBox>
+                                </StackPanel>
+
+                                <!-- Agent 模式（进阶，默认关闭） -->
+                                <TextBlock Text="Agent 模式（进阶，默认关闭）" Style="{StaticResource CaptionText}" Margin="0,12,0,8"/>
+                                <StackPanel Margin="4,0,0,8">
+                                    <CheckBox IsChecked="{Binding AgentModeEnabled}" Margin="0,0,0,6"
+                                              ToolTip="开启后对话请求携带 agentMode，服务端可展示工具轨迹（agent_plan/tool_call）。后端 agent_mode_enabled=false 时仍会回落普通 RAG。写入策略：ask / session_allow / always_allow_workspace。">
+                                        <TextBlock Text="允许对话使用 Agent 工具链（检索/工作区等白名单）" Style="{StaticResource BodyText}"/>
+                                    </CheckBox>
+                                    <TextBlock Style="{StaticResource SmallText}" Foreground="{StaticResource TextTertiaryBrush}"
+                                               TextWrapping="Wrap"
+                                               Text="默认关闭，不改变现有 RAG 体验。开启后对话区会出现思考/工具轨迹；任意 shell/危险工具不会开放。"/>
                                 </StackPanel>
                             </StackPanel>
                         </Border>

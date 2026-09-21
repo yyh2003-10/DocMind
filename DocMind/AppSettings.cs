@@ -108,6 +108,16 @@ public class AppSettings
     public double LlmTemperature { get; set; } = 0.7;
     /// <summary>最大 token 数（对应 DOC2MIND_LLM_MAX_TOKENS）。</summary>
     public int LlmMaxTokens { get; set; } = 8192;
+
+    // ── Agent 进阶能力预留（默认关闭；基础产品不暴露危险能力）──
+    /// <summary>是否在对话请求中允许 Agent 模式（后端 agentMode）。默认 false = 仅 RAG。</summary>
+    public bool AgentModeEnabled { get; set; } = false;
+
+    /// <summary>Agent 工作区写入策略：ask | session_allow | always_allow_workspace。</summary>
+    public string AgentFileWritePolicy { get; set; } = "session_allow";
+
+    /// <summary>Agent 单次任务最大步数（进阶能力启用后生效）。</summary>
+    public int AgentMaxSteps { get; set; } = 8;
     /// <summary>LLM 调用/流式空闲超时（秒，对应 DOC2MIND_LLM_TIMEOUT）。
     /// 0 = 用后端默认 180s。慢网/大模型（NIM 等）建议 300+。</summary>
     public double LlmTimeoutSec { get; set; } = 300;

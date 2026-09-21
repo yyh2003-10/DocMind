@@ -11,8 +11,10 @@ from collections.abc import Iterator
 from typing import Any
 
 from doc2mind.core.llm.base import (
+    ChatToolTurn,
     LLMClient,
     LLMError,
+    ToolCallDelta,
     is_provider_overloaded_error,
     is_transient_network_error,
     iter_exception_chain,
@@ -78,6 +80,7 @@ class OpenAIClient(LLMClient):
         self._raw_base_url = base_url
         self._raw_timeout = timeout
         self._client = OpenAI(**kwargs)
+        self._supports_tool_calling = True
 
     @property
     def model_name(self) -> str:
@@ -86,6 +89,83 @@ class OpenAIClient(LLMClient):
     @property
     def provider(self) -> str:
         return "openai"
+
+    @property
+    def supports_tool_calling(self) -> bool:
+        return True
+
+    @staticmethod
+    def _parse_tool_calls(message: Any) -> list[ToolCallDelta]:
+        """解析 OpenAI 兼容 message.tool_calls（自研字段命名，不粘贴第三方实现）。"""
+        import json as _json
+
+        raw_calls = getattr(message, "tool_calls", None) or []
+        parsed: list[ToolCallDelta] = []
+        for c in raw_calls:
+            fn = getattr(c, "function", None)
+            name = getattr(fn, "name", "") or getattr(c, "name", "") or ""
+            args_raw = getattr(fn, "arguments", None)
+            if args_raw is None:
+                args_raw = getattr(c, "arguments", "{}")
+            if isinstance(args_raw, dict):
+                args = args_raw
+            else:
+                try:
+                    args = _json.loads(str(args_raw or "{}"))
+                except Exception:  # noqa: BLE001
+                    args = {"_raw": str(args_raw)}
+            if not isinstance(args, dict):
+                args = {"_raw": args}
+            parsed.append(
+                ToolCallDelta(
+                    id=str(getattr(c, "id", "") or f"call_{len(parsed)}"),
+                    name=str(name),
+                    arguments=args,
+                )
+            )
+        return parsed
+
+    def chat_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> ChatToolTurn:
+        if not tools:
+            text = self.chat(messages, temperature=temperature, max_tokens=max_tokens, timeout=timeout)
+            return ChatToolTurn(final_text=text)
+        try:
+            create_kwargs: dict[str, Any] = {
+                "model": self._model,
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": "auto",
+                "temperature": temperature if temperature is not None else self._temperature,
+            }
+            mt = sanitize_max_tokens(max_tokens if max_tokens is not None else self._max_tokens)
+            if mt is not None:
+                create_kwargs["max_tokens"] = mt
+            if timeout and timeout > 0:
+                create_kwargs["timeout"] = timeout
+            resp = self._client.chat.completions.create(**create_kwargs)
+            choice = resp.choices[0] if getattr(resp, "choices", None) else None
+            message = getattr(choice, "message", None) if choice else None
+            content = (getattr(message, "content", None) or "") if message else ""
+            tool_calls = self._parse_tool_calls(message) if message is not None else []
+            finish = getattr(choice, "finish_reason", None)
+            self._last_truncated = finish == "length"
+            return ChatToolTurn(
+                final_text=str(content or ""),
+                tool_calls=tool_calls,
+                raw={"finish_reason": finish},
+            )
+        except LLMError:
+            raise
+        except Exception as e:
+            raise self._wrap_api_error(e, "tool-calling 对话") from e
 
     @staticmethod
     def _wrap_api_error(e: Exception, action: str) -> LLMError:

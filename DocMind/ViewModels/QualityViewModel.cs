@@ -14,7 +14,54 @@ namespace DocMind.ViewModels;
 public partial class QualityViewModel : ViewModelBase
 {
     private readonly IDoc2kbApiService _apiService;
-    private readonly NotificationService _notifications;
+    private readonly NotificationService? _notifications;
+    private readonly AppSettings? _appSettings;
+
+    /// <summary>后端不可达 → 全局离线横幅（FC-03/08）。</summary>
+    public event Action? BackendUnreachable;
+
+    /// <summary>LLM 未配置 → 跳转设置页。</summary>
+    public event Action? NavigateToSettingsRequested;
+
+    [RelayCommand]
+    private void NavigateToSettings() => NavigateToSettingsRequested?.Invoke();
+
+    /// <summary>AI 整理事前门禁（FC-06 类）。settings 为空时不阻断（兼容单测）。</summary>
+    public bool IsLlmConfigured
+    {
+        get
+        {
+            if (_appSettings is null)
+            {
+                return true;
+            }
+            var provider = _appSettings.LlmProvider?.Trim() ?? "";
+            if (provider.Length == 0 || string.Equals(provider, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            if (string.Equals(provider, "ollama", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            if (!string.IsNullOrWhiteSpace(_appSettings.LlmApiKey))
+            {
+                return true;
+            }
+            return _appSettings.LlmProfiles?.Any(p => !string.IsNullOrWhiteSpace(p.ApiKey)) == true;
+        }
+    }
+
+    public string LlmConfigHint =>
+        "尚未配置大模型：AI 整理需要 LLM，请到【设置 → 大模型对话】完成配置。\n"
+        + "完全离线可选择 Ollama（本机推理、无需 API Key）。";
+
+    public void NotifyLlmGateChanged()
+    {
+        OnPropertyChanged(nameof(IsLlmConfigured));
+        PreviewCurateCommand.NotifyCanExecuteChanged();
+        ExecuteCurateCommand.NotifyCanExecuteChanged();
+    }
 
     private string? _collection;
     private bool _isBusy;
@@ -28,10 +75,14 @@ public partial class QualityViewModel : ViewModelBase
     private bool _hasPreviewResult;
     private CancellationTokenSource? _curateCts;
 
-    public QualityViewModel(IDoc2kbApiService apiService, NotificationService notifications)
+    public QualityViewModel(
+        IDoc2kbApiService apiService,
+        NotificationService? notifications = null,
+        AppSettings? appSettings = null)
     {
         _apiService = apiService;
         _notifications = notifications;
+        _appSettings = appSettings;
         Title = "质量看板";
         Warnings = new ObservableCollection<string>();
         Collections = new ObservableCollection<CollectionStats>();
@@ -307,6 +358,7 @@ public partial class QualityViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
             DebugLog.Error($"质量报告后端不可达: {ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Quality", ex);
@@ -373,10 +425,10 @@ public partial class QualityViewModel : ViewModelBase
 
     public bool HasCurateSummary => !string.IsNullOrWhiteSpace(CurateSummary);
 
-    private bool CanRunCurate => !IsCurating;
+    private bool CanRunCurate => !IsCurating && IsLlmConfigured;
 
     /// <summary>执行按钮（dry_run=false）需先完成一次只读预览（dedup/consolidate 有损，先确认再执行）。</summary>
-    private bool CanRunCurateExecute => !IsCurating && _hasPreviewResult;
+    private bool CanRunCurateExecute => !IsCurating && _hasPreviewResult && IsLlmConfigured;
 
     /// <summary>AI 整理只读预览（dry_run=true，零写入）：先看整理方案再决定是否执行。</summary>
     [RelayCommand(CanExecute = nameof(CanRunCurate))]
@@ -393,6 +445,15 @@ public partial class QualityViewModel : ViewModelBase
     {
         if (IsCurating)
         {
+            return;
+        }
+        if (!IsLlmConfigured)
+        {
+            CurateStatus = LlmConfigHint;
+            _notifications?.Warning(LlmConfigHint, "需要配置大模型");
+            NavigateToSettingsRequested?.Invoke();
+            PreviewCurateCommand.NotifyCanExecuteChanged();
+            ExecuteCurateCommand.NotifyCanExecuteChanged();
             return;
         }
 
@@ -478,6 +539,7 @@ public partial class QualityViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             CurateStatus = $"后端不可达：{ex.Message}";
             DebugLog.Error($"AI 整理{mode}后端不可达: {ex.Message}", "Quality", ex);
         }

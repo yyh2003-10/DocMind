@@ -206,6 +206,7 @@ def ingest_path(
     store: VectorStore | None = None,
     progress: Callable[[int, int], None] | None = None,
     cancel_event: threading.Event | None = None,
+    on_result: Callable[[IngestResult], None] | None = None,
 ) -> IngestSummary:
     """摄入一个文件或目录。
 
@@ -221,6 +222,8 @@ def ingest_path(
             None 表示不回调
         cancel_event: 可选取消事件；线程间共享，某线程 set() 后 ingest 在
             下一个文件级/批次级检查点抛出 IngestCancelled。
+        on_result: 每个文件产生 IngestResult 后回调（线程内同步调用）。
+            供异步 job 在取消时回报「已导入 N 篇」明细（FC-01b）。
 
     Returns:
         `IngestSummary`
@@ -315,7 +318,7 @@ def ingest_path(
         if workers > 1 and len(files) > 1:
             _ingest_parallel(
                 files, settings, collection, force, store, embedder,
-                progress, summary, workers, cancel_event,
+                progress, summary, workers, cancel_event, on_result=on_result,
             )
         else:
             for idx, f in enumerate(files, start=1):
@@ -330,7 +333,7 @@ def ingest_path(
                     ),
                     cancel_event=cancel_event,
                 )
-                _record_result(summary, res)
+                _record_result(summary, res, on_result=on_result)
                 if progress is not None:
                     try:
                         progress(idx, total, f.name)
@@ -356,8 +359,12 @@ def ingest_path(
             store.close()
 
 
-def _record_result(summary: IngestSummary, res: IngestResult) -> None:
-    """把单文件结果累计进批量汇总。"""
+def _record_result(
+    summary: IngestSummary,
+    res: IngestResult,
+    on_result: Callable[[IngestResult], None] | None = None,
+) -> None:
+    """把单文件结果累计进批量汇总；可选回调供取消时回报「已导入明细」。"""
     summary.results.append(res)
     if res.status == "ingested":
         summary.total_documents += 1
@@ -366,6 +373,11 @@ def _record_result(summary: IngestSummary, res: IngestResult) -> None:
         summary.skipped += 1
     elif res.status == "failed":
         summary.failed += 1
+    if on_result is not None:
+        try:
+            on_result(res)
+        except Exception as exc:  # noqa: BLE001 —— 回调失败不影响摄入
+            logger.debug("on_result 回调失败: %s", exc)
 
 
 def _record_dropped(summary: IngestSummary, dropped: list[tuple[Path, str]], collection: str) -> None:
@@ -389,6 +401,7 @@ def _ingest_parallel(
     summary: IngestSummary,
     workers: int,
     cancel_event: threading.Event | None = None,
+    on_result: Callable[[IngestResult], None] | None = None,
 ) -> None:
     """两段式文件级并行（ingest_workers>1 时启用）。
 
@@ -440,9 +453,10 @@ def _ingest_parallel(
                                 progress, idx - 1, total, files[idx - 1].name
                             )
                         ),
+                        cancel_event=cancel_event,
                     )
                 )
-                _record_result(summary, res)
+                _record_result(summary, res, on_result=on_result)
                 if progress is not None:
                     try:
                         progress(idx, total, files[idx - 1].name)
@@ -692,6 +706,10 @@ def _prepare_one(
         if report_stage is not None:
             report_stage(stage, stage_progress)
 
+    # FC-01a：进入单文件处理前也检查取消，避免刚提交的大文件在解析前无检查点
+    if cancel_event is not None and cancel_event.is_set():
+        raise IngestCancelled("任务已被取消")
+
     _emit("parsing")
     try:
         loader = get_loader(path)
@@ -762,6 +780,9 @@ def _prepare_one(
     # 分块
     from doc2mind.core.chunker.base import ChunkerError
 
+    if cancel_event is not None and cancel_event.is_set():
+        raise IngestCancelled("任务已被取消")
+
     _emit("chunking")
     try:
         chunks = chunk_document(doc, settings)
@@ -827,6 +848,7 @@ def _write_prepared(
     store: VectorStore,
     prep: _Prepared,
     report_stage: Callable[[str, float | None], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> IngestResult:
     """把准备好的分块/向量写入向量库（写段，必须在单写者上下文执行）。
 
@@ -838,6 +860,10 @@ def _write_prepared(
     def _emit(stage: str, stage_progress: float | None = None) -> None:
         if report_stage is not None:
             report_stage(stage, stage_progress)
+
+    # FC-01a：写库前再检查一次取消（准备段可能已耗时很久）
+    if cancel_event is not None and cancel_event.is_set():
+        raise IngestCancelled("任务已被取消")
 
     # 维度预检：换嵌入模型后未重建索引时，提前给出可操作的错误指引，
     # 而不是等写库时报一句没头没尾的"写库失败"。
@@ -898,11 +924,13 @@ def _ingest_one(
     cancel_event: threading.Event | None = None,
 ) -> IngestResult:
     """摄入单个文件（顺序路径）：准备段 + 写库段串联。"""
+    if cancel_event is not None and cancel_event.is_set():
+        raise IngestCancelled("任务已被取消")
     prep = _prepare_one(path, settings, collection, force, store, embedder,
                         report_stage=report_stage, cancel_event=cancel_event)
     if isinstance(prep, IngestResult):
         return prep
-    return _write_prepared(store, prep, report_stage=report_stage)
+    return _write_prepared(store, prep, report_stage=report_stage, cancel_event=cancel_event)
 
 
 def _auto_curate_after_ingest(

@@ -1,0 +1,257 @@
+{
+  "time": "2026-09-21 10:12:28",
+  "pass": 50,
+  "fail": 0,
+  "items": [
+    {
+      "name": "主题重叠判定",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "高分偏题→背景非引用",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "强相关→cite",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "中相关→bg",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "弱相关→丢弃",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "cross_check 可对账",
+      "status": "PASS",
+      "detail": "{\"citation_min_score\": 0.45, \"bg_floor\": 0.27, \"bg_ratio\": 0.6, \"reranked_usable\": true, \"hit_count\": 4, \"cite_count\": 1"
+    },
+    {
+      "name": "库外场景 cite=0",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "流式库外无伪造本地 [n]",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "空命中 status 诚实",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "evidence 含 citation_gate",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "retrieval_ms 存在",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "generation_ms 存在",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "stage_first_token 非流式=-1",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "stage_total_ms 存在",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "stage 关闭时不写 stage_retrieval_ms",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "默认 builtin",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "无 key 回落 builtin",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "无 key degraded 且不崩",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "密钥脱敏",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "默认配置",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "普通 mock 不支持 tools",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "降级返回正文",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "首轮 tool_calls",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "次轮 final_text",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "agent 默认关闭",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "默认不加载",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "search 白名单",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "write/shell 黑名单",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "命令脱敏",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "无 server 降级 ok=false",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "大纲解析",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "无 LLM 仍可编排",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "事件含 outline/done",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "RAG 默认不启用 longform",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "预算耗尽可 skip",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "过滤英文 meta",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "保留中文实质",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "不误杀中文思考",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "可关闭配置",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "短词 LIKE 兜底代码存在",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "jieba 默认开启",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "bm25_search 短词可调用",
+      "status": "PASS",
+      "detail": "env skip: VectorStore.__init__() missing 1 required positional argument: 'embedding_dim'"
+    },
+    {
+      "name": "export 契约含 file_path",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "config 暴露 search/mcp/longform",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "agent_mode_enabled 默认 false",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "mcp_client_enabled 默认 false",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "longform_enabled 默认 false",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "search_provider 默认 builtin",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "citation_min_score=0.45",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "无明文 key 默认",
+      "status": "PASS",
+      "detail": ""
+    }
+  ]
+}

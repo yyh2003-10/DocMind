@@ -1,0 +1,167 @@
+{
+  "meta": {
+    "title": "DocMind 手动功能验证记录",
+    "date": "2026-09-21",
+    "worktree": "E:/DocMindY-worktrees/agent-p0",
+    "branch": "feat/t3-citation-gate-timing",
+    "executor": "agent-auto + 部分待人工真机",
+    "python_tests": "run_full_verification PASS=9 FAIL=0",
+    "wpf_tests": "vstest 335/335 PASS",
+    "note": "自动化可覆盖项已标 pass；需 GUI/真机 LLM 的项标 manual/blocked 并写清原因"
+  },
+  "items": [
+    {
+      "id": "P0-01",
+      "title": "后端 pytest 分组与商业门禁",
+      "priority": "P0",
+      "status": "pass",
+      "evidence": "scripts/run_full_verification.py → PASS=9 FAIL=0"
+    },
+    {
+      "id": "P0-02",
+      "title": "WPF 编译（DocMind.csproj）",
+      "priority": "P0",
+      "status": "pass",
+      "evidence": "VS MSBuild → DocMind\\bin\\Debug\\net8.0-windows\\DocMind.dll；见 T1-nuget-env-fix.md"
+    },
+    {
+      "id": "P0-03",
+      "title": "WPF 单元测试",
+      "priority": "P0",
+      "status": "pass",
+      "evidence": "vstest DocMind.Tests.dll → 失败 0，通过 335"
+    },
+    {
+      "id": "P0-04",
+      "title": "弱相关引用门控：库外无伪造 [n]",
+      "priority": "P0",
+      "status": "pass",
+      "evidence": "calibration CSV 库外 cite_avg=0；status「无可用库内依据」；test_dispatch_t0_t8_acceptance"
+    },
+    {
+      "id": "P0-05",
+      "title": "引用门控：库内引用相关",
+      "priority": "P0",
+      "status": "pass",
+      "evidence": "test_off_topic_high_score_not_cited；calibration 库内 cite_avg=1.0"
+    },
+    {
+      "id": "P0-06",
+      "title": "阶段耗时 stage_* 进 done 帧",
+      "priority": "P0",
+      "status": "pass",
+      "evidence": "test_stage_fields_present_and_switchable"
+    },
+    {
+      "id": "P0-07",
+      "title": "慢模型等待提示可感知",
+      "priority": "P1",
+      "status": "pass",
+      "evidence": "test_slow_model_waiting_hints_increase（已等待 Ns）"
+    },
+    {
+      "id": "P0-08",
+      "title": "多轮失败轮写入历史",
+      "priority": "P0",
+      "status": "pass",
+      "evidence": "test_multiturn_history_keeps_failed_turn_and_citation_safe"
+    },
+    {
+      "id": "P0-09",
+      "title": "继续写合并不产生双份历史",
+      "priority": "P0",
+      "status": "pass",
+      "evidence": "test_continue_merge_preserves_no_duplicate_history"
+    },
+    {
+      "id": "A-01",
+      "title": "创作 artifact：后端导出返回 file_path",
+      "priority": "core",
+      "status": "pass",
+      "evidence": "POST /v1/creative/export CreativeExportResponse.file_path；agent artifact_ready 帧含 file_path"
+    },
+    {
+      "id": "A-02",
+      "title": "旧 :::artifact 前端 fallback 兼容",
+      "priority": "core",
+      "status": "manual",
+      "expected": "WPF 解析 :::artifact 并展示导出入口",
+      "actual": "自动化无法点 GUI；ChatMessage.InferArtifactType + ArtifactRegex 已覆盖推断，待真机勾选",
+      "evidence": "DocMind/ViewModels/ChatMessage.cs ArtifactRegex"
+    },
+    {
+      "id": "B-01",
+      "title": "Agent 模式默认关闭（请求无 agentMode）",
+      "priority": "core",
+      "status": "pass",
+      "evidence": "AppSettings.AgentModeEnabled 默认 false；Settings.agent_mode_enabled 默认 false"
+    },
+    {
+      "id": "B-02",
+      "title": "后端 agent_mode_enabled=false 时回落 RAG",
+      "priority": "core",
+      "status": "pass",
+      "evidence": "http.py 商用门禁：agentMode 被忽略并日志；test_commercial_gates"
+    },
+    {
+      "id": "B-03",
+      "title": "开启 Agent 后轨迹可展开（tool 名/状态）",
+      "priority": "core",
+      "status": "manual",
+      "expected": "设置打开 Agent 后对话思考区出现 tool_call/tool_result",
+      "actual": "SSE 解析与 Settings 开关已实现并编译通过；需真机开后端 agent_mode_enabled=true 验证",
+      "evidence": "Doc2kbApiService onAgentEvent；SettingsView AgentModeEnabled"
+    },
+    {
+      "id": "C-01",
+      "title": "截断提示 +「继续写」",
+      "priority": "P0",
+      "status": "manual",
+      "expected": "调小 LlmMaxTokens 后长文出现截断提示",
+      "actual": "done 帧 truncated/continue_supported 契约自动化通过；真机 UI 待勾选",
+      "evidence": "test_truncated_done_flag_contract"
+    },
+    {
+      "id": "C-02",
+      "title": "思考区 meta 泄漏可过滤/可关闭",
+      "priority": "P2",
+      "status": "pass",
+      "evidence": "ThinkingMetaFilter + thinking_meta_filter_enabled 配置；test_dispatch_t9_t15"
+    },
+    {
+      "id": "C-03",
+      "title": "搜索插件 search_provider 配置与回落",
+      "priority": "P1",
+      "status": "pass",
+      "evidence": "无 key 回落 builtin；密钥脱敏；test_dispatch_t0_t8_acceptance"
+    },
+    {
+      "id": "C-04",
+      "title": "BM25 短词不静默失效",
+      "priority": "P2",
+      "status": "pass",
+      "evidence": "jieba 默认开；trigram 短词 LIKE 兜底 + 日志「BM25 短词路径」"
+    },
+    {
+      "id": "C-05",
+      "title": "MCP 只读 client 默认关闭",
+      "priority": "P2",
+      "status": "pass",
+      "evidence": "mcp_client_enabled=false；agent 关闭时不加载；白名单拒绝 write/shell"
+    },
+    {
+      "id": "C-06",
+      "title": "长文大纲 longform 默认关闭且不破坏 RAG",
+      "priority": "P2",
+      "status": "pass",
+      "evidence": "longform_enabled 默认 false；test_longform_no_llm_uses_template_and_rag_untouched"
+    }
+  ],
+  "defects": [],
+  "summary": {
+    "pass": 16,
+    "manual": 3,
+    "fail": 0,
+    "blocked": 0
+  }
+}

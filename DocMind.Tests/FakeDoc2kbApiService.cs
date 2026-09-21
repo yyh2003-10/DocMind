@@ -114,7 +114,7 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default)
         => OnChat?.Invoke(req, ct) ?? throw new NotImplementedException();
 
-    public async Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, Action? onRestart = null, CancellationToken ct = default)
+    public async Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, Action? onRestart = null, Action<string, string>? onAgentEvent = null, CancellationToken ct = default)
     {
         if (OnChatStreamWithStatus is not null)
         {
@@ -401,4 +401,24 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     {
         public void Dispose() { }
     }
+
+    // ── 回收站（基础能力）──
+    public Func<int, CancellationToken, Task<TrashListResponse>>? OnListTrash { get; set; }
+    public Task<TrashListResponse> ListTrashAsync(int limit = 100, CancellationToken ct = default)
+        => OnListTrash?.Invoke(limit, ct) ?? Task.FromResult(new TrashListResponse());
+
+    public Func<string, CancellationToken, Task<TrashRestoreResponse>>? OnRestoreTrash { get; set; }
+    public Task<TrashRestoreResponse> RestoreTrashedDocumentAsync(string documentId, CancellationToken ct = default)
+        => OnRestoreTrash?.Invoke(documentId, ct)
+           ?? Task.FromResult(new TrashRestoreResponse { Id = documentId, Status = "restored", Note = "恢复后需重新摄入或 reindex 才能被检索" });
+
+    public Func<int, CancellationToken, Task<TrashPurgeResponse>>? OnPurgeTrash { get; set; }
+    public Task<TrashPurgeResponse> PurgeTrashAsync(int olderThanDays = 30, CancellationToken ct = default)
+        => OnPurgeTrash?.Invoke(olderThanDays, ct) ?? Task.FromResult(new TrashPurgeResponse { Purged = 0 });
+
+    public Task<LibraryStatus> GetLibraryStatusAsync(CancellationToken ct = default)
+        => Task.FromResult(new LibraryStatus { Status = "ok", Summary = "知识库状态正常" });
+
+    public Task<ProfileSwitchResult> SetUsageProfileAsync(string profile, CancellationToken ct = default)
+        => Task.FromResult(new ProfileSwitchResult { Profile = profile });
 }

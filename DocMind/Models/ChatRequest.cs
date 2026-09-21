@@ -89,4 +89,16 @@ public sealed record ChatRequest
     /// 绝不拼进 Query（避免污染检索与会话历史）。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("memoryContext")]
     public string? MemoryContext { get; init; }
+
+    /// <summary>提示词双轨（P0）："rag" | "delivery"；null = 后端按意图自动推断。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("responseMode")]
+    public string? ResponseMode { get; init; }
+
+    /// <summary>续写：true 时不重复检索，基于会话历史补全；后端合并进上一条 assistant。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("continueWriting")]
+    public bool ContinueWriting { get; init; }
+
+    /// <summary>Agent 模式（进阶，默认 false）。由 AppSettings.AgentModeEnabled 控制是否发送。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("agentMode")]
+    public bool AgentMode { get; init; }
 }

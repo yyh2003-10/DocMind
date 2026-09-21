@@ -46,6 +46,11 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
     private bool _isWaitingForFirstToken;
     private bool _showRegenerate;
     private bool _showWithdraw;
+    private bool _showContinueWriting;
+    private bool _truncated;
+    private bool _partial;
+    private string? _promptTrack;
+    private string? _truncatedHint;
     private string _waitingHint = "🧠 正在检索知识库并思考回答...";
     private string _statusText = string.Empty;
     private bool _showStatus;
@@ -1087,9 +1092,10 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
 
     private void WireSourceMarkers(Paragraph paragraph)
     {
-        // Markdig.Wpf 给代码块段落套 CodeBlock 样式、给标题段落套 Heading 样式，跳过避免误转换；
-        // 普通段落因注入了 ParagraphStyleKey 也会有非空 Style，需放行（只拦非普通正文样式的段落）
-        if (paragraph.Style is not null && !ReferenceEquals(paragraph.Style, _paragraphStyle))
+        // 仅跳过代码块等非正文段落。旧逻辑用 Style 引用比较：Markdig 在无
+        // Application 的测试环境或未套用自定义 Style 时，会把全部正文段落
+        // 误判为非正文 → 引用角标挂不上。
+        if (IsLikelyCodeParagraph(paragraph))
         {
             return;
         }
@@ -1120,6 +1126,33 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
                 paragraph.Inlines.Add(inline);
             }
         }
+    }
+
+    private static bool IsLikelyCodeParagraph(Paragraph paragraph)
+    {
+        static bool Mono(FontFamily? ff)
+        {
+            if (ff is null) return false;
+            var name = ff.Source ?? "";
+            return name.Contains("Consolas", StringComparison.OrdinalIgnoreCase)
+                   || name.Contains("Cascadia", StringComparison.OrdinalIgnoreCase)
+                   || name.Contains("Courier", StringComparison.OrdinalIgnoreCase)
+                   || name.Contains("Mono", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (Mono(paragraph.FontFamily)) return true;
+        if (paragraph.Tag is string tag && tag.Contains("code", StringComparison.OrdinalIgnoreCase)) return true;
+        if (paragraph.Style is Style style)
+        {
+            foreach (var setter in style.Setters.OfType<Setter>())
+            {
+                if (setter.Property == TextElement.FontFamilyProperty && setter.Value is FontFamily ff && Mono(ff))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void AppendRunWithMarkers(Paragraph paragraph, Run run)
@@ -1561,6 +1594,41 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
     {
         get => _showRegenerate;
         set => SetField(ref _showRegenerate, value);
+    }
+
+    /// <summary>是否显示「继续写」（截断/部分回答时，由 VM 维护）。</summary>
+    public bool ShowContinueWriting
+    {
+        get => _showContinueWriting;
+        set => SetField(ref _showContinueWriting, value);
+    }
+
+    /// <summary>P0：输出 token 上限截断。</summary>
+    public bool Truncated
+    {
+        get => _truncated;
+        set => SetField(ref _truncated, value);
+    }
+
+    /// <summary>P0：后端 partial（中断/停止/截断）。</summary>
+    public bool Partial
+    {
+        get => _partial;
+        set => SetField(ref _partial, value);
+    }
+
+    /// <summary>P0：提示词轨（rag/delivery），用于调试与状态条。</summary>
+    public string? PromptTrack
+    {
+        get => _promptTrack;
+        set => SetField(ref _promptTrack, value);
+    }
+
+    /// <summary>P0：截断提示文案（独立字段，不写入 Content，避免污染续写正文）。</summary>
+    public string? TruncatedHint
+    {
+        get => _truncatedHint;
+        set => SetField(ref _truncatedHint, value);
     }
 
     /// <summary>是否显示「撤回」按钮（仅最后一条用户消息在非生成中显示）。</summary>

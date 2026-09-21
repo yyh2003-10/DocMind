@@ -169,6 +169,39 @@ class ChatStore:
         except sqlite3.Error as e:
             raise ChatStoreError(f"写入会话消息失败: {e}") from e
 
+    def update_last_assistant_content(self, chat_id: str, content: str) -> bool:
+        """把会话中最后一条 assistant 消息的 content 整段替换为 content。
+
+        用于「继续写」合并：避免 append_turn 把合并全文再写成新轮，
+        导致重启后历史重复。返回是否更新到行。
+        """
+        if not chat_id or content is None:
+            raise ChatStoreError(f"非法参数: chat_id={chat_id!r}")
+        self._ensure_parent_dir()
+        now = _now_iso()
+        try:
+            with self._conn() as conn:
+                self._ensure_schema(conn)
+                row = conn.execute(
+                    "SELECT id FROM chat_messages "
+                    "WHERE chat_id = ? AND role = 'assistant' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (chat_id,),
+                ).fetchone()
+                if row is None:
+                    return False
+                conn.execute(
+                    "UPDATE chat_messages SET content = ? WHERE id = ?",
+                    (content, row[0]),
+                )
+                conn.execute(
+                    "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+                    (now, chat_id),
+                )
+                return True
+        except sqlite3.Error as e:
+            raise ChatStoreError(f"更新会话 assistant 消息失败: {e}") from e
+
     def append_turn(
         self,
         chat_id: str,

@@ -14,6 +14,49 @@ public partial class GraphViewModel : ViewModelBase
     private readonly NotificationService? _notifications;
     private readonly AppSettings? _appSettings;
 
+    /// <summary>后端不可达时通知 MainViewModel 刷新全局离线横幅（FC-03/08）。</summary>
+    public event Action? BackendUnreachable;
+
+    /// <summary>请求跳转到设置页配置大模型（FC-06 前置引导）。</summary>
+    public event Action? NavigateToSettingsRequested;
+
+    /// <summary>导航到设置页。</summary>
+    [RelayCommand]
+    private void NavigateToSettings() => NavigateToSettingsRequested?.Invoke();
+
+    /// <summary>LLM 是否已配置（抽取图谱事前门禁，FC-06）。
+    /// 未注入 AppSettings 时视为未知，不阻断（兼容单测/旧构造）。</summary>
+    public bool IsLlmConfigured
+    {
+        get
+        {
+            if (_appSettings is null)
+            {
+                return true;
+            }
+            var provider = _appSettings.LlmProvider?.Trim() ?? "";
+            if (provider.Length == 0 || string.Equals(provider, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            if (string.Equals(provider, "ollama", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            // 设置页已配置 Key，或存在已带 Key 的服务商档案（对话页可按请求携带）
+            if (!string.IsNullOrWhiteSpace(_appSettings.LlmApiKey))
+            {
+                return true;
+            }
+            return _appSettings.LlmProfiles?.Any(p => !string.IsNullOrWhiteSpace(p.ApiKey)) == true;
+        }
+    }
+
+    /// <summary>LLM 未配置时的引导文案。</summary>
+    public string LlmConfigHint =>
+        "尚未配置大模型：请到【设置 → 大模型对话】完成配置后再抽取图谱。\n"
+        + "完全离线可选择 Ollama（本机推理、无需 API Key）。";
+
     private string? _collection = "全部集合";
     private bool _isBusy;
     private string _statusMessage = "就绪";
@@ -42,24 +85,11 @@ public partial class GraphViewModel : ViewModelBase
         AdaptiveQuickPrompts = new ObservableCollection<string>();
         DistilledTags = new ObservableCollection<string>();
         EntityQuickJumpNames = new ObservableCollection<string>();
-
-        // 图谱实体问答历史上默认开启联网；用户改过模式后沿用持久化值
-        if (_appSettings is not null && !string.IsNullOrWhiteSpace(_appSettings.WebSearchMode))
-        {
-            _selectedWebSearchMode = WebSearchModeChoice.FromKey(_appSettings.WebSearchMode);
-        }
-        else if (_appSettings?.EnableWebSearch == true)
-        {
-            _selectedWebSearchMode = WebSearchModeChoice.Normal;
-        }
-        else
-        {
-            _selectedWebSearchMode = WebSearchModeChoice.Normal;
-        }
     }
 
     private CancellationTokenSource? _chatCts;
     private string _entityChatInput = string.Empty;
+    private bool _isWebSearchEnabled = true;
     private bool _isEntityAiGenerating;
     private string? _currentEntityChatId;
     private bool _isDistillDialogOpen;
@@ -124,51 +154,8 @@ public partial class GraphViewModel : ViewModelBase
 
     public bool IsWebSearchEnabled
     {
-        get => SelectedWebSearchMode.Key is "normal" or "deep";
-        set
-        {
-            if (value)
-            {
-                if (SelectedWebSearchMode.Key == "off")
-                {
-                    SelectedWebSearchMode = WebSearchModeChoice.Normal;
-                }
-            }
-            else if (SelectedWebSearchMode.Key != "off")
-            {
-                SelectedWebSearchMode = WebSearchModeChoice.Off;
-            }
-        }
-    }
-
-    public ObservableCollection<WebSearchModeChoice> WebSearchModes { get; } =
-        new(WebSearchModeChoice.All);
-
-    private WebSearchModeChoice _selectedWebSearchMode = WebSearchModeChoice.Normal;
-
-    public WebSearchModeChoice SelectedWebSearchMode
-    {
-        get => _selectedWebSearchMode;
-        set
-        {
-            var next = value ?? WebSearchModeChoice.Off;
-            if (SetProperty(ref _selectedWebSearchMode, next))
-            {
-                OnPropertyChanged(nameof(IsWebSearchEnabled));
-                if (_appSettings is not null)
-                {
-                    _appSettings.SetWebSearchMode(next.Key);
-                    try
-                    {
-                        _appSettings.Save();
-                    }
-                    catch
-                    {
-                        // 落盘失败不阻断图谱对话
-                    }
-                }
-            }
-        }
+        get => _isWebSearchEnabled;
+        set => SetProperty(ref _isWebSearchEnabled, value);
     }
 
     public bool IsEntityAiGenerating
@@ -205,13 +192,6 @@ public partial class GraphViewModel : ViewModelBase
     public event Action<string>? GraphDataRenderRequested;
     public event Action<string>? ThemeChangeRequested;
     public event Action<string>? NodeFocusRequested;
-    public event Action? NavigateToSettingsRequested;
-
-    /// <summary>LLM 是否已配置（抽取图谱事前禁用判据）。复用 GetActiveProviderConfig 逻辑。</summary>
-    public bool IsLlmConfigured => GetActiveProviderConfig() is not null;
-
-    [RelayCommand]
-    private void NavigateToSettings() => NavigateToSettingsRequested?.Invoke();
 
     public string? Collection
     {
@@ -244,9 +224,6 @@ public partial class GraphViewModel : ViewModelBase
             }
         }
     }
-
-    /// <summary>通知 LLM 配置状态变更（设置页保存后调用）。</summary>
-    public void NotifyLlmConfigChanged() => OnPropertyChanged(nameof(IsLlmConfigured));
 
     public string StatusMessage
     {
@@ -448,19 +425,21 @@ public partial class GraphViewModel : ViewModelBase
         }
     }
 
-    [RelayCommand(CanExecute = nameof(CanOperate))]
+    [RelayCommand(CanExecute = nameof(CanExtractGraph))]
     public async Task ExtractGraphAsync()
     {
-        // 事前拦截：LLM 未配置时直接引导配置，不发注定失败的请求
+        // FC-06：LLM 未配置时事前拦截，不再发注定 400 的抽取请求
         if (!IsLlmConfigured)
         {
-            StatusMessage = "尚未配置大模型：请到【设置 → 大模型】完成配置后重试";
-            _notifications?.Warning("尚未配置大模型，无法抽取图谱：请到【设置 → 大模型】完成配置", "需要配置");
+            StatusMessage = LlmConfigHint;
+            _notifications?.Warning(LlmConfigHint, "需要配置大模型");
+            NavigateToSettingsRequested?.Invoke();
+            ExtractGraphCommand.NotifyCanExecuteChanged();
             return;
         }
 
         IsBusy = true;
-        StatusMessage = "大模型正在从文档中抽取实体与关系网，请候...";
+        StatusMessage = "大模型正在从文档中抽取实体与关系网，请稍候...";
         try
         {
             string? targetColl = (_collection == "全部集合" || string.IsNullOrWhiteSpace(_collection)) ? null : _collection;
@@ -493,15 +472,29 @@ public partial class GraphViewModel : ViewModelBase
         }
         catch (ApiException ex)
         {
-            StatusMessage = $"提示: {ex.Message}";
-            _notifications?.Warning(ex.Message, "抽取提示");
+            // 后端 LLM_NOT_CONFIGURED 等：同步本地 IsLlmConfigured 视图并引导设置
+            if (ex.Message.Contains("LLM", StringComparison.OrdinalIgnoreCase)
+                || ex.Message.Contains("大模型", StringComparison.Ordinal)
+                || string.Equals(ex.Code, "LLM_NOT_CONFIGURED", StringComparison.OrdinalIgnoreCase))
+            {
+                StatusMessage = LlmConfigHint;
+                _notifications?.Warning(LlmConfigHint, "需要配置大模型");
+                OnPropertyChanged(nameof(IsLlmConfigured));
+                ExtractGraphCommand.NotifyCanExecuteChanged();
+            }
+            else
+            {
+                StatusMessage = $"提示: {ex.Message}";
+                _notifications?.Warning(ex.Message, "抽取提示");
+            }
             DebugLog.Warn($"图谱抽取提示: {ex.Message}", "GraphVM");
         }
         catch (BackendConnectionException ex)
         {
             StatusMessage = "无法连接到后端服务，请确认后端进程已正常运行。";
-            _notifications?.Error(StatusMessage, "连接失败");
+            _notifications?.Error(StatusMessage + "（已同步全局离线横幅）", "连接失败");
             DebugLog.Error($"图谱抽取连接失败: {ex}", "GraphVM");
+            BackendUnreachable?.Invoke();
         }
         catch (Exception ex)
         {
@@ -515,7 +508,17 @@ public partial class GraphViewModel : ViewModelBase
         }
     }
 
-    private bool CanOperate() => !IsBusy && IsLlmConfigured;
+    private bool CanOperate() => !IsBusy;
+
+    /// <summary>抽取图谱命令可用性：非忙碌且 LLM 已配置（或未知，不阻断单测）。</summary>
+    private bool CanExtractGraph() => !IsBusy && IsLlmConfigured;
+
+    /// <summary>LLM 配置变更/后端恢复后刷新命令可用性（MainViewModel 在线回调调用）。</summary>
+    public void NotifyLlmGateChanged()
+    {
+        OnPropertyChanged(nameof(IsLlmConfigured));
+        ExtractGraphCommand.NotifyCanExecuteChanged();
+    }
 
     public async Task SelectNodeAsync(string nodeId)
     {
@@ -780,7 +783,6 @@ var trimmed = q.Trim().TrimStart(' ', '：', ':');
             Collection = SelectedNode.Collection,
             ChatId = _currentEntityChatId,
             EnableWebSearch = IsWebSearchEnabled,
-            WebSearchMode = IsWebSearchEnabled ? SelectedWebSearchMode.Key : null,
             EntityContext = entityContext,
             Model = GetActiveModel(),
             ProviderConfig = GetActiveProviderConfig(),

@@ -193,6 +193,21 @@ public sealed record ChatStreamResult
     /// <summary>后端附带的警示说明（partial=true 时通常非空）。</summary>
     public string? Warning { get; init; }
 
+    /// <summary>P0：提示词轨（rag | delivery）；旧后端可为 null。</summary>
+    public string? PromptTrack { get; init; }
+
+    /// <summary>P0：输出 token 上限导致正文被截断。</summary>
+    public bool Truncated { get; init; }
+
+    /// <summary>P0：后端支持「继续写」补全。</summary>
+    public bool ContinueSupported { get; init; }
+
+    /// <summary>P0：normal | continue。</summary>
+    public string? ResponseMode { get; init; }
+
+    /// <summary>P0：截断时的续写引导文案。</summary>
+    public string? ContinueHint { get; init; }
+
     /// <summary>后端确认的模型显示名（done 帧 model_spec.display_name，可能是本地未收录的自定义模型名）。</summary>
     public string? ModelDisplayName { get; init; }
 

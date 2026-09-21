@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DocMind · 引用门控与阶段耗时诊断</title>
+  <link rel="stylesheet" href="assets/diag.css" />
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="eyebrow">DocMind · T3 / 中后端均匀提速</p>
+      <h1>弱相关引用门控 &amp; 分阶段耗时</h1>
+      <p class="lede">
+        调参诊断页：解释三档门控如何让弱相关切片不占 <code>[n]</code>，
+        以及 done 帧如何暴露 检索 / 联网 / 首 token / 生成 / 总耗时。
+      </p>
+    </header>
+
+    <section class="card" id="gate">
+      <h2>1. 引用门控三档</h2>
+      <div class="controls">
+        <label>
+          引用线 citation_min_score
+          <input id="minScore" type="range" min="0.20" max="0.80" step="0.05" value="0.45" />
+          <span id="minScoreVal">0.45</span>
+        </label>
+        <label>
+          背景线比例 bg_ratio
+          <input id="bgRatio" type="range" min="0.00" max="1.00" step="0.05" value="0.60" />
+          <span id="bgRatioVal">0.60</span>
+        </label>
+        <label class="check">
+          <input id="topicOk" type="checkbox" checked />
+          高分切片与问题有主题词汇重叠
+        </label>
+        <label class="check">
+          <input id="useRerank" type="checkbox" checked />
+          重排可用（rerank_score）
+        </label>
+      </div>
+
+      <div class="tier-bar" id="tierBar" aria-hidden="true"></div>
+      <table class="data">
+        <thead>
+          <tr><th>示例命中</th><th>相关度</th><th>档位</th><th>是否占 [n]</th></tr>
+        </thead>
+        <tbody id="gateTable"></tbody>
+      </table>
+      <p class="note" id="gateNote"></p>
+    </section>
+
+    <section class="card" id="timing">
+      <h2>2. 分阶段耗时（模拟）</h2>
+      <div class="controls">
+        <label>
+          检索
+          <input id="retMs" type="range" min="0" max="3000" step="50" value="200" />
+          <span id="retMsVal">200 ms</span>
+        </label>
+        <label>
+          联网
+          <input id="webMs" type="range" min="0" max="36000" step="500" value="0" />
+          <span id="webMsVal">0 ms</span>
+        </label>
+        <label>
+          首 token (TTFT)
+          <input id="ttftMs" type="range" min="0" max="60000" step="500" value="800" />
+          <span id="ttftMsVal">800 ms</span>
+        </label>
+        <label>
+          生成（首 token 之后）
+          <input id="genMs" type="range" min="0" max="60000" step="500" value="2000" />
+          <span id="genMsVal">2000 ms</span>
+        </label>
+      </div>
+      <div class="timing-bars" id="timingBars"></div>
+      <p class="note" id="timingNote"></p>
+    </section>
+
+    <section class="card" id="defaults">
+      <h2>3. 推荐默认与误杀风险</h2>
+      <table class="data">
+        <thead>
+          <tr><th>配置</th><th>默认</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>citation_min_score</code></td><td>0.45</td><td>重排分引用线；&gt;0.60 无重排库易误杀</td></tr>
+          <tr><td><code>citation_bg_score_ratio</code></td><td>0.6</td><td>背景线 = 引用线 × ratio；更低丢弃不注入</td></tr>
+          <tr><td><code>web_search_timeout</code></td><td>36s</td><td>联网预算，超时带部分结果，不拖死生成</td></tr>
+          <tr><td><code>llm_first_token_slow_ms</code></td><td>30000</td><td>首 token 过慢时提示关联网 / 换模型</td></tr>
+        </tbody>
+      </table>
+      <ul class="bullets">
+        <li>弱相关不占 <code>[n]</code>，或仅作背景，避免错误引用污染答案。</li>
+        <li>高分但无词汇重叠 → 降为背景（同义改写误杀风险更低）。</li>
+        <li>空命中时状态流明确「无库内引用依据」，不伪造编号。</li>
+        <li>丢弃弱命中可缩短上下文，减轻生成阶段「前慢后死等」。</li>
+      </ul>
+    </section>
+
+    <footer class="foot">
+      <p>工作区：<code>agent-p0</code> · 分支 <code>feat/t3-citation-gate-timing</code> · 字段见 <code>docs/api.md</code></p>
+    </footer>
+  </main>
+  <script src="assets/diag.js"></script>
+</body>
+</html>
