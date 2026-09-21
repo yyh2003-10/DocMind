@@ -655,6 +655,27 @@
                                     </StackPanel>
                                 </Button>
 
+                                <!-- 继续写（P0：截断/部分回答时补全） -->
+                                <Button Command="{Binding DataContext.ContinueWritingCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                        Style="{StaticResource BubbleActionButtonStyle}"
+                                        FontSize="11"
+                                        Padding="7,2"
+                                        Margin="6,0,0,0"
+                                        Visibility="{Binding ShowContinueWriting, Converter={StaticResource B2V}}"
+                                        ToolTip="接着上一条回答继续写完整，不重复检索；输入框可填补充要求">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Data="{StaticResource IconRefresh}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                        <TextBlock Text="继续写"/>
+                                    </StackPanel>
+                                </Button>
+                                <!-- 截断提示条：独立绑定，不写入回答正文 -->
+                                <TextBlock Text="{Binding TruncatedHint}"
+                                           FontSize="11"
+                                           Foreground="{StaticResource WarningBrush}"
+                                           Margin="6,4,0,0"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding TruncatedHint, Converter={StaticResource StringToVis}}"/>
+
                                 <!-- 创作物画布预览入口（包含 Artifact 时可见） -->
                                 <Button Command="{Binding DataContext.OpenArtifactCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
                                         CommandParameter="{Binding}"

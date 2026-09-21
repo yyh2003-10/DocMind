@@ -147,7 +147,8 @@ public class Doc2kbApiService : IDoc2kbApiService
     public async Task<ChatStreamResult> ChatStreamAsync(
         ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone,
         Action<string>? onStatus = null, Action<string>? onThinking = null,
-        Action? onRestart = null, CancellationToken ct = default)
+        Action? onRestart = null, Action<string, string>? onAgentEvent = null,
+        CancellationToken ct = default)
     {
         var reqBody = JsonSerializer.Serialize(req, JsonOptions);
         DebugLog.Info($"→ POST v1/chat/stream\n  req: {Truncate(RedactSecrets(reqBody), 800)}", "API");
@@ -313,6 +314,23 @@ public class Doc2kbApiService : IDoc2kbApiService
                         continue;
                     }
 
+                    // Agent 轨迹帧（T7）：默认安全忽略；有回调时上报 tool 名与摘要
+                    if (root.TryGetProperty("type", out var typeAgent)
+                        && onAgentEvent is not null)
+                    {
+                        var agentType = typeAgent.GetString() ?? "";
+                        if (agentType is "agent_plan" or "tool_call" or "tool_result" or "artifact_ready")
+                        {
+                            var toolId = root.TryGetProperty("tool_id", out var tid) ? (tid.GetString() ?? "")
+                                : root.TryGetProperty("tool", out var t2) ? (t2.GetString() ?? "") : "";
+                            var summary = root.TryGetProperty("summary", out var sum)
+                                ? (sum.GetString() ?? "")
+                                : root.TryGetProperty("status", out var st) ? (st.GetString() ?? "") : agentType;
+                            onAgentEvent(agentType, string.IsNullOrWhiteSpace(toolId) ? summary : $"{toolId}: {summary}");
+                            continue;
+                        }
+                    }
+
                     if (root.TryGetProperty("done", out var doneElem) && doneElem.ValueKind == JsonValueKind.True)
                     {
                         doneReceived = true;
@@ -366,6 +384,13 @@ public class Doc2kbApiService : IDoc2kbApiService
         int ElapsedMs() => root.TryGetProperty("elapsed_ms", out var v) && v.TryGetInt32(out var n) ? n : 0;
         bool Partial() => root.TryGetProperty("partial", out var v) && v.ValueKind == JsonValueKind.True;
         string? Warning() => root.TryGetProperty("warning", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        // P0 双轨 / 续写（旧后端缺字段时为 null/false）
+        string? PromptTrack() => root.TryGetProperty("prompt_track", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        bool Truncated() => root.TryGetProperty("truncated", out var v) && v.ValueKind == JsonValueKind.True;
+        bool ContinueSupported() => !root.TryGetProperty("continue_supported", out var v)
+            || v.ValueKind is not JsonValueKind.False;
+        string? ResponseMode() => root.TryGetProperty("response_mode", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        string? ContinueHint() => root.TryGetProperty("continue_hint", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         // 后端实际生效人设（创作意图自动路由时可能与请求不同）
         string? Persona() => root.TryGetProperty("persona", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
@@ -413,13 +438,70 @@ public class Doc2kbApiService : IDoc2kbApiService
                     Page = s.TryGetProperty("page", out var p) && p.ValueKind == JsonValueKind.Number ? p.GetInt32() : null,
                     Heading = s.TryGetProperty("heading", out var h) ? h.GetString() : null,
                     Score = s.TryGetProperty("score", out var sc) && sc.ValueKind == JsonValueKind.Number ? sc.GetDouble() : 0,
+                    ScoreType = s.TryGetProperty("score_type", out var sct) ? (sct.GetString() ?? string.Empty) : string.Empty,
+                    ConfidenceLabel = s.TryGetProperty("confidence_label", out var cl) ? (cl.GetString() ?? string.Empty) : string.Empty,
                     SourceType = s.TryGetProperty("source_type", out var st) ? (st.GetString() ?? "local") : "local",
                     Url = s.TryGetProperty("url", out var u) ? u.GetString() : null,
                     Title = s.TryGetProperty("title", out var t) ? t.GetString() : null,
                     Snippet = s.TryGetProperty("snippet", out var snip) ? snip.GetString() : null,
                     SourceName = s.TryGetProperty("source_name", out var sn) ? sn.GetString() : null,
+                    Domain = s.TryGetProperty("domain", out var dom) ? dom.GetString() : null,
+                    PublishedAt = s.TryGetProperty("published_at", out var pa) ? pa.GetString() : null,
+                    ContentFetched = s.TryGetProperty("content_fetched", out var cf)
+                        && cf.ValueKind is JsonValueKind.True or JsonValueKind.False
+                        && cf.GetBoolean(),
+                    CorroboratedBy = s.TryGetProperty("corroborated_by", out var cb) && cb.TryGetInt32(out var cbv) ? cbv : 0,
+                    EvidenceLevel = s.TryGetProperty("evidence_level", out var el) ? (el.GetString() ?? "单一来源") : "单一来源",
                 });
             }
+        }
+
+        EvidenceSummary? evidence = null;
+        if (root.TryGetProperty("evidence", out var ev) && ev.ValueKind == JsonValueKind.Object)
+        {
+            CitationAudit? citationAudit = null;
+            if (ev.TryGetProperty("citation_audit", out var ca) && ca.ValueKind == JsonValueKind.Object)
+            {
+                static List<int> ReadIntList(JsonElement el)
+                {
+                    var list = new List<int>();
+                    if (el.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var item in el.EnumerateArray())
+                        {
+                            if (item.TryGetInt32(out var v)) list.Add(v);
+                        }
+                    }
+                    return list;
+                }
+                static List<int> ReadIntListProp(JsonElement parent, string name)
+                    => parent.TryGetProperty(name, out var el) ? ReadIntList(el) : [];
+                citationAudit = new CitationAudit
+                {
+                    Cited = ReadIntListProp(ca, "cited"),
+                    Valid = ReadIntListProp(ca, "valid"),
+                    Invalid = ReadIntListProp(ca, "invalid"),
+                    EvidenceSupport = ReadIntListProp(ca, "evidence_support"),
+                    DisclaimerOnly = ReadIntListProp(ca, "disclaimer_only"),
+                    ValidRatio = ca.TryGetProperty("valid_ratio", out var vr) && vr.ValueKind == JsonValueKind.Number
+                        ? vr.GetDouble() : 1.0,
+                    Ok = !ca.TryGetProperty("ok", out var ok)
+                        || (ok.ValueKind is JsonValueKind.True or JsonValueKind.False && ok.GetBoolean()),
+                };
+            }
+            evidence = new EvidenceSummary
+            {
+                LocalCount = ev.TryGetProperty("local_count", out var lc) && lc.TryGetInt32(out var lcv) ? lcv : 0,
+                WebFetchedCount = ev.TryGetProperty("web_fetched_count", out var wf) && wf.TryGetInt32(out var wfv) ? wfv : 0,
+                WebUnfetchedCount = ev.TryGetProperty("web_unfetched_count", out var wu) && wu.TryGetInt32(out var wuv) ? wuv : 0,
+                GraphInjected = ev.TryGetProperty("graph_injected", out var gi)
+                    && gi.ValueKind is JsonValueKind.True or JsonValueKind.False
+                    && gi.GetBoolean(),
+                FallbackGeneralKnowledge = ev.TryGetProperty("fallback_general_knowledge", out var fg)
+                    && fg.ValueKind is JsonValueKind.True or JsonValueKind.False
+                    && fg.GetBoolean(),
+                CitationAudit = citationAudit,
+            };
         }
 
         return new ChatStreamResult
@@ -433,11 +515,17 @@ public class Doc2kbApiService : IDoc2kbApiService
             Sources = sources,
             Partial = Partial(),
             Warning = Warning(),
+            PromptTrack = PromptTrack(),
+            Truncated = Truncated(),
+            ContinueSupported = ContinueSupported(),
+            ResponseMode = ResponseMode(),
+            ContinueHint = ContinueHint(),
             ModelDisplayName = modelDisplayName,
             ContextWindow = contextWindow,
             MaxOutputTokens = maxOutputTokens,
             IsReasoningModel = isReasoningModel,
             ModelSpecSummary = modelSpecSummary,
+            Evidence = evidence ?? EvidenceSummary.FromSources(sources),
         };
     }
 
@@ -1013,6 +1101,21 @@ public class Doc2kbApiService : IDoc2kbApiService
         var body = new { content };
         return await SendAsync<PptInspectionReportDto>(HttpMethod.Post, "v1/creative/inspect", body, ct);
     }
+
+    public Task<LibraryStatus> GetLibraryStatusAsync(CancellationToken ct = default)
+        => SendAsync<LibraryStatus>(HttpMethod.Get, "v1/library/status", null, ct);
+
+    public Task<TrashListResponse> ListTrashAsync(int limit = 100, CancellationToken ct = default)
+        => SendAsync<TrashListResponse>(HttpMethod.Get, $"v1/trash?limit={limit}", null, ct);
+
+    public Task<TrashRestoreResponse> RestoreTrashedDocumentAsync(string documentId, CancellationToken ct = default)
+        => SendAsync<TrashRestoreResponse>(HttpMethod.Post, $"v1/trash/{Uri.EscapeDataString(documentId)}/restore", null, ct);
+
+    public Task<TrashPurgeResponse> PurgeTrashAsync(int olderThanDays = 30, CancellationToken ct = default)
+        => SendAsync<TrashPurgeResponse>(HttpMethod.Post, "v1/trash/purge", new TrashPurgeRequest { OlderThanDays = olderThanDays }, ct);
+
+    public Task<ProfileSwitchResult> SetUsageProfileAsync(string profile, CancellationToken ct = default)
+        => SendAsync<ProfileSwitchResult>(HttpMethod.Post, "v1/profile", new { profile }, ct);
 
     public IDisposable SubscribeEvents(Action<EventMessage> onEvent, CancellationToken ct = default)
     {

@@ -7,6 +7,10 @@ namespace DocMind.ViewModels;
 
 public partial class ConvertViewModel : ViewModelBase
 {
+
+    /// <summary>后端不可达时通知 Main 刷新全局离线横幅（FC-03/08）。</summary>
+    public event Action? BackendUnreachable;
+
     private readonly IDoc2kbApiService _apiService;
     private readonly NotificationService _notifications;
 
@@ -210,6 +214,7 @@ public partial class ConvertViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
             DebugLog.Error($"转换后端不可达: {ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Convert", ex);

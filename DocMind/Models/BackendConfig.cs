@@ -21,14 +21,18 @@ public sealed record BackendConfig
     public string LlmModel { get; init; } = "";
     public double LlmTemperature { get; init; } = 0.7;
     public int LlmMaxTokens { get; init; } = 8192;
+    /// <summary>LLM 调用超时（秒）；0 = 后端默认。</summary>
+    public double LlmTimeout { get; init; }
+    /// <summary>联网搜索总预算（秒）。</summary>
+    public double WebSearchTimeout { get; init; } = 36;
     public int RagTopK { get; init; } = 5;
     public double RagMinScore { get; init; } = 0.0;
     public string RagMode { get; init; } = "strict";
 
     /// <summary>是否启用检索后重排（Reranker / cross-encoder 精排）。</summary>
     public bool RerankEnabled { get; init; } = true;
-    /// <summary>重排模型名（fastembed TextRanking 支持列表中的模型）。</summary>
-    public string RerankModel { get; init; } = "Xenova/bge-reranker-v2-m3";
+    /// <summary>重排模型名（fastembed TextCrossEncoder 支持列表中的模型）。</summary>
+    public string RerankModel { get; init; } = "BAAI/bge-reranker-base";
     /// <summary>送入重排器的候选数上限。</summary>
     public int RerankRecall { get; init; } = 20;
 
@@ -56,6 +60,12 @@ public sealed record BackendConfig
     /// <summary>入库时是否自动跑 AI 整理（enrich + 可选 categorize + extract）。
     /// 默认 true；关闭后只写元数据，不调 LLM。dedup / consolidate 永不自动跑。</summary>
     public bool AutoCurateOnIngest { get; init; } = true;
+
+    /// <summary>是否启用 Agent 对话模式（需后端 agent_mode_enabled；默认 false）。</summary>
+    public bool AgentModeEnabled { get; init; }
+
+    /// <summary>Agent 工作区写入策略：ask / session_allow / always_allow_workspace。</summary>
+    public string AgentFileWritePolicy { get; init; } = "session_allow";
 }
 
 /// <summary>对应后端 ConfigUpdate：只提交有值的字段（null 表示不修改）。</summary>
@@ -98,6 +108,8 @@ public sealed record BackendConfigUpdate
     public int? RagMaxHistoryTokens { get; init; }
 
     public float? LlmTimeout { get; init; }
+    /// <summary>联网搜索总预算（秒）；null = 不修改。</summary>
+    public float? WebSearchTimeout { get; init; }
 
     // --- 文件监控 ---
     public List<string>? WatchPaths { get; init; }

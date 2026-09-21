@@ -18,8 +18,102 @@ from doc2mind.core.creator.models import (
     InspectionLevel,
     PptInspectionReport,
     SlideLayoutType,
+    SlideModel,
 )
 from doc2mind.core.creator.parser import extract_artifact
+
+_PAGE_TITLE_PLACEHOLDER_RE = re.compile(r"^第\s*\d+\s*页$")
+_MATH_INLINE_RE = re.compile(r"\$[^$\n]{1,40}\$")
+
+
+def _has_real_body(s: SlideModel) -> bool:
+    """该页是否有可展示的正文/结构化内容（标题与副标题 alone 不算）。"""
+    if any((b or "").strip() for b in s.bullet_points):
+        return True
+    if s.table_data and any(any((c or "").strip() for c in row) for row in s.table_data):
+        return True
+    for c in s.cards:
+        if (c.title or "").strip() or (c.content or "").strip() or any((x or "").strip() for x in c.bullets):
+            return True
+    if any((m.value or "").strip() or (m.label or "").strip() for m in s.metrics):
+        return True
+    if any((t.stage or "").strip() or (t.title or "").strip() for t in s.timeline_nodes):
+        return True
+    if (s.quote_text or "").strip():
+        return True
+    return False
+
+
+def _markdown_residue_hits(text: str) -> int:
+    if not text:
+        return 0
+    hits = text.count("**") // 2
+    hits += len(_MATH_INLINE_RE.findall(text))
+    return hits
+
+
+def _slide_markdown_residue(s: SlideModel) -> int:
+    total = 0
+    total += sum(_markdown_residue_hits(b) for b in s.bullet_points)
+    total += _markdown_residue_hits(s.quote_text)
+    for c in s.cards:
+        total += _markdown_residue_hits(c.title)
+        total += _markdown_residue_hits(c.content)
+        total += sum(_markdown_residue_hits(x) for x in c.bullets)
+    for m in s.metrics:
+        total += _markdown_residue_hits(m.value)
+        total += _markdown_residue_hits(m.label)
+    for t in s.timeline_nodes:
+        total += _markdown_residue_hits(t.stage)
+        total += _markdown_residue_hits(t.title)
+    table_hits = 0
+    if s.table_data:
+        for row in s.table_data:
+            for cell in row:
+                table_hits += _markdown_residue_hits(cell)
+    return total + table_hits
+
+
+def validate_pptx_export(artifact: ArtifactModel) -> list[str]:
+    """PPTX 导出硬门禁。返回阻断错误列表；空列表表示可通过。
+
+    拒绝条件：
+    1. 存在页码占位标题（`第 N 页`）；
+    2. 存在空正文页（无 bullet/table/cards/metrics/timeline/quote 实文）；
+    3. 正文/表格残留 Markdown（`**` / `$...$`）超过阈值。
+    """
+    slides = artifact.slides
+    if not slides:
+        return ["未能解析出有效幻灯片页面，结构不合格，请重生成"]
+
+    placeholder_pages: list[int] = []
+    empty_pages: list[int] = []
+    residue_pages: list[int] = []
+
+    for s in slides:
+        title = (s.title or "").strip()
+        if _PAGE_TITLE_PLACEHOLDER_RE.match(title):
+            placeholder_pages.append(s.index)
+
+        if not _has_real_body(s):
+            is_coverish = s.layout == SlideLayoutType.COVER or s.is_cover
+            if not (is_coverish and ((s.title or "").strip() or (s.subtitle or "").strip())):
+                empty_pages.append(s.index)
+
+        if _slide_markdown_residue(s) >= 3:
+            residue_pages.append(s.index)
+
+    errors: list[str] = []
+    if placeholder_pages:
+        pages = "、".join(str(i) for i in placeholder_pages)
+        errors.append(f"存在页码占位标题页（{pages}），请为每页提供 `# 标题`")
+    if empty_pages:
+        pages = "、".join(str(i) for i in empty_pages)
+        errors.append(f"存在空正文页（{pages}），请补充要点/表格/金句内容")
+    if residue_pages:
+        pages = "、".join(str(i) for i in residue_pages)
+        errors.append(f"正文/表格残留 Markdown 语法（{pages}），请清理 `**加粗**` 与 `$公式$`")
+    return errors
 
 
 def inspect_presentation(artifact_or_text: ArtifactModel | str) -> PptInspectionReport:

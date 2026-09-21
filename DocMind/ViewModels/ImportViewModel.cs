@@ -9,6 +9,10 @@ namespace DocMind.ViewModels;
 
     public partial class ImportViewModel : ViewModelBase
     {
+
+    /// <summary>后端不可达时通知 Main 刷新全局离线横幅（FC-03/08）。</summary>
+    public event Action? BackendUnreachable;
+
         /// <summary>下拉框中的「新建分组」哨兵项，选中后切换为内联输入新名称。</summary>
         public const string NewCollectionSentinel = "＋ 新建分组…";
 
@@ -693,6 +697,48 @@ namespace DocMind.ViewModels;
                 return;
             }
 
+            if (final.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase)
+                || final.Status.Equals("canceled", StringComparison.OrdinalIgnoreCase))
+            {
+                // FC-01b：取消也要展示「前 N 篇已导入」明细
+                sw.Stop();
+                var cancelIngested = 0;
+                if (final.Results is { Count: > 0 })
+                {
+                    var ingestedList = new List<IngestResult>();
+                    var skippedList = new List<string>();
+                    var failedList = new List<string>();
+                    foreach (var r in final.Results)
+                    {
+                        switch (r.Status)
+                        {
+                            case "ingested":
+                                cancelIngested++;
+                                ingestedList.Add(r);
+                                break;
+                            case "skipped":
+                                skippedList.Add(r.Source);
+                                break;
+                            case "failed":
+                                failedList.Add($"{r.Source}：{WithOcrInstallHint(r.Error) ?? "未知原因"}");
+                                break;
+                        }
+                    }
+                    Results = new ObservableCollection<IngestResult>(ingestedList);
+                    Skipped = new ObservableCollection<string>(skippedList);
+                    Failed = new ObservableCollection<string>(failedList);
+                }
+                StatusMessage = !string.IsNullOrWhiteSpace(final.CancelNote)
+                    ? final.CancelNote
+                    : cancelIngested > 0
+                        ? $"已取消导入：前 {cancelIngested} 篇已导入可搜索，其余未处理。"
+                        : "已取消导入：尚无已完成文件入库。";
+                CurrentProcessingItem = "任务已取消";
+                _notifications.Info(StatusMessage, "导入已取消");
+                DebugLog.Info($"导入已取消: {StatusMessage} jobId={final.JobId}", "Import");
+                return;
+            }
+
             // 后端 JobStatus.results：每个文件的最终状态（ingested / skipped / failed），
             // 由后端在任务完成时填充，前端无需二次同步请求。
             var ingested = 0;
@@ -790,10 +836,47 @@ namespace DocMind.ViewModels;
         catch (OperationCanceledException) when (_importCts.IsCancellationRequested)
         {
             sw.Stop();
-            StatusMessage = "已取消导入（后台可能仍在处理未完成文件）";
+            // FC-01b：取消后尽量拉一次 job，展示「已导入 N 篇」明细
+            var cancelMsg = "已取消导入";
+            try
+            {
+                if (!string.IsNullOrEmpty(_currentJobId))
+                {
+                    var jobAfter = await _apiService.GetJobAsync(_currentJobId);
+                    var n = jobAfter.Results?.Count(r => r.Status == "ingested") ?? 0;
+                    if (!string.IsNullOrWhiteSpace(jobAfter.CancelNote))
+                    {
+                        cancelMsg = jobAfter.CancelNote;
+                    }
+                    else if (n > 0)
+                    {
+                        cancelMsg = $"已取消导入：前 {n} 篇已导入可搜索，其余未处理。";
+                    }
+                    else
+                    {
+                        cancelMsg = "已取消导入：尚无已完成文件入库。";
+                    }
+                    if (jobAfter.Results is { Count: > 0 })
+                    {
+                        var ingestedList = jobAfter.Results.Where(r => r.Status == "ingested").ToList();
+                        var skippedList = jobAfter.Results.Where(r => r.Status == "skipped").Select(r => r.Source).ToList();
+                        var failedList = jobAfter.Results.Where(r => r.Status == "failed")
+                            .Select(r => $"{r.Source}：{WithOcrInstallHint(r.Error) ?? "未知原因"}").ToList();
+                        Results = new ObservableCollection<IngestResult>(ingestedList);
+                        Skipped = new ObservableCollection<string>(skippedList);
+                        Failed = new ObservableCollection<string>(failedList);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"取消后拉取 job 明细失败: {ex.Message}", "Import");
+                cancelMsg = "已取消导入（明细暂不可用，可稍后在文档库确认）";
+            }
+            StatusMessage = cancelMsg;
             CurrentProcessingItem = "任务已取消";
-            _notifications.Info("导入已取消");
-            DebugLog.Info($"导入已取消，耗时{sw.ElapsedMilliseconds}ms", "Import");
+            _notifications.Info(cancelMsg);
+            DebugLog.Info($"导入已取消，耗时{sw.ElapsedMilliseconds}ms msg={cancelMsg}", "Import");
         }
         catch (ApiException ex)
         {
@@ -806,6 +889,7 @@ namespace DocMind.ViewModels;
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
             CurrentProcessingItem = "后端服务未响应";

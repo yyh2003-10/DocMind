@@ -112,6 +112,13 @@ class OllamaClient(LLMClient):
             )
             resp.raise_for_status()
             data = resp.json()
+            done_reason = data.get("done_reason")
+            self._last_truncated = done_reason == "length"
+            if done_reason == "length":
+                logger.info(
+                    "输出因达到 token 上限被截断（done_reason=length, model=%s）",
+                    self._model,
+                )
             content = data.get("message", {}).get("content", "")
             return content.strip()
         except httpx.HTTPStatusError as e:
@@ -210,6 +217,12 @@ class OllamaClient(LLMClient):
                                     emitted_parts.append(content)
                                     yield ("content", content)
                             if data.get("done", False):
+                                self._last_truncated = data.get("done_reason") == "length"
+                                if self._last_truncated:
+                                    logger.info(
+                                        "流式输出因达到 token 上限被截断（done_reason=length, model=%s）",
+                                        self._model,
+                                    )
                                 break
                         except json.JSONDecodeError:
                             continue
