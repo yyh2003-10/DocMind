@@ -377,6 +377,10 @@ _archive/
 # AI 助手工作记录（.zcode / .atomcode 目录），不入仓库
 .zcode/
 .atomcode/
+# 本机 IDE/助手配置：可能包含插件、路径或账号相关设置
+.codebuddy/settings.local.json
+# CI/本地测试构建输出
+ci-out/
 # 静态分析缓存
 .ruff_cache/
 # 编译输出：安装包走 GitHub Releases，不入仓库
