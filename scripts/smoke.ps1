@@ -765,6 +765,88 @@ try {
             Add-Check '6.08' '依赖清单 GET /v1/system/dependencies' 'FAIL' (Get-ErrMessage $dep)
         }
     }
+
+    # ---------------------------------------------------------- 7. 取消契约 (FC-01c)
+    Write-Section '7. 取消契约'
+
+    # 7.01 起一个长耗时导入 job → DELETE /v1/jobs/{id} → 断言 status == cancelled
+    $cancelJobId = "smoke-cancel-$(Get-Date -Format 'yyyyMMddHHmmss')"
+    $cancelJob = Invoke-Dm -Method POST -Path '/v1/ingest' -Body @{
+        path = $script:CorpusDir
+        collection = $script:Collection
+        recursive = $false
+        force = $false
+    } -TimeoutSec 30
+
+    if ($cancelJob.Ok -and $cancelJob.Json.job_id) {
+        $jobId = $cancelJob.Json.job_id
+        # 等待 job 开始运行
+        Start-Sleep -Seconds 1
+
+        # 取消 job
+        $cancelResp = Invoke-Dm -Method DELETE -Path ('/v1/jobs/' + $jobId) -TimeoutSec 10
+        if ($cancelResp.Ok) {
+            # 验证 job 状态
+            $jobStatus = Invoke-Dm -Method GET -Path ('/v1/jobs/' + $jobId) -TimeoutSec 10
+            if ($jobStatus.Ok -and $jobStatus.Json.status -eq 'cancelled') {
+                Add-Check '7.01' '取消导入 job DELETE /v1/jobs/{id}' 'PASS' ('status=cancelled，job_id=' + $jobId)
+            }
+            else {
+                Add-Check '7.01' '取消导入 job DELETE /v1/jobs/{id}' 'FAIL' ('预期 status=cancelled，实际=' + ($jobStatus.Json.status))
+            }
+        }
+        else {
+            Add-Check '7.01' '取消导入 job DELETE /v1/jobs/{id}' 'FAIL' (Get-ErrMessage $cancelResp)
+        }
+    }
+    else {
+        Add-Check '7.01' '取消导入 job DELETE /v1/jobs/{id}' 'SKIP' '无法创建导入 job'
+    }
+
+    # 7.02 断言 GET /v1/jobs/{id} 的 results 含已完成明细
+    if ($cancelJob.Ok -and $cancelJob.Json.job_id) {
+        $jobId = $cancelJob.Json.job_id
+        $jobStatus = Invoke-Dm -Method GET -Path ('/v1/jobs/' + $jobId) -TimeoutSec 10
+        if ($jobStatus.Ok) {
+            if ($jobStatus.Json.results -and $jobStatus.Json.results.Count -gt 0) {
+                Add-Check '7.02' '取消后 job.results 含已完成明细' 'PASS' ('results 数量=' + $jobStatus.Json.results.Count)
+            }
+            else {
+                # 取消时可能没有已完成的文件，这也是可接受的
+                Add-Check '7.02' '取消后 job.results 含已完成明细' 'WARN' ('results 为空（可能取消发生在第一个文件处理前）')
+            }
+        }
+        else {
+            Add-Check '7.02' '取消后 job.results 含已完成明细' 'FAIL' (Get-ErrMessage $jobStatus)
+        }
+    }
+    else {
+        Add-Check '7.02' '取消后 job.results 含已完成明细' 'SKIP' '依赖 7.01'
+    }
+
+    # 7.03 重复取消同一 job → 幂等返回（不 500）
+    if ($cancelJob.Ok -and $cancelJob.Json.job_id) {
+        $jobId = $cancelJob.Json.job_id
+        $cancelAgain = Invoke-Dm -Method DELETE -Path ('/v1/jobs/' + $jobId) -TimeoutSec 10
+        if ($cancelAgain.Ok -or $cancelAgain.Status -eq 404) {
+            Add-Check '7.03' '重复取消同一 job 幂等' 'PASS' ('返回 ' + $cancelAgain.Status + '，非 500')
+        }
+        else {
+            Add-Check '7.03' '重复取消同一 job 幂等' 'FAIL' ('返回 ' + $cancelAgain.Status + '，预期 200 或 404')
+        }
+    }
+    else {
+        Add-Check '7.03' '重复取消同一 job 幂等' 'SKIP' '依赖 7.01'
+    }
+
+    # 7.04 不存在的 job 取消 → 404 NOT_FOUND
+    $cancelBogus = Invoke-Dm -Method DELETE -Path '/v1/jobs/bogus-job-id' -TimeoutSec 10
+    if ($cancelBogus.Status -eq 404) {
+        Add-Check '7.04' '取消不存在的 job 返回 404' 'PASS' '404 NOT_FOUND'
+    }
+    else {
+        Add-Check '7.04' '取消不存在的 job 返回 404' 'FAIL' ('返回 ' + $cancelBogus.Status + '，预期 404')
+    }
 }
 catch {
     Add-Check 'X.00' '脚本执行异常' 'FAIL' $_.Exception.Message

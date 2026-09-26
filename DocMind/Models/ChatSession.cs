@@ -35,6 +35,9 @@ public sealed record ChatSessionMessage
     public string CreatedAt { get; init; } = string.Empty;
 
     public IReadOnlyList<SourceRef>? Sources { get; init; }
+
+    /// <summary>Agent 轨迹（tool 调用/步骤），无则为空。</summary>
+    public IReadOnlyList<AgentTrajectoryStep>? Trajectory { get; init; }
 }
 
 /// <summary>GET /v1/chats/{id} 响应体 — 会话全部消息（回看/续聊）。</summary>

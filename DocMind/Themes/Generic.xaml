@@ -29,10 +29,14 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="c:SkeletonControl">
-                    <Border x:Name="PART_Root"
-                            Background="{TemplateBinding SkeletonBrush}"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            SnapsToDevicePixels="True"/>
+                    <Grid SnapsToDevicePixels="True">
+                        <Border Background="{TemplateBinding SkeletonBrush}"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                SnapsToDevicePixels="True"/>
+                        <Border Background="{TemplateBinding HighlightBrush}"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                SnapsToDevicePixels="True"/>
+                    </Grid>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
@@ -53,7 +57,7 @@
             <Setter.Value>
                 <ControlTemplate TargetType="c:SecretInputControl">
                     <Border Background="{TemplateBinding Background}"
-                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderBrush="{Binding BorderBrush, RelativeSource={RelativeSource TemplatedParent}, TargetNullValue=Transparent, FallbackValue=Transparent}"
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="{DynamicResource CornerMd}"
                             Padding="{TemplateBinding Padding}">

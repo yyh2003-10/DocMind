@@ -79,6 +79,7 @@ public partial class MainViewModel : ViewModelBase
             // 构造时会话列表可能因后端未就绪加载失败（fire-and-forget 无重试），
             // 必须在后端恢复在线后补一次刷新，否则历史会话一直空白。
             _ = _chatViewModel.RefreshSessionsAsync();
+            _ = _chatViewModel.RefreshLibraryStatusAsync();
             // 同理补拉模型种子：构造时 v1/config 可能因令牌竞态 401 失败且无重试，
             // 否则整个会话 _configuredModel 为空，「默认 · xx」退回占位符、默认提供商分组缺模型。
             _ = _chatViewModel.RefreshModelSeedAsync();
@@ -196,6 +197,8 @@ public partial class MainViewModel : ViewModelBase
 
         // 对话页一键直达设置页（如未配置大模型引导）
         _chatViewModel.NavigateToSettingsRequested += NavigateToSettings;
+        _chatViewModel.NavigateToImportRequested += NavigateToImport;
+        _chatViewModel.NavigateToDocumentsRequested += NavigateToDocuments;
 
         // FC-06 类前置：图谱/质量「LLM 未配置 → 设置页」
         _graphViewModel.NavigateToSettingsRequested += NavigateToSettings;
@@ -293,11 +296,32 @@ public partial class MainViewModel : ViewModelBase
                 if (_currentPage is GraphViewModel gv)
                     _ = gv.EnsureLoadedAsync();
                 if (_currentPage is SettingsViewModel)
-                    _ = _gpuWarning?.DiagnoseAsync();
+                    _ = DiagnoseGpuThrottledAsync();
 
                 // 订阅新页面
                 if (_currentPage != null)
                     _currentPage.PropertyChanged += OnPagePropertyChanged;
+
+                // 设置页用独立窗口承载，不进主页宿主（大 XAML 在宿主里会白屏）
+                if (value is SettingsViewModel)
+                {
+                    ShowSettings();
+                    // 侧栏仍高亮「设置」，但主区保持上一可视页，避免整页空白
+                    return;
+                }
+
+                if (value != null)
+                {
+                    try
+                    {
+                        ShowView(ResolveView(value));
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugLog.Error(ex, "Nav", $"创建页面失败: {value.GetType().Name}");
+                        ShowView(CreateErrorView(value));
+                    }
+                }
 
                 OnPropertyChanged(nameof(IsChatActive));
                 OnPropertyChanged(nameof(DrawerWidth));
@@ -306,6 +330,130 @@ public partial class MainViewModel : ViewModelBase
     }
 
     /// <summary>对话页面 ViewModel（供双轨侧栏抽屉直接绑定历史会话与操作）。</summary>
+    // ===================== 页面视图缓存（避免每次导航重建 170KB XAML） =====================
+
+    private readonly Dictionary<Type, System.Windows.FrameworkElement> _viewCache = new();
+    private readonly System.Windows.Controls.Grid _pageHost = new()
+    {
+        ClipToBounds = true,
+        HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+        VerticalAlignment = System.Windows.VerticalAlignment.Stretch,
+    };
+
+    /// <summary>
+    /// 页面宿主 Grid：子视图常驻树中，导航只切 Visibility。
+    /// 避免 ContentControl 反复卸载/重挂（WebView/大 XAML 导致卡死、logical child 异常）。
+    /// </summary>
+    public System.Windows.FrameworkElement CurrentView => _pageHost;
+
+    private System.Windows.FrameworkElement ResolveView(ViewModelBase vm)
+    {
+        var type = vm.GetType();
+        if (_viewCache.TryGetValue(type, out var cached))
+        {
+            if (!ReferenceEquals(cached.DataContext, vm))
+                cached.DataContext = vm;
+            return cached;
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        System.Windows.FrameworkElement view = vm switch
+        {
+            SearchViewModel _ => new DocMind.Views.SearchView(),
+            ChatViewModel _ => new DocMind.Views.ChatView(),
+            ImportViewModel _ => new DocMind.Views.ImportView(),
+            ConvertViewModel _ => new DocMind.Views.ConvertView(),
+            QualityViewModel _ => new DocMind.Views.QualityView(),
+            DocumentsViewModel _ => new DocMind.Views.DocumentsView(),
+            GraphViewModel _ => new DocMind.Views.GraphView(),
+            SettingsViewModel _ => new DocMind.Views.SettingsView(),
+            DebugLogViewModel _ => new DocMind.Views.DebugLogView(),
+            _ => new System.Windows.Controls.ContentControl(),
+        };
+        view.DataContext = vm;
+        // 常驻 Grid：先隐藏，首次加入后只切 Visible
+        view.Visibility = System.Windows.Visibility.Collapsed;
+        if (!_pageHost.Children.Contains(view))
+            _pageHost.Children.Add(view);
+        _viewCache[type] = view;
+        DebugLog.Info($"页面视图已创建并缓存: {type.Name} 耗时 {sw.ElapsedMilliseconds}ms", "Nav");
+        return view;
+    }
+
+    private static System.Windows.FrameworkElement CreateErrorView(ViewModelBase vm)
+    {
+        var tb = new System.Windows.Controls.TextBlock
+        {
+            Text = $"页面加载失败：{vm.GetType().Name}\n请查看「调试日志」中的 Nav 记录。",
+            TextWrapping = System.Windows.TextWrapping.Wrap,
+            Margin = new System.Windows.Thickness(24),
+            FontSize = 14,
+        };
+        return tb;
+    }
+
+    private void ShowView(System.Windows.FrameworkElement view)
+    {
+        try
+        {
+            // 先显示目标页，再隐藏其它页——避免瞬间出现「全白/全空」中间态
+            view.Visibility = System.Windows.Visibility.Visible;
+            if (view.DataContext == null && _currentPage != null)
+                view.DataContext = _currentPage;
+
+            foreach (System.Windows.UIElement child in _pageHost.Children)
+            {
+                if (!ReferenceEquals(child, view) && child is System.Windows.FrameworkElement fe)
+                    fe.Visibility = System.Windows.Visibility.Collapsed;
+            }
+
+            // 兜底：绝不能整页全空
+            var anyVisible = false;
+            foreach (System.Windows.UIElement child in _pageHost.Children)
+            {
+                if (child is System.Windows.FrameworkElement fe && fe.Visibility == System.Windows.Visibility.Visible)
+                {
+                    anyVisible = true;
+                    break;
+                }
+            }
+            if (!anyVisible && _viewCache.TryGetValue(typeof(ChatViewModel), out var chatView))
+            {
+                chatView.Visibility = System.Windows.Visibility.Visible;
+                DebugLog.Warn("ShowView 兜底：恢复 ChatView", "Nav");
+            }
+            DebugLog.Debug($"ShowView → {view.GetType().Name} visible={view.Visibility}", "Nav");
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Error(ex, "Nav", "ShowView 失败");
+            // 失败时尽量恢复对话页，避免白屏
+            if (_viewCache.TryGetValue(typeof(ChatViewModel), out var chatView))
+                chatView.Visibility = System.Windows.Visibility.Visible;
+        }
+    }
+
+    /// <summary>空闲预热重页（设置页 XAML 大），避免首次点击卡顿。</summary>
+    public void PreloadHeavyViews()
+    {
+        System.Windows.Application.Current?.Dispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ContextIdle,
+            new Action(() =>
+            {
+                try
+                {
+                    // SettingsView is hosted in its own window; do not create a second
+                    // instance here because duplicate bindings can recurse through WPF.
+                    DebugLog.Debug("跳过设置页预热（设置页使用独立窗口）", "Nav");
+                    DebugLog.Info("设置页预热完成", "Nav");
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Warn($"设置页预热失败: {ex.Message}", "Nav");
+                }
+            }));
+    }
+
     public ChatViewModel ChatViewModel => _chatViewModel;
 
     /// <summary>当前页面是否为对话页。</summary>
@@ -400,12 +548,62 @@ public partial class MainViewModel : ViewModelBase
 
     // ===================== 顶栏指令 =====================
 
-    [RelayCommand]
-    private void NavigateToSettings()
+    private DateTime _lastGpuDiagnoseAt = DateTime.MinValue;
+
+    /// <summary>进入设置页时刷新 GPU 诊断；60s 内节流，避免每次导航都打后端。</summary>
+    private Task DiagnoseGpuThrottledAsync()
     {
-        var settingsItem = NavigationItems.FirstOrDefault(n => n.ViewModelType == typeof(SettingsViewModel));
-        if (settingsItem != null)
-            SelectedNavigationItem = settingsItem;
+        if ((DateTime.UtcNow - _lastGpuDiagnoseAt).TotalSeconds < 60)
+            return Task.CompletedTask;
+        _lastGpuDiagnoseAt = DateTime.UtcNow;
+        return _gpuWarning?.DiagnoseAsync() ?? Task.CompletedTask;
+    }
+
+    /// <summary>跳到设置页（命令 + 事件共用；优先按 ViewModelType 匹配）。</summary>
+    [RelayCommand]
+    private void NavigateToSettings() => ShowSettings();
+
+    private System.Windows.Window? _settingsWindow;
+
+    /// <summary>
+    /// 打开设置页。用独立窗口承载，避免大 XAML 在主页宿主里白屏/测量异常。
+    /// </summary>
+    public void ShowSettings()
+    {
+        try
+        {
+            if (_settingsWindow is { IsLoaded: true })
+            {
+                _settingsWindow.Activate();
+                return;
+            }
+
+            var view = new DocMind.Views.SettingsView { DataContext = _settingsViewModel };
+            _settingsWindow = new System.Windows.Window
+            {
+                Title = "偏好设置 — DocMind",
+                Content = view,
+                Width = 1080,
+                Height = 760,
+                MinWidth = 860,
+                MinHeight = 560,
+                WindowStartupLocation = System.Windows.WindowStartupLocation.CenterOwner,
+                Owner = System.Windows.Application.Current?.MainWindow,
+                Background = System.Windows.Media.Brushes.White,
+            };
+            _settingsWindow.Closed += (_, _) => _settingsWindow = null;
+            _settingsWindow.Show();
+            DebugLog.Info("设置页以独立窗口打开", "Nav");
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Error(ex, "Nav", "打开设置窗口失败");
+            System.Windows.MessageBox.Show(
+                $"打开设置失败：{ex.Message}",
+                "DocMind",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Error);
+        }
     }
 
     [RelayCommand]
@@ -470,6 +668,10 @@ public partial class MainViewModel : ViewModelBase
         _importViewModel.CancelImportCommand.Execute(null);
         _documentsViewModel.CancelReindexPolling();
     }
+
+    /// <summary>文件监控事件来自后端 SSE；失效同一份文档页缓存并在当前页可见时刷新。</summary>
+    public void HandleFileWatcherEvent()
+        => _documentsViewModel.NotifyFileWatcherChange(CurrentPage == _documentsViewModel);
 
     /// <summary>导入完成 → 文档库、知识图谱、质量看板及对话集合全量同步刷新。</summary>
     private void OnImportCompleted()

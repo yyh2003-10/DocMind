@@ -2,7 +2,7 @@
 chcp 65001 >nul
 
 REM 版本号唯一来源：改版本只改这一处（打包文件名 / 安装包参数 / 提示文案统一使用）
-set APP_VERSION=1.0.1
+set APP_VERSION=1.0.2
 
 set ROOT_DIR=%~dp0..
 cd /d "%ROOT_DIR%"

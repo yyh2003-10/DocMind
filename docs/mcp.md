@@ -87,7 +87,7 @@ doc2mind  →  command: doc2mind mcp
 }
 ```
 
-## 四、工具清单（19 个）
+## 四、工具清单（20 个）
 
 | 工具 | 说明 | 关键参数 |
 |---|---|---|
@@ -107,20 +107,21 @@ doc2mind  →  command: doc2mind mcp
 | `reindex` | 重建指定集合的向量索引（可换嵌入模型），返回 `job_id` | `collection`、`model` |
 | `curate` | **AI 整理知识库**：enrich（打标签/摘要）、categorize（自动归类/建集合）、dedup（语义去重）、consolidate（归纳合并蒸馏笔记）、extract（图谱实体抽取）。`dry_run=true` 只读预览零写入。**每次跑完自动写入 `curate_runs` 留痕** | `collection`、`actions`、`dry_run`、`top_k`、`note`（触发来源） |
 | `list_curate_runs` | 列出近 N 天的 curate 运行记录（让 Agent 看到自己/别人跑了什么整理、动了哪些文档） | `days`、`limit` |
-| `graph_get` | **知识图谱查询**：返回实体与关系图谱数据（需先由 `/v1/graph/extract` 抽取入库） | `collection`、`limit` |
+| `graph_get` | **知识图谱查询**：返回实体与关系图谱数据（需先由 `/v1/graph/extract` 抽取入库）。每个节点附带 `source_documents`（来源原文件路径/title/关联切片数），可从实体定位到具体原文件 | `collection`、`limit` |
 | `create_artifact` | **创作导出**：把大纲/内容编译为 PPTX / DOCX / XLSX / HTML 物理文件 | `content`、`format`、`output_path` |
 | `inspect_artifact` | **PPT 大纲体检**：0-100 评分 + 排版/密度/版式多样性诊断 | `content` |
+| `library_status` | 库健康状态：ok / empty / warn / reindex_needed，供 agent 决定是否提醒 reindex | （无） |
 
 > `chat`、`curate`、`graph_get`（抽取环节）需要先配置 LLM（`DOC2MIND_LLM_PROVIDER` + 相关密钥），详见下方「RAG 对话配置」。
 >
-> 数量口径以本文档为准（**19 个**）。HTTP 侧等价能力见 [docs/api.md](api.md)。
+> 数量口径以本文档为准（**20 个**，含 `library_status`）。HTTP 侧等价能力见 [docs/api.md](api.md)。
 
 ## 五、给 agent 的提示词模板
 
 把下面这段放进你的 agent 系统提示或项目说明，它就知道怎么用了：
 
 ```text
-你有一个外置知识库工具 DocMind，通过 MCP 提供 19 个工具。
+你有一个外置知识库工具 DocMind，通过 MCP 提供 20 个工具。
 
 用法约定：
 - 摄入项目代码/文档：优先用 ingest_job（异步、有进度），路径给绝对路径，

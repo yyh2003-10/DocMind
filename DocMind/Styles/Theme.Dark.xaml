@@ -9,6 +9,8 @@
          =================================================================== -->
 
     <!-- ==================== 1. 语义配色 ==================== -->
+    <!-- 当前是否深色主题（供 PDF 阅读器等 WebView 同步） -->
+    <sys:Boolean x:Key="IsDarkTheme">True</sys:Boolean>
     <!-- Primary — Indigo (dark variant, brighter for contrast) -->
     <Color x:Key="PrimaryColor">#818CF8</Color>
     <Color x:Key="PrimaryLight">#1E1B4B</Color>
@@ -29,29 +31,29 @@
     <Color x:Key="InfoLight">#0A2A38</Color>
 
     <!-- Neutrals — Apple dark gray scale (pure black base) -->
-    <Color x:Key="BackgroundColor">#000000</Color>
-    <Color x:Key="SurfaceColor">#1C1C1E</Color>
-    <Color x:Key="CardColor">#1C1C1E</Color>
-    <Color x:Key="SidebarBackgroundColor">#000000</Color>
-    <Color x:Key="BorderColor">#38383A</Color>
-    <Color x:Key="BorderLightColor">#2C2C2E</Color>
-    <Color x:Key="HoverColor">#2C2C2E</Color>
-    <Color x:Key="HoverCardColor">#25233A</Color>
+    <Color x:Key="BackgroundColor">#0B0D11</Color>
+    <Color x:Key="SurfaceColor">#161A21</Color>
+    <Color x:Key="CardColor">#171C24</Color>
+    <Color x:Key="SidebarBackgroundColor">#0E1117</Color>
+    <Color x:Key="BorderColor">#2A313C</Color>
+    <Color x:Key="BorderLightColor">#202631</Color>
+    <Color x:Key="HoverColor">#222936</Color>
+    <Color x:Key="HoverCardColor">#252B3A</Color>
     <Color x:Key="SelectedColor">#1E1B4B</Color>
 
     <!-- Text — Apple label hierarchy (dark) -->
-    <Color x:Key="TextPrimaryColor">#F5F5F7</Color>
-    <Color x:Key="TextSecondaryColor">#A1A1A6</Color>
-    <Color x:Key="TextTertiaryColor">#8E8E93</Color>
-    <Color x:Key="TextMutedColor">#636366</Color>
+    <Color x:Key="TextPrimaryColor">#F4F7FB</Color>
+    <Color x:Key="TextSecondaryColor">#A6B0BF</Color>
+    <Color x:Key="TextTertiaryColor">#7E8A9B</Color>
+    <Color x:Key="TextMutedColor">#5F6B7A</Color>
     <Color x:Key="TextInverseColor">#000000</Color>
     <Color x:Key="LinkColor">#818CF8</Color>
     <Color x:Key="AccentColor">#818CF8</Color>
 
     <!-- ==================== Brushes ==================== -->
-    <SolidColorBrush x:Key="PrimaryBrush" Color="{StaticResource PrimaryColor}"/>
-    <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource PrimaryColor}"/>
-    <SolidColorBrush x:Key="PrimaryLightBrush" Color="{StaticResource PrimaryLight}"/>
+    <SolidColorBrush x:Key="PrimaryBrush" Color="{DynamicResource PrimaryColor}"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="{DynamicResource PrimaryColor}"/>
+    <SolidColorBrush x:Key="PrimaryLightBrush" Color="{DynamicResource PrimaryLight}"/>
     <SolidColorBrush x:Key="PrimaryHoverBrush" Color="{StaticResource PrimaryHover}"/>
     <SolidColorBrush x:Key="PrimaryActiveBrush" Color="{StaticResource PrimaryActive}"/>
     <SolidColorBrush x:Key="PrimarySubtleBrush" Color="{StaticResource PrimarySubtle}"/>
@@ -67,11 +69,11 @@
     <SolidColorBrush x:Key="InfoBrush" Color="{StaticResource InfoColor}"/>
     <SolidColorBrush x:Key="InfoLightBrush" Color="{StaticResource InfoLight}"/>
 
-    <SolidColorBrush x:Key="BackgroundBrush" Color="{StaticResource BackgroundColor}"/>
-    <SolidColorBrush x:Key="SurfaceBrush" Color="{StaticResource SurfaceColor}"/>
-    <SolidColorBrush x:Key="CardBrush" Color="{StaticResource CardColor}"/>
+    <SolidColorBrush x:Key="BackgroundBrush" Color="{DynamicResource BackgroundColor}"/>
+    <SolidColorBrush x:Key="SurfaceBrush" Color="{DynamicResource SurfaceColor}"/>
+    <SolidColorBrush x:Key="CardBrush" Color="{DynamicResource CardColor}"/>
     <SolidColorBrush x:Key="SidebarBackgroundBrush" Color="{StaticResource SidebarBackgroundColor}"/>
-    <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="BorderBrush" Color="{DynamicResource BorderColor}"/>
     <SolidColorBrush x:Key="BorderLightBrush" Color="{StaticResource BorderLightColor}"/>
     <SolidColorBrush x:Key="HoverBrush" Color="{StaticResource HoverColor}"/>
     <SolidColorBrush x:Key="HoverCardBrush" Color="{StaticResource HoverCardColor}"/>
@@ -79,22 +81,23 @@
 
     <!-- DocMind Flow 2.0 双轨与画卷系统 (Dark) -->
     <SolidColorBrush x:Key="RailBackgroundBrush" Color="#0D1117"/>
-    <SolidColorBrush x:Key="DrawerBackgroundBrush" Color="#161B22"/>
-    <SolidColorBrush x:Key="CanvasBackgroundBrush" Color="#090D13"/>
-    <SolidColorBrush x:Key="FloatingCardBrush" Color="#161B22"/>
-    <SolidColorBrush x:Key="FloatingCardBorderBrush" Color="#30363D"/>
+    <SolidColorBrush x:Key="DrawerBackgroundBrush" Color="#151A22"/>
+    <SolidColorBrush x:Key="CanvasBackgroundBrush" Color="#0F131A"/>
+    <SolidColorBrush x:Key="FloatingCardBrush" Color="#181E27"/>
+    <SolidColorBrush x:Key="FloatingCardBorderBrush" Color="#303946"/>
     <SolidColorBrush x:Key="DocMindEmeraldBrush" Color="#34D399"/>
     <SolidColorBrush x:Key="DocMindEmeraldLightBrush" Color="#064E3B"/>
     <SolidColorBrush x:Key="DocMindCyanBrush" Color="#38BDF8"/>
     <SolidColorBrush x:Key="DocMindCyanLightBrush" Color="#0C4A6E"/>
 
-    <SolidColorBrush x:Key="TextPrimaryBrush" Color="{StaticResource TextPrimaryColor}"/>
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="{DynamicResource TextPrimaryColor}"/>
     <SolidColorBrush x:Key="TextSecondaryBrush" Color="{StaticResource TextSecondaryColor}"/>
     <SolidColorBrush x:Key="TextTertiaryBrush" Color="{StaticResource TextTertiaryColor}"/>
     <SolidColorBrush x:Key="TextMutedBrush" Color="{StaticResource TextMutedColor}"/>
     <SolidColorBrush x:Key="TextInverseBrush" Color="{StaticResource TextInverseColor}"/>
     <SolidColorBrush x:Key="LinkBrush" Color="{StaticResource LinkColor}"/>
-    <SolidColorBrush x:Key="BodyBrush" Color="{StaticResource TextPrimaryColor}"/>
+    <SolidColorBrush x:Key="LinkHoverBrush" Color="#A5B4FC"/>
+    <SolidColorBrush x:Key="BodyBrush" Color="{DynamicResource TextPrimaryColor}"/>
 
     <!-- ==================== 1.5 对话气泡配色 ==================== -->
     <!-- 用户消息：品牌靛蓝深染胶囊（深色主题下与卡片面拉开层次） -->
@@ -126,6 +129,12 @@
     <sys:Double x:Key="MotionFastMs">120</sys:Double>
     <sys:Double x:Key="MotionNormalMs">180</sys:Double>
     <sys:Double x:Key="MotionSlowMs">240</sys:Double>
+    <!-- 滚动条 Thumb 宽度：常态 8px，悬停/按压 12px（120ms 属性动画） -->
+    <sys:Double x:Key="ScrollThumbWidthNormal">8</sys:Double>
+    <sys:Double x:Key="ScrollThumbWidthHover">12</sys:Double>
+    <!-- 反馈参数：骨架屏脉冲周期、进度条完成态单次辉光 -->
+    <sys:Double x:Key="SkeletonPulseMs">1400</sys:Double>
+    <sys:Double x:Key="ProgressCompleteGlowMs">180</sys:Double>
 
     <!-- ==================== 3. 圆角体系 ==================== -->
     <CornerRadius x:Key="CornerSm">4</CornerRadius>
@@ -150,6 +159,25 @@
     <DropShadowEffect x:Key="ShadowButtonHover" BlurRadius="12" ShadowDepth="2"
                       Color="#818CF8" Opacity="0.30" Direction="270" RenderingBias="Performance"/>
 
+    <!-- ==================== 4.5 字阶/行高档位 Token 族 ==================== -->
+    <!-- 字阶八档（数值常量，双字典值一致；页面禁止散值字号） -->
+    <sys:Double x:Key="FontSizeDisplay">32</sys:Double>
+    <sys:Double x:Key="FontSizeTitleLarge">26</sys:Double>
+    <sys:Double x:Key="FontSizeTitle">20</sys:Double>
+    <sys:Double x:Key="FontSizeSubtitle">16</sys:Double>
+    <sys:Double x:Key="FontSizeBody">14</sys:Double>
+    <sys:Double x:Key="FontSizeCaption">12</sys:Double>
+    <sys:Double x:Key="FontSizeSmall">11</sys:Double>
+    <sys:Double x:Key="FontSizeMicro">10</sys:Double>
+    <!-- 行高七档（Body 统一宽松 22 阅读行距；页面禁止散值行高） -->
+    <sys:Double x:Key="LineHeightDisplay">44</sys:Double>
+    <sys:Double x:Key="LineHeightTitleLarge">36</sys:Double>
+    <sys:Double x:Key="LineHeightTitle">28</sys:Double>
+    <sys:Double x:Key="LineHeightSubtitle">24</sys:Double>
+    <sys:Double x:Key="LineHeightBody">20</sys:Double>
+    <sys:Double x:Key="LineHeightCaption">18</sys:Double>
+    <sys:Double x:Key="LineHeightSmall">16</sys:Double>
+
     <!-- ==================== 5. 字体体系 ==================== -->
     <Style TargetType="TextElement">
         <Setter Property="FontFamily" Value="SF Pro Display, Segoe UI Variable Display, Segoe UI, Microsoft YaHei, sans-serif"/>
@@ -167,31 +195,36 @@
     </Style>
 
     <Style x:Key="TitleText" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="26"/>
+        <Setter Property="FontSize" Value="{StaticResource FontSizeTitleLarge}"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
     </Style>
     <Style x:Key="SubtitleText" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="16"/>
+        <Setter Property="FontSize" Value="{StaticResource FontSizeSubtitle}"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
     </Style>
     <Style x:Key="BodyText" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="14.5"/>
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBody}"/>
         <Setter Property="FontWeight" Value="Regular"/>
         <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
     </Style>
     <Style x:Key="CaptionText" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="12.5"/>
+        <Setter Property="FontSize" Value="{StaticResource FontSizeCaption}"/>
         <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
     </Style>
     <Style x:Key="SmallText" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="11.5"/>
+        <Setter Property="FontSize" Value="{StaticResource FontSizeSmall}"/>
         <Setter Property="Foreground" Value="{StaticResource TextTertiaryBrush}"/>
+    </Style>
+    <Style x:Key="GroupHeaderStyle" TargetType="TextBlock" BasedOn="{StaticResource CaptionText}">
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="TextWrapping" Value="Wrap"/>
+        <Setter Property="Margin" Value="0,16,0,8"/>
     </Style>
     <Style x:Key="MonoText" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="SF Mono, Cascadia Code, JetBrains Mono, Consolas, monospace"/>
-        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBody}"/>
     </Style>
 
     <!-- ==================== 6. 卡片样式 ==================== -->
@@ -312,8 +345,8 @@
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Card" Property="Background" Value="{DynamicResource HoverCardBrush}"/>
-                            <Setter TargetName="Card" Property="BorderBrush" Value="{DynamicResource PrimarySubtleBrush}"/>
+                            <Setter TargetName="Card" Property="Background" Value="{StaticResource HoverCardBrush}"/>
+                            <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource PrimarySubtleBrush}"/>
                             <Setter TargetName="Card" Property="Effect" Value="{StaticResource ShadowCard}"/>
                             <Trigger.EnterActions>
                                 <BeginStoryboard>
@@ -343,15 +376,15 @@
                             </Trigger.ExitActions>
                         </Trigger>
                         <Trigger Property="IsKeyboardFocused" Value="True">
-                            <Setter TargetName="Card" Property="Background" Value="{DynamicResource HoverCardBrush}"/>
-                            <Setter TargetName="Card" Property="BorderBrush" Value="{DynamicResource PrimaryBrush}"/>
+                            <Setter TargetName="Card" Property="Background" Value="{StaticResource HoverCardBrush}"/>
+                            <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter TargetName="Card" Property="Background" Value="{DynamicResource PrimaryLightBrush}"/>
-                            <Setter TargetName="Card" Property="BorderBrush" Value="{DynamicResource PrimaryBrush}"/>
+                            <Setter TargetName="Card" Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
+                            <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
                             <Setter TargetName="ActiveIndicator" Property="Visibility" Value="Visible"/>
                             <Setter TargetName="ActiveIndicator" Property="Opacity" Value="1"/>
-                            <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}"/>
+                            <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/>
                             <Trigger.EnterActions>
                                 <BeginStoryboard>
                                     <Storyboard>
@@ -413,7 +446,7 @@
                 <ControlTemplate TargetType="Button">
                     <Grid Margin="-6">
                         <Border x:Name="Bloom"
-                                Background="{StaticResource PrimaryLightBrush}"
+                                Background="{DynamicResource PrimaryLightBrush}"
                                 CornerRadius="12"
                                 Margin="1"
                                 Opacity="0"
@@ -524,7 +557,7 @@
                 <ControlTemplate TargetType="Button">
                     <Grid>
                         <Border x:Name="Bloom"
-                                Background="{StaticResource PrimaryLightBrush}"
+                                Background="{DynamicResource PrimaryLightBrush}"
                                 CornerRadius="8"
                                 Opacity="0"
                                 RenderTransformOrigin="0.5,0.5">
@@ -534,7 +567,7 @@
                         </Border>
                         <Border x:Name="Root"
                                 Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderBrush="{Binding BorderBrush, RelativeSource={RelativeSource TemplatedParent}, TargetNullValue=Transparent, FallbackValue=Transparent}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
                                 CornerRadius="8" Padding="{TemplateBinding Padding}"
                                 SnapsToDevicePixels="True"
@@ -716,7 +749,7 @@
                 <ControlTemplate TargetType="Button">
                     <Grid>
                         <Border x:Name="Bloom"
-                                Background="{StaticResource PrimaryLightBrush}"
+                                Background="{DynamicResource PrimaryLightBrush}"
                                 CornerRadius="8"
                                 Opacity="0"
                                 RenderTransformOrigin="0.5,0.5">
@@ -814,7 +847,7 @@
                 <ControlTemplate TargetType="TextBox">
                     <Border x:Name="Root"
                             Background="{TemplateBinding Background}"
-                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
                             BorderThickness="1"
                             CornerRadius="8"
                             SnapsToDevicePixels="True">
@@ -855,7 +888,7 @@
                 <ControlTemplate TargetType="PasswordBox">
                     <Border x:Name="Root"
                             Background="{TemplateBinding Background}"
-                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
                             BorderThickness="1"
                             CornerRadius="8"
                             SnapsToDevicePixels="True">
@@ -877,7 +910,7 @@
     <ControlTemplate x:Key="ComboBoxToggleButton" TargetType="ToggleButton">
         <Border x:Name="TemplateRoot"
                 Background="{TemplateBinding Background}"
-                BorderBrush="{TemplateBinding BorderBrush}"
+                BorderBrush="{Binding BorderBrush, RelativeSource={RelativeSource TemplatedParent}, TargetNullValue=Transparent, FallbackValue=Transparent}"
                 BorderThickness="{TemplateBinding BorderThickness}"
                 CornerRadius="8"
                 SnapsToDevicePixels="True">
@@ -889,8 +922,8 @@
                     BorderThickness="0">
                 <Path x:Name="Arrow"
                       Data="M0,0 L5,5 L10,0"
-                      Fill="{StaticResource TextTertiaryBrush}"
-                      Stroke="{StaticResource TextTertiaryBrush}"
+                      Fill="{DynamicResource TextTertiaryBrush}"
+                      Stroke="{DynamicResource TextTertiaryBrush}"
                       StrokeThickness="1.5"
                       HorizontalAlignment="Center"
                       VerticalAlignment="Center"/>
@@ -932,7 +965,7 @@
                         <ToggleButton x:Name="DropDownToggle"
                                       Template="{StaticResource ComboBoxToggleButton}"
                                       Background="{TemplateBinding Background}"
-                                      BorderBrush="{TemplateBinding BorderBrush}"
+                                      BorderBrush="{Binding BorderBrush, RelativeSource={RelativeSource TemplatedParent}, TargetNullValue=Transparent, FallbackValue=Transparent}"
                                       BorderThickness="{TemplateBinding BorderThickness}"
                                       IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
                                       Focusable="False"
@@ -974,8 +1007,8 @@
                                   MinWidth="{Binding ActualWidth, ElementName=MainGrid}"
                                   MaxHeight="260">
                                 <Border x:Name="DropDownBorder"
-                                        Background="{StaticResource CardBrush}"
-                                        BorderBrush="{StaticResource BorderBrush}"
+                                        Background="{DynamicResource CardBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}"
                                         BorderThickness="1"
                                         CornerRadius="8"
                                         Effect="{StaticResource ShadowMd}"
@@ -1053,7 +1086,7 @@
                         <Border x:Name="CheckBorder"
                                 Width="20" Height="20"
                                 Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderBrush="{Binding BorderBrush, RelativeSource={RelativeSource TemplatedParent}, TargetNullValue=Transparent, FallbackValue=Transparent}"
                                 BorderThickness="2"
                                 CornerRadius="4"
                                 SnapsToDevicePixels="True">
@@ -1101,7 +1134,7 @@
             <Setter.Value>
                 <ControlTemplate TargetType="ListBox">
                     <Border Background="{TemplateBinding Background}"
-                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderBrush="{Binding BorderBrush, RelativeSource={RelativeSource TemplatedParent}, TargetNullValue=Transparent, FallbackValue=Transparent}"
                             BorderThickness="{TemplateBinding BorderThickness}"
                             SnapsToDevicePixels="True">
                         <ScrollViewer Padding="{TemplateBinding Padding}"
@@ -1243,7 +1276,7 @@
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource HoverBrush}"/>
                             <Trigger.EnterActions>
                                 <BeginStoryboard>
                                     <Storyboard>
@@ -1288,12 +1321,12 @@
                             </Trigger.ExitActions>
                         </Trigger>
                         <Trigger Property="IsKeyboardFocused" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource HoverBrush}"/>
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="{DynamicResource PrimaryLightBrush}"/>
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
                             <Setter TargetName="ActiveIndicator" Property="Visibility" Value="Visible"/>
-                            <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}"/>
+                            <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/>
                             <Trigger.EnterActions>
                                 <BeginStoryboard>
                                     <Storyboard>
@@ -1365,7 +1398,7 @@
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource HoverBrush}"/>
                             <Trigger.EnterActions>
                                 <BeginStoryboard>
                                     <Storyboard>
@@ -1398,13 +1431,13 @@
                             </Trigger.ExitActions>
                         </Trigger>
                         <Trigger Property="IsKeyboardFocused" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource HoverBrush}"/>
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="{DynamicResource PrimaryLightBrush}"/>
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
                             <Setter TargetName="ActiveIndicator" Property="Visibility" Value="Visible"/>
                             <Setter TargetName="ActiveIndicator" Property="Opacity" Value="1"/>
-                            <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}"/>
+                            <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/>
                             <Trigger.EnterActions>
                                 <BeginStoryboard>
                                     <Storyboard>
@@ -1429,6 +1462,16 @@
 
     <!-- ==================== 15. ProgressBar 样式 ==================== -->
     <Style TargetType="ProgressBar">
+        <Style.Triggers>
+            <!-- 完成态收尾：默认进度色时切成功色；页面显式指定 DangerBrush/WarningBrush 时保持原语义色 -->
+            <MultiDataTrigger>
+                <MultiDataTrigger.Conditions>
+                    <Condition Binding="{Binding Value, RelativeSource={RelativeSource Self}}" Value="100"/>
+                    <Condition Binding="{Binding Foreground, RelativeSource={RelativeSource Self}}" Value="{StaticResource PrimaryBrush}"/>
+                </MultiDataTrigger.Conditions>
+                <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
+            </MultiDataTrigger>
+        </Style.Triggers>
         <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
         <Setter Property="BorderThickness" Value="0"/>
         <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/>
@@ -1458,9 +1501,9 @@
                                         <TranslateTransform x:Name="FlowTransform" X="-1.0"/>
                                     </LinearGradientBrush.Transform>
                                     <GradientStop Color="#00000000" Offset="0.0"/>
-                                    <GradientStop Color="{StaticResource PrimaryColor}" Offset="0.25"/>
+                                    <GradientStop Color="{DynamicResource PrimaryColor}" Offset="0.25"/>
                                     <GradientStop Color="#B0FFFFFF" Offset="0.5"/>
-                                    <GradientStop Color="{StaticResource PrimaryColor}" Offset="0.75"/>
+                                    <GradientStop Color="{DynamicResource PrimaryColor}" Offset="0.75"/>
                                     <GradientStop Color="#00000000" Offset="1.0"/>
                                 </LinearGradientBrush>
                             </Border.Background>
@@ -1485,19 +1528,24 @@
                                 <StopStoryboard BeginStoryboardName="FlowAnimation"/>
                             </Trigger.ExitActions>
                         </Trigger>
+                        <!-- 进度到 100%：终态稳定值（系统动画关闭时立即呈现，不等待过渡） -->
+                        <Trigger Property="Value" Value="100">
+                            <Setter TargetName="PART_Indicator" Property="Opacity" Value="1"/>
+                        </Trigger>
+                        <!-- 单次辉光收尾（180ms 透明度动画，无 Effect，符合 60fps 红线）；仅系统动画开启时播放 -->
                         <MultiDataTrigger>
                             <MultiDataTrigger.Conditions>
                                 <Condition Binding="{Binding Value, RelativeSource={RelativeSource Self}}" Value="100"/>
+                                <Condition Binding="{Binding Source={x:Static SystemParameters.ClientAreaAnimation}}" Value="True"/>
                             </MultiDataTrigger.Conditions>
-                            <Setter TargetName="PART_Indicator" Property="Background" Value="{StaticResource SuccessBrush}"/>
                             <MultiDataTrigger.EnterActions>
                                 <BeginStoryboard>
                                     <Storyboard>
                                         <DoubleAnimation
                                             Storyboard.TargetName="PART_Indicator"
                                             Storyboard.TargetProperty="Opacity"
-                                            From="0.35" To="1"
-                                            Duration="0:0:0.24">
+                                            From="0.5" To="1"
+                                            Duration="0:0:0.18">
                                             <DoubleAnimation.EasingFunction>
                                                 <CubicEase EasingMode="EaseOut"/>
                                             </DoubleAnimation.EasingFunction>
@@ -1512,9 +1560,20 @@
         </Setter>
     </Style>
 
+    <!-- 失败语义进度条：指示条固定 Danger 色，完成态不再切成功色 -->
+    <Style x:Key="ProgressBarDangerStyle" TargetType="ProgressBar" BasedOn="{StaticResource {x:Type ProgressBar}}">
+        <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
+    </Style>
+
+    <!-- 跳过语义进度条：指示条固定 Warning 色 -->
+    <Style x:Key="ProgressBarWarningStyle" TargetType="ProgressBar" BasedOn="{StaticResource {x:Type ProgressBar}}">
+        <Setter Property="Foreground" Value="{StaticResource WarningBrush}"/>
+    </Style>
+
+
     <!-- ==================== 16. 滚动条样式 ==================== -->
     <Style TargetType="ScrollBar">
-        <Setter Property="Width" Value="10"/>
+        <Setter Property="Width" Value="{StaticResource ScrollThumbWidthHover}"/>
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="Template">
             <Setter.Value>
@@ -1526,8 +1585,9 @@
                                Orientation="{TemplateBinding Orientation}">
                             <Track.Thumb>
                                 <Thumb x:Name="Thumb"
-                                       Background="{StaticResource TextMutedBrush}"
+                                       Background="{DynamicResource TextMutedBrush}"
                                        BorderThickness="0"
+                                       Width="{StaticResource ScrollThumbWidthNormal}"
                                        MinWidth="8"
                                        MinHeight="24"
                                        Opacity="0.55">
@@ -1557,13 +1617,73 @@
                         </Track>
                     </Border>
                     <ControlTemplate.Triggers>
+                        <!-- 悬停最终态：动画关闭时立即生效，同时作为动画结束后的稳定值 -->
                         <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Thumb" Property="Width" Value="{StaticResource ScrollThumbWidthHover}"/>
                             <Setter TargetName="Thumb" Property="Background" Value="{StaticResource TextTertiaryBrush}"/>
                             <Setter TargetName="Thumb" Property="Opacity" Value="1"/>
                         </Trigger>
+                        <!-- 仅系统动画开启时播放 120ms 加宽/加深过渡，仅 Width+Opacity 两个属性 -->
+                        <!-- 注：Conditions 含纯 Binding 条件时必须用 MultiDataTrigger；MultiTrigger 的 Condition 要求 Property 非 null，否则 Seal 抛 InvalidOperationException -->
+                        <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                                <Condition Binding="{Binding IsMouseOver, RelativeSource={RelativeSource Self}}" Value="True"/>
+                                <Condition Binding="{Binding Source={x:Static SystemParameters.ClientAreaAnimation}}" Value="True"/>
+                            </MultiDataTrigger.Conditions>
+                            <MultiDataTrigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation
+                                            Storyboard.TargetName="Thumb"
+                                            Storyboard.TargetProperty="Width"
+                                            From="{StaticResource ScrollThumbWidthNormal}"
+                                            To="{StaticResource ScrollThumbWidthHover}"
+                                            Duration="0:0:0.12">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                        <DoubleAnimation
+                                            Storyboard.TargetName="Thumb"
+                                            Storyboard.TargetProperty="Opacity"
+                                            From="0.55"
+                                            To="1"
+                                            Duration="0:0:0.12">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </MultiDataTrigger.EnterActions>
+                            <MultiDataTrigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation
+                                            Storyboard.TargetName="Thumb"
+                                            Storyboard.TargetProperty="Width"
+                                            To="{StaticResource ScrollThumbWidthNormal}"
+                                            Duration="0:0:0.12">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                        <DoubleAnimation
+                                            Storyboard.TargetName="Thumb"
+                                            Storyboard.TargetProperty="Opacity"
+                                            To="0.55"
+                                            Duration="0:0:0.12">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </MultiDataTrigger.ExitActions>
+                        </MultiDataTrigger>
                         <Trigger Property="Orientation" Value="Horizontal">
                             <Setter Property="Width" Value="Auto"/>
-                            <Setter Property="Height" Value="10"/>
+                            <Setter Property="Height" Value="{StaticResource ScrollThumbWidthHover}"/>
                             <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -1592,7 +1712,7 @@
                     <TextBlock Text="{Binding}"
                                FontWeight="Semibold"
                                FontSize="15"
-                               Foreground="{StaticResource TextPrimaryBrush}"/>
+                               Foreground="{DynamicResource TextPrimaryBrush}"/>
                 </DataTemplate>
             </Setter.Value>
         </Setter>
@@ -1622,7 +1742,11 @@
     <SolidColorBrush x:Key="ScrimStrongBrush" Color="{StaticResource ScrimColor}" Opacity="0.70"/>
     <SolidColorBrush x:Key="OverlayBrush" Color="{StaticResource OverlayColor}"/>
 
-    <SolidColorBrush x:Key="FocusRingBrush" Color="{StaticResource PrimaryColor}"/>
+    <!-- 浮层提亮描边：浅色主题由阴影承担层级、描边近乎不可见；深色主题 1px 提亮勾勒浮层边缘（与 UserBubbleBorderBrush 同一提亮语言） -->
+    <SolidColorBrush x:Key="ElevatedBorderBrush" Color="#303946"/>
+    <Thickness x:Key="ElevatedBorderThickness">1</Thickness>
+
+    <SolidColorBrush x:Key="FocusRingBrush" Color="{DynamicResource PrimaryColor}"/>
     <Thickness x:Key="FocusRingThickness">2</Thickness>
 
     <!-- 幻灯片放映专用舞台 Token（放映室恒深色舞台，不分主题，双字典同值） -->
@@ -1639,13 +1763,13 @@
     <Thickness x:Key="PageContentMarginTight">12,10,12,10</Thickness>
 
     <DropShadowEffect x:Key="ShadowBrandGlow" BlurRadius="12" ShadowDepth="0"
-                      Color="{StaticResource PrimaryColor}" Opacity="0.40"
+                      Color="{DynamicResource PrimaryColor}" Opacity="0.40"
                       Direction="270" RenderingBias="Performance"/>
     <DropShadowEffect x:Key="ShadowBrandStrong" BlurRadius="14" ShadowDepth="0"
-                      Color="{StaticResource PrimaryColor}" Opacity="0.50"
+                      Color="{DynamicResource PrimaryColor}" Opacity="0.50"
                       Direction="270" RenderingBias="Performance"/>
     <DropShadowEffect x:Key="ShadowLogoGlow" BlurRadius="16" ShadowDepth="0"
-                      Color="{StaticResource PrimaryColor}" Opacity="0.35"
+                      Color="{DynamicResource PrimaryColor}" Opacity="0.35"
                       Direction="270" RenderingBias="Performance"/>
 
     <!-- ==================== 22. 键盘焦点视觉 ==================== -->
@@ -1654,7 +1778,7 @@
             <Setter.Value>
                 <ControlTemplate>
                     <Border Margin="-2"
-                            BorderBrush="{StaticResource FocusRingBrush}"
+                            BorderBrush="{DynamicResource FocusRingBrush}"
                             BorderThickness="2"
                             CornerRadius="8"
                             SnapsToDevicePixels="True"/>
@@ -1668,7 +1792,7 @@
             <Setter.Value>
                 <ControlTemplate>
                     <Border Margin="-1"
-                            BorderBrush="{StaticResource FocusRingBrush}"
+                            BorderBrush="{DynamicResource FocusRingBrush}"
                             BorderThickness="1.5"
                             CornerRadius="8"
                             SnapsToDevicePixels="True"/>
@@ -1716,15 +1840,90 @@
     </Style>
 
     <Style x:Key="PageHeaderText" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="18"/>
+        <Setter Property="FontSize" Value="{StaticResource FontSizeTitle}"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
     </Style>
 
     <Style x:Key="PageHeaderCaptionText" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontSize" Value="{StaticResource FontSizeCaption}"/>
         <Setter Property="Foreground" Value="{StaticResource TextTertiaryBrush}"/>
         <Setter Property="Margin" Value="0,3,0,0"/>
+    </Style>
+
+    <!-- 统一页首容器：标题 + 副文案（左）+ 右侧主操作区（右），标题↔副文案间距 SpaceXs(4)，页首下距内容区 SpaceXl(16) -->
+    <Style x:Key="PageHeaderStyle" TargetType="StackPanel">
+        <Setter Property="Orientation" Value="Horizontal"/>
+        <Setter Property="Margin" Value="0,0,0,16"/>
+        <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        <Setter Property="VerticalAlignment" Value="Top"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+    </Style>
+
+    <!-- 页首文字区（标题 + 副文案）垂直居中，避免换行时与主操作区互盖 -->
+    <Style x:Key="PageHeaderTextAreaStyle" TargetType="StackPanel">
+        <Setter Property="Orientation" Value="Vertical"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+    </Style>
+
+    <!-- ==================== 4.6 空态样式族（四段式） ==================== -->
+    <!-- 空态容器：轻插画 + 主标题 + 副文案 + 主操作，垂直居中排列 -->
+    <Style x:Key="EmptyStateStyle" TargetType="StackPanel">
+        <Setter Property="Orientation" Value="Vertical"/>
+        <Setter Property="HorizontalAlignment" Value="Center"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="Margin" Value="32,24"/>
+        <Setter Property="MaxWidth" Value="420"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+    </Style>
+
+    <!-- 空态轻插画：64×64 品牌淡底圆 + 中心 32×32 矢量 Path，纯矢量静态资源 -->
+    <Style x:Key="EmptyStateIllustrationStyle" TargetType="Border">
+        <Setter Property="Width" Value="64"/>
+        <Setter Property="Height" Value="64"/>
+        <Setter Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
+        <Setter Property="CornerRadius" Value="{StaticResource CornerPill}"/>
+        <Setter Property="HorizontalAlignment" Value="Center"/>
+        <Setter Property="Margin" Value="0,0,0,16"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+    </Style>
+
+    <!-- 空态中心矢量 Path：32×32，着品牌色，兼容 IconPathStyle 线宽 -->
+    <Style x:Key="EmptyStateIconStyle" TargetType="Path" BasedOn="{StaticResource IconMdStyle}">
+        <Setter Property="Width" Value="32"/>
+        <Setter Property="Height" Value="32"/>
+        <Setter Property="Stroke" Value="{StaticResource PrimaryBrush}"/>
+        <Setter Property="Fill" Value="Transparent"/>
+    </Style>
+
+    <!-- 空态主标题（SubtitleText 16/SemiBold） -->
+    <Style x:Key="EmptyStateTitleStyle" TargetType="TextBlock" BasedOn="{StaticResource SubtitleText}">
+        <Setter Property="HorizontalAlignment" Value="Center"/>
+        <Setter Property="Margin" Value="0,0,0,8"/>
+        <Setter Property="TextAlignment" Value="Center"/>
+    </Style>
+
+    <!-- 空态副文案（BodyText 14/TextSecondary/居中/LineHeightBody） -->
+    <Style x:Key="EmptyStateBodyStyle" TargetType="TextBlock" BasedOn="{StaticResource BodyText}">
+        <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+        <Setter Property="HorizontalAlignment" Value="Center"/>
+        <Setter Property="TextAlignment" Value="Center"/>
+        <Setter Property="LineHeight" Value="{StaticResource LineHeightBody}"/>
+        <Setter Property="TextWrapping" Value="Wrap"/>
+        <Setter Property="Margin" Value="0,0,0,16"/>
+    </Style>
+
+    <!-- 空态主操作 CTA（PrimaryButtonStyle 档位） -->
+    <Style x:Key="EmptyStateActionStyle" TargetType="Button" BasedOn="{StaticResource PrimaryButtonStyle}">
+        <Setter Property="HorizontalAlignment" Value="Center"/>
+        <Setter Property="Margin" Value="0,0,0,12"/>
+    </Style>
+
+    <!-- 空态快捷键提示（SmallText） -->
+    <Style x:Key="EmptyStateHintStyle" TargetType="TextBlock" BasedOn="{StaticResource SmallText}">
+        <Setter Property="HorizontalAlignment" Value="Center"/>
+        <Setter Property="TextAlignment" Value="Center"/>
     </Style>
 
     <!-- ==================== 24. 交互样式族（UI 打磨） ==================== -->
@@ -1785,8 +1984,8 @@
 
     <Style x:Key="AlertDialogStyle" TargetType="Border">
         <Setter Property="Background" Value="{StaticResource CardBrush}"/>
-        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
-        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="BorderBrush" Value="{StaticResource ElevatedBorderBrush}"/>
+        <Setter Property="BorderThickness" Value="{StaticResource ElevatedBorderThickness}"/>
         <Setter Property="CornerRadius" Value="{StaticResource CornerXl}"/>
         <Setter Property="Padding" Value="20,16"/>
         <Setter Property="Effect" Value="{StaticResource ShadowLg}"/>

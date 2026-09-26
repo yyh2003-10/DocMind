@@ -118,6 +118,21 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
+    /// <summary>记住这条消息（UI 命令入口）。</summary>
+    [RelayCommand]
+    private Task RememberMessage(ChatMessage? message)
+        => message is null ? Task.CompletedTask : RememberMessageAsync(message);
+
+    /// <summary>为消息挂上反馈落库回调（点赞/点踩写 FeedbackService，不再只是本地布尔）。</summary>
+    private void AttachFeedbackSink(ChatMessage msg)
+    {
+        msg.FeedbackSink = async (m, isLike) =>
+        {
+            if (isLike) await ThumbsUpAsync(m);
+            else await ThumbsDownAsync(m);
+        };
+    }
+
     /// <summary>获取记忆统计信息（供 UI 展示）。</summary>
     public async Task<Models.MemoryStats?> GetMemoryStatsAsync()
     {

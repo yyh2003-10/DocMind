@@ -200,4 +200,21 @@ public class UserMemoryServiceTests : IDisposable
         Assert.Equal(0, stats.EntryCount);
         Assert.Equal(0, stats.UsedChars);
     }
+
+
+    [Fact]
+    public async Task DeleteByIdAsync_RemovesSingleEntry()
+    {
+        await _service.AddAsync("记忆A", "memory");
+        await _service.AddAsync("记忆B", "memory");
+        var all = await _service.GetAllAsync();
+        Assert.Equal(2, all.Count);
+        var target = all[0];
+        var removed = await _service.DeleteByIdAsync(target.Id);
+        Assert.True(removed);
+        var after = await _service.GetAllAsync();
+        Assert.Single(after);
+        Assert.Equal(all[1].Id, after[0].Id);
+    }
+
 }

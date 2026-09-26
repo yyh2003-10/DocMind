@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,8 +23,9 @@ os.environ.setdefault("DOC2MIND_DISABLE_AUTH", "1")
 @pytest.fixture()
 def client(tmp_path: Path):
     from fastapi.testclient import TestClient
-    from doc2mind.server.http import create_app
+
     from doc2mind.core.config import Settings
+    from doc2mind.server.http import create_app
 
     s = Settings()
     s.db_path = tmp_path / "foundation.db"
@@ -33,6 +36,7 @@ def client(tmp_path: Path):
         # ensure_open 用 settings
         with TestClient(app) as c:
             c.app_state_settings = s  # type: ignore[attr-defined]
+            c.test_app = app  # type: ignore[attr-defined]
             yield c
 
 
@@ -45,6 +49,30 @@ def test_config_exposes_agent_reserve_defaults(client):
     # 基础字段仍在
     for key in ("embed_model", "llm_provider", "rag_top_k", "llm_api_key_configured"):
         assert key in body
+
+
+def test_gpu_diagnosis_runs_outside_request_event_loop(client):
+    import httpx
+
+    diagnosis_thread: list[int] = []
+
+    def fake_diagnosis():
+        diagnosis_thread.append(threading.get_ident())
+        return {"gpu_available": False, "recommended_path": "cpu"}
+
+    async def request():
+        event_loop_thread = threading.get_ident()
+        transport = httpx.ASGITransport(app=client.test_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as async_client:
+            response = await async_client.get("/v1/system/gpu-diagnosis")
+        return response, event_loop_thread
+
+    with patch("doc2mind.core.system_env.get_gpu_diagnosis", side_effect=fake_diagnosis):
+        response, event_loop_thread = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert response.json()["recommended_path"] == "cpu"
+    assert diagnosis_thread and diagnosis_thread[0] != event_loop_thread
 
 
 def test_chat_request_camel_and_snake_fields():
@@ -96,6 +124,43 @@ def test_trash_restore_note_mentions_reingest(client):
     assert ("摄入" in note) or ("reindex" in note.lower()) or ("不存在" in note) or ("软删除" in note)
 
 
+def test_documents_endpoint_reports_dynamic_source_missing(client, tmp_path: Path):
+    from doc2mind.core.loader.base import make_source
+    from doc2mind.core.store.sqlite_vec import StoredDocument
+
+    present_path = tmp_path / "present.md"
+    present_path.write_text("present", encoding="utf-8")
+    missing_path = tmp_path / "missing.md"
+    store = client.app.state.doc2mind.ensure_open()
+    for doc_id, source in (
+        ("present", make_source(present_path)),
+        ("missing", make_source(missing_path)),
+        ("note", "note:manual entry"),
+    ):
+        store.upsert_document(
+            StoredDocument(
+                id=doc_id,
+                source=source,
+                collection="default",
+                format="md",
+                file_hash=f"hash-{doc_id}",
+                size_bytes=1,
+                page_count=None,
+                chunk_count=0,
+                created_at="2026-01-01T00:00:00+08:00",
+                updated_at="2026-01-01T00:00:00+08:00",
+            )
+        )
+
+    response = client.get("/v1/documents?page_size=100")
+
+    assert response.status_code == 200
+    missing_by_id = {
+        doc["id"]: doc["source_missing"] for doc in response.json()["documents"]
+    }
+    assert missing_by_id == {"present": False, "missing": True, "note": False}
+
+
 def test_agent_mode_fallback_when_disabled():
     """商用门禁：settings.agent_mode_enabled=False 时源码必须先判断 agent_allowed。"""
     http = Path(r"E:\DocMindY-worktrees\agent-p0\src\doc2mind\server\http.py").read_text(encoding="utf-8")
@@ -138,8 +203,9 @@ def test_search_request_and_empty_message_contract():
 
 
 def test_ingest_job_status_has_cancel_note_field():
-    from doc2mind.server.http import JobStatus
     from datetime import datetime, timezone
+
+    from doc2mind.server.http import JobStatus
 
     js = JobStatus(job_id="j1", type="ingest", status="cancelled", started_at=datetime.now(timezone.utc).isoformat())
     # pydantic 默认 cancel_note 可为 None

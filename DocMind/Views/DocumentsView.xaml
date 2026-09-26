@@ -10,13 +10,45 @@
 
     <Grid Margin="{StaticResource PageContentMargin}">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>   <!-- 工具条 (Row 0) -->
-            <RowDefinition Height="Auto"/>   <!-- 重建索引进度条 (Row 1) -->
-            <RowDefinition Height="*"/>      <!-- 列表 + 详情 (Row 2) -->
+            <RowDefinition Height="Auto"/>   <!-- 页首 (Row 0) -->
+            <RowDefinition Height="Auto"/>   <!-- 工具条 (Row 1) -->
+            <RowDefinition Height="Auto"/>   <!-- 重建索引进度条 (Row 2) -->
+            <RowDefinition Height="*"/>      <!-- 列表 + 详情 (Row 3) -->
         </Grid.RowDefinitions>
 
+        <!-- ===== 页首：标题 + 副文案 + 右侧主操作区 ===== -->
+        <Grid Grid.Row="0" Margin="0,0,0,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Style="{StaticResource PageHeaderTextAreaStyle}"
+                       HorizontalAlignment="Left" MaxWidth="520" VerticalAlignment="Center">
+                <TextBlock Text="文档库" Style="{StaticResource PageHeaderText}"/>
+                <TextBlock Text="浏览与管理已摄入的文档、分组与分块"
+                           Style="{StaticResource PageHeaderCaptionText}"
+                           ToolTip="浏览与管理已摄入的文档、分组与分块"
+                           TextTrimming="CharacterEllipsis"/>
+            </StackPanel>
+            <Button Grid.Column="1"
+                    Command="{Binding ReindexCommand}"
+                    Style="{StaticResource SecondaryButtonStyle}"
+                    VerticalAlignment="Center"
+                    Padding="12,6"
+                    MinHeight="36"
+                    ToolTip="使用当前配置的模型全量重新生成向量嵌入">
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="{StaticResource IconBolt}"
+                          Style="{StaticResource IconSmStyle}"
+                          Stroke="{DynamicResource PrimaryBrush}"
+                          Margin="0,0,8,0"/>
+                    <TextBlock Text="重建索引"/>
+                </StackPanel>
+            </Button>
+        </Grid>
+
         <!-- ===== 工具条 ===== -->
-        <Border Grid.Row="0" Style="{StaticResource ToolbarBorderStyle}" Padding="14,12">
+        <Border Grid.Row="1" Style="{StaticResource ToolbarBorderStyle}" Padding="14,12">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -38,11 +70,17 @@
                                Style="{StaticResource CaptionText}"
                                VerticalAlignment="Center"
                                Margin="0,0,8,0"/>
-                    <ComboBox Grid.Column="1"
-                              ItemsSource="{Binding AvailableCollections}"
-                              SelectedItem="{Binding Collection, Mode=TwoWay}"
-                              ToolTip="选择要查看与管理的知识库分组"
-                              Margin="0,0,12,0"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <ComboBox ItemsSource="{Binding AvailableCollections}"
+                                  SelectedItem="{Binding Collection, Mode=TwoWay}"
+                                  ToolTip="选择要查看与管理的知识库分组"
+                                  MinWidth="110" Margin="0,0,6,0"/>
+                        <Button Content="刷新"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Command="{Binding RefreshCollectionsCommand}"
+                                Padding="8,4" FontSize="{StaticResource FontSizeSmall}"
+                                ToolTip="重新拉取全部分组（含新建/导入产生的）"/>
+                    </StackPanel>
 
                     <TextBox Grid.Column="2"
                              Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}"
@@ -65,6 +103,20 @@
                             Padding="16,6"
                             MinHeight="36"/>
                 </Grid>
+                <!-- 新建分组 -->
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <TextBlock Text="新建分组:" Style="{StaticResource CaptionText}"
+                               VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBox Text="{Binding NewCollectionName, UpdateSourceTrigger=PropertyChanged}"
+                             Width="180" Padding="8,4"
+                             ToolTip="输入分组名后点击创建，例如 项目A / 教材"/>
+                    <Button Content="创建分组"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Command="{Binding CreateCollectionCommand}"
+                            Padding="12,4" Margin="8,0,0,0"/>
+                </StackPanel>
+
+
 
                 <!-- 第二行：批量操作 + 分页控制 -->
                 <Grid Grid.Row="1">
@@ -83,7 +135,7 @@
                                 Margin="0,0,8,0"
                                 ToolTip="使用当前配置的模型全量重新生成向量嵌入">
                             <StackPanel Orientation="Horizontal">
-                                <Path Data="{StaticResource IconBolt}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                <Path Data="{StaticResource IconBolt}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource PrimaryBrush}" Margin="0,0,6,0"/>
                                 <TextBlock Text="重建索引"/>
                             </StackPanel>
                         </Button>
@@ -93,7 +145,7 @@
                                 MinHeight="36"
                                 ToolTip="从知识库中删除当前选中的文档及其分块数据">
                             <StackPanel Orientation="Horizontal">
-                                <Path Data="{StaticResource IconTrash}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource DangerBrush}" Margin="0,0,6,0"/>
+                                <Path Data="{StaticResource IconTrash}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource DangerBrush}" Margin="0,0,6,0"/>
                                 <TextBlock Text="删除选中"/>
                             </StackPanel>
                         </Button>
@@ -104,7 +156,7 @@
                                 Margin="8,0,0,0"
                                 ToolTip="查看软删除的文档；恢复后需重新摄入/重建索引才能被检索">
                             <StackPanel Orientation="Horizontal">
-                                <Path Data="{StaticResource IconUndo}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                <Path Data="{StaticResource IconUndo}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource PrimaryBrush}" Margin="0,0,6,0"/>
                                 <TextBlock Text="回收站"/>
                             </StackPanel>
                         </Button>
@@ -128,17 +180,17 @@
                                 Padding="8,4"
                                 VerticalAlignment="Center"
                                 ToolTip="下一页">
-                            <Path Data="{StaticResource IconChevronRight}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource TextSecondaryBrush}"/>
+                            <Path Data="{StaticResource IconChevronRight}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextSecondaryBrush}"/>
                         </Button>
                     </StackPanel>
                 </Grid>
             </Grid>
         </Border>
 
-        <!-- ===== 重建索引进度条（忙碌时显示，独立 Row 1 防遮挡） ===== -->
-        <Border Grid.Row="1"
-                Background="{StaticResource SurfaceBrush}"
-                BorderBrush="{StaticResource BorderBrush}"
+        <!-- ===== 重建索引进度条（忙碌时显示，独立 Row 2 防遮挡） ===== -->
+        <Border Grid.Row="2"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
                 CornerRadius="{StaticResource CornerMd}"
                 Padding="12,8"
@@ -171,9 +223,9 @@
         </Border>
 
         <!-- ===== 回收站（软删除；恢复后需重摄入） ===== -->
-        <Border Grid.Row="1"
-                Background="{StaticResource SurfaceBrush}"
-                BorderBrush="{StaticResource BorderBrush}"
+        <Border Grid.Row="2"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
                 CornerRadius="{StaticResource CornerMd}"
                 Padding="12,8"
@@ -192,7 +244,7 @@
                 <Border Background="{DynamicResource WarningLightBrush}"
                         BorderBrush="{DynamicResource WarningBrush}"
                         BorderThickness="1"
-                        CornerRadius="6"
+                        CornerRadius="{StaticResource CornerSm}"
                         Padding="10,8"
                         Margin="0,6,0,6"
                         Visibility="{Binding ShowPurgeTrashConfirm, Converter={StaticResource BoolToVis}}">
@@ -202,10 +254,10 @@
                             <Button Content="确认清理" Command="{Binding ConfirmPurgeTrashCommand}" Style="{StaticResource DangerButtonStyle}" Padding="10,4"/>
                         </StackPanel>
                         <TextBlock Text="将物理删除 30 天前的回收站记录，且不可恢复。确定继续？"
-                                   FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                   FontSize="{StaticResource FontSizeCaption}" VerticalAlignment="Center" TextWrapping="Wrap"/>
                     </DockPanel>
                 </Border>
-                <TextBlock Text="{Binding TrashStatus}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,4,0,6"/>
+                <TextBlock Text="{Binding TrashStatus}" FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,4,0,6"/>
                 <ListBox ItemsSource="{Binding TrashItems}"
                          SelectedItem="{Binding SelectedTrashItem}"
                          MaxHeight="160"
@@ -218,9 +270,9 @@
                                     <ColumnDefinition Width="120"/>
                                     <ColumnDefinition Width="100"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="{Binding DisplaySource}" FontSize="12" TextTrimming="CharacterEllipsis"/>
-                                <TextBlock Grid.Column="1" Text="{Binding Collection}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
-                                <TextBlock Grid.Column="2" Text="{Binding DeletedAt}" FontSize="11" Foreground="{StaticResource TextTertiaryBrush}"/>
+                                <TextBlock Grid.Column="0" Text="{Binding DisplaySource}" FontSize="{StaticResource FontSizeCaption}" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Collection}" FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                <TextBlock Grid.Column="2" Text="{Binding DeletedAt}" FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextTertiaryBrush}"/>
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
@@ -228,8 +280,8 @@
             </StackPanel>
         </Border>
 
-        <!-- ===== 列表 + 详情 (Row 2) ===== -->
-        <Grid Grid.Row="2">
+        <!-- ===== 列表 + 详情 (Row 3) ===== -->
+        <Grid Grid.Row="3">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="1.6*"/>
                 <ColumnDefinition Width="12"/>
@@ -267,11 +319,20 @@
                                                 VerticalAlignment="Center">
                                             <TextBlock Text="{Binding Format, Mode=OneWay}"
                                                        Style="{StaticResource SmallText}"
-                                                       Foreground="{StaticResource PrimaryBrush}"/>
+                                                       Foreground="{DynamicResource PrimaryBrush}"/>
                                         </Border>
+                                        <TextBlock DockPanel.Dock="Right"
+                                                   Text="源文件缺失"
+                                                   Style="{StaticResource SmallText}"
+                                                   Foreground="{DynamicResource WarningBrush}"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,0,8,0"
+                                                   VerticalAlignment="Center"
+                                                   Visibility="{Binding SourceMissing, Converter={StaticResource BoolToVis}}"
+                                                   ToolTip="源文件当前不可访问；知识库中的索引内容仍保留。"/>
                                         <TextBlock Text="{Binding Source, Mode=OneWay}"
                                                    FontWeight="SemiBold"
-                                                   FontSize="13"
+                                                   FontSize="{StaticResource FontSizeBody}"
                                                    TextTrimming="CharacterEllipsis"/>
                                     </DockPanel>
 
@@ -299,15 +360,15 @@
                                 HorizontalAlignment="Center"
                                 Visibility="{Binding HasNoDocuments, Converter={StaticResource BoolToVis}}">
                         <Border Width="48" Height="48"
-                                Background="{StaticResource PrimaryLightBrush}"
+                                Background="{DynamicResource PrimaryLightBrush}"
                                 CornerRadius="{StaticResource CornerXl}"
                                 HorizontalAlignment="Center"
                                 Margin="0,0,0,12">
-                            <Path Data="{StaticResource IconFolder}" Style="{StaticResource IconSmStyle}" Width="22" Height="22" Stroke="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Path Data="{StaticResource IconFolder}" Style="{StaticResource IconSmStyle}" Width="22" Height="22" Stroke="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <TextBlock Text="暂无文档"
                                    Style="{StaticResource BodyText}"
-                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
                                    HorizontalAlignment="Center"/>
                         <TextBlock Text="请先在「导入」页摄入内容"
                                    Style="{StaticResource SmallText}"
@@ -335,19 +396,19 @@
                                        Margin="0,20,0,0"/>
 
                             <!-- 详情加载错误 -->
-                            <Border Background="{StaticResource DangerLightBrush}"
-                                    BorderBrush="{StaticResource DangerBrush}"
+                            <Border Background="{DynamicResource DangerLightBrush}"
+                                    BorderBrush="{DynamicResource DangerBrush}"
                                     BorderThickness="1"
-                                    CornerRadius="8"
+                                    CornerRadius="{StaticResource CornerMd}"
                                     Padding="12,10"
                                     Margin="0,0,0,8"
                                     Visibility="{Binding HasDetailError, Converter={StaticResource BoolToVis}}">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                                    <Path Data="{StaticResource IconWarning}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource WarningBrush}" Margin="0,0,6,0"/>
+                                    <Path Data="{StaticResource IconWarning}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource WarningBrush}" Margin="0,0,6,0"/>
                                     <TextBlock Text="详情加载失败"
                                                Style="{StaticResource CaptionText}"
-                                               Foreground="{StaticResource DangerBrush}"
+                                               Foreground="{DynamicResource DangerBrush}"
                                                FontWeight="SemiBold"/>
                                 </StackPanel>
                                     <TextBlock Text="{Binding DetailError, Mode=OneWay}"
@@ -362,6 +423,12 @@
                                            FontWeight="SemiBold"
                                            Style="{StaticResource BodyText}"
                                            TextWrapping="Wrap"/>
+                                <TextBlock Text="源文件当前不可访问；知识库中的索引内容仍保留。"
+                                           Style="{StaticResource SmallText}"
+                                           Foreground="{DynamicResource WarningBrush}"
+                                           Margin="0,4,0,0"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding Detail.Document.SourceMissing, Converter={StaticResource BoolToVis}}"/>
                                 <TextBlock Text="{Binding Detail.Document.Collection, Mode=OneWay, StringFormat=分组: {0}}"
                                            Style="{StaticResource SmallText}"
                                            Margin="0,4,0,0"/>
@@ -380,13 +447,13 @@
                                                VerticalAlignment="Center">
                                         <Run Text="分块预览 "/>
                                         <Run Text="{Binding ChunkInfoText, Mode=OneWay}"
-                                             Foreground="{StaticResource TextMutedBrush}"/>
+                                             Foreground="{DynamicResource TextMutedBrush}"/>
                                     </TextBlock>
                                     <Button Grid.Column="1"
                                             Content="加载更多分块"
                                             Command="{Binding LoadMoreChunksCommand}"
                                             Style="{StaticResource TextButtonStyle}"
-                                            FontSize="11"
+                                            FontSize="{StaticResource FontSizeSmall}"
                                             ToolTip="递增加载更多分块预览"
                                             Visibility="{Binding CanLoadMoreChunks, Converter={StaticResource BoolToVis}}"/>
                                 </Grid>
@@ -394,7 +461,7 @@
                                 <ItemsControl ItemsSource="{Binding Detail.ChunksPreview}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate DataType="{x:Type m:Chunk}">
-                                            <Border Background="{StaticResource SurfaceBrush}"
+                                            <Border Background="{DynamicResource SurfaceBrush}"
                                                     CornerRadius="{StaticResource CornerSm}"
                                                     Padding="10,8"
                                                     Margin="0,0,0,8">
@@ -419,7 +486,7 @@
                                                                 Command="{Binding DataContext.SearchChunkCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                                 CommandParameter="{Binding}"
                                                                 Style="{StaticResource TextButtonStyle}"
-                                                                FontSize="11"
+                                                                FontSize="{StaticResource FontSizeSmall}"
                                                                 ToolTip="跳转到搜索页定位该分块原文">
                                                             <StackPanel Orientation="Horizontal">
                                                                 <Path Data="{StaticResource IconSearch}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
@@ -477,7 +544,7 @@
                                                                 </Grid.ColumnDefinitions>
                                                                 <TextBox Grid.Column="0"
                                                                          Text="{Binding EditingAnnotation, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                         FontSize="11"
+                                                                         FontSize="{StaticResource FontSizeSmall}"
                                                                          Padding="6,4"
                                                                          MinHeight="28"
                                                                          ToolTip="输入批注后点击保存;留空保存=清除批注">
@@ -491,7 +558,7 @@
                                                                         Command="{Binding DataContext.SaveAnnotationCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                                         CommandParameter="{Binding}"
                                                                         Style="{StaticResource TextButtonStyle}"
-                                                                        FontSize="11"
+                                                                        FontSize="{StaticResource FontSizeSmall}"
                                                                         Padding="8,2"
                                                                         Margin="6,0,0,0"
                                                                         ToolTip="保存批注（留空=清除）">
@@ -503,7 +570,7 @@
                                                                 <Button Grid.Column="2"
                                                                         Command="{Binding DataContext.DeleteAnnotationCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                                         CommandParameter="{Binding}"
-                                                                        FontSize="11"
+                                                                        FontSize="{StaticResource FontSizeSmall}"
                                                                         Padding="8,2"
                                                                         Margin="4,0,0,0"
                                                                         ToolTip="删除此分块的批注">
@@ -518,7 +585,7 @@
                                                                         </Style>
                                                                     </Button.Style>
                                                                     <StackPanel Orientation="Horizontal">
-                                                                        <Path Data="{StaticResource IconTrash}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource DangerBrush}" Margin="0,0,6,0"/>
+                                                                        <Path Data="{StaticResource IconTrash}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource DangerBrush}" Margin="0,0,6,0"/>
                                                                         <TextBlock Text="删除"/>
                                                                     </StackPanel>
                                                                 </Button>

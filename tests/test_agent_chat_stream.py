@@ -7,6 +7,7 @@ from pathlib import Path
 
 from doc2mind.core.agent.runtime.chat_agent import (
     _planner_tools_to_calls,
+    _tool_hits_to_source_dicts,
     _tool_results_to_context_block,
     agent_answer_stream,
 )
@@ -26,6 +27,25 @@ def test_planner_tools_mapping():
     calls = _planner_tools_to_calls(_FakePlan(), "什么是GPT", 5)
     assert calls and calls[0].tool_id == "kb_search"
     assert calls[0].arguments["query"] == "什么是GPT"
+    # 默认未开联网：不应自动插入 web_search
+    assert all(c.tool_id != "web_search" for c in calls)
+
+
+def test_planner_tools_mapping_includes_web_search():
+    class _WebPlan(_FakePlan):
+        enabled_tools = ["knowledge_base", "web_search"]
+
+    calls = _planner_tools_to_calls(
+        _WebPlan(), "什么是挠度", 5, enable_web_search=True, web_search_mode="deep"
+    )
+    ids = [c.tool_id for c in calls]
+    assert "kb_search" in ids
+    assert "web_search" in ids
+    web = next(c for c in calls if c.tool_id == "web_search")
+    assert web.arguments["mode"] == "deep"
+    # 用户开关打开时，即使 planner 漏了 web_search 也必须补上
+    calls2 = _planner_tools_to_calls(_FakePlan(), "什么是挠度", 5, enable_web_search=True)
+    assert any(c.tool_id == "web_search" for c in calls2)
 
 
 def test_tool_results_context_block():
@@ -42,6 +62,43 @@ def test_tool_results_context_block():
     block = _tool_results_to_context_block(results)
     assert "a.md" in block
     assert "失败" in block
+
+
+def test_tool_results_context_block_web_and_sources():
+    results = [
+        ToolResult(
+            call_id="w1",
+            tool_id="web_search",
+            status=ToolStatus.OK,
+            summary="ok",
+            data={
+                "mode": "deep",
+                "results": [
+                    {
+                        "title": "挠度定义",
+                        "url": "https://example.com/d",
+                        "domain": "example.com",
+                        "content": "挠度是结构构件在外力下的线位移",
+                        "snippet": "挠度定义",
+                        "relevance_score": 0.8,
+                        "evidence_level": "交叉印证",
+                        "content_fetched": True,
+                    }
+                ],
+            },
+        ),
+    ]
+    block = _tool_results_to_context_block(results)
+    assert "实时联网检索" in block
+    assert "挠度" in block
+    assert "https://example.com/d" in block
+
+    class _Loop:
+        tool_results = results
+
+    sources = _tool_hits_to_source_dicts(_Loop())
+    assert sources and sources[0]["source_type"] == "web"
+    assert sources[0]["url"] == "https://example.com/d"
 
 
 class _FakeChunk:
@@ -162,6 +219,91 @@ def test_workspace_root_sanitizes_chat_id(tmp_path):
     # 必须落在 workspaces 下的消毒名
     assert evil.parent.name == "workspaces"
     assert ".." not in evil.name
+
+
+def test_agent_answer_stream_emits_web_search_when_enabled(tmp_path, monkeypatch):
+    """联网开启时 Agent 路径应规划并执行 web_search（对标多轮搜索短板补齐）。"""
+    import doc2mind.core.agent.runtime.chat_agent as ca
+    from doc2mind.core.config import Settings
+    from doc2mind.core.search import web_search as ws_mod
+
+    monkeypatch.setattr(ca, "Retriever", lambda store, embedder, reranker=None: _SimpleRetriever())
+    monkeypatch.setattr(ca, "plan_with_llm", lambda *a, **k: _FakePlan())
+
+    class _SimpleRetriever:
+        def search(self, q, collection=None, top_k=5):
+            return [_FakeHit("库内要点", "kb/a.md")], None
+
+    class _FakeWebService:
+        def set_searxng_bases(self, bases):
+            pass
+
+        def search(self, query, **kwargs):
+            class _R:
+                title = "Deflection of beams"
+                url = "https://example.com/beam"
+                snippet = "deflection definition"
+                content = "挠度是梁在外力下的竖向位移"
+                domain = "example.com"
+                source_name = "Web"
+                relevance_score = 0.85
+                evidence_level = "单一来源"
+                content_fetched = True
+                published_at = None
+                corroborated_by = 0
+
+            return [_R()]
+
+    monkeypatch.setattr(ws_mod, "get_web_search_service", lambda: _FakeWebService())
+
+    s = Settings()
+    try:
+        s.db_path = tmp_path / "doc2mind.db"
+    except Exception:
+        pass
+    for attr, val in (
+        ("llm_provider", "openai"),
+        ("llm_model", "fake-model"),
+        ("llm_max_tokens", 2048),
+        ("rag_top_k", 5),
+        ("agent_file_write_policy", "always_allow_workspace"),
+        ("agent_native_tool_calling", False),
+    ):
+        try:
+            setattr(s, attr, val)
+        except Exception:
+            pass
+
+    frames = list(
+        agent_answer_stream(
+            "什么是挠度",
+            collection="default",
+            top_k=3,
+            chat_id="chat-agent-web",
+            settings=s,
+            llm_client=_FakeLLM(),
+            store=object(),
+            embedder=object(),
+            enable_web_search=True,
+            web_search_mode="deep",
+        )
+    )
+    done = None
+    agent_plan = None
+    for line in frames:
+        obj = json.loads(line)
+        if obj.get("done"):
+            done = obj
+        if obj.get("type") == "agent_plan":
+            agent_plan = obj
+    assert agent_plan is not None
+    assert "web_search" in (agent_plan.get("planned_tools") or [])
+    assert agent_plan.get("web_search_mode") == "deep"
+    assert done is not None
+    assert "web_search" in (done.get("tools_used") or [])
+    web_srcs = [x for x in (done.get("sources") or []) if x.get("source_type") == "web"]
+    assert web_srcs
+    assert web_srcs[0].get("url", "").startswith("https://")
 
 
 def test_agent_mode_continue_preferred_over_rag():

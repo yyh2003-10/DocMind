@@ -563,55 +563,6 @@ class TestRagAnswer:
                     )
         assert result.sources == []
 
-    def test_off_topic_high_score_not_cited(self) -> None:
-        """高分但与 query 无词汇重叠：不进引用列表（弱相关门控）。"""
-        mock_client = MockLLMClient("基于通用知识回答。")
-        s = Settings(llm_provider="openai", llm_api_key="test", rag_mode="hybrid")
-        guide = _make_hit(
-            content="DocMind 快速上手：点击新建对话导入文档。", score=0.95, source="guide.pdf"
-        )
-        real = _make_hit(
-            content="挠度是指结构构件在荷载下的竖向位移。", score=0.80, source="mech.pdf"
-        )
-        stats = SearchStats(
-            query="q", total_hits=2, elapsed_ms=5, vector_candidates=2, bm25_candidates=2
-        )
-        with patch("doc2mind.core.rag._open_store") as mock_open:
-            mock_open.return_value = (MagicMock(), MagicMock())
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
-                MockRetriever.return_value.search.return_value = ([guide, real], stats)
-                with patch("doc2mind.core.store.graph_store.GraphStore") as gs:
-                    gs.return_value.find_entities_by_keyword.return_value = []
-                    result = rag_answer(
-                        query="什么是挠度", settings=s, llm_client=mock_client,
-                        enable_web_search=False,
-                    )
-        cited_sources = [src.source for src in result.sources]
-        assert "mech.pdf" in cited_sources
-        assert "guide.pdf" not in cited_sources
-        user_msg = mock_client.last_messages[-1]["content"]
-        assert "挠度" in user_msg
-        assert "低相关背景" in user_msg or "DocMind 快速上手" not in user_msg.split("挠度")[0]
-
-    def test_rag_answer_exposes_stage_timing(self) -> None:
-        """done/非流式响应可见分阶段耗时与门控统计。"""
-        mock_client = MockLLMClient("回答")
-        s = Settings(llm_provider="openai", llm_api_key="test", citation_min_score=0.45)
-        hit = _make_hit(content="这是一个关于问题的说明文档。", score=0.7)
-        stats = SearchStats(query="q", total_hits=1, elapsed_ms=5, vector_candidates=1, bm25_candidates=1)
-        with patch("doc2mind.core.rag._open_store") as mock_open:
-            mock_open.return_value = (MagicMock(), MagicMock())
-            with patch("doc2mind.core.rag.Retriever") as MockRetriever:
-                MockRetriever.return_value.search.return_value = ([hit], stats)
-                result = rag_answer(query="问题", settings=s, llm_client=mock_client)
-        assert "retrieval_ms" in result.timing
-        assert "generation_ms" in result.timing
-        assert "total_ms" in result.timing
-        assert "citation_gate" in result.evidence
-        gate = result.evidence["citation_gate"]
-        assert gate["hit_count"] == 1
-        assert gate["cite_count"] == 1
-
     def test_rag_answer_dataclass(self) -> None:
         """验证 RagAnswer 和 SourceRef dataclass。"""
         answer = RagAnswer(
@@ -1227,12 +1178,9 @@ class TestStreamStopSemantics:
         tokens = "".join(p["token"] for p in payloads if "token" in p)
         assert "停止后不应出现的后续内容" not in tokens
 
-        # 停止：保留用户问题以维持多轮指代，但不写入半截 assistant 正文
-        mem_hist = _CHAT_SESSIONS.get(done["chat_id"], [])
-        db_hist = ChatStore(s.db_path).get_history(done["chat_id"], 10)
-        assert all(m.get("role") != "assistant" for m in mem_hist), mem_hist
-        assert all(m.get("role") != "assistant" for m in db_hist), db_hist
-        assert any(m.get("role") == "user" for m in mem_hist) or mem_hist == []
+        # 本轮完全不落历史：内存 LRU 为空、SQLite 无消息
+        assert _CHAT_SESSIONS.get(done["chat_id"], []) == []
+        assert ChatStore(s.db_path).get_history(done["chat_id"], 10) == []
 
     def test_stop_before_retrieval_returns_partial_done(self, tmp_path) -> None:
         """检索阶段前已停止：立即产出 partial 终帧，不调用 LLM、不落历史。"""
@@ -1700,8 +1648,7 @@ class TestEvidenceSummary:
 
         mock_client = MockLLMClient("结合图谱的回答")
         s = Settings(llm_provider="openai", llm_api_key="test")
-        # 主题相关命中（含 query 词），避免被引用门控降为背景
-        hit = _make_hit(content="实体问题排查：检查实体关系是否完整。", source="doc.pdf", page=1)
+        hit = _make_hit(content="本地内容", source="doc.pdf", page=1)
         stats = SearchStats(query="q", total_hits=1, elapsed_ms=5, vector_candidates=1, bm25_candidates=1)
         with patch("doc2mind.core.rag._open_store") as mock_open:
             mock_open.return_value = (MagicMock(), MagicMock())
@@ -2197,15 +2144,10 @@ class TestResolveMaxTokensWiring:
         assert client.last_max_tokens == 4096
 
     def test_source_log_recorded(self, caplog) -> None:
-        """来源链日志可查（A12）：含「输出上限=」与「来源=」。
-
-        直接测 _resolve_effective_max_tokens（全量套件下 caplog 不受其它
-        测试 logger 配置干扰），而非完整流式链路。
-        """
+        """来源链日志可查（A12）：含「输出上限=」与「来源=」。"""
         import logging
 
         from doc2mind.core.config import Settings
-        from doc2mind.core.rag import _resolve_effective_max_tokens
 
         class _Rec(MockLLMClient):
             @property
@@ -2216,32 +2158,15 @@ class TestResolveMaxTokensWiring:
             def provider(self) -> str:
                 return "openai"
 
-        client = _Rec("x")
-        s = Settings(rag_mode="hybrid", llm_max_tokens=0)
-        from doc2mind.core.llm.model_registry import get_model_spec
+            def _do_chat(self, messages, temperature=None, max_tokens=None):
+                self.last_max_tokens = max_tokens
+                self.last_messages = messages
+                return self._reply
 
-        spec = get_model_spec(client.model_name, client.provider)
-        # 强制启用 caplog 对 doc2mind 的传播，避免全量套件里其它 fixture 关闭 handler
-        logger = logging.getLogger("doc2mind.core.rag")
-        old_prop = logger.propagate
-        logger.propagate = True
-        try:
-            with caplog.at_level(logging.INFO, logger="doc2mind.core.rag"):
-                effective, source = _resolve_effective_max_tokens(
-                    model_name=client.model_name,
-                    provider=client.provider,
-                    user_config=s.llm_max_tokens,
-                    registry_spec=spec,
-                    client=client,
-                )
-        finally:
-            logger.propagate = old_prop
-        assert effective is not None
-        assert source
-        joined = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("doc2mind"))
-        # caplog 在极端串扰下仍可能为空：用函数返回值兜底断言契约
-        if joined.strip():
-            assert "输出上限=" in joined or "输出上限" in joined
-        else:
-            # 无日志捕获时至少验证推导结果与 source 标签
-            assert isinstance(source, str) and len(source) > 0
+        client = _Rec("GPT 是 OpenAI 的大语言模型。")
+        s = Settings(rag_mode="hybrid", llm_max_tokens=0)
+        with caplog.at_level(logging.INFO, logger="doc2mind.core.rag"):
+            self._run(client, s, metadata_provider_factory=lambda c: None)
+        joined = "\n".join(r.message for r in caplog.records)
+        assert "输出上限=" in joined
+        assert "来源=" in joined

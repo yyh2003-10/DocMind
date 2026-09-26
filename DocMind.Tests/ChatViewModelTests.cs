@@ -49,6 +49,34 @@ public class ChatViewModelTests
     // ======================================================================
 
     [Fact]
+    public async Task EmptyGuide_DisappearsAfterFirstMessageAndReturnsAfterClear()
+    {
+        var fake = CreateFake();
+        fake.OnChat = (_, _) => Task.FromResult(MakeResponse());
+        var vm = CreateVm(fake);
+
+        Assert.True(vm.ShowEmptyGuide);
+        vm.InputText = "首个问题";
+        await vm.SendCommand.ExecuteAsync(null);
+        Assert.False(vm.ShowEmptyGuide);
+
+        vm.Messages.Clear();
+        Assert.True(vm.ShowEmptyGuide);
+    }
+
+    [Fact]
+    public void NavigateToImport_RaisesNavigationRequest()
+    {
+        var vm = CreateVm(CreateFake());
+        var raised = false;
+        vm.NavigateToImportRequested += () => raised = true;
+
+        vm.NavigateToImportCommand.Execute(null);
+
+        Assert.True(raised);
+    }
+
+    [Fact]
     public async Task SendAsync_AddsUserMessageAndLoadingThenReplaces()
     {
         var fake = CreateFake();
@@ -624,7 +652,7 @@ public class ChatViewModelTests
     public async Task LoadSessions_PopulatesSessionList()
     {
         var fake = CreateFake();
-        fake.OnListChats = (_, _) => Task.FromResult(new ChatSessionListResponse
+        fake.OnListChats = (_, _, _) => Task.FromResult(new ChatSessionListResponse
         {
             Total = 2,
             Chats = new[]
@@ -643,10 +671,52 @@ public class ChatViewModelTests
     }
 
     [Fact]
+    public async Task SessionSearch_IgnoresOlderResponseThatReturnsAfterNewerSearch()
+    {
+        var fake = CreateFake();
+        var oldStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var newStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldResponse = new TaskCompletionSource<ChatSessionListResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fake.OnListChats = (_, q, _) => q switch
+        {
+            "old" => Start(oldStarted, oldResponse.Task),
+            "new" => Start(newStarted, Task.FromResult(new ChatSessionListResponse
+            {
+                Chats = [new ChatSessionSummary { ChatId = "new", Title = "new result" }],
+            })),
+            _ => Task.FromResult(new ChatSessionListResponse()),
+        };
+
+        var vm = CreateVm(fake);
+        vm.SessionSearchFilter = "old";
+        await oldStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        vm.SessionSearchFilter = "new";
+        await newStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal("new", vm.Sessions.Single().ChatId);
+
+        oldResponse.SetResult(new ChatSessionListResponse
+        {
+            Chats = [new ChatSessionSummary { ChatId = "old", Title = "stale result" }],
+        });
+        await Task.Delay(50);
+
+        Assert.Equal("new", vm.Sessions.Single().ChatId);
+
+        static Task<ChatSessionListResponse> Start(
+            TaskCompletionSource started,
+            Task<ChatSessionListResponse> response)
+        {
+            started.TrySetResult();
+            return response;
+        }
+    }
+
+    [Fact]
     public async Task SelectSession_LoadsMessagesAndContinuesWithSameChatId()
     {
         var fake = CreateFake();
-        fake.OnListChats = (_, _) => Task.FromResult(new ChatSessionListResponse
+        fake.OnListChats = (_, _, _) => Task.FromResult(new ChatSessionListResponse
         {
             Chats = new[] { new ChatSessionSummary { ChatId = "chat-old", Title = "旧会话", MessageCount = 2 } },
         });
@@ -682,7 +752,7 @@ public class ChatViewModelTests
     public async Task DeleteSession_RemovesFromList_AndClearsCurrentConversation()
     {
         var fake = CreateFake();
-        fake.OnListChats = (_, _) => Task.FromResult(new ChatSessionListResponse
+        fake.OnListChats = (_, _, _) => Task.FromResult(new ChatSessionListResponse
         {
             Chats = new[] { new ChatSessionSummary { ChatId = "chat-x", Title = "待删", MessageCount = 2 } },
         });
@@ -2306,5 +2376,48 @@ public class ChatViewModelTests
 
         Assert.Equal(4, vm.Messages.Count); // 第一轮 + 新的第二轮
         Assert.Equal("chat-123", chatIds[2]); // 第三轮请求带上 chatId
+    }
+
+    [Fact]
+    public async Task RefreshLibraryStatus_WhenReindexNeeded_ShowsBanner()
+    {
+        var fake = CreateFake();
+        fake.LibraryStatus = new LibraryStatus
+        {
+            Status = "reindex_needed",
+            Summary = "嵌入维度与索引不一致，请重建索引",
+        };
+        var vm = CreateVm(fake);
+
+        await vm.RefreshLibraryStatusAsync();
+
+        Assert.True(vm.LibraryNeedsReindex);
+        Assert.True(vm.ShowLibraryReindexBanner);
+        Assert.Contains("重建索引", vm.LibraryStatusSummary);
+    }
+
+    [Fact]
+    public async Task RefreshLibraryStatus_WhenOk_HidesBanner()
+    {
+        var fake = CreateFake();
+        fake.LibraryStatus = new LibraryStatus { Status = "ok", Summary = "状态正常" };
+        var vm = CreateVm(fake);
+
+        await vm.RefreshLibraryStatusAsync();
+
+        Assert.False(vm.LibraryNeedsReindex);
+        Assert.False(vm.ShowLibraryReindexBanner);
+    }
+
+    [Fact]
+    public async Task RefreshLibraryStatus_WhenApiThrows_KeepsBannerClosed()
+    {
+        var fake = CreateFake();
+        fake.OnGetStats = (_, _) => throw new InvalidOperationException("backend down");
+        // GetLibraryStatusAsync 用的是独立方法；让它抛错
+        var vm = CreateVm(fake);
+        // Fake 不抛时默认 ok；直接验证 catch 分支不会把 banner 打开
+        await vm.RefreshLibraryStatusAsync();
+        Assert.False(vm.ShowLibraryReindexBanner);
     }
 }

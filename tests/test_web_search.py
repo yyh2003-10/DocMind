@@ -3,12 +3,48 @@
 from __future__ import annotations
 
 import json
-import os
+import sys
+from types import ModuleType
 
 from doc2mind.core.search.web_search import WebSearchResult, WebSearchService
 
 
 class TestFreeChannels:
+    def test_ddgs_uses_query_locale_and_latest_time_filter(self, monkeypatch) -> None:
+        calls: list[tuple[str, dict]] = []
+
+        class FakeDDGS:
+            def __init__(self, timeout):
+                self.timeout = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def text(self, query, **kwargs):
+                calls.append((query, kwargs))
+                return [{
+                    "title": "GPT guide",
+                    "href": "https://example.com/gpt",
+                    "body": "GPT architecture guide",
+                }]
+
+        ddgs_module = ModuleType("ddgs")
+        ddgs_module.DDGS = FakeDDGS
+        monkeypatch.setitem(sys.modules, "ddgs", ddgs_module)
+        service = WebSearchService(fetch_pages=False)
+
+        assert service._search_ddgs("GPT architecture", 4)
+        assert service._search_ddgs("最新 GPT 架构", 4)
+        assert calls[0][1] == {"max_results": 4, "region": "us-en"}
+        assert calls[1][1] == {
+            "max_results": 4,
+            "region": "cn-zh",
+            "timelimit": "m",
+        }
+
     def test_searxng_parses_json_results(self) -> None:
         service = WebSearchService(fetch_pages=False)
         payload = {
@@ -106,6 +142,16 @@ class TestNormalizeSearchUrl:
 
 
 class TestWebSearchQuality:
+    def test_long_cjk_entity_is_not_truncated_in_query_variants(self) -> None:
+        service = WebSearchService(fetch_pages=False)
+
+        variants = service._query_variants("弹性模量是什么", "弹性模量是什么")
+
+        assert "弹性是什么意思" not in variants
+        assert "弹性工作原理" not in variants
+        assert "弹性计算公式" not in variants
+        assert "弹性模量" in variants
+
     def test_query_variants_prioritize_official_and_manual_sources(self) -> None:
         service = WebSearchService(fetch_pages=False)
         variants = service._query_variants(
@@ -401,6 +447,50 @@ class TestWebSearchQuality:
             "360Search",
         )
         assert service._quality_raw_count([good, junk, junk]) == 1
+
+    def test_early_stop_requires_relevant_unique_cross_source_results(self) -> None:
+        service = WebSearchService(fetch_pages=False)
+
+        def candidate(index: int, source: str) -> WebSearchResult:
+            return WebSearchResult(
+                title=f"GPT Transformer guide {index}",
+                url=f"https://source{index}.example/gpt/{index}",
+                snippet="GPT Transformer architecture overview",
+                source_name=source,
+            )
+
+        one_source = [candidate(i, "Bing") for i in range(8)]
+        assert not service._should_stop_search_early(one_source, "GPT Transformer")
+
+        duplicate_urls = [candidate(i, ("Bing", "Baidu", "SearXNG")[i % 3]) for i in range(4)]
+        assert not service._should_stop_search_early(
+            duplicate_urls + duplicate_urls, "GPT Transformer"
+        )
+
+        distractors = [
+            WebSearchResult(
+                title=f"Unrelated cooking guide {i}",
+                url=f"https://distractor{i}.example/page",
+                snippet="Recipes and kitchen tips",
+                source_name=("Bing", "Baidu", "SearXNG")[i % 3],
+            )
+            for i in range(8)
+        ]
+        assert not service._should_stop_search_early(distractors, "GPT Transformer")
+
+        diverse = [candidate(i, ("Bing", "Baidu", "SearXNG")[i % 3]) for i in range(8)]
+        assert service._should_stop_search_early(diverse, "GPT Transformer")
+
+        modifier_only = [
+            WebSearchResult(
+                title=f"主动式控制方案 {i}",
+                url=f"https://modifier{i}.example/page",
+                snippet="主动式控制系统的设计与应用",
+                source_name=("Bing", "Baidu", "SearXNG")[i % 3],
+            )
+            for i in range(8)
+        ]
+        assert not service._should_stop_search_early(modifier_only, "主动式动平衡机")
 
     def test_search_drops_360_aggregate_pages_keeps_real(self) -> None:
         service = WebSearchService(fetch_pages=False)

@@ -13,6 +13,8 @@
 
     <Grid Margin="{StaticResource PageContentMargin}">
         <Grid.RowDefinitions>
+            <!-- 页首 -->
+            <RowDefinition Height="Auto"/>
             <!-- 路径选择 + 拖拽区域 -->
             <RowDefinition Height="Auto"/>
             <!-- 选中项信息 + 预览 -->
@@ -23,8 +25,38 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
+        <!-- ===== 页首：标题 + 副文案 + 右侧主操作区 ===== -->
+        <Grid Grid.Row="0" Margin="0,0,0,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Style="{StaticResource PageHeaderTextAreaStyle}"
+                       HorizontalAlignment="Left" MaxWidth="520" VerticalAlignment="Center">
+                <TextBlock Text="导入文档" Style="{StaticResource PageHeaderText}"/>
+                <TextBlock Text="本地离线解析、切片与向量嵌入，支持拖拽文件或目录"
+                           Style="{StaticResource PageHeaderCaptionText}"
+                           ToolTip="本地离线解析、切片与向量嵌入，支持拖拽文件或目录"
+                           TextTrimming="CharacterEllipsis"/>
+            </StackPanel>
+            <Button Grid.Column="1"
+                    Command="{Binding ImportCommand}"
+                    Style="{StaticResource PrimaryButtonStyle}"
+                    VerticalAlignment="Center"
+                    Padding="20,6"
+                    MinHeight="36"
+                    ToolTip="开始导入（Ctrl+I）">
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="{StaticResource IconUpload}"
+                          Style="{StaticResource IconSmStyle}"
+                          Margin="0,0,8,0"/>
+                    <TextBlock Text="开始导入"/>
+                </StackPanel>
+            </Button>
+        </Grid>
+
         <!-- ===== 路径选择卡片 ===== -->
-        <Border Grid.Row="0" Style="{StaticResource ToolbarBorderStyle}">
+        <Border Grid.Row="1" Style="{StaticResource ToolbarBorderStyle}">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -66,7 +98,7 @@
                                Margin="0,0,8,0"/>
 
                     <Grid Grid.Column="3">
-                        <!-- 下拉选择已有知识库集合（含「＋ 新建分组…」哨兵项） -->
+                        <!-- 下拉选择已有知识库分组（含「＋ 新建分组…」哨兵项） -->
                         <ComboBox ItemsSource="{Binding AvailableCollections}"
                                   SelectedItem="{Binding SelectedCollectionItem, UpdateSourceTrigger=PropertyChanged}"
                                   Visibility="{Binding IsCreatingCollection, Converter={StaticResource InvertBoolVis}}"
@@ -88,7 +120,7 @@
                                     MinHeight="36"
                                     Margin="4,0,0,0"
                                     ToolTip="确认新建该分组">
-                                <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource SuccessBrush}"/>
+                                <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource SuccessBrush}"/>
                             </Button>
                             <Button Command="{Binding CancelCreateCollectionCommand}"
                                     Style="{StaticResource TextButtonStyle}"
@@ -125,15 +157,8 @@
                               Margin="0,0,16,0"
                               VerticalAlignment="Center"/>
 
-                    <!-- 右侧操作按钮组 -->
+                    <!-- 右侧操作按钮组（主操作「开始导入」已上移至页首右侧） -->
                     <StackPanel Grid.Column="3" Orientation="Horizontal">
-                        <Button Content="开始导入"
-                                Command="{Binding ImportCommand}"
-                                Style="{StaticResource PrimaryButtonStyle}"
-                                Padding="20,6"
-                                MinHeight="36"
-                                Margin="0,0,8,0"/>
-
                         <Button Content="取消"
                                 Command="{Binding CancelImportCommand}"
                                 Style="{StaticResource DangerButtonStyle}"
@@ -152,12 +177,12 @@
         </Border>
 
         <!-- ===== 选中项信息 + 预览（选择/拖拽后显示） ===== -->
-        <Border Grid.Row="1"
+        <Border Grid.Row="2"
                 Visibility="{Binding HasSelectedPath, Converter={StaticResource BoolToVis}}"
-                Background="{StaticResource SurfaceBrush}"
-                BorderBrush="{StaticResource BorderBrush}"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="8"
+                CornerRadius="{StaticResource CornerMd}"
                 Padding="16,10"
                 Margin="0,0,0,12">
             <StackPanel>
@@ -167,7 +192,7 @@
                            TextTrimming="CharacterEllipsis"/>
                 <TextBlock Text="{Binding SelectedPathPreview, Mode=OneWay}"
                            Style="{StaticResource CaptionText}"
-                           Foreground="{StaticResource TextMutedBrush}"
+                           Foreground="{DynamicResource TextMutedBrush}"
                            TextWrapping="Wrap"
                            MaxHeight="96"
                            Margin="0,6,0,0"/>
@@ -175,9 +200,9 @@
         </Border>
 
         <!-- ===== 进度条 ===== -->
-        <Border Grid.Row="2"
-                Background="{StaticResource SurfaceBrush}"
-                CornerRadius="8"
+        <Border Grid.Row="3"
+                Background="{DynamicResource SurfaceBrush}"
+                CornerRadius="{StaticResource CornerMd}"
                 Padding="12,8"
                 Margin="0,0,0,12">
             <Grid>
@@ -200,11 +225,11 @@
 
         <!-- 空态拖拽引导（IsBusy=False 且 HasResults=False 时显示） -->
         <Border x:Name="DropZone"
-                Grid.Row="3"
-                BorderBrush="{StaticResource BorderBrush}"
+                Grid.Row="4"
+                BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="2"
-                CornerRadius="12"
-                Background="{StaticResource SurfaceBrush}"
+                CornerRadius="{StaticResource CornerLg}"
+                Background="{DynamicResource SurfaceBrush}"
                 DragEnter="DropZone_DragEnter"
                 DragLeave="DropZone_DragLeave"
                 Drop="View_Drop">
@@ -224,11 +249,11 @@
             </Border.Style>
             <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                 <Border Width="64" Height="64"
-                        Background="{StaticResource PrimaryLightBrush}"
+                        Background="{DynamicResource PrimaryLightBrush}"
                         CornerRadius="{StaticResource CornerPill}"
                         HorizontalAlignment="Center"
                         Margin="0,0,0,12">
-                    <Path Data="{StaticResource IconUpload}" Style="{StaticResource IconSmStyle}" Width="28" Height="28" Stroke="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <Path Data="{StaticResource IconUpload}" Style="{StaticResource IconSmStyle}" Width="28" Height="28" Stroke="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
                 <TextBlock Text="拖拽文件或文件夹到此处"
                            Style="{StaticResource SubtitleText}"
@@ -241,11 +266,11 @@
         </Border>
 
         <!-- ===== 正在导入中动态看板（IsBusy=True 时显示，彻底消除白屏与空态误导） ===== -->
-        <Border Grid.Row="3"
-                BorderBrush="{StaticResource BorderBrush}"
+        <Border Grid.Row="4"
+                BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="12"
-                Background="{StaticResource CardBrush}"
+                CornerRadius="{StaticResource CornerLg}"
+                Background="{DynamicResource CardBrush}"
                 Padding="32,24">
             <Border.Style>
                 <Style TargetType="Border">
@@ -269,14 +294,14 @@
                 <!-- 动态标题与处理步骤 -->
                 <StackPanel Grid.Row="0" HorizontalAlignment="Center" Margin="0,0,0,16">
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                        <Path Data="{StaticResource IconBolt}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource PrimaryBrush}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <Path Data="{StaticResource IconBolt}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource PrimaryBrush}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="正在执行知识库导入与本地索引…"
-                                   FontSize="18" FontWeight="SemiBold"
-                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                                   FontSize="{StaticResource FontSizeTitle}" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
                     </StackPanel>
                     <TextBlock Text="{Binding CurrentProcessingItem, Mode=OneWay}"
                                Style="{StaticResource BodyText}"
-                               Foreground="{StaticResource PrimaryBrush}"
+                               Foreground="{DynamicResource PrimaryBrush}"
                                HorizontalAlignment="Center"
                                TextTrimming="CharacterEllipsis"
                                Margin="0,8,0,0"/>
@@ -297,7 +322,7 @@
                                Text="{Binding ProgressPercent, Mode=OneWay, StringFormat={}{0}%}"
                                Style="{StaticResource SubtitleText}"
                                FontWeight="Bold"
-                               Foreground="{StaticResource PrimaryBrush}"
+                               Foreground="{DynamicResource PrimaryBrush}"
                                Margin="16,0,0,0"
                                VerticalAlignment="Center"/>
                 </Grid>
@@ -306,11 +331,11 @@
                 <DockPanel Grid.Row="2" Margin="0,0,0,20">
                     <TextBlock Text="{Binding ElapsedTimeText, Mode=OneWay}"
                                Style="{StaticResource CaptionText}"
-                               Foreground="{StaticResource TextMutedBrush}"
+                               Foreground="{DynamicResource TextMutedBrush}"
                                DockPanel.Dock="Left"/>
                     <TextBlock Text="{Binding StatusMessage, Mode=OneWay}"
                                Style="{StaticResource CaptionText}"
-                               Foreground="{StaticResource TextSecondaryBrush}"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
                                HorizontalAlignment="Right"
                                DockPanel.Dock="Right"/>
                 </DockPanel>
@@ -331,20 +356,20 @@
                 <TextBlock Grid.Row="4"
                            Text="提示：文档解析、切片与 ONNX 向量嵌入均在本地离线计算，请稍候…"
                            Style="{StaticResource SmallText}"
-                           Foreground="{StaticResource TextMutedBrush}"
+                           Foreground="{DynamicResource TextMutedBrush}"
                            HorizontalAlignment="Center"/>
             </Grid>
         </Border>
 
         <!-- 结果区：健康摘要 + 三栏列表 -->
-        <DockPanel Grid.Row="3">
+        <DockPanel Grid.Row="4">
         <!-- 导入健康摘要（完成后，顶部） -->
         <Border DockPanel.Dock="Top"
                 Visibility="{Binding HasHealthSummary, Converter={StaticResource BoolToVis}}"
-                Background="{StaticResource CardBrush}"
-                BorderBrush="{StaticResource BorderBrush}"
+                Background="{DynamicResource CardBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="12"
+                CornerRadius="{StaticResource CornerLg}"
                 Padding="14,12"
                 Margin="0,0,0,12">
             <StackPanel>
@@ -354,7 +379,7 @@
                                DockPanel.Dock="Left"/>
                     <TextBlock Text="{Binding HealthSummaryText, Mode=OneWay}"
                                Style="{StaticResource CaptionText}"
-                               Foreground="{StaticResource TextSecondaryBrush}"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
                                TextWrapping="Wrap"
                                HorizontalAlignment="Right"/>
                 </DockPanel>
@@ -410,14 +435,14 @@
             <!-- 导入成功 -->
             <DockPanel Grid.Column="0" Margin="0,0,6,0">
                 <Border DockPanel.Dock="Top"
-                        Background="{StaticResource SuccessLightBrush}"
-                        CornerRadius="8"
+                        Background="{DynamicResource SuccessLightBrush}"
+                        CornerRadius="{StaticResource CornerMd}"
                         Padding="12,8"
                         Margin="0,0,0,8">
                     <StackPanel Orientation="Horizontal">
-                        <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource SuccessBrush}" Margin="0,0,8,0"/>
+                        <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource SuccessBrush}" Margin="0,0,8,0"/>
                         <TextBlock Style="{StaticResource SubtitleText}"
-                                   Foreground="{StaticResource SuccessBrush}">
+                                   Foreground="{DynamicResource SuccessBrush}">
                             <Run Text="导入成功 ("/>
                             <Run Text="{Binding Results.Count, Mode=OneWay}"/>
                             <Run Text=")"/>
@@ -443,19 +468,19 @@
                                         <Run Text="size "/><Run Text="{Binding SizeBytes, Mode=OneWay, StringFormat={}{0:N0} B}"/>
                                     </TextBlock>
                                     <TextBlock Style="{StaticResource SmallText}" Margin="12,0,0,0"
-                                               Foreground="{StaticResource TextMutedBrush}">
+                                               Foreground="{DynamicResource TextMutedBrush}">
                                         <Run Text="{Binding Format, Mode=OneWay}"/>
                                     </TextBlock>
                                 </StackPanel>
-                                <!-- AI 自动整理结果（tags / summary / 归类集合） -->
+                                            <!-- AI 自动整理结果（tags / summary / 归类分组） -->
                                 <StackPanel Margin="0,6,0,0" Visibility="{Binding HasCuration, Converter={StaticResource BoolToVisConverter}}">
-                                    <Border Background="{StaticResource PrimaryLightBrush}"
+                                    <Border Background="{DynamicResource PrimaryLightBrush}"
                                             CornerRadius="{StaticResource CornerMd}" Padding="8,6" Margin="0,0,0,4">
                                         <StackPanel>
                                             <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
-                                                <Path Data="{StaticResource IconAi}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                                <Path Data="{StaticResource IconAi}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource PrimaryBrush}" Margin="0,0,6,0"/>
                                                 <TextBlock Text="AI 整理" Style="{StaticResource SmallText}" FontWeight="SemiBold"
-                                                           Foreground="{StaticResource PrimaryBrush}"/>
+                                                           Foreground="{DynamicResource PrimaryBrush}"/>
                                             </StackPanel>
                                             <!-- 标签 -->
                                             <ItemsControl ItemsSource="{Binding CurationTags}" Margin="0,0,0,4">
@@ -466,19 +491,19 @@
                                                 </ItemsControl.ItemsPanel>
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate>
-                                                        <Border Background="{StaticResource SurfaceBrush}"
-                                                                CornerRadius="4" Padding="6,2" Margin="0,0,4,2">
+                                                        <Border Background="{DynamicResource SurfaceBrush}"
+                                                                CornerRadius="{StaticResource CornerSm}" Padding="6,2" Margin="0,0,4,2">
                                                             <TextBlock Text="{Binding}" Style="{StaticResource SmallText}"
-                                                                       Foreground="{StaticResource TextSecondaryBrush}"/>
+                                                                       Foreground="{DynamicResource TextSecondaryBrush}"/>
                                                         </Border>
                                                     </DataTemplate>
                                                 </ItemsControl.ItemTemplate>
                                             </ItemsControl>
                                             <!-- 摘要 -->
                                             <TextBlock Text="{Binding CurationSummary}" Style="{StaticResource SmallText}"
-                                                       TextWrapping="Wrap" Foreground="{StaticResource TextSecondaryBrush}"
+                                                       TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}"
                                                        Visibility="{Binding CurationSummary, Converter={StaticResource StringToVis}}"/>
-                                            <!-- 归类集合 -->
+                                            <!-- 归类分组 -->
                                             <TextBlock Style="{StaticResource SmallText}" Margin="0,2,0,0"
                                                        Visibility="{Binding CurationCollection, Converter={StaticResource StringToVis}}">
                                                 <Run Text="归类到: "/><Run Text="{Binding CurationCollection}" FontWeight="SemiBold"/>
@@ -495,8 +520,8 @@
             <!-- 跳过 -->
             <DockPanel Grid.Column="1" Margin="6,0,6,0">
                 <Border DockPanel.Dock="Top"
-                        Background="{StaticResource SurfaceBrush}"
-                        CornerRadius="8"
+                        Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="{StaticResource CornerMd}"
                         Padding="12,8"
                         Margin="0,0,0,8">
                     <StackPanel Orientation="Horizontal">
@@ -527,14 +552,14 @@
             <!-- 失败 -->
             <DockPanel Grid.Column="2" Margin="6,0,0,0">
                 <Border DockPanel.Dock="Top"
-                        Background="{StaticResource DangerLightBrush}"
-                        CornerRadius="8"
+                        Background="{DynamicResource DangerLightBrush}"
+                        CornerRadius="{StaticResource CornerMd}"
                         Padding="12,8"
                         Margin="0,0,0,8">
                     <StackPanel Orientation="Horizontal">
-                        <Path Data="{StaticResource IconCross}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource DangerBrush}" Margin="0,0,8,0"/>
+                        <Path Data="{StaticResource IconCross}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource DangerBrush}" Margin="0,0,8,0"/>
                         <TextBlock Style="{StaticResource SubtitleText}"
-                                   Foreground="{StaticResource DangerBrush}">
+                                   Foreground="{DynamicResource DangerBrush}">
                             <Run Text="失败 ("/>
                             <Run Text="{Binding Failed.Count, Mode=OneWay}"/>
                             <Run Text=")"/>
@@ -550,7 +575,7 @@
                         <DataTemplate>
                             <TextBlock Text="{Binding}"
                                        Style="{StaticResource CaptionText}"
-                                       Foreground="{StaticResource DangerBrush}"
+                                       Foreground="{DynamicResource DangerBrush}"
                                        TextTrimming="CharacterEllipsis"
                                        Margin="4,4"/>
                         </DataTemplate>

@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from doc2mind.core.agent.runtime.registry import ToolRegistry, builtin_tool_specs
 from doc2mind.core.agent.runtime.types import ToolCall, ToolResult, ToolStatus
@@ -157,6 +158,120 @@ def make_kb_search_executor(
     return kb_search
 
 
+def make_web_search_executor(
+    web_search_fn: Callable[..., Any],
+    *,
+    mode: str = "normal",
+    github_token: str | None = None,
+    max_results: int | None = None,
+) -> Callable[[ToolCall], ToolResult]:
+    """web_search：可多轮调用的联网检索工具（借鉴 coding-agent 工具循环形态）。
+
+    web_search_fn(query, mode=..., max_results=..., github_token=...) -> 结果列表
+    或 WebSearchService.search 的兼容返回。执行器把结果压成可引用摘要 + 结构化 data，
+    供 Loop 回注 messages 与最终 sources 组装。
+    """
+
+    def web_search(call: ToolCall) -> ToolResult:
+        query = str(call.arguments.get("query") or "").strip()
+        if not query:
+            return _err(call, "query 不能为空")
+        call_mode = str(call.arguments.get("mode") or mode or "normal").strip().lower()
+        if call_mode not in ("normal", "deep"):
+            call_mode = mode if mode in ("normal", "deep") else "normal"
+        arg_max = call.arguments.get("max_results")
+        try:
+            max_n = int(arg_max) if arg_max is not None else (max_results or (16 if call_mode == "deep" else 8))
+        except (TypeError, ValueError):
+            max_n = 16 if call_mode == "deep" else 8
+        max_n = max(1, min(max_n, 32))
+        try:
+            raw = web_search_fn(
+                query,
+                mode=call_mode,
+                max_results=max_n,
+                github_token=call.arguments.get("github_token") or github_token,
+            )
+        except TypeError:
+            try:
+                raw = web_search_fn(query)
+            except Exception as exc:  # noqa: BLE001
+                return _err(call, f"联网搜索失败: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            return _err(call, f"联网搜索失败: {exc}")
+
+        if isinstance(raw, tuple) and raw:
+            raw = raw[0]
+        if raw is None:
+            raw = []
+        items: list[dict[str, Any]] = []
+        for r in list(raw)[:max_n]:
+            items.append(
+                {
+                    "title": getattr(r, "title", None) or (r.get("title") if isinstance(r, dict) else None) or "-",
+                    "url": getattr(r, "url", None) or (r.get("url") if isinstance(r, dict) else None) or "",
+                    "snippet": getattr(r, "snippet", None)
+                    or (r.get("snippet") if isinstance(r, dict) else "")
+                    or "",
+                    "content": (
+                        getattr(r, "content", None)
+                        or (r.get("content") if isinstance(r, dict) else "")
+                        or ""
+                    )[:1200],
+                    "domain": getattr(r, "domain", None) or (r.get("domain") if isinstance(r, dict) else "") or "",
+                    "source_name": getattr(r, "source_name", None)
+                    or (r.get("source_name") if isinstance(r, dict) else None)
+                    or "Web",
+                    "relevance_score": float(
+                        getattr(r, "relevance_score", None)
+                        or (r.get("relevance_score") if isinstance(r, dict) else 0.0)
+                        or 0.0
+                    ),
+                    "evidence_level": getattr(r, "evidence_level", None)
+                    or (r.get("evidence_level") if isinstance(r, dict) else None)
+                    or "单一来源",
+                    "content_fetched": bool(
+                        getattr(r, "content_fetched", None)
+                        if getattr(r, "content_fetched", None) is not None
+                        else (
+                            r.get("content_fetched")
+                            if isinstance(r, dict)
+                            else bool(getattr(r, "content", None) or (r.get("content") if isinstance(r, dict) else None))
+                        )
+                    ),
+                    "published_at": getattr(r, "published_at", None)
+                    or (r.get("published_at") if isinstance(r, dict) else None),
+                    "corroborated_by": int(
+                        getattr(r, "corroborated_by", None)
+                        or (r.get("corroborated_by") if isinstance(r, dict) else 0)
+                        or 0
+                    ),
+                }
+            )
+        fetched = sum(1 for it in items if it.get("content_fetched") and (it.get("content") or "").strip())
+        if not items:
+            summary = "联网搜索无可用结果"
+        else:
+            heads = [f"《{(it.get('title') or '')[:20]}》" for it in items[:3]]
+            summary = (
+                f"联网检索 {len(items)} 条（mode={call_mode}，已精读 {fetched}）："
+                + "、".join(heads)
+            )
+        return _ok(
+            call,
+            summary,
+            {
+                "results": items,
+                "count": len(items),
+                "fetched_count": fetched,
+                "query": query,
+                "mode": call_mode,
+            },
+        )
+
+    return web_search
+
+
 def make_export_executor(
     workspace: Workspace,
     export_fn: Callable[..., Any] | None = None,
@@ -226,10 +341,12 @@ def make_inspect_executor(inspect_fn: Callable[..., Any] | None = None) -> Calla
         if not isinstance(content, str) or not content.strip():
             return _err(call, "content 不能为空")
         try:
-            if inspect_fn is None:
-                from doc2mind.core.creator import inspect_presentation as inspect_fn
+            fn = inspect_fn
+            if fn is None:
+                from doc2mind.core.creator import inspect_presentation
 
-            report = inspect_fn(content)
+                fn = inspect_presentation
+            report = fn(content)
         except Exception as exc:  # noqa: BLE001
             return _err(call, f"体检失败: {exc}")
         score = getattr(report, "score", None)
@@ -253,6 +370,9 @@ def bind_runtime_executors(
     *,
     workspace: Workspace | None = None,
     search_fn: Callable[..., Any] | None = None,
+    web_search_fn: Callable[..., Any] | None = None,
+    web_search_mode: str = "normal",
+    github_token: str | None = None,
     export_fn: Callable[..., Any] | None = None,
     inspect_fn: Callable[..., Any] | None = None,
     collection: str | list[str] | None = "default",
@@ -271,6 +391,15 @@ def bind_runtime_executors(
     if search_fn is not None:
         registry.bind_executor(
             "kb_search", make_kb_search_executor(search_fn, collection=collection)
+        )
+    if web_search_fn is not None and registry.get("web_search") is not None:
+        registry.bind_executor(
+            "web_search",
+            make_web_search_executor(
+                web_search_fn,
+                mode=web_search_mode or "normal",
+                github_token=github_token,
+            ),
         )
     if registry.get("inspect_artifact") is not None:
         registry.bind_executor("inspect_artifact", make_inspect_executor(inspect_fn))

@@ -48,6 +48,7 @@ public partial class DocumentsViewModel : ViewModelBase
     private bool _hasLoadedOnce;
     private bool _refreshSucceeded;
     private bool _suppressCollectionRefresh;
+    private bool _refreshAfterFileWatcherChange;
 
     /// <summary>切换为该页面时触发一次加载；文档列表失败不缓存，失败后再次进入会重试。</summary>
     public async Task EnsureLoadedAsync()
@@ -65,6 +66,24 @@ public partial class DocumentsViewModel : ViewModelBase
 
     /// <summary>外部数据变更（如导入完成）后使缓存失效：下次进入页面自动重新加载。</summary>
     public void InvalidateCache() => _hasLoadedOnce = false;
+
+    /// <summary>文件监控变更时失效缓存；当前页立即刷新，忙碌时在本次请求结束后补刷。</summary>
+    public void NotifyFileWatcherChange(bool isActive)
+    {
+        InvalidateCache();
+        if (!isActive)
+        {
+            return;
+        }
+
+        if (IsBusy)
+        {
+            _refreshAfterFileWatcherChange = true;
+            return;
+        }
+
+        _ = RefreshCommand.ExecuteAsync(null);
+    }
 
     // ===================== 回收站（基础数据安全） =====================
 
@@ -298,6 +317,46 @@ public partial class DocumentsViewModel : ViewModelBase
         finally
         {
             _suppressCollectionRefresh = false;
+        }
+    }
+
+    private string _newCollectionName = "";
+
+    /// <summary>新建分组名称。</summary>
+    public string NewCollectionName
+    {
+        get => _newCollectionName;
+        set => SetProperty(ref _newCollectionName, value ?? "");
+    }
+
+    /// <summary>刷新分组下拉。</summary>
+    [CommunityToolkit.Mvvm.Input.RelayCommand]
+    private async Task RefreshCollectionsAsync()
+    {
+        await LoadCollectionsAsync();
+    }
+
+    /// <summary>新建分组并刷新下拉。</summary>
+    [CommunityToolkit.Mvvm.Input.RelayCommand]
+    private async Task CreateCollectionAsync()
+    {
+        var name = (NewCollectionName ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            _notifications?.Warning("请输入分组名称", "文档库");
+            return;
+        }
+        try
+        {
+            await _apiService.CreateCollectionAsync(name);
+            NewCollectionName = "";
+            await LoadCollectionsAsync();
+            Collection = name;
+            _notifications?.Success($"已创建分组「{name}」", "文档库");
+        }
+        catch (Exception ex)
+        {
+            _notifications?.Error($"创建分组失败：{ex.Message}", "文档库");
         }
     }
 
@@ -575,6 +634,11 @@ public partial class DocumentsViewModel : ViewModelBase
         finally
         {
             IsBusy = false;
+            if (_refreshAfterFileWatcherChange)
+            {
+                _refreshAfterFileWatcherChange = false;
+                _ = RefreshCommand.ExecuteAsync(null);
+            }
         }
     }
 

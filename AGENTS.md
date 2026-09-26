@@ -28,7 +28,7 @@
 | `mcp__doc2mind__purge_trash` | 物理清空回收站（破坏性，不可恢复；默认清 30 天前的，需用户明确同意） | `older_than_days` |
 | `mcp__doc2mind__list_curate_runs` | 列出近 N 天的 curate 运行记录（让 Agent 看到自己/别人跑了什么整理） | `days`、`limit` |
 
-> 共 **19 个** MCP 工具（与 `docs/mcp.md` 工具清单一致）。
+> 共 **20 个** MCP 工具（与 `docs/mcp.md` 工具清单一致，含 `library_status`）。
 
 ### 用法约定
 

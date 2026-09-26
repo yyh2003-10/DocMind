@@ -242,3 +242,24 @@ def test_gate_exception_falls_back_to_citable(monkeypatch):
     assert len(result.sources) == 1
     assert result.sources[0].source == "mech.md"
     assert rag_mod.logger is not None  # 门控异常已走回退路径（不抛错）
+
+
+def test_entity_grounded_skips_topic_gate_keeps_citable():
+    """图谱实体上下文（entity_grounded）跳过主题门：无表面词重叠的本地证据仍可引用。"""
+    q = "实体问题"
+    hit = _H(
+        _C(content="本地内容", source="doc.pdf"),
+        rerank_score=None, vector_score=0.8, bm25_score=0.7,
+    )
+    # 无图谱锚定：主题门把无词重叠命中降为背景
+    strict = partition_citation_hits(
+        q, [hit], citation_min_score=0.45, top_k=5, reranked_usable=False
+    )
+    assert hit not in strict.cite_hits
+    assert hit in strict.bg_hits
+    # 有图谱锚定：同一命中进入 cite
+    grounded = partition_citation_hits(
+        q, [hit], citation_min_score=0.45, top_k=5, reranked_usable=False, entity_grounded=True
+    )
+    assert hit in grounded.cite_hits
+    assert grounded.gate["cite_count"] == 1

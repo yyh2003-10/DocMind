@@ -116,7 +116,7 @@
                                 MinHeight="36"
                                 Margin="0,0,8,0">
                             <StackPanel Orientation="Horizontal">
-                                <Path Data="{StaticResource IconBolt}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                <Path Data="{StaticResource IconBolt}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource PrimaryBrush}" Margin="0,0,6,0"/>
                                 <TextBlock Text="开始转换"/>
                             </StackPanel>
                         </Button>
@@ -131,7 +131,7 @@
 
         <!-- ===== 忙碌进度条（转换进行中时显示） ===== -->
         <Border Grid.Row="2"
-                Background="{StaticResource CardBrush}"
+                Background="{DynamicResource CardBrush}"
                 CornerRadius="{StaticResource CornerLg}"
                 Padding="12,8"
                 Margin="0,0,0,12"
@@ -155,7 +155,7 @@
 
         <!-- ===== 预览区 ===== -->
         <Border Grid.Row="3"
-                BorderBrush="{StaticResource BorderBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
                 CornerRadius="{StaticResource CornerLg}"
                 Padding="12">
@@ -176,8 +176,8 @@
                                 <TextBlock Text="一键导入知识库"/>
                             </StackPanel>
                         </Button>
-                        <Border Background="{StaticResource SurfaceBrush}"
-                                CornerRadius="4"
+                        <Border Background="{DynamicResource SurfaceBrush}"
+                                CornerRadius="{StaticResource CornerSm}"
                                 Padding="8,2"
                                 Visibility="{Binding HasInputPath, Converter={StaticResource BoolToVis}}">
                             <TextBlock Style="{StaticResource SmallText}">
@@ -187,7 +187,7 @@
                     </StackPanel>
                 </DockPanel>
 
-                <Border Background="{StaticResource SurfaceBrush}"
+                <Border Background="{DynamicResource SurfaceBrush}"
                         CornerRadius="{StaticResource CornerSm}"
                         Padding="8">
                     <ScrollViewer VerticalScrollBarVisibility="Auto"
@@ -197,7 +197,7 @@
                                  BorderThickness="0"
                                  TextWrapping="Wrap"
                                  FontFamily="Cascadia Code, Consolas, monospace"
-                                 FontSize="13"
+                                 FontSize="{StaticResource FontSizeBody}"
                                  Background="Transparent"/>
                     </ScrollViewer>
                 </Border>

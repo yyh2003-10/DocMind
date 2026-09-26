@@ -90,12 +90,7 @@ public sealed class ThemeService
     {
         try
         {
-            var dict = LoadThemeDictionary(mode);
-            var merged = Application.Current.Resources.MergedDictionaries;
-            if (merged.Count > 0)
-                merged[0] = dict;
-            else
-                merged.Add(dict);
+            ReplaceThemeDictionary(LoadThemeDictionary(mode));
         }
         catch (Exception ex)
         {
@@ -103,16 +98,31 @@ public sealed class ThemeService
         }
     }
 
+    /// <summary>
+    /// 只替换 Theme 字典，保留 Icons 等其它 MergedDictionaries。
+    /// 历史 bug：直接 merged[0] = theme 会把 Icons.xaml 顶掉，
+    /// 导致 MainWindow 启动时 StaticResource IconSettings 找不到。
+    /// </summary>
+    private static void ReplaceThemeDictionary(ResourceDictionary themeDict)
+    {
+        var merged = Application.Current.Resources.MergedDictionaries;
+        for (int i = 0; i < merged.Count; i++)
+        {
+            var src = merged[i].Source?.OriginalString ?? "";
+            if (src.Contains("Theme", StringComparison.OrdinalIgnoreCase))
+            {
+                merged[i] = themeDict;
+                return;
+            }
+        }
+        merged.Add(themeDict);
+    }
+
     /// <summary>启动时加载已保存的主题。</summary>
     public void LoadInitialTheme()
     {
         var mode = CurrentTheme;
-        var dict = LoadThemeDictionary(mode);
-        var merged = Application.Current.Resources.MergedDictionaries;
-        if (merged.Count > 0)
-            merged[0] = dict;
-        else
-            merged.Add(dict);
+        ReplaceThemeDictionary(LoadThemeDictionary(mode));
     }
 
     /// <summary>重启当前应用。</summary>

@@ -92,6 +92,14 @@ public static class DebugLog
         var message = context is null
             ? $"{ex.GetType().Name}: {ex.Message}"
             : $"{context} | {ex.GetType().Name}: {ex.Message}";
+        // 展开 InnerException 链 + 堆栈（XamlParseException 的行号在 InnerException 里）
+        var cur = ex.InnerException;
+        while (cur is not null)
+        {
+            message += $"\n  ---> {cur.GetType().Name}: {cur.Message}";
+            cur = cur.InnerException;
+        }
+        message += $"\n  stack: {ex.StackTrace}";
         Append(Level.Error, message, category);
     }
 

@@ -14,8 +14,10 @@ from doc2mind.core.agent.runtime import (
     Workspace,
     bind_runtime_executors,
     builtin_tool_specs,
+    make_web_search_executor,
     run_mock_loop,
 )
+from doc2mind.core.agent.runtime.executors import make_inspect_executor
 
 
 @dataclass
@@ -113,6 +115,118 @@ def test_export_executor_with_stub(tmp_path):
     assert res.status == ToolStatus.OK
     rel = res.data["relative_path"]
     assert (tmp_path / "ws" / rel).exists() or Path(res.data["file_path"]).exists()
+
+
+def test_inspect_executor_uses_default_inspector(monkeypatch):
+    @dataclass
+    class Report:
+        score: int = 92
+        grade: str = "A"
+        summary: str = "ok"
+        slide_count: int = 3
+
+    monkeypatch.setattr(
+        "doc2mind.core.creator.inspect_presentation",
+        lambda content: Report(),
+    )
+    res = make_inspect_executor()(ToolCall(call_id="i1", tool_id="inspect_artifact", arguments={"content": "# x"}))
+    assert res.status == ToolStatus.OK
+    assert res.data["score"] == 92
+
+
+@dataclass
+class FakeWebHit:
+    title: str
+    url: str
+    snippet: str = ""
+    content: str = ""
+    domain: str = "example.com"
+    source_name: str = "Web"
+    relevance_score: float = 0.7
+    evidence_level: str = "单一来源"
+    content_fetched: bool = True
+    published_at: str | None = None
+    corroborated_by: int = 0
+
+
+def _web_search_fn(query, mode="normal", max_results=8, github_token=None):
+    return [
+        FakeWebHit(
+            title=f"{query} 定义与工程意义",
+            url="https://example.com/def",
+            content=f"关于 {query} 的网页正文摘录",
+            content_fetched=True,
+        ),
+        FakeWebHit(
+            title=f"{query} 规范限值",
+            url="https://example.com/spec",
+            content="仅标题与摘要",
+            content_fetched=False,
+        ),
+    ][:max_results]
+
+
+def test_web_search_executor_binds_and_returns_results(tmp_path):
+    reg = ToolRegistry(builtin_tool_specs())
+    bind_runtime_executors(
+        reg,
+        workspace=Workspace(tmp_path / "ws"),
+        web_search_fn=_web_search_fn,
+        web_search_mode="deep",
+    )
+    res = reg.execute(
+        ToolCall(
+            call_id="wsearch1",
+            tool_id="web_search",
+            arguments={"query": "挠度", "mode": "deep"},
+        )
+    )
+    assert res.status == ToolStatus.OK
+    assert res.data["count"] >= 1
+    assert res.data["mode"] == "deep"
+    assert res.data["results"][0]["url"].startswith("https://")
+    assert "挠度" in res.summary
+
+
+def test_web_search_executor_empty_query(tmp_path):
+    executor = make_web_search_executor(_web_search_fn)
+    res = executor(ToolCall(call_id="wsearch2", tool_id="web_search", arguments={"query": "  "}))
+    assert res.status == ToolStatus.ERROR
+
+
+def test_loop_with_web_search_tool(tmp_path):
+    reg = ToolRegistry(builtin_tool_specs())
+    bind_runtime_executors(
+        reg,
+        workspace=Workspace(tmp_path / "ws"),
+        search_fn=_search_fn,
+        web_search_fn=_web_search_fn,
+        web_search_mode="deep",
+    )
+    turns = [
+        MockModelTurn(
+            tool_calls=[
+                ToolCall(call_id="c1", tool_id="kb_search", arguments={"query": "挠度"}),
+                ToolCall(call_id="c2", tool_id="web_search", arguments={"query": "挠度", "mode": "deep"}),
+            ]
+        ),
+        MockModelTurn(
+            tool_calls=[
+                ToolCall(call_id="c3", tool_id="web_search", arguments={"query": "deflection 定义", "mode": "normal"}),
+            ]
+        ),
+        MockModelTurn(final_text="基于库内与联网多轮检索作答"),
+    ]
+    result = run_mock_loop(
+        turns,
+        reg,
+        gate=PermissionGate(write_policy="always_allow_workspace"),
+        auto_approve_session=True,
+    )
+    assert result.status == "succeeded"
+    web_results = [r for r in result.tool_results if r.tool_id == "web_search"]
+    assert len(web_results) == 2
+    assert all(r.status == ToolStatus.OK for r in web_results)
 
 
 def test_loop_with_bound_executors(tmp_path):

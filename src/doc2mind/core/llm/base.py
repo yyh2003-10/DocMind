@@ -18,9 +18,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # 默认 LLM 调用超时（秒），防 API 挂起阻塞请求线程。
-# 120s 对 NIM/大 MoE + 慢链路偏紧（TTFT/帧间隔易顶满），默认提到 180s；
+# 大模型 TTFT 可能很长（规划/检索后才出字），默认 600s；出字后按空闲间隔判定；
 # 仍不够时用 DOC2MIND_LLM_TIMEOUT / config.llm_timeout 再调大。
-DEFAULT_TIMEOUT = 180
+DEFAULT_TIMEOUT = 600
 
 # 主流 LLM 网关对输出 token 上限的常见硬限制（sensenova 等严格校验网关
 # 实测 [1, 65536]）。超出时选择不传该参数，由服务端取模型默认上限。
@@ -264,7 +264,8 @@ class LLMTimeoutError(LLMError):
 
 @dataclass
 class ToolCallDelta:
-    """流式/非流式 tool_calls 解析结果（T8）。"""
+    """Provider 原生工具调用的一次调用。"""
+
     id: str
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
@@ -272,7 +273,8 @@ class ToolCallDelta:
 
 @dataclass
 class ChatToolTurn:
-    """带 tools 的单轮模型输出：final_text 或 tool_calls 二选一。"""
+    """带 tools 的单轮模型输出：正文或工具调用。"""
+
     final_text: str = ""
     tool_calls: list[ToolCallDelta] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
@@ -352,7 +354,7 @@ class LLMClient(ABC):
 
     @property
     def supports_tool_calling(self) -> bool:
-        """是否支持 provider 原生 tools/tool_calls。默认 False（编排降级）。"""
+        """Whether this provider exposes native tools/tool_calls."""
         return bool(getattr(self, "_supports_tool_calling", False))
 
     def chat_with_tools(
@@ -364,7 +366,7 @@ class LLMClient(ABC):
         max_tokens: int | None = None,
         timeout: float | None = None,
     ) -> ChatToolTurn:
-        """带 tools 的非流式对话（T8）。不支持时返回空 tool_calls 的普通正文。"""
+        """Call a provider with tools, falling back to plain chat when unsupported."""
         if not tools or not self.supports_tool_calling:
             text = self.chat(messages, temperature=temperature, max_tokens=max_tokens, timeout=timeout)
             return ChatToolTurn(final_text=text)

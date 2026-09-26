@@ -90,6 +90,24 @@ public sealed class CreativeExportResponse
     public string? Error { get; set; }
 }
 
+/// <summary>Artifact 历史版本摘要。</summary>
+public class ArtifactVersionSummary
+{
+    [JsonPropertyName("version_id")] public string VersionId { get; set; } = string.Empty;
+    [JsonPropertyName("artifact_id")] public string ArtifactId { get; set; } = string.Empty;
+    [JsonPropertyName("version")] public int Version { get; set; }
+    [JsonPropertyName("created_at")] public string CreatedAt { get; set; } = string.Empty;
+    [JsonPropertyName("format")] public string? Format { get; set; }
+    [JsonPropertyName("title")] public string? Title { get; set; }
+    [JsonPropertyName("sources")] public List<Dictionary<string, object?>> Sources { get; set; } = new();
+}
+
+/// <summary>Artifact 历史版本完整内容，用于恢复/重新生成。</summary>
+public sealed class ArtifactVersionResponse : ArtifactVersionSummary
+{
+    [JsonPropertyName("content")] public string Content { get; set; } = string.Empty;
+}
+
 /// <summary>卡片网格中的单个卡片。</summary>
 public sealed class SlideCardItem
 {
@@ -165,6 +183,8 @@ public sealed class SlideItem
 /// <summary>创作交付物前端综合模型。</summary>
 public sealed class ArtifactItem
 {
+    /// <summary>版本管理用 ID（会话内稳定；缺省自动生成）。</summary>
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Type { get; set; } = "docx"; // pptx, docx, xlsx, html, md
     public string Title { get; set; } = "知识创作交付物";
     public string Theme { get; set; } = "tech_blue";

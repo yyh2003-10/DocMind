@@ -1,23 +1,23 @@
 # DocMind 全方面检测报告
 
-- 时间：2026-09-21T10:52:57
+- 时间：2026-09-21T10:55:33
 - 仓库：`E:\DocMindY`
 - Python：`E:\DocMindY\.venv\Scripts\python.exe`
-- 结果：**PASS=7 / FAIL=1 / SKIP=2**
+- 结果：**PASS=9 / FAIL=0 / SKIP=1**
 
 ## 分组结果
 
 | 分组 | 状态 | 摘要 |
 |---|---|---|
-| 商业门禁与基础能力 | **PASS** | 11 passed, 17 warnings in 2.36s |
-| 对话/续写/双轨 | **PASS** | 214 passed in 27.96s |
-| Agent 骨架与执行器 | **SKIP** | no test files |
-| 导入/取消/软删 | **PASS** | 72 passed, 21 warnings in 12.27s |
-| 搜索/检索/重排 | **PASS** | 64 passed in 13.05s |
-| 图谱/科研/意图 | **PASS** | 190 passed in 1.68s |
-| 创作/导出/整理/配置 | **PASS** | 69 passed, 5 warnings in 4.42s |
-| LLM/元数据/健壮性 | **PASS** | 153 passed, 53 warnings in 14.03s |
-| 业务矩阵 | **FAIL** | Traceback (most recent call last):   File "<string>", line 1, in <module> ModuleNotFoundError: No module named 'tests.test_business_matrix'  |
+| 商业门禁与基础能力 | **PASS** | 43 passed, 33 warnings in 4.24s |
+| 对话/续写/双轨 | **PASS** | 227 passed in 26.52s |
+| Agent 骨架与执行器 | **PASS** | 19 passed in 1.21s |
+| 导入/取消/软删 | **PASS** | 77 passed, 21 warnings in 9.61s |
+| 搜索/检索/重排 | **PASS** | 67 passed in 12.05s |
+| 图谱/科研/意图 | **PASS** | 190 passed in 1.69s |
+| 创作/导出/整理/配置 | **PASS** | 69 passed, 5 warnings in 4.47s |
+| LLM/元数据/健壮性 | **PASS** | 153 passed, 53 warnings in 14.56s |
+| 业务矩阵 | **PASS** | endpoints/vms/tests/markers OK |
 | dotnet | **SKIP** | 未启用 --include-dotnet |
 
 ## 商用门禁覆盖

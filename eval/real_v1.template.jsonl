@@ -1,0 +1,50 @@
+{"id":"q001","query":"气缸","type":"zh_2char","collection":"demo","relevant":["demo/machine.md#0"],"negatives":["demo/network.md#0"],"notes":"2字中文词，测 BM25/jieba"}
+{"id":"q002","query":"电机","type":"zh_2char","collection":"demo","relevant":["demo/machine.md#1"],"negatives":["demo/network.md#0"],"notes":"2字中文词"}
+{"id":"q003","query":"电源","type":"zh_2char","collection":"demo","relevant":["demo/machine.md#2"],"negatives":["demo/note-踩坑.md#0"],"notes":"2字中文词"}
+{"id":"q004","query":"报警","type":"zh_2char","collection":"demo","relevant":["demo/machine.md#3"],"negatives":["demo/network.md#1"],"notes":"2字中文词"}
+{"id":"q005","query":"温度","type":"zh_2char","collection":"demo","relevant":["demo/machine.md#4"],"negatives":["demo/network.md#0"],"notes":"2字中文词"}
+{"id":"q006","query":"IP","type":"zh_2char","collection":"demo","relevant":["demo/network.md#0"],"negatives":["demo/machine.md#0"],"notes":"2字符英文缩写"}
+{"id":"q007","query":"USB","type":"zh_2char","collection":"demo","relevant":["demo/network.md#1"],"negatives":["demo/machine.md#1"],"notes":"2-3字符缩写"}
+{"id":"q008","query":"TCP","type":"zh_2char","collection":"demo","relevant":["demo/network.md#2"],"negatives":["demo/machine.md#2"],"notes":"协议缩写"}
+{"id":"q009","query":"bge-small-zh-v1.5","type":"entity_exact","collection":"demo","relevant":["demo/embed-model.md#0"],"negatives":["demo/network.md#0"],"notes":"模型名精确匹配"}
+{"id":"q010","query":"sqlite-vec","type":"entity_exact","collection":"demo","relevant":["demo/vector-store.md#0"],"negatives":["demo/machine.md#0"],"notes":"产品名"}
+{"id":"q011","query":"jieba 分词","type":"entity_exact","collection":"demo","relevant":["demo/vector-store.md#1"],"negatives":["demo/network.md#1"],"notes":"库名+功能"}
+{"id":"q012","query":"DocMind","type":"entity_exact","collection":"demo","relevant":["demo/product.md#0"],"negatives":["demo/machine.md#3"],"notes":"产品本名"}
+{"id":"q013","query":"RRF","type":"entity_exact","collection":"demo","relevant":["demo/vector-store.md#2"],"negatives":["demo/network.md#2"],"notes":"算法缩写"}
+{"id":"q014","query":"rerank","type":"entity_exact","collection":"demo","relevant":["demo/embed-model.md#1"],"negatives":["demo/machine.md#4"],"notes":"英文术语"}
+{"id":"q015","query":"ONNX","type":"entity_exact","collection":"demo","relevant":["demo/embed-model.md#2"],"negatives":["demo/network.md#0"],"notes":"运行时名"}
+{"id":"q016","query":"MCP","type":"entity_exact","collection":"demo","relevant":["demo/product.md#1"],"negatives":["demo/machine.md#0"],"notes":"协议名"}
+{"id":"q017","query":"怎么导入文档","type":"paraphrase","collection":"demo","relevant":["demo/product.md#2"],"negatives":["demo/network.md#1"],"notes":"口语化 vs 正式表述"}
+{"id":"q018","query":"如何把 PDF 放进知识库","type":"paraphrase","collection":"demo","relevant":["demo/product.md#2"],"negatives":["demo/machine.md#2"],"notes":"同义改写"}
+{"id":"q019","query":"知识库支持哪些格式","type":"paraphrase","collection":"demo","relevant":["demo/product.md#3"],"negatives":["demo/network.md#0"],"notes":"能力问询"}
+{"id":"q020","query":"建库步骤是什么","type":"paraphrase","collection":"demo","relevant":["demo/product.md#2"],"negatives":["demo/embed-model.md#0"],"notes":"流程改写"}
+{"id":"q021","query":"混合检索是怎么工作的","type":"paraphrase","collection":"demo","relevant":["demo/vector-store.md#2"],"negatives":["demo/machine.md#1"],"notes":"原理问询"}
+{"id":"q022","query":"向量和关键词怎么融合","type":"paraphrase","collection":"demo","relevant":["demo/vector-store.md#2"],"negatives":["demo/note-踩坑.md#0"],"notes":"同义到 RRF"}
+{"id":"q023","query":"为什么相关度显示很高但不相关","type":"paraphrase","collection":"demo","relevant":["demo/vector-store.md#3","demo/note-踩坑.md#0"],"negatives":["demo/network.md#2"],"notes":"踩坑+原理"}
+{"id":"q024","query":"分数虚高怎么办","type":"paraphrase","collection":"demo","relevant":["demo/vector-store.md#3","demo/note-踩坑.md#0"],"negatives":["demo/machine.md#3"],"notes":"症状→根因"}
+{"id":"q025","query":"换嵌入模型后要做什么","type":"paraphrase","collection":"demo","relevant":["demo/embed-model.md#3"],"negatives":["demo/network.md#1"],"notes":"运维流程"}
+{"id":"q026","query":"嵌入模型和向量库维度不一致会怎样","type":"paraphrase","collection":"demo","relevant":["demo/embed-model.md#3"],"negatives":["demo/machine.md#4"],"notes":"错误场景"}
+{"id":"q027","query":"本地部署需要 GPU 吗","type":"paraphrase","collection":"demo","relevant":["demo/product.md#4"],"negatives":["demo/network.md#0"],"notes":"部署问询"}
+{"id":"q028","query":"CPU 能不能跑","type":"paraphrase","collection":"demo","relevant":["demo/product.md#4"],"negatives":["demo/embed-model.md#1"],"notes":"同义"}
+{"id":"q029","query":"气缸缸径怎么根据负载选","type":"multi_hop","collection":"demo","relevant":["demo/machine.md#0","demo/machine.md#5"],"negatives":["demo/network.md#0"],"notes":"参数+选型两段"}
+{"id":"q030","query":"电机过热报警怎么排查","type":"multi_hop","collection":"demo","relevant":["demo/machine.md#1","demo/machine.md#3"],"negatives":["demo/product.md#0"],"notes":"故障跨块"}
+{"id":"q031","query":"从导入到能问答中间有哪些步骤","type":"multi_hop","collection":"demo","relevant":["demo/product.md#2","demo/product.md#5"],"negatives":["demo/network.md#2"],"notes":"流程跨块"}
+{"id":"q032","query":"检索不准时先查嵌入还是先查分块","type":"multi_hop","collection":"demo","relevant":["demo/embed-model.md#4","demo/vector-store.md#4"],"negatives":["demo/machine.md#2"],"notes":"排障决策"}
+{"id":"q033","query":"网络配置和气缸选型有关系吗","type":"negation_noise","collection":"demo","relevant":[],"negatives":["demo/network.md#0","demo/machine.md#0"],"notes":"无关拼接，应弱命中"}
+{"id":"q034","query":"USB 接口能给电机供电吗","type":"negation_noise","collection":"demo","relevant":[],"negatives":["demo/network.md#1","demo/machine.md#1"],"notes":"库内有词但不答此问"}
+{"id":"q035","query":"DocMind 能替代 PLC 吗","type":"negation_noise","collection":"demo","relevant":[],"negatives":["demo/product.md#0","demo/machine.md#0"],"notes":"领域错配"}
+{"id":"q036","query":"温度传感器接 TCP 协议","type":"negation_noise","collection":"demo","relevant":[],"negatives":["demo/machine.md#4","demo/network.md#2"],"notes":"硬拼关键词"}
+{"id":"q037","query":"jieba 和 trigram 在 2 字词上的差异","type":"long_tail","collection":"demo","relevant":["demo/vector-store.md#1","demo/vector-store.md#4"],"negatives":["demo/machine.md#0"],"notes":"长尾技术对比"}
+{"id":"q038","query":"semantic_floor 该怎么标定","type":"long_tail","collection":"demo","relevant":["demo/vector-store.md#5"],"negatives":["demo/network.md#0"],"notes":"配置长尾"}
+{"id":"q039","query":"query_instruction 对 bge 有什么用","type":"long_tail","collection":"demo","relevant":["demo/embed-model.md#5"],"negatives":["demo/machine.md#3"],"notes":"非对称检索"}
+{"id":"q040","query":"邻块上下文 window 设多大合适","type":"long_tail","collection":"demo","relevant":["demo/vector-store.md#6"],"negatives":["demo/product.md#4"],"notes":"参数长尾"}
+{"id":"q041","query":"MCP 工具 search 和 chat 返回有什么区别","type":"long_tail","collection":"demo","relevant":["demo/product.md#1","demo/product.md#6"],"negatives":["demo/machine.md#1"],"notes":"API 细节"}
+{"id":"q042","query":"个人笔记和项目文档默认参数差在哪","type":"long_tail","collection":"demo","relevant":["demo/product.md#7"],"negatives":["demo/network.md#2"],"notes":"档案差异"}
+{"id":"q043","query":"量子纠缠怎么用于知识库压缩","type":"ood","collection":"demo","relevant":[],"negatives":[],"notes":"库外问题，应不硬塞"}
+{"id":"q044","query":"今天上海天气怎么样","type":"ood","collection":"demo","relevant":[],"negatives":[],"notes":"时事 OOD"}
+{"id":"q045","query":"帮我写一首七律","type":"ood","collection":"demo","relevant":[],"negatives":[],"notes":"创作 OOD"}
+{"id":"q046","query":"股票明天会涨吗","type":"ood","collection":"demo","relevant":[],"negatives":[],"notes":"预测 OOD"}
+{"id":"q047","query":"把这段代码改成 Rust","type":"ood","collection":"demo","relevant":[],"negatives":[],"notes":"无上下文编码"}
+{"id":"q048","query":"DocMind 是谁写的","type":"ood","collection":"demo","relevant":[],"negatives":[],"notes":"库内无作者信息"}
+{"id":"q049","query":"重排模型默认是什么","type":"entity_exact","collection":"demo","relevant":["demo/embed-model.md#1"],"negatives":["demo/network.md#1"],"notes":"默认配置"}
+{"id":"q050","query":"严格模式和混合模式区别","type":"paraphrase","collection":"demo","relevant":["demo/product.md#8"],"negatives":["demo/machine.md#2"],"notes":"模式对比"}

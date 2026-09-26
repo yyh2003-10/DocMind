@@ -70,11 +70,13 @@ class LoopController:
         self,
         registry: ToolRegistry,
         gate: PermissionGate | None = None,
+        permission_broker: Any | None = None,
         budget: LoopBudget | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.registry = registry
         self.gate = gate or PermissionGate()
+        self.permission_broker = permission_broker
         self.budget = budget or LoopBudget()
         self.on_event = on_event
         self.status = LoopStatus.IDLE
@@ -185,19 +187,53 @@ class LoopController:
                         error="permission denied",
                     )
                 elif decision == PermissionDecision.ASK:
-                    # P1 骨架：无 UI 挂起通道时，记 denied 并让模型改道
-                    denied.append(call.tool_id)
-                    result = ToolResult(
-                        call_id=call.call_id,
-                        tool_id=call.tool_id,
-                        status=ToolStatus.DENIED,
-                        error="permission ask not granted",
-                    )
                     self.status = LoopStatus.AWAITING_PERMISSION
+                    req_id = f"perm_{call.call_id}"
+                    if self.permission_broker is not None:
+                        try:
+                            self.permission_broker.begin(req_id)
+                        except Exception:  # noqa: BLE001
+                            pass
                     self._emit(
                         "permission_request",
-                        {"call_id": call.call_id, "tool_id": call.tool_id},
+                        {
+                            "request_id": req_id,
+                            "call_id": call.call_id,
+                            "tool_id": call.tool_id,
+                            "timeout_sec": 60,
+                        },
                     )
+                    verdict = "timeout"
+                    if self.permission_broker is not None:
+                        try:
+                            verdict = str(self.permission_broker.request(req_id, timeout=60.0))
+                        except Exception:  # noqa: BLE001
+                            verdict = "timeout"
+                    if verdict == "allow":
+                        self.gate.grant_session_write()
+                        self.status = LoopStatus.RUNNING_TOOL
+                        self._emit(
+                            "tool_call",
+                            {"call_id": call.call_id, "tool_id": call.tool_id},
+                        )
+                        result = self.registry.execute(call)
+                        self._emit(
+                            "permission_resolved",
+                            {"request_id": req_id, "decision": "allow"},
+                        )
+                    else:
+                        denied.append(call.tool_id)
+                        reason = "permission timeout" if verdict == "timeout" else "permission denied"
+                        result = ToolResult(
+                            call_id=call.call_id,
+                            tool_id=call.tool_id,
+                            status=ToolStatus.DENIED,
+                            error=reason,
+                        )
+                        self._emit(
+                            "permission_resolved",
+                            {"request_id": req_id, "decision": verdict},
+                        )
                 else:
                     self.status = LoopStatus.RUNNING_TOOL
                     self._emit(

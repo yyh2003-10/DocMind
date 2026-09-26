@@ -13,12 +13,16 @@ from doc2mind.core.agent.planner import (
     TOOLS,
 )
 from doc2mind.core.agent.prompt_policy import (
+    PROMPT_TRACK_DEEP_QA,
     PROMPT_TRACK_DELIVERY,
     PROMPT_TRACK_RAG,
+    ANSWER_FORMAT_HTML,
+    apply_answer_format,
     apply_prompt_track,
     boost_max_tokens,
     build_continue_query,
     done_frame_extras,
+    is_definition_query,
     resolve_prompt_track,
 )
 
@@ -28,11 +32,15 @@ __all__ = [
     "plan_with_llm",
     "user_facing_plan_reason",
     "TOOLS",
+    "PROMPT_TRACK_DEEP_QA",
     "PROMPT_TRACK_DELIVERY",
     "PROMPT_TRACK_RAG",
+    "ANSWER_FORMAT_HTML",
+    "apply_answer_format",
     "apply_prompt_track",
     "boost_max_tokens",
     "build_continue_query",
     "done_frame_extras",
+    "is_definition_query",
     "resolve_prompt_track",
 ]

@@ -2377,6 +2377,86 @@ class VectorStore:
             except sqlite3.Error:
                 return None
 
+    def find_documents_by_source(self, source: str) -> list[StoredDocument]:
+        """按精确来源路径查找所有活跃文档（可能跨集合重复摄入）。"""
+        with self._lock:
+            self._require_open()
+            try:
+                rows = self._conn.execute(
+                    "SELECT id, source, collection, format, file_hash, size_bytes,"
+                    " page_count, chunk_count, created_at, updated_at,"
+                    " title, tags, summary, enriched_at FROM documents"
+                    " WHERE source = ? AND deleted_at IS NULL",
+                    (source,),
+                ).fetchall()
+                return [self._row_to_document(row) for row in rows]
+            except sqlite3.Error as e:
+                raise StoreError(f"按来源查找文档失败: {e}") from e
+
+    @_retry_on_locked
+    def relocate_documents(
+        self, old_source: str, new_source: str, file_hash: str
+    ) -> int:
+        """仅在内容 hash 匹配时，原子更新文档和分块中的来源路径。
+
+        返回更新的文档数；来源不存在、hash 不匹配或新路径与同集合文档冲突时返回 0。
+        """
+        if not old_source or not new_source or not file_hash:
+            return 0
+
+        with self._lock:
+            self._require_open()
+            conn = self._conn
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    "SELECT id, collection FROM documents"
+                    " WHERE source = ? AND file_hash = ? AND deleted_at IS NULL",
+                    (old_source, file_hash),
+                ).fetchall()
+                if not rows:
+                    conn.execute("COMMIT")
+                    return 0
+
+                if old_source == new_source:
+                    conn.execute("COMMIT")
+                    return len(rows)
+
+                collections = list(dict.fromkeys(str(row[1]) for row in rows))
+                collection_slots = ", ".join("?" for _ in collections)
+                conflict = conn.execute(
+                    "SELECT 1 FROM documents"
+                    " WHERE source = ? AND deleted_at IS NULL"
+                    f" AND collection IN ({collection_slots}) LIMIT 1",
+                    [new_source, *collections],
+                ).fetchone()
+                if conflict is not None:
+                    conn.execute("ROLLBACK")
+                    return 0
+
+                document_ids = [str(row[0]) for row in rows]
+                id_slots = ", ".join("?" for _ in document_ids)
+                now = _now_iso()
+                conn.execute(
+                    "UPDATE documents SET source = ?, updated_at = ?"
+                    f" WHERE id IN ({id_slots}) AND deleted_at IS NULL",
+                    [new_source, now, *document_ids],
+                )
+                conn.execute(
+                    f"UPDATE chunks_meta SET source = ? WHERE document_id IN ({id_slots})",
+                    [new_source, *document_ids],
+                )
+                conn.execute("COMMIT")
+                return len(document_ids)
+            except sqlite3.IntegrityError:
+                with contextlib.suppress(Exception):
+                    conn.execute("ROLLBACK")
+                return 0
+            except Exception as e:  # noqa: BLE001
+                with contextlib.suppress(Exception):
+                    conn.execute("ROLLBACK")
+                raise StoreError(f"更新文档来源失败: {e}") from e
+
     def get_stats(self) -> StoreStats:
         """获取存储统计。"""
         with self._lock:
@@ -2392,23 +2472,43 @@ class VectorStore:
                 ).fetchone()[0]
                 # 各集合 (doc_count, chunk_count, size_bytes)，包含空集合。
                 # 软删除文档（deleted_at 非空）不计入 doc_count。
+                # 并集：collections 表 + documents 上实际出现过的 collection
+                # （避免只建过文档、未登记 collections 表时下拉「分组不全」）
                 rows = self._conn.execute(
                     """
-                    SELECT c.name,
-                           COUNT(DISTINCT d.id),
-                           COUNT(ch.id),
-                           COALESCE(SUM(d.size_bytes), 0)
-                    FROM collections c
-                    LEFT JOIN documents d ON d.collection = c.name
-                        AND d.source != '__collection_placeholder__'
-                        AND d.deleted_at IS NULL
-                    LEFT JOIN chunks_meta ch ON ch.document_id = d.id
-                    GROUP BY c.name
+                    SELECT name FROM (
+                        SELECT c.name AS name FROM collections c
+                        UNION
+                        SELECT DISTINCT d.collection AS name FROM documents d
+                            WHERE d.source != '__collection_placeholder__'
+                              AND d.deleted_at IS NULL
+                              AND d.collection IS NOT NULL
+                              AND d.collection != ''
+                    ) t
+                    WHERE name IS NOT NULL AND name != ''
                     """
                 ).fetchall()
-                collections = {
-                    r[0]: (int(r[1]), int(r[2]), int(r[3])) for r in rows
-                }
+                all_names = [str(r[0]) for r in rows]
+                collections: dict[str, tuple[int, int, int]] = {}
+                for name in all_names:
+                    stats_row = self._conn.execute(
+                        """
+                        SELECT COUNT(DISTINCT d.id),
+                               COUNT(ch.id),
+                               COALESCE(SUM(d.size_bytes), 0)
+                        FROM documents d
+                        LEFT JOIN chunks_meta ch ON ch.document_id = d.id
+                        WHERE d.collection = ?
+                          AND d.source != '__collection_placeholder__'
+                          AND d.deleted_at IS NULL
+                        """,
+                        (name,),
+                    ).fetchone()
+                    collections[name] = (
+                        int(stats_row[0] or 0),
+                        int(stats_row[1] or 0),
+                        int(stats_row[2] or 0),
+                    )
                 return StoreStats(
                     total_documents=doc_total,
                     total_chunks=chunk_total,

@@ -90,6 +90,7 @@ public sealed class UserMemoryService : IDisposable
         // "用户喜欢Python开发" → " 用 户 喜 欢 Python 开 发 "
         // 查询 "Python" OR "开" OR "发" 就能精确匹配
         var sb = new System.Text.StringBuilder(text.Length * 2);
+        var cjkRun = new System.Text.StringBuilder();
         for (int i = 0; i < text.Length; i++)
         {
             var c = text[i];
@@ -97,13 +98,25 @@ public sealed class UserMemoryService : IDisposable
             {
                 sb.Append(' ');
                 sb.Append(c);
+                cjkRun.Append(c);
             }
             else
             {
+                AppendCjkBigrams(sb, cjkRun);
+                cjkRun.Clear();
                 sb.Append(c);
             }
         }
+        AppendCjkBigrams(sb, cjkRun);
         return sb.ToString();
+    }
+
+    private static void AppendCjkBigrams(StringBuilder target, StringBuilder run)
+    {
+        for (var i = 0; i + 1 < run.Length; i++)
+        {
+            target.Append(' ').Append(run[i]).Append(run[i + 1]);
+        }
     }
 
     private static void FtsInsert(SqliteConnection conn, long rowid, string content, string category)
@@ -229,6 +242,21 @@ public sealed class UserMemoryService : IDisposable
     }
 
     /// <summary>删除记忆条目（子字符串匹配）。</summary>
+    /// <summary>按 ID 删除单条记忆。</summary>
+    public Task<bool> DeleteByIdAsync(long id)
+    {
+        EnsureInitialized();
+        lock (_lock)
+        {
+            using var conn = OpenConnection();
+            FtsDelete(conn, id);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM user_memory WHERE id=$id";
+            cmd.Parameters.AddWithValue("$id", id);
+            return Task.FromResult(cmd.ExecuteNonQuery() > 0);
+        }
+    }
+
     public Task<bool> RemoveAsync(string textSubstring, string? category = null)
     {
         EnsureInitialized();

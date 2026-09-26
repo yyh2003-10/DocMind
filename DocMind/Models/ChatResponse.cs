@@ -231,10 +231,18 @@ public sealed record ChatStreamResult
 public sealed record EvidenceSummary
 {
     public int LocalCount { get; init; }
+    public int LocalCiteCount { get; init; }
+    public int LocalHitCount { get; init; }
     public int WebFetchedCount { get; init; }
     public int WebUnfetchedCount { get; init; }
     public bool GraphInjected { get; init; }
     public bool FallbackGeneralKnowledge { get; init; }
+    public int CitableTotal { get; init; }
+    public int SynthesizedSourceCount { get; init; }
+    public bool SingleSource { get; init; }
+    public bool WebOnly { get; init; }
+    public bool DegradedRetrieval { get; init; }
+    public string? PromptTrack { get; init; }
     /// <summary>答案 [n] 引用审计；旧后端可为 null。</summary>
     public CitationAudit? CitationAudit { get; init; }
 
@@ -245,11 +253,20 @@ public sealed record EvidenceSummary
         {
             return new EvidenceSummary();
         }
+        var local = sources.Count(s => !s.IsWebSource);
+        var webF = sources.Count(s => s.IsWebSource && s.ContentFetched);
+        var webU = sources.Count(s => s.IsWebSource && !s.ContentFetched);
+        var total = local + webF + webU;
         return new EvidenceSummary
         {
-            LocalCount = sources.Count(s => !s.IsWebSource),
-            WebFetchedCount = sources.Count(s => s.IsWebSource && s.ContentFetched),
-            WebUnfetchedCount = sources.Count(s => s.IsWebSource && !s.ContentFetched),
+            LocalCount = local,
+            LocalCiteCount = local,
+            LocalHitCount = local,
+            WebFetchedCount = webF,
+            WebUnfetchedCount = webU,
+            CitableTotal = total,
+            SingleSource = total <= 1,
+            WebOnly = local == 0 && total > 0,
         };
     }
 }

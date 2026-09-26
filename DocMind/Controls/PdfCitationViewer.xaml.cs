@@ -56,6 +56,8 @@ public partial class PdfCitationViewer : UserControl
     private bool _isInitialized;
     private bool _isInitializing;
     private string? _currentLoadedPath;
+    private int _lastPage = 1;
+    private string _lastSnippet = string.Empty;
 
     public PdfCitationViewer()
     {
@@ -131,6 +133,7 @@ public partial class PdfCitationViewer : UserControl
     {
         _isInitialized = true;
         LoadingOverlay.Visibility = Visibility.Collapsed;
+        PushThemeToWebView();
 
         // 若初始化前已有绑定的属性，立即触发加载
         if (!string.IsNullOrWhiteSpace(SourcePath))
@@ -243,6 +246,10 @@ public partial class PdfCitationViewer : UserControl
 
         var page = TargetPage ?? 1;
         var snippet = TargetSnippet ?? string.Empty;
+        _lastPage = page;
+        _lastSnippet = snippet;
+
+        PushThemeToWebView();
 
         // 若为同一文档，直接通知翻页与高亮更新，无需重新载入整个 PDF
         if (string.Equals(_currentLoadedPath, path, StringComparison.OrdinalIgnoreCase))
@@ -270,6 +277,49 @@ public partial class PdfCitationViewer : UserControl
             });
             PdfWebView.CoreWebView2.PostWebMessageAsJson(loadCmd);
         }
+    }
+
+
+    /// <summary>把当前应用主题推给 PDF 阅读器（body.dark），保证分屏与主界面一致。</summary>
+    private void PushThemeToWebView()
+    {
+        if (!_isInitialized || PdfWebView.CoreWebView2 == null)
+        {
+            return;
+        }
+        var isDark = false;
+        if (System.Windows.Application.Current?.TryFindResource("IsDarkTheme") is bool flag)
+        {
+            isDark = flag;
+        }
+        var themeCmd = JsonSerializer.Serialize(new { action = "setTheme", isDark });
+        PdfWebView.CoreWebView2.PostWebMessageAsJson(themeCmd);
+    }
+
+    /// <summary>一键回到最近一次引用页并重新高亮（滚动离开后找回）。</summary>
+    public void RelocateCitation()
+    {
+        if (!_isInitialized || PdfWebView.CoreWebView2 == null)
+        {
+            return;
+        }
+        // 主题可能在打开期间被切换，重定位时一并刷新
+        PushThemeToWebView();
+        var jumpCmd = JsonSerializer.Serialize(new
+        {
+            action = "relocate",
+            page = TargetPage ?? _lastPage,
+            snippet = TargetSnippet ?? _lastSnippet,
+        });
+        PdfWebView.CoreWebView2.PostWebMessageAsJson(jumpCmd);
+    }
+
+    /// <summary>主题切换后可外部调用，同步 PDF 阅读器明暗。</summary>
+    public void RefreshTheme() => PushThemeToWebView();
+
+    private void RelocateButton_Click(object sender, RoutedEventArgs e)
+    {
+        RelocateCitation();
     }
 
     private void ShowError(string message)

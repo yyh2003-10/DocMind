@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator
 from typing import Any
@@ -46,7 +47,7 @@ class OpenAIClient(LLMClient):
         model: str = "deepseek-chat",
         temperature: float = 0.7,
         max_tokens: int = 8192,
-        timeout: float = 120.0,
+        timeout: float = 600.0,
     ) -> None:
         self._model = model or "deepseek-chat"
         self._temperature = temperature
@@ -96,31 +97,29 @@ class OpenAIClient(LLMClient):
 
     @staticmethod
     def _parse_tool_calls(message: Any) -> list[ToolCallDelta]:
-        """解析 OpenAI 兼容 message.tool_calls（自研字段命名，不粘贴第三方实现）。"""
-        import json as _json
-
+        """Parse OpenAI-compatible message.tool_calls into safe internal values."""
         raw_calls = getattr(message, "tool_calls", None) or []
         parsed: list[ToolCallDelta] = []
-        for c in raw_calls:
-            fn = getattr(c, "function", None)
-            name = getattr(fn, "name", "") or getattr(c, "name", "") or ""
-            args_raw = getattr(fn, "arguments", None)
-            if args_raw is None:
-                args_raw = getattr(c, "arguments", "{}")
-            if isinstance(args_raw, dict):
-                args = args_raw
+        for call in raw_calls:
+            function = getattr(call, "function", None)
+            name = getattr(function, "name", "") or getattr(call, "name", "") or ""
+            arguments_raw = getattr(function, "arguments", None)
+            if arguments_raw is None:
+                arguments_raw = getattr(call, "arguments", "{}")
+            if isinstance(arguments_raw, dict):
+                arguments = arguments_raw
             else:
                 try:
-                    args = _json.loads(str(args_raw or "{}"))
+                    arguments = json.loads(str(arguments_raw or "{}"))
                 except Exception:  # noqa: BLE001
-                    args = {"_raw": str(args_raw)}
-            if not isinstance(args, dict):
-                args = {"_raw": args}
+                    arguments = {"_raw": str(arguments_raw)}
+            if not isinstance(arguments, dict):
+                arguments = {"_raw": arguments}
             parsed.append(
                 ToolCallDelta(
-                    id=str(getattr(c, "id", "") or f"call_{len(parsed)}"),
+                    id=str(getattr(call, "id", "") or f"call_{len(parsed)}"),
                     name=str(name),
-                    arguments=args,
+                    arguments=arguments,
                 )
             )
         return parsed
@@ -150,8 +149,8 @@ class OpenAIClient(LLMClient):
                 create_kwargs["max_tokens"] = mt
             if timeout and timeout > 0:
                 create_kwargs["timeout"] = timeout
-            resp = self._client.chat.completions.create(**create_kwargs)
-            choice = resp.choices[0] if getattr(resp, "choices", None) else None
+            response = self._client.chat.completions.create(**create_kwargs)
+            choice = response.choices[0] if getattr(response, "choices", None) else None
             message = getattr(choice, "message", None) if choice else None
             content = (getattr(message, "content", None) or "") if message else ""
             tool_calls = self._parse_tool_calls(message) if message is not None else []
@@ -164,8 +163,8 @@ class OpenAIClient(LLMClient):
             )
         except LLMError:
             raise
-        except Exception as e:
-            raise self._wrap_api_error(e, "tool-calling 对话") from e
+        except Exception as exc:
+            raise self._wrap_api_error(exc, "tool-calling 对话") from exc
 
     @staticmethod
     def _wrap_api_error(e: Exception, action: str) -> LLMError:

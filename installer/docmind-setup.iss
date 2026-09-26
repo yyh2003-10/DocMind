@@ -11,9 +11,9 @@
 ; ============================================================
 
 #define MyAppName "DocMind"
-; 版本号默认 1.0.0；CI 可通过 iscc /DMyAppVersion=x.y.z 传入（优先）
+; 版本号默认 1.0.2；CI 可通过 iscc /DMyAppVersion=x.y.z 传入（优先）
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.1"
+  #define MyAppVersion "1.0.2"
 #endif
 #define MyAppPublisher "DocMind Contributors"
 #define MyAppURL "https://github.com/yyh2003-10/DocMind"

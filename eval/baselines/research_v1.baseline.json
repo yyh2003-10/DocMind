@@ -1,0 +1,27 @@
+{
+  "source": "eval/research_v1.jsonl",
+  "case_count": 15,
+  "key_statement_total": 52,
+  "supported_total": 40,
+  "external_only_total": 1,
+  "uncited_total": 11,
+  "support_rate_overall": 0.7692,
+  "support_rate_avg": 0.7378,
+  "cases": [
+    {"id": "r01", "support_rate": 0.8, "key_statement_count": 5, "supported": 4, "unsupported_cited": 0, "unsupported_uncited": 1},
+    {"id": "r02", "support_rate": 0.5, "key_statement_count": 4, "supported": 2, "unsupported_cited": 1, "unsupported_uncited": 1},
+    {"id": "r03", "support_rate": 1.0, "key_statement_count": 4, "supported": 4, "unsupported_cited": 0, "unsupported_uncited": 0},
+    {"id": "r04", "support_rate": 0.6667, "key_statement_count": 3, "supported": 2, "unsupported_cited": 0, "unsupported_uncited": 1},
+    {"id": "r05", "support_rate": 1.0, "key_statement_count": 2, "supported": 2, "unsupported_cited": 0, "unsupported_uncited": 0},
+    {"id": "r06", "support_rate": 1.0, "key_statement_count": 3, "supported": 3, "unsupported_cited": 0, "unsupported_uncited": 0},
+    {"id": "r07", "support_rate": 0.75, "key_statement_count": 4, "supported": 3, "unsupported_cited": 0, "unsupported_uncited": 1},
+    {"id": "r08", "support_rate": 0.6, "key_statement_count": 5, "supported": 3, "unsupported_cited": 0, "unsupported_uncited": 2},
+    {"id": "r09", "support_rate": 1.0, "key_statement_count": 3, "supported": 3, "unsupported_cited": 0, "unsupported_uncited": 0},
+    {"id": "r10", "support_rate": 0.75, "key_statement_count": 4, "supported": 3, "unsupported_cited": 0, "unsupported_uncited": 1},
+    {"id": "r11", "support_rate": 0.75, "key_statement_count": 4, "supported": 3, "unsupported_cited": 0, "unsupported_uncited": 1},
+    {"id": "r12", "support_rate": 1.0, "key_statement_count": 3, "supported": 3, "unsupported_cited": 0, "unsupported_uncited": 0},
+    {"id": "r13", "support_rate": 0.5, "key_statement_count": 4, "supported": 2, "unsupported_cited": 0, "unsupported_uncited": 2},
+    {"id": "r14", "support_rate": 0.0, "key_statement_count": 0, "supported": 0, "unsupported_cited": 0, "unsupported_uncited": 0},
+    {"id": "r15", "support_rate": 0.75, "key_statement_count": 4, "supported": 3, "unsupported_cited": 0, "unsupported_uncited": 1}
+  ]
+}

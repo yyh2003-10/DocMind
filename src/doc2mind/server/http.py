@@ -40,10 +40,12 @@ import secrets
 import threading
 import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from doc2mind.core.backup import BackupError, create_backup, restore_backup
 from doc2mind.core.config import (
     Settings,
     _user_data_dir,
@@ -57,6 +59,12 @@ from doc2mind.core.converter import (
     convert_document,
 )
 from doc2mind.core.creator import export_artifact
+from doc2mind.core.creator.history import (
+    ArtifactHistoryError,
+    get_version,
+    list_versions,
+    save_version,
+)
 from doc2mind.core.embedder import get_embedder
 from doc2mind.core.embedder.base import Embedder
 from doc2mind.core.llm import (
@@ -82,7 +90,7 @@ from doc2mind.core.reranker import get_reranker
 from doc2mind.core.retriever.search import Retriever
 from doc2mind.core.store.chat_store import ChatStore, ChatStoreError
 from doc2mind.core.store.graph_store import GraphStore
-from doc2mind.core.store.sqlite_vec import VectorStore
+from doc2mind.core.store.sqlite_vec import StoreError, VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -307,12 +315,11 @@ def _build_llm_client_from_provider_config(
     if pc is not None:
         provider = (pc.provider or s.llm_provider or "none").strip()
         if provider != "none":
+            tmp = _llm_settings_for_provider_request(
+                s, provider, pc.api_key, pc.base_url, pc.model or model_override
+            )
             tmp = dataclasses.replace(
-                s,
-                llm_provider=provider,
-                llm_api_key=(pc.api_key or "").strip() or s.llm_api_key,
-                llm_base_url=(pc.base_url or "").strip() or s.llm_base_url,
-                llm_model=(pc.model or model_override or "").strip() or s.llm_model,
+                tmp,
                 llm_temperature=(
                     pc.temperature if pc.temperature is not None else s.llm_temperature
                 ),
@@ -341,6 +348,24 @@ def _build_llm_client_from_provider(
     if req.provider_config is None:
         return None
     return _build_llm_client_from_provider_config(req.provider_config, s, req.model)
+
+
+def _llm_settings_for_provider_request(
+    s: Settings,
+    provider: str,
+    api_key: str | None,
+    base_url: str | None,
+    model: str | None,
+) -> Settings:
+    """Build transient settings without carrying credentials across providers."""
+    same_provider = provider.casefold() == str(s.llm_provider or "none").strip().casefold()
+    return dataclasses.replace(
+        s,
+        llm_provider=provider,
+        llm_api_key=(api_key or "").strip() or (s.llm_api_key if same_provider else None),
+        llm_base_url=(base_url or "").strip() or (s.llm_base_url if same_provider else None),
+        llm_model=(model or "").strip() or (s.llm_model if same_provider else ""),
+    )
 
 
 class ChatRequest(BaseModel):
@@ -390,6 +415,10 @@ class ChatRequest(BaseModel):
     response_mode: str | None = Field(
         None, validation_alias=AliasChoices("responseMode", "response_mode")
     )
+    # 渲染轨（与内容轨正交）：markdown | html。html = 助手气泡整页 HTML 体验
+    answer_format: str | None = Field(
+        None, validation_alias=AliasChoices("answerFormat", "answer_format")
+    )
     # 续写：不重复检索，基于会话历史补全可能被截断的长回答
     continue_writing: bool = Field(
         False, validation_alias=AliasChoices("continueWriting", "continue_writing")
@@ -400,13 +429,27 @@ class ChatRequest(BaseModel):
     )
     # 兼容：mode 字段 "agent" 也进入 Agent 模式
     mode: str | None = Field(None, validation_alias=AliasChoices("mode", "response_track"))
+    # 回答模式：rag | agent | auto；优先级高于 agentMode/全局默认
+    chat_mode: str | None = Field(
+        None, validation_alias=AliasChoices("chatMode", "chat_mode", "answerMode")
+    )
 
     model_config = {"populate_by_name": True}
 
     def is_agent_mode(self) -> bool:
+        if self.chat_mode and self.chat_mode.strip().lower() in ("agent", "rag", "auto"):
+            return self.chat_mode.strip().lower() == "agent"
         if self.agent_mode:
             return True
         return (self.mode or "").strip().lower() == "agent"
+
+    def requested_chat_mode(self) -> str | None:
+        raw = (self.chat_mode or "").strip().lower()
+        if raw in ("rag", "agent", "auto"):
+            return raw
+        if self.agent_mode or (self.mode or "").strip().lower() == "agent":
+            return "agent"
+        return None
 
 
 class SourceRefDTO(BaseModel):
@@ -491,6 +534,12 @@ class ChatResponse(BaseModel):
     evidence: EvidenceSummaryDTO | None = None
     # 分阶段耗时（与 SSE done 帧 timing 对齐）
     timing: dict[str, Any] = Field(default_factory=dict)
+    chat_mode: str | None = Field(None, validation_alias="chatMode")
+    chat_mode_requested: str | None = Field(None, validation_alias="chatModeRequested")
+    chat_mode_reason: str | None = Field(None, validation_alias="chatModeReason")
+    chat_mode_degraded: bool = Field(False, validation_alias="chatModeDegraded")
+
+    model_config = {"populate_by_name": True}
 
 
 class ChatSessionDTO(BaseModel):
@@ -514,6 +563,7 @@ class ChatMessageDTO(BaseModel):
     content: str
     created_at: str
     sources: list[SourceRefDTO] = []
+    trajectory: list[dict] = []
 
 
 class ChatDetailResponse(BaseModel):
@@ -576,6 +626,27 @@ class CreativeInspectResponse(BaseModel):
     highlights: list[str] = []
 
 
+class ArtifactVersionRequest(BaseModel):
+    content: str
+    format: str | None = None
+    title: str | None = None
+    sources: list[dict[str, Any]] = []
+
+
+class ArtifactVersionSummary(BaseModel):
+    version_id: str
+    artifact_id: str
+    version: int
+    created_at: str
+    format: str | None = None
+    title: str | None = None
+    sources: list[dict[str, Any]] = []
+
+
+class ArtifactVersionResponse(ArtifactVersionSummary):
+    content: str
+
+
 class ChatDeleteResponse(BaseModel):
     chat_id: str
     deleted: bool = True
@@ -628,6 +699,16 @@ class ConfigUpdate(BaseModel):
     agent_mode_enabled: bool | None = None
     agent_native_tool_calling: bool | None = None
     agent_file_write_policy: str | None = None
+    # 对话默认回答模式：rag | agent | auto（出厂 rag）
+    chat_mode_default: str | None = None
+    chat_mode_auto_enabled: bool | None = None
+    # T9/T10/T12（默认关闭/可关，不改 RAG 短答）
+    mcp_client_enabled: bool | None = None
+    mcp_servers_json: str | None = None
+    longform_enabled: bool | None = None
+    longform_max_sections: int | None = Field(None, ge=2, le=16)
+    longform_max_chars: int | None = Field(None, ge=1000, le=100000)
+    thinking_meta_filter_enabled: bool | None = None
     # --- 文件系统监控 ---
     watch_paths: list[str] | None = None
     watch_debounce_seconds: float | None = None
@@ -773,7 +854,27 @@ class LocalAiEnvironmentResponse(BaseModel):
     lm_studio: dict[str, Any] = {}
     local_gguf_models: list[dict[str, Any]] = []
     local_gguf_count: int = 0
+    tier: dict[str, Any] = {}  # 档位判定：{tier, tier_name, vram_gb, ram_gb, gpu_name, source}
+    bundle_version: int = 0  # model_bundles.BUNDLE_VERSION，前端据此兼容
     recommendations: list[dict[str, Any]] = []
+
+
+class ModelBundlesResponse(BaseModel):
+    """机型档位整套搭配（bundle）列表 + 当前档位判定。"""
+
+    bundle_version: int
+    tier: dict[str, Any]  # detect_tier() 结果
+    bundles: list[dict[str, Any]]
+
+
+class OllamaPullStatusResponse(BaseModel):
+    """ollama pull 任务状态快照（轮询用）。"""
+
+    state: str  # idle / pulling / done / error
+    model: str
+    percent: float
+    message: str
+    error: str
 
 
 class DownloadModelRequest(BaseModel):
@@ -837,7 +938,17 @@ class ConfigResponse(BaseModel):
     agent_mode_enabled: bool = False
     agent_file_write_policy: str = "session_allow"
     agent_native_tool_calling: bool = True
+    # 对话默认回答模式（出厂 rag）
+    chat_mode_default: str = "rag"
+    chat_mode_auto_enabled: bool = True
     auto_curate_on_ingest: bool | None = None
+    # T9/T10/T12
+    mcp_client_enabled: bool = False
+    mcp_servers_configured: bool = False
+    longform_enabled: bool = False
+    longform_max_sections: int = 8
+    longform_max_chars: int = 12000
+    thinking_meta_filter_enabled: bool = True
 
 
 class LlmTestResponse(BaseModel):
@@ -905,6 +1016,18 @@ class DocumentDTO(BaseModel):
     chunk_count: int
     created_at: str
     updated_at: str
+    source_missing: bool = False
+
+
+def _source_file_missing(source: str) -> bool:
+    """只检查绝对文件路径；note:、URL 和相对来源不属于本地文件。"""
+    try:
+        path = Path(source)
+        if not path.is_absolute() and not PureWindowsPath(source).is_absolute():
+            return False
+        return not path.is_file()
+    except (OSError, ValueError):
+        return True
 
 
 class IngestResultDTO(BaseModel):
@@ -1104,6 +1227,29 @@ class DoctorResponse(BaseModel):
     checks: list[DoctorCheckDTO]
 
 
+class BackupCreateRequest(BaseModel):
+    output_path: str | None = None
+
+
+class BackupResponse(BaseModel):
+    ok: bool
+    path: str
+    created_at: str | None = None
+    database_size: int = 0
+    tables: list[str] = []
+    previous_backup: str | None = None
+    error: str | None = None
+
+
+class BackupRestoreRequest(BaseModel):
+    backup_path: str
+
+
+class DiagnosticBundleRequest(BaseModel):
+    output_path: str | None = None
+    include_logs: bool = False
+
+
 class ApiError(BaseModel):
     code: str
     message: str
@@ -1184,6 +1330,36 @@ class _AppState:
         # 全局写锁：互斥 ingest / delete / reindex，防止 reindex 重建向量表
         # （DROP vec_chunks + 回填）期间并发写落到不存在的表上。
         self._write_lock = threading.Lock()
+        # Restore must not race with long-lived chat/search requests. The
+        # middleware below rejects new database requests while a restore is in
+        # progress and the endpoint waits for this counter to drain.
+        self._activity_cv = threading.Condition()
+        self._active_db_requests = 0
+        self._restoring = False
+
+    def begin_db_request(self) -> bool:
+        with self._activity_cv:
+            if self._restoring:
+                return False
+            self._active_db_requests += 1
+            return True
+
+    def end_db_request(self) -> None:
+        with self._activity_cv:
+            self._active_db_requests = max(0, self._active_db_requests - 1)
+            self._activity_cv.notify_all()
+
+    def begin_restore(self) -> bool:
+        with self._activity_cv:
+            if self._restoring or self._active_db_requests:
+                return False
+            self._restoring = True
+            return True
+
+    def end_restore(self) -> None:
+        with self._activity_cv:
+            self._restoring = False
+            self._activity_cv.notify_all()
 
     def ensure_open(self) -> VectorStore:
         # 双检锁：避免并发首次请求重复创建 store/embedder
@@ -1311,6 +1487,17 @@ def _build_auth_middleware(token: str):
     return _auth_middleware
 
 
+def _parse_trajectory(m) -> list:
+    raw = getattr(m, "trajectory_json", None)
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+        return val if isinstance(val, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def create_app(settings: Settings | None = None) -> Any:
     """创建 FastAPI app 实例。
 
@@ -1365,6 +1552,47 @@ def create_app(settings: Settings | None = None) -> Any:
             )
         return await call_next(request)
 
+    @app.middleware("http")
+    async def _database_activity(request: Request, call_next: Any) -> Any:
+        # Restore is the coordinator; all other API calls participate in the
+        # activity counter so a streaming chat cannot keep a database handle
+        # alive while Windows is replacing the file.
+        if request.url.path == "/v1/backup/restore":
+            return await call_next(request)
+        if not state.begin_db_request():
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": {
+                        "code": "RESTORE_IN_PROGRESS",
+                        "message": "知识库正在恢复，请稍后重试",
+                    }
+                },
+            )
+        handed_off = False
+        try:
+            response = await call_next(request)
+            if isinstance(response, StreamingResponse):
+                # Starlette returns before the body iterator is consumed. Keep
+                # the activity lease until the client disconnects or the
+                # generator finishes, so restore cannot replace SQLite while
+                # an SSE handler is still using the store.
+                iterator = response.body_iterator
+
+                async def _leased_iterator() -> Any:
+                    try:
+                        async for chunk in iterator:
+                            yield chunk
+                    finally:
+                        state.end_db_request()
+
+                response.body_iterator = _leased_iterator()
+                handed_off = True
+            return response
+        finally:
+            if not handed_off:
+                state.end_db_request()
+
     # --- GET /v1/health ---
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -1410,6 +1638,124 @@ def create_app(settings: Settings | None = None) -> Any:
         report = await asyncio.to_thread(run_diagnostics, check_network=network)
         return DoctorResponse(**report.to_dict())
 
+    # --- POST /v1/backup（知识库一致性备份）---
+    @app.post("/v1/backup", response_model=BackupResponse)
+    async def create_backup_endpoint(req: BackupCreateRequest) -> BackupResponse:
+        output = Path(req.output_path) if req.output_path else (
+            _user_data_dir() / "backups" / f"docmind-{datetime.now().strftime('%Y%m%d-%H%M%S')}.docmind.zip"
+        )
+        try:
+            manifest = await asyncio.to_thread(create_backup, state.settings.db_path, output)
+            return BackupResponse(
+                ok=True,
+                path=str(output),
+                created_at=manifest.get("created_at"),
+                database_size=int(manifest.get("database_size", 0)),
+                tables=list(manifest.get("tables", [])),
+            )
+        except BackupError as exc:
+            raise _api_error("BACKUP_FAILED", str(exc), 400) from exc
+
+    # --- POST /v1/backup/restore（恢复前先自动保留当前数据库）---
+    @app.post("/v1/backup/restore", response_model=BackupResponse)
+    async def restore_backup_endpoint(req: BackupRestoreRequest) -> BackupResponse:
+        # 与 ingest/delete/reindex 共用写锁，避免恢复期间仍有后台任务写旧库。
+        await asyncio.to_thread(state._write_lock.acquire)
+        restore_started = False
+        try:
+            if not state.begin_restore():
+                raise _api_error(
+                    "RESTORE_BUSY",
+                    "当前仍有数据库请求运行，请稍后再恢复备份",
+                    409,
+                )
+            restore_started = True
+            with state._jobs_lock:
+                active = [
+                    job.job_id
+                    for job in state.jobs.values()
+                    if job.status not in {"completed", "failed", "cancelled", "done", "succeeded"}
+                ]
+            if active:
+                raise _api_error(
+                    "RESTORE_BUSY",
+                    "当前仍有后台任务运行，请先等待任务完成或取消后再恢复备份",
+                    409,
+                )
+            if state.store is not None:
+                await asyncio.to_thread(state.store.close)
+                state.store = None
+            result = await asyncio.to_thread(restore_backup, state.settings.db_path, Path(req.backup_path))
+            # Reopen through the real VectorStore before reporting success. This
+            # loads sqlite-vec/FTS and catches stale WAL or schema problems that
+            # a plain SQLite integrity_check cannot detect.
+            reopened = state.ensure_open()
+            if not reopened.ping():
+                reopened.close()
+                state.store = None
+                raise BackupError("备份已替换，但 sqlite-vec 索引无法重新打开；已保留恢复前副本")
+            with reopened._lock:  # type: ignore[attr-defined]
+                meta_count = reopened._conn.execute("SELECT COUNT(*) FROM chunks_meta").fetchone()[0]  # type: ignore[union-attr]
+                vec_count = reopened._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0]  # type: ignore[union-attr]
+            if meta_count != vec_count:
+                reopened.close()
+                state.store = None
+                raise BackupError("备份索引不一致：向量与分块元数据数量不同；已保留恢复前副本")
+            manifest = result.get("manifest") or {}
+            return BackupResponse(
+                ok=True,
+                path=str(result.get("path", state.settings.db_path)),
+                created_at=manifest.get("created_at"),
+                database_size=int(manifest.get("database_size", 0)),
+                tables=list(manifest.get("tables", [])),
+                previous_backup=result.get("previous_backup"),
+            )
+        except BackupError as exc:
+            raise _api_error("RESTORE_FAILED", str(exc), 400) from exc
+        finally:
+            if restore_started:
+                state.end_restore()
+            state._write_lock.release()
+
+    # --- POST /v1/diagnostics/bundle（脱敏诊断包）---
+    @app.post("/v1/diagnostics/bundle", response_model=BackupResponse)
+    async def create_diagnostic_bundle(req: DiagnosticBundleRequest) -> BackupResponse:
+        output = Path(req.output_path) if req.output_path else (
+            _user_data_dir() / "diagnostics" / f"docmind-diagnostics-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+        )
+
+        def _build_bundle() -> dict[str, Any]:
+            from doc2mind.core.doctor import run_diagnostics
+
+            output.parent.mkdir(parents=True, exist_ok=True)
+            report = run_diagnostics(check_network=False).to_dict()
+            health = {
+                "version": __version__,
+                "database_name": state.settings.db_path.name,
+                "database_present": state.settings.db_path.exists(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            tmp_output = output.with_suffix(output.suffix + ".tmp")
+            try:
+                with zipfile.ZipFile(tmp_output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr("doctor.json", json.dumps(report, ensure_ascii=False, indent=2))
+                    archive.writestr("runtime.json", json.dumps(health, ensure_ascii=False, indent=2))
+                    if req.include_logs:
+                        for log_path in _user_data_dir().glob("*.log"):
+                            if log_path.is_file():
+                                archive.write(log_path, f"logs/{log_path.name}")
+                os.replace(tmp_output, output)
+            finally:
+                if tmp_output.exists():
+                    tmp_output.unlink(missing_ok=True)
+            return {"size": output.stat().st_size}
+
+        try:
+            details = await asyncio.to_thread(_build_bundle)
+            return BackupResponse(ok=True, path=str(output), database_size=int(details["size"]))
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise _api_error("DIAGNOSTICS_FAILED", str(exc), 500) from exc
+
     # --- POST /v1/sample/ingest（一键导入内置示例文档库）---
     @app.post("/v1/sample/ingest", response_model=SampleIngestResponse)
     async def ingest_sample(req: SampleIngestRequest) -> SampleIngestResponse:
@@ -1430,7 +1776,10 @@ def create_app(settings: Settings | None = None) -> Any:
     async def gpu_diagnosis() -> GpuDiagnosisResponse:
         from doc2mind.core.system_env import get_gpu_diagnosis
 
-        return GpuDiagnosisResponse(**get_gpu_diagnosis())
+        # GPU diagnosis imports native runtimes and scans local packages; keep it
+        # off the event loop so navigation-time diagnostics cannot stall the API.
+        result = await asyncio.to_thread(get_gpu_diagnosis)
+        return GpuDiagnosisResponse(**result)
 
     # --- POST /v1/system/install-gpu（一键安装，SSE 流式日志）---
     @app.post("/v1/system/install-gpu")
@@ -1489,6 +1838,72 @@ def create_app(settings: Settings | None = None) -> Any:
 
         res = await get_local_ai_environment()
         return LocalAiEnvironmentResponse(**res)
+
+    # --- GET /v1/system/model-bundles（机型档位整套搭配：5 档 + 三态 + pull 命令）---
+    @app.get("/v1/system/model-bundles", response_model=ModelBundlesResponse)
+    async def get_model_bundles_endpoint() -> ModelBundlesResponse:
+        from doc2mind.core.local_ai_detect import get_local_ai_environment
+        from doc2mind.core.model_bundles import BUNDLE_VERSION, MODEL_BUNDLES
+
+        # 复用环境探测拿三态与当前档位（探测有 1.5s 超时，快速失败无副作用）
+        env = await get_local_ai_environment()
+        states = {
+            r["tier"]: r for r in env["recommendations"] if r.get("kind") == "bundle"
+        }
+        bundles: list[dict[str, Any]] = []
+        for b in MODEL_BUNDLES:
+            rec = states.get(b.tier, {})
+            bundles.append({
+                "tier": b.tier,
+                "display_name": b.display_name,
+                "embed_model": b.embed_model,
+                "rerank_model": b.rerank_model,
+                "rerank_enabled": b.rerank_enabled,
+                "chat_models": rec.get("chat_options", []),
+                "model": rec.get("model", ""),
+                "pull_command": rec.get("pull_command", ""),
+                "state": rec.get("state", "runtime_missing"),
+                "is_current_tier": rec.get("is_current_tier", False),
+                "installer_url": rec.get("installer_url", ""),
+                "description": rec.get("description", b.description),
+                "badge": rec.get("badge", ""),
+            })
+        return ModelBundlesResponse(
+            bundle_version=BUNDLE_VERSION,
+            tier=env["tier"],
+            bundles=bundles,
+        )
+
+    # --- POST /v1/system/ollama/pull（一键拉取模型：子进程执行 ollama pull，进度走 GET 轮询）---
+    @app.post("/v1/system/ollama/pull", response_model=OllamaPullStatusResponse)
+    async def ollama_pull_endpoint(req: DownloadModelRequest) -> OllamaPullStatusResponse:
+        from doc2mind.core.ollama_pull import start_pull
+
+        model = (req.model_name or "").strip()
+        if not model:
+            raise HTTPException(status_code=400, detail="model_name 不能为空")
+        status = await start_pull(model)
+        return OllamaPullStatusResponse(
+            state=str(status.get("state", "idle")),
+            model=str(status.get("model", "")),
+            percent=float(status.get("percent", 0.0)),
+            message=str(status.get("message", "")),
+            error=str(status.get("error", "")),
+        )
+
+    # --- GET /v1/system/ollama/pull/status（拉取进度轮询）---
+    @app.get("/v1/system/ollama/pull/status", response_model=OllamaPullStatusResponse)
+    async def ollama_pull_status_endpoint() -> OllamaPullStatusResponse:
+        from doc2mind.core.ollama_pull import pull_status
+
+        status = await pull_status()
+        return OllamaPullStatusResponse(
+            state=str(status.get("state", "idle")),
+            model=str(status.get("model", "")),
+            percent=float(status.get("percent", 0.0)),
+            message=str(status.get("message", "")),
+            error=str(status.get("error", "")),
+        )
 
     # --- POST /v1/system/install-ocr（一键安装 OCR，SSE 流式日志）---
     @app.post("/v1/system/install-ocr")
@@ -1710,7 +2125,15 @@ def create_app(settings: Settings | None = None) -> Any:
             agent_mode_enabled=bool(getattr(s, "agent_mode_enabled", False)),
             agent_file_write_policy=str(getattr(s, "agent_file_write_policy", "session_allow") or "session_allow"),
             agent_native_tool_calling=bool(getattr(s, "agent_native_tool_calling", True)),
+            chat_mode_default=str(getattr(s, "chat_mode_default", "rag") or "rag"),
+            chat_mode_auto_enabled=bool(getattr(s, "chat_mode_auto_enabled", True)),
             auto_curate_on_ingest=bool(getattr(s, "auto_curate_on_ingest", False)),
+            mcp_client_enabled=bool(getattr(s, "mcp_client_enabled", False)),
+            mcp_servers_configured=bool(str(getattr(s, "mcp_servers_json", "") or "").strip() not in ("", "[]")),
+            longform_enabled=bool(getattr(s, "longform_enabled", False)),
+            longform_max_sections=int(getattr(s, "longform_max_sections", 8) or 8),
+            longform_max_chars=int(getattr(s, "longform_max_chars", 12000) or 12000),
+            thinking_meta_filter_enabled=bool(getattr(s, "thinking_meta_filter_enabled", True)),
         )
 
     @app.post("/v1/config", response_model=ConfigResponse)
@@ -1823,7 +2246,15 @@ def create_app(settings: Settings | None = None) -> Any:
             agent_mode_enabled=bool(getattr(s, "agent_mode_enabled", False)),
             agent_file_write_policy=str(getattr(s, "agent_file_write_policy", "session_allow") or "session_allow"),
             agent_native_tool_calling=bool(getattr(s, "agent_native_tool_calling", True)),
+            chat_mode_default=str(getattr(s, "chat_mode_default", "rag") or "rag"),
+            chat_mode_auto_enabled=bool(getattr(s, "chat_mode_auto_enabled", True)),
             auto_curate_on_ingest=bool(getattr(s, "auto_curate_on_ingest", False)),
+            mcp_client_enabled=bool(getattr(s, "mcp_client_enabled", False)),
+            mcp_servers_configured=bool(str(getattr(s, "mcp_servers_json", "") or "").strip() not in ("", "[]")),
+            longform_enabled=bool(getattr(s, "longform_enabled", False)),
+            longform_max_sections=int(getattr(s, "longform_max_sections", 8) or 8),
+            longform_max_chars=int(getattr(s, "longform_max_chars", 12000) or 12000),
+            thinking_meta_filter_enabled=bool(getattr(s, "thinking_meta_filter_enabled", True)),
         )
 
     # --- POST /v1/llm/test（设置页「测试连接」：验证 LLM 配置是否可用）---
@@ -1847,13 +2278,10 @@ def create_app(settings: Settings | None = None) -> Any:
                 error=f"不支持的提供商: {provider}，可选: {'/'.join(SUPPORTED_PROVIDERS)}",
             )
 
-        # 临时 Settings：dataclasses.replace 生成副本，不动运行时配置
-        tmp = dataclasses.replace(
-            s,
-            llm_provider=provider,
-            llm_api_key=(req.api_key or "").strip() or s.llm_api_key,
-            llm_base_url=(req.base_url or "").strip() or s.llm_base_url,
-            llm_model=(req.model or "").strip() or s.llm_model,
+        # 临时 Settings：dataclasses.replace 生成副本，不动运行时配置。
+        # 切 provider 时空字段不能继承上一家服务商的 key / URL / model。
+        tmp = _llm_settings_for_provider_request(
+            s, provider, req.api_key, req.base_url, req.model
         )
 
         def _run() -> tuple[str, str, str]:
@@ -1931,11 +2359,8 @@ def create_app(settings: Settings | None = None) -> Any:
             )
 
         # 临时 Settings：模型名用后端当前值（仅构造客户端，不影响列表结果）
-        tmp = dataclasses.replace(
-            s,
-            llm_provider=provider,
-            llm_api_key=(req.api_key or "").strip() or s.llm_api_key,
-            llm_base_url=(req.base_url or "").strip() or s.llm_base_url,
+        tmp = _llm_settings_for_provider_request(
+            s, provider, req.api_key, req.base_url, None
         )
 
         def _run() -> tuple[str, list[str]]:
@@ -2309,9 +2734,81 @@ def create_app(settings: Settings | None = None) -> Any:
         临时 LLM 客户端按请求生效，不修改后端全局配置；未携带则用全局配置。
         """
         store = await asyncio.to_thread(state.ensure_open)
+        from doc2mind.core.agent.chat_mode import resolve_chat_mode
+
+        decision = resolve_chat_mode(
+            req.requested_chat_mode(),
+            agent_flag=bool(req.agent_mode),
+            legacy_mode=req.mode,
+            agent_allowed=bool(getattr(state.settings, "agent_mode_enabled", False)),
+            default_mode=str(getattr(state.settings, "chat_mode_default", "rag") or "rag"),
+            query=req.query or "",
+            enable_web_search=bool(req.enable_web_search),
+            web_search_mode=req.resolved_web_search_mode(),
+            continue_writing=bool(req.continue_writing),
+            auto_enabled=bool(getattr(state.settings, "chat_mode_auto_enabled", True)),
+        )
         try:
             # 按请求携带的服务商配置构造临时 LLM 客户端（复用 /v1/llm/test 模式）
             llm_client = _build_llm_client_from_provider(req, state.settings)
+            if decision.mode == "agent":
+                from doc2mind.core.agent.runtime.chat_agent import agent_answer_stream
+
+                def _run_agent() -> dict[str, Any]:
+                    frames = list(
+                        agent_answer_stream(
+                            req.query,
+                            collection=req.collection,
+                            top_k=req.top_k,
+                            chat_id=req.chat_id,
+                            settings=state.settings,
+                            llm_client=llm_client,
+                            collections=req.collections,
+                            model_override=req.model,
+                            enable_web_search=req.enable_web_search,
+                            web_search_mode=req.resolved_web_search_mode(),
+                            github_token=req.github_token,
+                            store=store,
+                            embedder=state.embedder,
+                            persona=req.persona,
+                            persona_prompt=req.persona_prompt,
+                            attachments=req.attachments,
+                            memory_context=req.memory_context,
+                            response_mode=req.response_mode,
+                            answer_format=req.answer_format,
+                        )
+                    )
+                    answer_parts: list[str] = []
+                    done: dict[str, Any] = {}
+                    for frame in frames:
+                        try:
+                            obj = json.loads(frame)
+                        except (TypeError, ValueError):
+                            continue
+                        if isinstance(obj, dict) and obj.get("token"):
+                            answer_parts.append(str(obj["token"]))
+                        if isinstance(obj, dict) and obj.get("done"):
+                            done = obj
+                    if not done:
+                        raise RagError("Agent 未返回完成帧")
+                    done["answer"] = "".join(answer_parts)
+                    return done
+
+                agent_done = await asyncio.to_thread(_run_agent)
+                return ChatResponse(
+                    answer=str(agent_done.get("answer") or ""),
+                    chat_id=str(agent_done.get("chat_id") or ""),
+                    model=str(agent_done.get("model") or ""),
+                    provider=str(agent_done.get("provider") or ""),
+                    total_chunks=int(agent_done.get("total_chunks") or 0),
+                    elapsed_ms=int(agent_done.get("elapsed_ms") or 0),
+                    sources=[SourceRefDTO(**s) for s in (agent_done.get("sources") or [])],
+                    timing=dict(agent_done.get("timing") or {}),
+                    chat_mode=decision.mode,
+                    chat_mode_requested=decision.requested,
+                    chat_mode_reason=decision.reason,
+                    chat_mode_degraded=decision.degraded,
+                )
             answer = await asyncio.to_thread(
                 rag_answer,
                 req.query,
@@ -2377,6 +2874,10 @@ def create_app(settings: Settings | None = None) -> Any:
                 else None
             ),
             timing=dict(getattr(answer, "timing", None) or {}),
+            chat_mode=decision.mode,
+            chat_mode_requested=decision.requested,
+            chat_mode_reason=decision.reason,
+            chat_mode_degraded=decision.degraded,
         )
 
     # --- POST /v1/chat/stream (SSE) ---
@@ -2412,18 +2913,32 @@ def create_app(settings: Settings | None = None) -> Any:
                 if not stop_event.is_set():
                     yield f"data: {json.dumps({'error': f'LLM 配置错误: {e}'}, ensure_ascii=False)}\n\n"
                 return
-            # 续写优先走 RAG 续写路径；Agent 模式与 continueWriting 同时请求时以续写为准，
-            # 避免「继续写」被 agent 工具链抢走导致语义不符。
-            # 商用门禁：agent_mode_enabled=false 时忽略请求中的 agentMode，
-            # 强制回落 RAG，避免未开放的进阶能力被 API 直接打开。
-            agent_requested = req.is_agent_mode() and not req.continue_writing
+            # 商用门禁 + ChatMode 路由（规格：ai-chat-architecture-chat-mode.md）
+            from doc2mind.core.agent.chat_mode import (
+                decision_status_message,
+                resolve_chat_mode,
+            )
+
             agent_allowed = bool(getattr(state.settings, "agent_mode_enabled", False))
-            if agent_requested and not agent_allowed:
-                logger.info(
-                    "请求携带 agentMode 但后端 agent_mode_enabled=false，已回落 RAG（query_len=%d）",
-                    len(req.query or ""),
-                )
-            if agent_requested and agent_allowed:
+            decision = resolve_chat_mode(
+                req.requested_chat_mode(),
+                agent_flag=bool(req.agent_mode),
+                legacy_mode=req.mode,
+                agent_allowed=agent_allowed,
+                default_mode=str(getattr(state.settings, "chat_mode_default", "rag") or "rag"),
+                query=req.query or "",
+                enable_web_search=bool(req.enable_web_search),
+                web_search_mode=req.resolved_web_search_mode(),
+                continue_writing=bool(req.continue_writing),
+                auto_enabled=bool(getattr(state.settings, "chat_mode_auto_enabled", True)),
+            )
+            mode_msg = decision_status_message(decision)
+            if not stop_event.is_set():
+                yield f"data: {json.dumps({'type': 'status', 'message': mode_msg}, ensure_ascii=False)}\n\n"
+            if decision.degraded:
+                logger.warning("ChatMode 降级: requested=%s → %s (%s)", decision.requested, decision.mode, decision.reason)
+
+            if decision.mode == "agent":
                 from doc2mind.core.agent.runtime.chat_agent import agent_answer_stream
 
                 gen = agent_answer_stream(
@@ -2436,6 +2951,8 @@ def create_app(settings: Settings | None = None) -> Any:
                     collections=req.collections,
                     model_override=req.model,
                     enable_web_search=req.enable_web_search,
+                    web_search_mode=req.resolved_web_search_mode(),
+                    github_token=req.github_token,
                     store=store,
                     embedder=state.embedder,
                     stop_event=stop_event,
@@ -2444,6 +2961,7 @@ def create_app(settings: Settings | None = None) -> Any:
                     attachments=req.attachments,
                     memory_context=req.memory_context,
                     response_mode=req.response_mode,
+                    answer_format=req.answer_format,
                 )
             else:
                 gen = rag_answer_stream(
@@ -2464,8 +2982,38 @@ def create_app(settings: Settings | None = None) -> Any:
                     rag_mode=req.rag_mode,
                     memory_context=req.memory_context,
                     response_mode=req.response_mode,
+                    answer_format=req.answer_format,
                     continue_writing=req.continue_writing,
                 )
+
+            _chat_mode_meta = {
+                "chat_mode": decision.mode,
+                "chat_mode_requested": decision.requested,
+                "chat_mode_reason": decision.reason,
+                "chat_mode_degraded": decision.degraded,
+            }
+
+            def _enrich_done(chunk: str | None) -> str | None:
+                """把 chat_mode 路由元数据并入 done 帧，便于前端角标与排障。"""
+                if not chunk:
+                    return chunk
+                prefix = "data: "
+                raw = chunk[len(prefix):] if chunk.startswith(prefix) else chunk
+                raw = raw.strip()
+                if not raw or not raw.startswith("{"):
+                    return chunk
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    return chunk
+                if not isinstance(obj, dict) or not obj.get("done"):
+                    return chunk
+                obj.update(_chat_mode_meta)
+                # 只返回裸 JSON：消费端（event_generator）会统一包一层
+                # "data: {chunk}\n\n"。此处若再拼 "data: " 前缀，SSE 行会变成
+                # "data: data: {...}"，端上剥掉一次前缀后仍以 'd' 开头，
+                # JSON 解析直接抛 PARSE_ERROR，导致整轮回答判定失败。
+                return json.dumps(obj, ensure_ascii=False)
 
             def _push(chunk: str | None) -> None:
                 """跨线程推送到 asyncio 队列；失败时置位 stop_event 防止挂死。"""
@@ -2485,7 +3033,7 @@ def create_app(settings: Settings | None = None) -> Any:
                     for chunk_json in gen:
                         if stop_event.is_set():
                             break
-                        _push(chunk_json)
+                        _push(_enrich_done(chunk_json))
                 except RagError as e:
                     _push(f"__ERROR__:{e}")
                 except Exception as e:  # noqa: BLE001
@@ -2545,16 +3093,17 @@ def create_app(settings: Settings | None = None) -> Any:
             },
         )
 
-    # --- GET /v1/chats（会话列表，按更新时间倒序） ---
+    # --- GET /v1/chats（会话列表，按更新时间倒序；q= 关键字过滤标题/消息） ---
     @app.get("/v1/chats", response_model=ChatListResponse)
     async def list_chats(
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
+        q: str | None = Query(None, min_length=1, description="按标题/消息内容模糊搜索"),
     ) -> ChatListResponse:
         store = ChatStore(state.settings.db_path)
         try:
             sessions, total = await asyncio.to_thread(
-                lambda: (store.list_sessions(limit, offset), store.count_sessions())
+                lambda: (store.list_sessions(limit, offset, q=q), store.count_sessions(q=q))
             )
         except ChatStoreError as e:
             raise _api_error("INTERNAL", f"列出会话失败: {e}", 500) from e
@@ -2569,11 +3118,12 @@ def create_app(settings: Settings | None = None) -> Any:
                 )
                 for s in sessions
             ],
-            # AUD-013：total 是会话总数而非本页条数（分页正确性）
+            # AUD-013：total 是会话总数（q 过滤时为匹配数）而非本页条数
             total=total,
         )
 
     # --- GET /v1/chats/{chat_id}（会话全部消息，回看/续聊） ---
+
     @app.get("/v1/chats/{chat_id}", response_model=ChatDetailResponse)
     async def get_chat(chat_id: str) -> ChatDetailResponse:
         store = ChatStore(state.settings.db_path)
@@ -2624,6 +3174,7 @@ def create_app(settings: Settings | None = None) -> Any:
                     pass
             parsed_messages.append(
                 ChatMessageDTO(
+                    trajectory=_parse_trajectory(m),
                     role=m.role,
                     content=m.content,
                     created_at=m.created_at,
@@ -2679,6 +3230,7 @@ def create_app(settings: Settings | None = None) -> Any:
                     size_bytes=d.size_bytes, page_count=d.page_count,
                     chunk_count=d.chunk_count, created_at=d.created_at,
                     updated_at=d.updated_at,
+                    source_missing=_source_file_missing(d.source),
                 )
                 for d in docs
             ],
@@ -2721,7 +3273,7 @@ def create_app(settings: Settings | None = None) -> Any:
                     }
                 )
         return {
-            "document": match.__dict__,
+            "document": {**match.__dict__, "source_missing": _source_file_missing(match.source)},
             "chunks_preview": preview,
         }
 
@@ -2816,6 +3368,31 @@ def create_app(settings: Settings | None = None) -> Any:
         )
 
     # --- PUT /v1/chunks/{chunk_id}/annotation（笔记批注） ---
+    # --- POST /v1/agent/permission/{request_id}：L2 权限挂起裁决 ---
+    class PermissionDecisionRequest(BaseModel):
+        decision: str = "deny"  # allow | deny
+
+    @app.post("/v1/agent/permission/{request_id}")
+    async def resolve_agent_permission(request_id: str, body: PermissionDecisionRequest):
+        """解除 Agent L2 写入权限挂起。UI 在收到 permission_request 帧后调用。
+
+        decision=allow 授权本会话后续写入；deny/超时则该次工具被拒，模型改道。
+        """
+        from doc2mind.core.agent.runtime.permissions import GLOBAL_PERMISSION_BROKER
+
+        ok = GLOBAL_PERMISSION_BROKER.resolve(request_id, body.decision)
+        return {
+            "resolved": ok,
+            "request_id": request_id,
+            "decision": body.decision if ok else "unknown",
+            "pending": GLOBAL_PERMISSION_BROKER.pending_ids(),
+        }
+
+    @app.get("/v1/agent/permission/pending")
+    async def list_pending_permissions():
+        from doc2mind.core.agent.runtime.permissions import GLOBAL_PERMISSION_BROKER
+
+        return {"pending": GLOBAL_PERMISSION_BROKER.pending_ids()}
     @app.put("/v1/chunks/{chunk_id}/annotation")
     async def upsert_chunk_annotation(chunk_id: int, body: dict = Body(...)) -> dict:
         """更新分块批注(合并到 extra JSON)。body 示例: {"text": "这是一个重要结论"}"""
@@ -3339,6 +3916,45 @@ def create_app(settings: Settings | None = None) -> Any:
             )
 
         return await asyncio.to_thread(_do_inspect)
+
+    # --- Artifact 版本历史（草稿、来源和重新生成入口）---
+    @app.post("/v1/creative/artifacts/{artifact_id}/versions", response_model=ArtifactVersionResponse)
+    async def save_artifact_version(artifact_id: str, req: ArtifactVersionRequest) -> ArtifactVersionResponse:
+        try:
+            record = await asyncio.to_thread(
+                save_version,
+                _user_data_dir() / "artifacts",
+                artifact_id,
+                content=req.content,
+                artifact_format=req.format,
+                title=req.title,
+                sources=req.sources,
+            )
+            return ArtifactVersionResponse(**record)
+        except ArtifactHistoryError as exc:
+            raise _api_error("ARTIFACT_VERSION_FAILED", str(exc), 400) from exc
+
+    @app.get("/v1/creative/artifacts/{artifact_id}/versions", response_model=list[ArtifactVersionSummary])
+    async def get_artifact_versions(artifact_id: str) -> list[ArtifactVersionSummary]:
+        try:
+            records = await asyncio.to_thread(
+                list_versions, _user_data_dir() / "artifacts", artifact_id
+            )
+            return [ArtifactVersionSummary(**record) for record in records]
+        except ArtifactHistoryError as exc:
+            raise _api_error("ARTIFACT_VERSION_FAILED", str(exc), 400) from exc
+
+    @app.get("/v1/creative/artifacts/{artifact_id}/versions/{version_id}", response_model=ArtifactVersionResponse)
+    async def get_artifact_version(artifact_id: str, version_id: str) -> ArtifactVersionResponse:
+        try:
+            record = await asyncio.to_thread(
+                get_version, _user_data_dir() / "artifacts", artifact_id, version_id
+            )
+        except ArtifactHistoryError as exc:
+            raise _api_error("ARTIFACT_VERSION_FAILED", str(exc), 400) from exc
+        if record is None:
+            raise _api_error("NOT_FOUND", "Artifact 版本不存在", 404)
+        return ArtifactVersionResponse(**record)
 
     # --- POST /v1/reindex ---
     @app.post("/v1/reindex", response_model=JobStatus)

@@ -64,8 +64,24 @@ public sealed record BackendConfig
     /// <summary>是否启用 Agent 对话模式（需后端 agent_mode_enabled；默认 false）。</summary>
     public bool AgentModeEnabled { get; init; }
 
+    /// <summary>全局默认回答模式：rag | agent | auto（出厂 rag）。</summary>
+    public string ChatModeDefault { get; init; } = "rag";
+
     /// <summary>Agent 工作区写入策略：ask / session_allow / always_allow_workspace。</summary>
     public string AgentFileWritePolicy { get; init; } = "session_allow";
+    /// <summary>搜索 Provider（builtin/tavily/…）。</summary>
+    public string SearchProvider { get; init; } = "builtin";
+    /// <summary>搜索 Provider API Key 是否已配置（不回传明文）。</summary>
+    public bool SearchProviderApiKeyConfigured { get; init; }
+    /// <summary>搜索 Provider 自定义端点。</summary>
+    public string? SearchProviderEndpoint { get; init; }
+
+    /// <summary>是否启用长文大纲编排。</summary>
+    public bool LongformEnabled { get; init; }
+    /// <summary>长文最大章节数（2-16）。</summary>
+    public int LongformMaxSections { get; init; } = 8;
+    /// <summary>长文总字数上限。</summary>
+    public int LongformMaxChars { get; init; } = 12000;
 }
 
 /// <summary>对应后端 ConfigUpdate：只提交有值的字段（null 表示不修改）。</summary>
@@ -117,6 +133,33 @@ public sealed record BackendConfigUpdate
 
     /// <summary>入库时是否自动跑 AI 整理；null = 不修改。</summary>
     public bool? AutoCurateOnIngest { get; init; }
+
+    /// <summary>是否启用 Agent 对话模式（后端 agent_mode_enabled）；null = 不修改。
+    /// 设置页勾选后推送，否则后端默认 false 会回落 RAG，客户端开关无效。</summary>
+    public bool? AgentModeEnabled { get; init; }
+
+    /// <summary>全局默认回答模式 rag/agent/auto；null = 不修改。</summary>
+    public string? ChatModeDefault { get; init; }
+
+    /// <summary>是否允许 provider 原生 tool-calling；null = 不修改。</summary>
+    public bool? AgentNativeToolCalling { get; init; }
+
+    /// <summary>Agent 工作区写入策略；null = 不修改。</summary>
+    public string? AgentFileWritePolicy { get; init; }
+
+    /// <summary>搜索 Provider（builtin/tavily/bocha/serpapi）；null = 不修改。</summary>
+    public string? SearchProvider { get; init; }
+    /// <summary>搜索 Provider API Key；空字符串=清除，null=不修改。</summary>
+    public string? SearchProviderApiKey { get; init; }
+    /// <summary>搜索 Provider 端点；null = 不修改。</summary>
+    public string? SearchProviderEndpoint { get; init; }
+
+    /// <summary>长文大纲编排开关；null = 不修改。</summary>
+    public bool? LongformEnabled { get; init; }
+    /// <summary>长文最大章节数；null = 不修改。</summary>
+    public int? LongformMaxSections { get; init; }
+    /// <summary>长文总字数上限；null = 不修改。</summary>
+    public int? LongformMaxChars { get; init; }
 
     /// <summary>持久化开关：true（默认）= 运行时生效 + 后端落盘 config.toml；
     /// false = 只更新后端运行时配置，不落盘（LLM 连接字段「输入即生效」的即时推送用，保存才持久化）。</summary>

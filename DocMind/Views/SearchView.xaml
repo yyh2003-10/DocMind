@@ -12,7 +12,7 @@
         <!-- 评分颜色: 高→绿, 中→蓝, 低→灰 -->
         <Style x:Key="ScoreBadge" TargetType="Border">
             <Setter Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
-            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="CornerRadius" Value="{StaticResource CornerSm}"/>
             <Setter Property="Padding" Value="6,2"/>
             <Setter Property="Margin" Value="0,0,8,0"/>
             <Setter Property="VerticalAlignment" Value="Top"/>
@@ -25,8 +25,8 @@
 
         <!-- 结果卡片模板 -->
         <DataTemplate x:Key="HitCardTemplate" DataType="{x:Type m:SearchHit}">
-            <Border Background="{StaticResource CardBrush}"
-                    CornerRadius="10"
+            <Border Background="{DynamicResource CardBrush}"
+                    CornerRadius="{StaticResource CornerMd}"
                     Padding="14"
                     Margin="0,0,0,8"
                     SnapsToDevicePixels="True">
@@ -41,7 +41,7 @@
                             </Trigger>
                             <!-- 选中高亮：跟随 ListBoxItem.IsSelected -->
                             <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
-                                         Value="True">
+                                          Value="True">
                                 <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
                                 <Setter Property="BorderThickness" Value="2"/>
                             </DataTrigger>
@@ -68,15 +68,17 @@
                         <!-- 相关度百分比徽章 -->
                         <Border Grid.Column="0" Style="{StaticResource ScoreBadge}" Margin="0,0,6,0">
                             <TextBlock Text="{Binding ScorePercentText, Mode=OneWay}"
-                                       FontSize="11" FontWeight="Bold"
-                                       Foreground="{StaticResource PrimaryBrush}"/>
+                                       Style="{StaticResource SmallText}"
+                                       FontWeight="Bold"
+                                       Foreground="{DynamicResource PrimaryBrush}"/>
                         </Border>
 
                         <!-- 检索引擎徽章 -->
-                        <Border Grid.Column="1" Background="{StaticResource SurfaceBrush}"
-                                CornerRadius="4" Padding="6,2" Margin="0,0,8,0">
+                        <Border Grid.Column="1" Background="{DynamicResource SurfaceBrush}"
+                                CornerRadius="{StaticResource CornerSm}" Padding="6,2" Margin="0,0,8,0">
                             <TextBlock Text="{Binding MatchBadgeText, Mode=OneWay}"
-                                       FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                       Style="{StaticResource SmallText}"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"/>
                         </Border>
 
                         <!-- 来源文件名 -->
@@ -88,8 +90,8 @@
                                    TextTrimming="CharacterEllipsis"/>
 
                         <!-- 格式标记 -->
-                        <Border Grid.Column="3" CornerRadius="3"
-                                Background="{StaticResource SurfaceBrush}"
+                        <Border Grid.Column="3" CornerRadius="{StaticResource CornerSm}"
+                                Background="{DynamicResource SurfaceBrush}"
                                 Padding="4,1" Margin="4,0,0,0">
                             <TextBlock Text="{Binding Format, Mode=OneWay}"
                                        Style="{StaticResource SmallText}"/>
@@ -103,7 +105,7 @@
                                TextWrapping="Wrap"
                                MaxHeight="60"
                                TextTrimming="CharacterEllipsis"
-                               LineHeight="20"/>
+                               LineHeight="{StaticResource LineHeightBody}"/>
 
                     <!-- 第三行：元数据信息 -->
                     <StackPanel Grid.Row="2" Orientation="Horizontal"
@@ -123,6 +125,8 @@
 
     <Grid Margin="0">
         <Grid.RowDefinitions>
+            <!-- 页首 -->
+            <RowDefinition Height="Auto"/>
             <!-- 搜索条 -->
             <RowDefinition Height="Auto"/>
             <!-- 统计 -->
@@ -132,8 +136,43 @@
             <!-- 状态栏由 MainWindow 统一接管 -->
         </Grid.RowDefinitions>
 
+        <!-- ===== 页首：标题 + 副文案 + 右侧主操作区 ===== -->
+        <Grid Grid.Row="0" Margin="0,0,0,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Style="{StaticResource PageHeaderTextAreaStyle}"
+                       HorizontalAlignment="Left" MaxWidth="520" VerticalAlignment="Center">
+                <TextBlock Text="知识检索" Style="{StaticResource PageHeaderText}"/>
+                <TextBlock Text="向量 + 关键词混合检索，按相关度返回分块"
+                           Style="{StaticResource PageHeaderCaptionText}"
+                           ToolTip="向量 + 关键词混合检索，按相关度返回分块"
+                           TextTrimming="CharacterEllipsis"/>
+            </StackPanel>
+            <Button Grid.Column="1"
+                    Content="去导入文档"
+                    Command="{Binding GoToImportCommand}"
+                    Style="{StaticResource SecondaryButtonStyle}"
+                    VerticalAlignment="Center"
+                    Padding="12,6"
+                    MinHeight="36"
+                    ToolTip="跳转到导入页（Ctrl+I）">
+                <Button.ContentTemplate>
+                    <DataTemplate>
+                        <StackPanel Orientation="Horizontal">
+                            <Path Data="{StaticResource IconUpload}"
+                                  Style="{StaticResource IconSmStyle}"
+                                  Margin="0,0,8,0"/>
+                            <TextBlock Text="去导入文档"/>
+                        </StackPanel>
+                    </DataTemplate>
+                </Button.ContentTemplate>
+            </Button>
+        </Grid>
+
         <!-- ===== 搜索条 ===== -->
-        <Border Grid.Row="0" Style="{StaticResource ToolbarBorderStyle}">
+        <Border Grid.Row="1" Style="{StaticResource ToolbarBorderStyle}">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <!-- 主搜索框 (自适应弹性占满) -->
@@ -146,22 +185,37 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- 1. 主搜索输入框 -->
+                <!-- 1. 主搜索输入框：左侧搜索图标（聚焦 TextSecondary / 失焦 TextTertiary） -->
                 <Grid Grid.Column="0" Margin="0,0,10,0">
                     <TextBox x:Name="QueryBox"
                              Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
                              ToolTip="输入搜索问题或关键词，按回车开始搜索"
                              VerticalContentAlignment="Center"
-                             Padding="14,8,36,8"
+                             Padding="36,8,36,8"
                              MinHeight="38"
                              KeyUp="QueryBox_KeyUp"/>
+                    <Path Data="{StaticResource IconSearch}"
+                          HorizontalAlignment="Left"
+                          VerticalAlignment="Center"
+                          Margin="12,0,0,0">
+                        <Path.Style>
+                            <Style TargetType="Path" BasedOn="{StaticResource IconSmStyle}">
+                                <Setter Property="Stroke" Value="{StaticResource TextTertiaryBrush}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsKeyboardFocusWithin, ElementName=QueryBox}" Value="True">
+                                        <Setter Property="Stroke" Value="{StaticResource TextSecondaryBrush}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Path.Style>
+                    </Path>
                     <Button Content="×"
                             Style="{StaticResource TextButtonStyle}"
                             Command="{Binding ClearCommand}"
                             HorizontalAlignment="Right"
                             VerticalAlignment="Center"
                             Visibility="{Binding HasQuery, Converter={StaticResource BoolToVis}}"
-                            FontSize="16"
+                            FontSize="{StaticResource FontSizeSubtitle}"
                             Padding="6,2"
                             Margin="0,0,6,0"/>
                 </Grid>
@@ -227,11 +281,11 @@
         </Border>
 
         <!-- ===== 结果统计条 ===== -->
-        <Border Grid.Row="1"
-                Background="{StaticResource CardBrush}"
-                BorderBrush="{StaticResource BorderBrush}"
+        <Border Grid.Row="2"
+                Background="{DynamicResource CardBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="8"
+                CornerRadius="{StaticResource CornerMd}"
                 Padding="14,7"
                 Margin="0,0,0,8"
                 Visibility="{Binding HasResults, Converter={StaticResource BoolToVis}}">
@@ -250,45 +304,36 @@
         </Border>
 
         <!-- ===== 搜索主工作区（包含全宽空态与结果分栏） ===== -->
-        <Grid Grid.Row="2">
-            <!-- 1. 全宽空态引导卡片（无结果且非忙碌时居中占满） -->
-            <Border Background="{StaticResource SurfaceBrush}"
-                    BorderBrush="{StaticResource BorderBrush}"
-                    BorderThickness="1"
-                    CornerRadius="{StaticResource CornerLg}"
-                    Padding="36,48"
-                    HorizontalAlignment="Center"
-                    VerticalAlignment="Center"
-                    MaxWidth="580"
-                    Visibility="{Binding ShowEmptyGuide, Converter={StaticResource BoolToVis}}">
-                <StackPanel HorizontalAlignment="Center">
-                    <Border Width="64" Height="64"
-                            Background="{StaticResource PrimaryLightBrush}"
-                            CornerRadius="32"
-                            HorizontalAlignment="Center"
-                            Margin="0,0,0,16">
-                        <Path Data="{StaticResource IconSearch}" Style="{StaticResource IconSmStyle}" Width="32" Height="32" Stroke="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    </Border>
-                    <TextBlock Text="知识库检索"
-                               Style="{StaticResource TitleText}"
-                               HorizontalAlignment="Center"
-                               Margin="0,0,0,8"/>
-                    <TextBlock Text="{Binding EmptyGuideText, Mode=OneWay}"
-                               Style="{StaticResource BodyText}"
-                               Foreground="{StaticResource TextSecondaryBrush}"
-                               TextWrapping="Wrap"
-                               TextAlignment="Center"
-                               LineHeight="22"
-                               Margin="0,0,0,20"/>
-                    <!-- FC-07：库为空时一键去导入 -->
-                    <Button Content="去导入文档"
-                            Command="{Binding GoToImportCommand}"
-                            Style="{StaticResource PrimaryButtonStyle}"
-                            HorizontalAlignment="Center"
-                            Padding="18,8"
-                            Visibility="{Binding ShowGoImportAction, Converter={StaticResource BoolToVis}}"/>
-                </StackPanel>
-            </Border>
+        <Grid Grid.Row="3">
+            <!-- 1. 全宽空态：四段式（轻插画 + 主标题 + 副文案 + 主操作 CTA + 快捷键提示） -->
+            <StackPanel Style="{StaticResource EmptyStateStyle}"
+                        Visibility="{Binding ShowEmptyGuide, Converter={StaticResource BoolToVis}}">
+                <Border Style="{StaticResource EmptyStateIllustrationStyle}">
+                    <Path Data="{StaticResource IconSearch}"
+                          Style="{StaticResource EmptyStateIconStyle}"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Center"/>
+                </Border>
+                <TextBlock Text="知识库检索"
+                           Style="{StaticResource EmptyStateTitleStyle}"/>
+                <TextBlock Text="{Binding EmptyGuideText, Mode=OneWay}"
+                           Style="{StaticResource EmptyStateBodyStyle}"/>
+                <!-- FC-07：库为空时一键去导入 -->
+                <Button Command="{Binding GoToImportCommand}"
+                        Style="{StaticResource EmptyStateActionStyle}"
+                        Padding="18,8"
+                        Visibility="{Binding ShowGoImportAction, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Data="{StaticResource IconUpload}"
+                              Style="{StaticResource IconSmStyle}"
+                              Margin="0,0,8,0"/>
+                        <TextBlock Text="去导入文档"/>
+                    </StackPanel>
+                </Button>
+                <TextBlock Style="{StaticResource EmptyStateHintStyle}"
+                           Text="按 Ctrl+K 可快捷跳转到本页"
+                           Margin="0,8,0,0"/>
+            </StackPanel>
 
             <!-- 2. 结果列表 + 详情分栏（有结果或忙碌时展示） -->
             <Grid>
@@ -314,20 +359,20 @@
                     <!-- 骨架屏（加载中显示） -->
                     <StackPanel Margin="0,0,0,8"
                                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
-                        <Border Background="{StaticResource SurfaceBrush}"
-                                CornerRadius="8" Height="90" Margin="0,0,0,8">
+                        <Border Background="{DynamicResource SurfaceBrush}"
+                                CornerRadius="{StaticResource CornerMd}" Height="90" Margin="0,0,0,8">
                             <StackPanel Margin="12">
-                                <cc:SkeletonControl CornerRadius="4" Height="14" Width="120" Margin="0,0,0,8"/>
-                                <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
-                                <cc:SkeletonControl CornerRadius="4" Height="12" Width="80"/>
+                                <cc:SkeletonControl CornerRadius="{StaticResource CornerSm}" Height="14" Width="120" Margin="0,0,0,8"/>
+                                <cc:SkeletonControl CornerRadius="{StaticResource CornerSm}" Height="14" Margin="0,0,0,6"/>
+                                <cc:SkeletonControl CornerRadius="{StaticResource CornerSm}" Height="12" Width="80"/>
                             </StackPanel>
                         </Border>
-                        <Border Background="{StaticResource SurfaceBrush}"
-                                CornerRadius="8" Height="80" Margin="0,0,0,8">
+                        <Border Background="{DynamicResource SurfaceBrush}"
+                                CornerRadius="{StaticResource CornerMd}" Height="80" Margin="0,0,0,8">
                             <StackPanel Margin="12">
-                                <cc:SkeletonControl CornerRadius="4" Height="14" Width="100" Margin="0,0,0,8"/>
-                                <cc:SkeletonControl CornerRadius="4" Height="14" Margin="0,0,0,6"/>
-                                <cc:SkeletonControl CornerRadius="4" Height="12" Width="60"/>
+                                <cc:SkeletonControl CornerRadius="{StaticResource CornerSm}" Height="14" Width="100" Margin="0,0,0,8"/>
+                                <cc:SkeletonControl CornerRadius="{StaticResource CornerSm}" Height="14" Margin="0,0,0,6"/>
+                                <cc:SkeletonControl CornerRadius="{StaticResource CornerSm}" Height="12" Width="60"/>
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -375,7 +420,7 @@
                 <!-- 右侧：详情区 + 跨页联动动作 -->
                 <Border Grid.Column="2"
                         Padding="14,0,0,0"
-                        BorderBrush="{StaticResource BorderBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}"
                         BorderThickness="1,0,0,0">
                     <DockPanel>
                         <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
@@ -411,8 +456,8 @@
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel>
                                 <!-- 选中文档详情元数据卡片 -->
-                                <Border Background="{StaticResource SurfaceBrush}"
-                                        CornerRadius="8"
+                                <Border Background="{DynamicResource SurfaceBrush}"
+                                        CornerRadius="{StaticResource CornerMd}"
                                         Padding="12"
                                         Margin="0,0,0,10"
                                         Visibility="{Binding HasSelectedHit, Converter={StaticResource BoolToVis}}">
@@ -434,7 +479,7 @@
                                                          Value="{Binding SelectedHit.DisplayScore, Mode=OneWay}"
                                                          Maximum="1.0"
                                                          Height="6"
-                                                         Foreground="{StaticResource PrimaryBrush}"/>
+                                                         Foreground="{DynamicResource PrimaryBrush}"/>
                                         </Grid>
 
                                         <!-- 元数据 -->
@@ -457,7 +502,7 @@
                                            Text="{Binding SelectedHit.Content, Mode=OneWay}"
                                            Style="{StaticResource BodyText}"
                                            TextWrapping="Wrap"
-                                           LineHeight="22"
+                                           LineHeight="{StaticResource LineHeightBody}"
                                            xml:space="preserve"/>
 
                                 <!-- 详情空态 -->

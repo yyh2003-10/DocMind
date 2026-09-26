@@ -269,7 +269,10 @@ class WebSearchService:
                         logger.debug("查询变体失败: %s", ex)
                 # 任一变体已给出足够**非垃圾**候选：停收其余变体，把预算留给精读。
                 # 用原始条数会让 360 聚合页凑满 8 条后提前停收，优质慢引擎再无机会。
-                if self._quality_raw_count(raw_results) >= 8 and deadline is not None:
+                # 等到候选通过原问题相关度、实体、唯一 URL 与来源多样性检查后才早停。
+                if deadline is not None and self._should_stop_search_early(
+                    raw_results, original_query
+                ):
                     break
                 if left is not None and left <= 0 and not done:
                     timed_out_variants += len(pending)
@@ -520,8 +523,8 @@ class WebSearchService:
                         results.extend(future.result(timeout=0))
                     except Exception as ex:  # noqa: BLE001
                         logger.debug("搜索通道失败: %s", ex)
-                # 够数就提前收工：再等慢通道只会吃掉精读预算
-                if len(results) >= 4 and deadline is not None:
+                # 只在已有足量、与原问题相关且来源/域名足够分散的候选时早停。
+                if deadline is not None and self._should_stop_search_early(results, query):
                     break
                 if left is not None and left <= 0 and not done:
                     break
@@ -770,7 +773,7 @@ class WebSearchService:
 
         # 中文概念/通识短问（「挠度是什么」「什么是弹性模量」）：
         # 无空格且长度短，旧逻辑几乎只出 1 组词 → 候选池同质化，易落成单一来源。
-        # 至少补到 ~3 组：定义/公式向 + 百科向，提高多域名交叉印证机会。
+        # 至少补到 ~3 组：定义/公式向 + 百科/规范向，提高多域名交叉印证机会。
         cjk_tokens = [
             t for t in self._query_tokens(original_query)
             if re.search(r"[一-鿿]", t) and len(t) >= 2
@@ -782,13 +785,44 @@ class WebSearchService:
                     original_query,
                 )
             )
-            core_cjk = " ".join(cjk_tokens[:3])
+            core_cjk = "".join(cjk_tokens[:2])
+            # 实测（2026-09）：Bing 中文对「空格多词」查询极不稳定（「挠度 定义 计算 公式」
+            # 会随机召回英语六级/系统重装等无关页），但「语义完整连写短语」稳定召回
+            # （「挠度是什么意思」「动平衡机工作原理」）。变体全部用连写，且总长 ≤6 字：
+            # 「弹性模量是什么意思」7 字会稳定劣化成搜「弹性」（召 Economics 词条）。
+            def _cjk_variant(suffix: str) -> str:
+                if len(core_cjk) + len(suffix) > 6:
+                    return core_cjk
+                return f"{core_cjk}{suffix}"
+
             if is_concept:
-                variants.append(f"{core_cjk} 定义 计算 公式")
-                variants.append(f"{core_cjk} 百度百科")
+                variants.append(_cjk_variant("是什么意思"))
+                variants.append(_cjk_variant("工作原理"))
+                variants.append(_cjk_variant("计算公式"))
             else:
-                variants.append(f"{core_cjk} 技术 文档 规范")
-                variants.append(f"{core_cjk} 实践 应用 示例")
+                variants.append(_cjk_variant("工作原理"))
+                variants.append(_cjk_variant("使用方法"))
+
+        # 中文领域词防退化变体：裸实体短语单独成查（不加引号、不加修饰词）。
+        # 实测（2026-09）：Bing 中文对引号/多词/长连写极不稳定（「"动平衡机" 原理」
+        # 会退化成搜「动」），但裸 4~6 字短语（「动平衡机」「动平衡机工作原理」）
+        # 稳定召回正主。jieba 把「主动式动平衡机」切成「主动式+动平衡+机」，
+        # 首变体带「主动式」前缀必歪，需要相邻词拼接出 4~6 字核心短语兜底。
+        cjk_words = [
+            w for w in self._segment_cjk(original_query)
+            if re.fullmatch(r"[\u4e00-\u9fff]+", w)
+        ]
+        phrases: list[str] = []
+        for i in range(len(cjk_words)):
+            merged = ""
+            for j in range(i, min(i + 3, len(cjk_words))):
+                merged += cjk_words[j]
+                if 4 <= len(merged) <= 6 and merged not in self._WEAK_CJK_TOKENS:
+                    phrases.append(merged)
+        # 短的（更接近核心实体）优先，最多补 2 条，避免变体爆炸
+        for phrase in list(dict.fromkeys(phrases))[:2]:
+            if phrase.casefold() not in {v.casefold() for v in variants}:
+                variants.append(phrase)
 
         return list(dict.fromkeys(v.strip() for v in variants if v.strip()))
 
@@ -1157,29 +1191,37 @@ class WebSearchService:
     _WEAK_CJK_TOKENS = {
         "关系", "系统", "实现", "记忆", "数据", "技术", "功能", "使用", "通过",
         "进行", "提供", "支持", "相关", "内容", "文档", "产品", "方案", "问题",
+        # 高频泛词：单独命中会把「主动式动平衡机」这类查询退化成搜「主动」
+        "主动", "被动", "应用", "介绍", "解释", "意思", "定义", "区别", "对比",
+        "作用", "原理", "方法", "流程", "结构", "组成", "分类", "类型", "特点",
     }
 
     @classmethod
     def _distinctive_query_tokens(cls, query: str) -> list[str]:
-        """提取高信息量查询 token（英文/型号/数字），用于跑题过滤。
+        """提取高信息量查询 token（英文/型号/数字/中文领域词），用于跑题过滤。
 
         规则：
         - 优先长度≥3 的拉丁/数字 token（如 atomcode、asda、b3）
         - 长度=2 的拉丁 token 仅在无更长 token 时作为兜底（如 as）
-        - 纯中文弱 2-gram 不进入约束集
+        - 中文 ≥3 字领域词（如「动平衡机」「伺服电机」）与拉丁 token 同级锚定；
+          纯中文弱 2-gram 不进入约束集
         """
         raw = cls._query_tokens(query)
         strong: list[str] = []
         weak_latin: list[str] = []
         for token in raw:
-            if not re.search(r"[a-z0-9]", token):
-                continue
             if token in cls._STOPWORDS or token in cls._WEAK_CJK_TOKENS:
                 continue
-            if len(token) >= 3 or any(ch.isdigit() for ch in token):
+            if re.search(r"[a-z0-9]", token):
+                if len(token) >= 3 or any(ch.isdigit() for ch in token):
+                    strong.append(token)
+                elif len(token) == 2:
+                    weak_latin.append(token)
+            elif len(token) >= 3:
+                # 中文领域词：jieba 切出的 ≥3 字实体（故障案例
+                # 「主动式动平衡机」→ jieba 切成「主动式+动平衡」，
+                # 旧逻辑只认拉丁 token，核心实体完全不参与锚定）。
                 strong.append(token)
-            elif len(token) == 2:
-                weak_latin.append(token)
         return strong if strong else weak_latin
 
     @staticmethod
@@ -1254,6 +1296,58 @@ class WebSearchService:
             count += 1
         return count
 
+    def _should_stop_search_early(
+        self, results: list[WebSearchResult], query: str
+    ) -> bool:
+        """仅当已收集到分散且通过原查询相关性预筛的结果时提前停止。"""
+        if self._quality_raw_count(results) < 8:
+            return False
+
+        candidates: list[WebSearchResult] = []
+        seen: set[str] = set()
+        distinctive = self._distinctive_query_tokens(query)
+        for result in results:
+            url = self.normalize_url(result.url)
+            if not url or not self._is_http_url(url):
+                continue
+            domain = urllib.parse.urlsplit(url).netloc.lower()
+            if self._is_search_engine_home(url) or self._is_junk_domain(domain):
+                continue
+            if self._is_aggregate_page(result.title, result.snippet, domain):
+                continue
+            key = self._canonical_key(url)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.url = url
+            result.domain = domain
+            candidates.append(result)
+
+        if len(candidates) < 8:
+            return False
+
+        self._score_results(candidates, query, self._is_latest_query(query))
+        cjk_tokens = [
+            token for token in distinctive
+            if not re.search(r"[a-z0-9]", token)
+        ]
+        grounded = [
+            result for result in candidates
+            if result.relevance_score >= 0.12
+            and self._matches_distinctive_tokens(result, distinctive)
+            # 多个中文锚点时，任意命中修饰词（如“主动式”）不足以证明核心实体相关。
+            and (
+                len(cjk_tokens) <= 1
+                or all(
+                    token in f"{result.title}\n{result.snippet}\n{result.content}".casefold()
+                    for token in cjk_tokens
+                )
+            )
+        ]
+        source_count = len({result.source_name.casefold() for result in grounded})
+        domain_count = len({result.domain for result in grounded})
+        return len(grounded) >= 8 and source_count >= 3 and domain_count >= 6
+
     @staticmethod
     def _authority_score(domain: str) -> float:
         host = domain.lower().split(":", 1)[0]
@@ -1277,6 +1371,11 @@ class WebSearchService:
         )
         if any(host == h or host.endswith("." + h) for h in official_hosts):
             return 0.92
+        # 中文工程/规范语境：edu/gov 已有分；标题含规范/标准类词在排序层再抬（见 quality_score）
+        if host.endswith(".edu.cn") or host.endswith(".edu") or host.endswith(".ac.cn"):
+            return 0.55
+        if host.endswith(".gov.cn") or host.endswith(".gov"):
+            return 0.60
         # 台达官方主站及其文档/CDN 子域名优先。
         if host == "deltaww.com" or host.endswith(".deltaww.com"):
             return 1.0
@@ -1285,10 +1384,6 @@ class WebSearchService:
         if "delta" in host and (host.endswith(".com.cn") or host.endswith(".com.tw")):
             return 0.82
         if any(word in host for word in ("manual", "docs", "pdf", "documentation", "developer")):
-            return 0.55
-        if host.endswith(".edu.cn") or host.endswith(".edu") or host.endswith(".ac.cn"):
-            return 0.5
-        if host.endswith(".gov.cn") or host.endswith(".gov"):
             return 0.55
         return 0.28
 
@@ -1493,7 +1588,7 @@ class WebSearchService:
             encoded_query = urllib.parse.quote(query)
             url = f"https://www.so.com/s?q={encoded_query}&pn=1"
             req = urllib.request.Request(url, headers=_HEADERS)
-            with self._open_url(req, timeout=self.timeout) as resp:
+            with self._open_url(req, timeout=min(self.timeout, 6)) as resp:
                 page = resp.read().decode("utf-8", errors="ignore")
 
             results: list[WebSearchResult] = []
@@ -1537,7 +1632,7 @@ class WebSearchService:
             encoded_query = urllib.parse.quote(query)
             url = f"https://www.sogou.com/web?query={encoded_query}"
             req = urllib.request.Request(url, headers=_HEADERS)
-            with self._open_url(req, timeout=self.timeout) as resp:
+            with self._open_url(req, timeout=min(self.timeout, 6)) as resp:
                 page = resp.read().decode("utf-8", errors="ignore")
 
             results: list[WebSearchResult] = []
@@ -1698,7 +1793,7 @@ class WebSearchService:
             encoded_query = urllib.parse.quote(query)
             url = f"https://www.baidu.com/s?wd={encoded_query}&rn={limit}"
             req = urllib.request.Request(url, headers=_HEADERS)
-            with self._open_url(req, timeout=self.timeout) as resp:
+            with self._open_url(req, timeout=min(self.timeout, 6)) as resp:
                 page = resp.read().decode("utf-8", errors="ignore")
 
             results: list[WebSearchResult] = []
@@ -1744,7 +1839,7 @@ class WebSearchService:
             encoded_query = urllib.parse.quote(query)
             url = f"https://www.bing.com/search?q={encoded_query}&count={limit}"
             req = urllib.request.Request(url, headers=_HEADERS)
-            with self._open_url(req, timeout=self.timeout) as resp:
+            with self._open_url(req, timeout=min(self.timeout, 6)) as resp:
                 page = resp.read().decode("utf-8", errors="ignore")
 
             results: list[WebSearchResult] = []
@@ -1786,7 +1881,17 @@ class WebSearchService:
 
             results: list[WebSearchResult] = []
             with DDGS(timeout=min(self.timeout, 5)) as ddgs:
-                ddg_results = ddgs.text(query, max_results=limit)
+                options: dict[str, Any] = {
+                    "max_results": limit,
+                    "region": self._ddgs_region(query),
+                }
+                if self._is_latest_query(query):
+                    options["timelimit"] = "m"
+                try:
+                    ddg_results = ddgs.text(query, **options)
+                except TypeError:
+                    # 兼容旧版 duckduckgo_search：区域/时间参数不受支持时仍保留基础搜索。
+                    ddg_results = ddgs.text(query, max_results=limit)
                 for item in ddg_results or []:
                     title = item.get("title", "").strip()
                     href = item.get("href", "").strip()
@@ -1804,6 +1909,11 @@ class WebSearchService:
             logger.debug("DuckDuckGo 搜索失败: %s", ex)
             return []
 
+    @staticmethod
+    def _ddgs_region(query: str) -> str:
+        """避免 DDGS 默认英语区域对中文查询造成偏置。"""
+        return "cn-zh" if re.search(r"[\u4e00-\u9fff]", query) else "us-en"
+
     # ---- 通道 4: DuckDuckGo Instant Answer API ----
     def _search_ddg_api(self, query: str, limit: int) -> list[WebSearchResult]:
         try:
@@ -1813,7 +1923,7 @@ class WebSearchService:
                 f"{encoded_query}&format=json&no_html=1&skip_disambig=1"
             )
             req = urllib.request.Request(url, headers=_HEADERS)
-            with self._open_url(req, timeout=self.timeout) as resp:
+            with self._open_url(req, timeout=min(self.timeout, 6)) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
 
             results: list[WebSearchResult] = []

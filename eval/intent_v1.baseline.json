@@ -1,0 +1,387 @@
+{
+  "eval_set": "eval\\intent_v1.jsonl",
+  "live": false,
+  "total": 46,
+  "route_acc": 0.9783,
+  "creative_hit": 1.0,
+  "research_hit": 1.0,
+  "creative_false_positive": 0.0,
+  "details": {
+    "creative_expected": 9,
+    "creative_hit": 9,
+    "research_expected": 14,
+    "research_hit": 14,
+    "non_creative": 37,
+    "creative_fp": 0
+  },
+  "rows": [
+    {
+      "id": "r001",
+      "query": "把这些文献的观点对比一下",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "compare",
+      "match": true
+    },
+    {
+      "id": "r002",
+      "query": "把这五篇论文整理成一份对比报告",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "compare",
+      "match": true
+    },
+    {
+      "id": "r003",
+      "query": "把这几篇文献做成一份对比表格",
+      "expected": "creative",
+      "got": "creative",
+      "got_sub": "table",
+      "match": true
+    },
+    {
+      "id": "r004",
+      "query": "这些参考文献帮我做个PPT展示",
+      "expected": "creative",
+      "got": "creative",
+      "got_sub": "ppt",
+      "match": true
+    },
+    {
+      "id": "r005",
+      "query": "有5篇关于RAG的论文",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r006",
+      "query": "把文献整理一下",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r007",
+      "query": "这几篇文献帮我梳理总结一下",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "review",
+      "match": true
+    },
+    {
+      "id": "r008",
+      "query": "帮我写综述",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "review",
+      "match": true
+    },
+    {
+      "id": "r009",
+      "query": "写综述大纲",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "review",
+      "match": true
+    },
+    {
+      "id": "r010",
+      "query": "文献综述怎么写",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "review",
+      "match": true
+    },
+    {
+      "id": "r011",
+      "query": "把这些文献的观点对比一下",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "compare",
+      "match": true
+    },
+    {
+      "id": "r012",
+      "query": "对比这些文献",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "compare",
+      "match": true
+    },
+    {
+      "id": "r013",
+      "query": "这几篇论文的观点对比",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "compare",
+      "match": true
+    },
+    {
+      "id": "r014",
+      "query": "帮我把这些文献写个带引用的草稿",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "draft",
+      "match": true
+    },
+    {
+      "id": "r015",
+      "query": "给这几篇论文准备引用支撑",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "draft",
+      "match": true
+    },
+    {
+      "id": "r016",
+      "query": "把这几篇文献整理成带引用的草稿",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "draft",
+      "match": true
+    },
+    {
+      "id": "r017",
+      "query": "RNN和LSTM的区别",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r018",
+      "query": "什么是梯度消失",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r019",
+      "query": "Transformer的注意力机制是怎么工作的",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r020",
+      "query": "数据库索引为什么会失效",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r021",
+      "query": "SQL的执行顺序是怎样的",
+      "expected": "question",
+      "got": "task",
+      "got_sub": null,
+      "match": false
+    },
+    {
+      "id": "r022",
+      "query": "Kubernetes里Pod是怎么调度的",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r023",
+      "query": "我的HAP安装失败报签名错误",
+      "expected": "troubleshoot",
+      "got": "troubleshoot",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r024",
+      "query": "ohpm install一直卡住怎么办",
+      "expected": "troubleshoot",
+      "got": "troubleshoot",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r025",
+      "query": "应用启动就闪退",
+      "expected": "troubleshoot",
+      "got": "troubleshoot",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r026",
+      "query": "curl返回502错误",
+      "expected": "troubleshoot",
+      "got": "troubleshoot",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r027",
+      "query": "数据库死锁了怎么解决",
+      "expected": "troubleshoot",
+      "got": "troubleshoot",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r028",
+      "query": "代码编译报错找不到符号",
+      "expected": "troubleshoot",
+      "got": "troubleshoot",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r029",
+      "query": "帮我做个PPT",
+      "expected": "creative",
+      "got": "creative",
+      "got_sub": "ppt",
+      "match": true
+    },
+    {
+      "id": "r030",
+      "query": "生成一份演示文稿",
+      "expected": "creative",
+      "got": "creative",
+      "got_sub": "ppt",
+      "match": true
+    },
+    {
+      "id": "r031",
+      "query": "写一份研报",
+      "expected": "creative",
+      "got": "creative",
+      "got_sub": "doc",
+      "match": true
+    },
+    {
+      "id": "r032",
+      "query": "出一份对比表",
+      "expected": "creative",
+      "got": "creative",
+      "got_sub": "table",
+      "match": true
+    },
+    {
+      "id": "r033",
+      "query": "做课件教案",
+      "expected": "creative",
+      "got": "creative",
+      "got_sub": "lesson",
+      "match": true
+    },
+    {
+      "id": "r034",
+      "query": "生成可视化看板",
+      "expected": "creative",
+      "got": "creative",
+      "got_sub": "web",
+      "match": true
+    },
+    {
+      "id": "r035",
+      "query": "随便聊聊",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r036",
+      "query": "今天天气怎么样",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r037",
+      "query": "在吗",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r038",
+      "query": "你好",
+      "expected": "greeting",
+      "got": "greeting",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r039",
+      "query": "总结一下这篇文章",
+      "expected": "summary",
+      "got": "summary",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r040",
+      "query": "对比 A 和 B 的区别",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r041",
+      "query": "帮我概述这段内容",
+      "expected": "summary",
+      "got": "summary",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r042",
+      "query": "A和B有什么不同",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    },
+    {
+      "id": "r043",
+      "query": "帮我写个综述",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "review",
+      "match": true
+    },
+    {
+      "id": "r044",
+      "query": "整理成对比报告",
+      "expected": "research",
+      "got": "research",
+      "got_sub": "compare",
+      "match": true
+    },
+    {
+      "id": "r045",
+      "query": "做个PPT",
+      "expected": "creative",
+      "got": "creative",
+      "got_sub": "ppt",
+      "match": true
+    },
+    {
+      "id": "r046",
+      "query": "帮我整理一下",
+      "expected": "question",
+      "got": "question",
+      "got_sub": null,
+      "match": true
+    }
+  ]
+}

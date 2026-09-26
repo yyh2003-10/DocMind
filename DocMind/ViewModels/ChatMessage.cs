@@ -55,6 +55,19 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
     private string _statusText = string.Empty;
     private bool _showStatus;
 
+    /// <summary>本条消息的渲染格式快照："html" = 整页 HTML 沙箱气泡；其余 = Markdown 气泡。
+    /// 发出时从全局开关快照进来，历史渲染只读本消息字段，不读全局开关——
+    /// 否则用户中途切模式会让历史消息的渲染串掉。</summary>
+    public string? AnswerFormat { get; set; }
+
+    /// <summary>本条消息是否按 HTML 体验气泡渲染。
+    /// 双重判定：AnswerFormat 快照 = "html"（发出时的模式）**且** 内容探测确实像 HTML。
+    /// 后者是守卫：HTML 模式下模型若实际回了 Markdown/纯文本（如检索型问题），
+    /// 仍走 Markdown 气泡，避免整页 HTML 渲染器里裸文本、深色主题下不可读。</summary>
+    public bool IsHtmlAnswer =>
+        string.Equals(AnswerFormat, "html", System.StringComparison.OrdinalIgnoreCase)
+        && Controls.HtmlAnswerBubble.LooksLikeHtml(_content);
+
     /// <summary>角色：user / assistant / system。</summary>
     public string Role
     {
@@ -78,7 +91,11 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             if (SetField(ref _content, value))
             {
                 UpdateRenderedDocument();
+                // IsHtmlAnswer 依赖内容做探测守卫，内容变化时需同步刷新（流式空→完稿 HTML）
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsHtmlAnswer)));
                 PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CanCopy)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasContent)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ShowTextFallback)));
             }
         }
     }
@@ -358,6 +375,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         {
             var rawContent = Content;
             var cleanContent = rawContent;
+
 
             // 1. 嗅探提取 Artifact 交付物
             // 自愈容错：模型有时不写 :::artifact 包裹，只输出一份纯 Markdown 方案。
@@ -1230,7 +1248,6 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
     {
         var targetSource = Sources?.FirstOrDefault(s => s.Index == index);
         var isWeb = targetSource?.IsWebSource == true && !string.IsNullOrWhiteSpace(targetSource.Url);
-        var iconSymbol = isWeb ? "🌐↗" : "📄";
 
         var link = new Hyperlink
         {
@@ -1250,18 +1267,46 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
                 Background = (Brush)(System.Windows.Application.Current?.FindResource("CardBrush") ?? Brushes.White),
                 BorderBrush = (Brush)(System.Windows.Application.Current?.FindResource("BorderBrush") ?? Brushes.LightGray),
                 BorderThickness = new Thickness(1),
-                Padding = new Thickness(8, 6, 8, 6),
+                Padding = new Thickness(12, 10, 12, 10),
+                MaxWidth = 420,
+                // 延迟在 ToolTipService 上设置（ToolTip 本身无 InitialShowDelay/BetweenShowDelay）
+                StaysOpen = false,
             };
-            var tipPanel = new StackPanel { MaxWidth = 340 };
+            var tipPanel = new StackPanel { MaxWidth = 400 };
+
+            // 顶栏：类型徽章 + 标题
+            var headerRow = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 0, 0, 4) };
+            var badge = new Border
+            {
+                Background = (Brush)(System.Windows.Application.Current?.FindResource("PrimaryLightBrush")
+                                     ?? Brushes.LightBlue),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(6, 2, 6, 2),
+                Margin = new Thickness(0, 0, 8, 0),
+                VerticalAlignment = VerticalAlignment.Top,
+            };
+            var isPdf = !targetSource.IsWebSource
+                && (string.Equals(targetSource.Format, "pdf", StringComparison.OrdinalIgnoreCase)
+                    || targetSource.Source.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase));
+            badge.Child = new TextBlock
+            {
+                Text = targetSource.IsWebSource ? "网页" : isPdf ? "PDF" : (targetSource.Format?.ToUpperInvariant() ?? "原文"),
+                FontSize = 10,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = (Brush)(System.Windows.Application.Current?.FindResource("PrimaryBrush") ?? Brushes.DodgerBlue),
+            };
+            DockPanel.SetDock(badge, Dock.Left);
+            headerRow.Children.Add(badge);
             var tipHeader = new TextBlock
             {
-                Text = targetSource.IsWebSource ? $"🌐 [{index}] {targetSource.DisplayTitle}" : $"📄 [{index}] {targetSource.DisplayTitle}",
+                Text = $"[{index}] {targetSource.DisplayTitle}",
                 FontWeight = FontWeights.SemiBold,
                 FontSize = 12,
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextPrimaryBrush") ?? Brushes.Black),
             };
-            tipPanel.Children.Add(tipHeader);
+            headerRow.Children.Add(tipHeader);
+            tipPanel.Children.Add(headerRow);
 
             if (targetSource.IsWebSource && !string.IsNullOrWhiteSpace(targetSource.Url))
             {
@@ -1289,38 +1334,46 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
 
             if (!string.IsNullOrWhiteSpace(targetSource.Snippet))
             {
+                var snippetBox = new Border
+                {
+                    Background = (Brush)(System.Windows.Application.Current?.FindResource("HoverCardBrush")
+                                         ?? Brushes.WhiteSmoke),
+                    CornerRadius = new CornerRadius(6),
+                    Padding = new Thickness(8, 6, 8, 6),
+                    Margin = new Thickness(0, 6, 0, 0),
+                };
                 var tipSnippet = new TextBlock
                 {
                     Text = targetSource.Snippet.Trim(),
                     FontSize = 11,
+                    LineHeight = 17,
                     Foreground = (Brush)(System.Windows.Application.Current?.FindResource("TextSecondaryBrush") ?? Brushes.DarkGray),
                     TextWrapping = TextWrapping.Wrap,
-                    MaxHeight = 80,
+                    MaxHeight = 96,
                     TextTrimming = TextTrimming.CharacterEllipsis,
-                    Margin = new Thickness(0, 4, 0, 0),
                 };
-                tipPanel.Children.Add(tipSnippet);
+                snippetBox.Child = tipSnippet;
+                tipPanel.Children.Add(snippetBox);
             }
-
-            var isPdfSource = !targetSource.IsWebSource && (string.Equals(targetSource.Format, "pdf", StringComparison.OrdinalIgnoreCase) || targetSource.Source.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase));
 
             var tipHint = new TextBlock
             {
-                Text = isWeb 
-                    ? "💡 点击直接在默认浏览器中打开该网页（同时展示来源抽屉）" 
-                    : (isPdfSource 
-                        ? $"🎯 点击展开原著阅读器并定位高亮 (第 P{targetSource.Page ?? 1} 页)" 
-                        : "💡 点击直接在右侧抽屉查证切片原文"),
+                Text = isWeb
+                    ? "点击在浏览器打开 · 同时展开来源列表"
+                    : (isPdf
+                        ? $"点击对照原文 · 定位 P{targetSource.Page ?? 1}"
+                        : "点击对照原文与切片"),
                 FontSize = 10,
-                Foreground = isPdfSource 
-                    ? (Brush)(System.Windows.Application.Current?.FindResource("PrimaryBrush") ?? Brushes.DodgerBlue)
-                    : (Brush)(System.Windows.Application.Current?.FindResource("TextTertiaryBrush") ?? Brushes.Gray),
-                FontWeight = isPdfSource ? FontWeights.SemiBold : FontWeights.Normal,
-                Margin = new Thickness(0, 6, 0, 0),
+                Foreground = (Brush)(System.Windows.Application.Current?.FindResource("PrimaryBrush") ?? Brushes.DodgerBlue),
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 8, 0, 0),
             };
             tipPanel.Children.Add(tipHint);
             tip.Content = tipPanel;
             link.ToolTip = tip;
+            // 对齐 ima：悬停较快弹出摘录卡（延迟挂在 ToolTipService 上）
+            ToolTipService.SetInitialShowDelay(link, 200);
+            ToolTipService.SetBetweenShowDelay(link, 80);
 
             // 点击角标：如果为网页且带有合法 URL，直接在默认浏览器中打开；并通知展开抽屉
             link.Click += (_, _) =>
@@ -1338,7 +1391,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             link.Click += (_, _) => NotifySourceMarker(index);
         }
 
-        link.Inlines.Add(new Run($"[{indexText} {iconSymbol}]"));
+        link.Inlines.Add(new Run($"[{indexText}]"));
         return link;
     }
 
@@ -1438,9 +1491,12 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             if (HasSourcesButZeroCited)
             {
                 var zeroParts = new List<string>();
-                if (ev.LocalCount > 0)
+                var hit = ev.LocalHitCount > 0 ? ev.LocalHitCount : ev.LocalCount;
+                if (hit > 0)
                 {
-                    zeroParts.Add($"库内检索 {ev.LocalCount} 条");
+                    zeroParts.Add(ev.LocalHitCount > ev.LocalCiteCount && ev.LocalCiteCount == 0
+                        ? $"库内命中 {hit} · 可引用 0"
+                        : $"库内检索 {hit} 条");
                 }
                 if (ev.WebFetchedCount > 0)
                 {
@@ -1456,11 +1512,26 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             var parts = new List<string>();
             if (ev.LocalCount > 0)
             {
-                parts.Add($"库内原文 {ev.LocalCount}");
+                if (ev.LocalHitCount > ev.LocalCount)
+                {
+                    parts.Add($"库内命中 {ev.LocalHitCount}/可引用 {ev.LocalCount}");
+                }
+                else
+                {
+                    parts.Add($"库内原文 {ev.LocalCount}");
+                }
+            }
+            else if (ev.LocalHitCount > 0)
+            {
+                parts.Add($"库内命中 {ev.LocalHitCount}/可引用 0");
             }
             if (ev.WebFetchedCount > 0)
             {
                 parts.Add($"精读网页 {ev.WebFetchedCount}");
+            }
+            if (ev.SynthesizedSourceCount > 0)
+            {
+                parts.Add($"综合 {ev.SynthesizedSourceCount}");
             }
             if (ev.GraphInjected)
             {
@@ -1474,12 +1545,23 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
                 }
                 return "";
             }
+            if (ev.DegradedRetrieval)
+            {
+                parts.Add("⚠检索降级");
+            }
+            if (ev.SingleSource || (ev.WebOnly && ev.CitableTotal <= 2))
+            {
+                parts.Add("⚠单一来源");
+            }
             return string.Join(" · ", parts);
         }
     }
 
-    /// <summary>是否呈现通用知识警告样式（本地未命中 fallback）。</summary>
-    public bool HasEvidenceWarning => EffectiveEvidence.FallbackGeneralKnowledge;
+    /// <summary>是否呈现通用知识/弱证据警告样式。</summary>
+    public bool HasEvidenceWarning =>
+        EffectiveEvidence.FallbackGeneralKnowledge
+        || EffectiveEvidence.DegradedRetrieval
+        || EffectiveEvidence.SingleSource;
 
     /// <summary>是否显示证据条（有来源证据 或 通用知识警告）。</summary>
     public bool HasEvidenceBar =>
@@ -1970,6 +2052,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         ThinkingSteps.Add(text);
         ThinkingStepPills.Add(ThinkingStep.Parse(text));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinkingSteps)));
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
     }
@@ -2008,6 +2091,7 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
             ThinkingStepPills.Add(failPill);
         }
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinkingSteps)));
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ThinkingIconText)));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasThinking)));
     }
@@ -2061,6 +2145,12 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
     /// <summary>是否有可复制内容（控制「复制」按钮可见性）。</summary>
     public bool CanCopy => !IsLoading && !string.IsNullOrEmpty(Content);
 
+    /// <summary>是否有可见正文（防空泡）。</summary>
+    public bool HasContent => !string.IsNullOrWhiteSpace(Content);
+    /// <summary>是否显示纯文本兜底（无 FlowDocument、有正文、非 HTML）。</summary>
+    public bool ShowTextFallback =>
+        HasContent && RenderedDocument is null && !IsHtmlAnswer;
+
     private bool _isCopied;
 
     /// <summary>是否已复制（用于呈现「已复制 ✓」对勾微动效）。</summary>
@@ -2100,18 +2190,31 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
         }
     }
 
-    /// <summary>切换点赞。</summary>
+    /// <summary>点赞/点踩持久化回调（宿主 VM 注入，写入 FeedbackService；isLike=true 赞）。</summary>
+    public Func<ChatMessage, bool, Task>? FeedbackSink { get; set; }
+
+    /// <summary>切换点赞（开启时回调 FeedbackSink 落库）。</summary>
     [RelayCommand]
-    private void ToggleLike()
+    private async Task ToggleLikeAsync()
     {
         IsLiked = !IsLiked;
+        if (IsLiked && FeedbackSink is not null)
+        {
+            try { await FeedbackSink(this, true); }
+            catch { /* 反馈失败不打断 UI */ }
+        }
     }
 
-    /// <summary>切换点踩。</summary>
+    /// <summary>切换点踩（开启时回调 FeedbackSink 落库）。</summary>
     [RelayCommand]
-    private void ToggleDislike()
+    private async Task ToggleDislikeAsync()
     {
         IsDisliked = !IsDisliked;
+        if (IsDisliked && FeedbackSink is not null)
+        {
+            try { await FeedbackSink(this, false); }
+            catch { /* 反馈失败不打断 UI */ }
+        }
     }
 
     /// <summary>复制消息内容到剪贴板，并触发「已复制 ✓」反馈。</summary>
@@ -2138,6 +2241,36 @@ public sealed partial class ChatMessage : System.ComponentModel.INotifyPropertyC
 
     /// <summary>是否有引用来源（控制来源列表可见性）。</summary>
     public bool HasSources => Sources is { Count: > 0 };
+
+    private IReadOnlyList<DocMind.Models.AgentTrajectoryStep>? _trajectorySteps;
+
+    /// <summary>Agent 轨迹步骤（回看时间线）；无则 null。</summary>
+    public IReadOnlyList<DocMind.Models.AgentTrajectoryStep>? TrajectorySteps
+    {
+        get => _trajectorySteps;
+        set
+        {
+            if (SetField(ref _trajectorySteps, value))
+            {
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasTrajectory)));
+            }
+        }
+    }
+
+    /// <summary>是否有可展示的轨迹。</summary>
+    public bool HasTrajectory => TrajectorySteps is { Count: > 0 };
+
+    private bool _isTrajectoryExpanded;
+
+    /// <summary>轨迹时间线是否展开。</summary>
+    public bool IsTrajectoryExpanded
+    {
+        get => _isTrajectoryExpanded;
+        set => SetField(ref _isTrajectoryExpanded, value);
+    }
+    /// <summary>切换轨迹时间线展开/收起。</summary>
+    [CommunityToolkit.Mvvm.Input.RelayCommand]
+    private void ToggleTrajectory() => IsTrajectoryExpanded = !IsTrajectoryExpanded;
 
     /// <summary>是否有模型信息（仅在 assistant 回答中显示）。</summary>
     public bool HasModel => Model is not null;

@@ -2,7 +2,27 @@
 
 本文件记录 DocMind 每个版本的主要变更。格式基于 [Keep a Changelog](https://keepachangelog.com/)。
 
-## [Unreleased]
+## [v1.0.2] - 2026-09-26
+
+### 🖥️ 机型档位整套搭配（模型配置一键成套）
+
+- **5 档机型 bundle**：新增 `doc2mind.core.model_bundles`，按硬件自动匹配「嵌入 + 重排 + 本地 LLM」整套搭配（极轻量纯 CPU / 轻量 / 主流 / 进阶 / 旗舰），选型来自魔搭社区 GGUF 仓库与低配实测数据（Qwen3-1.7B → 30B-A3B MoE），拉取命令走魔搭加速源。
+- **干净电脑开箱即用**：档位推荐永不依赖本机环境——无 Ollama / 无 GGUF / 无 GPU 也返回完整 5 档（`runtime_missing` 态），配合三态按钮（应用整套 / 复制拉取命令 / 打开 Ollama 下载页）从零安装。
+- **硬件探测多级降级**：`nvidia-smi`（独立显存）→ `wmic`（内存 + GPU 名）→ 最保守极轻量档，推荐文案展示实际探测到的硬件（不再硬编码型号）。
+- **极轻量档自动关重排**：cross-encoder 在无 GPU 机器上得不偿失，应用该档时 `rerank_enabled=false` 随整套一并下发。
+- **GGUF 扫描去盘符化**：不再写死 F:/E:/D:，改为枚举所有存在盘符的 `<盘>:\models`、`<盘>:\llama` + LM Studio 缓存目录 + `DOC2MIND_GGUF_DIRS` 环境变量追加。
+- **HTTP 端点**：`GET /v1/system/model-bundles`（档位判定 + 5 档 bundle + 三态 + pull 命令）；`/v1/system/local-ai-environment` 响应新增 `tier` / `bundle_version` 字段。
+- **WPF 设置页**：「本地 AI 环境智能感知」区新增档位卡片（当前档位高亮），「应用整套」一次下发嵌入 / 重排 / LLM 三配置。
+- 测试：`tests/test_model_bundles.py` 21 项（档位边界 / 干净机用例 / 嵌入模型清单防漂移）+ C# DTO 反序列化与 ApplyBundle 用例 6 项。
+
+### 🧭 基础能力产品化（F0/F1）与评估契约
+
+- **推荐检索配置（F0）**：新增 `RECOMMENDED_RETRIEVAL_PRESET`（bge 中文查询指令、`semantic_floor=0.15` 等已验证参数）。出厂默认仍向后兼容；仅显式应用才写回。
+  - CLI：`doc2mind config --recommended-retrieval [--apply]`
+  - HTTP：`GET/POST /v1/config/retrieval-recommended`（预览 / 应用，幂等）
+- **本库评估（F1）**：`doc2mind.core.eval_library.evaluate_library` + `tools/eval_library.py` + `POST /v1/eval/library`。真实库抽样自检索（SelfRecall@k / MRR）、健康快照、可操作建议；CLI 退出码 0/1/2 可接脚本。
+- **评估契约**：新增 `docs/testing/feature-eval-contract.md`（三层评估体系 + 功能 DoD + CI 卡点）。
+- 测试：`tests/test_recommended_retrieval_and_eval.py` 9 项全绿（配合既有 `eval_retrieval.py --zh` 门槛）。
 
 ### 🎯 向量知识库检索根基升级（召回质量核心）
 

@@ -1,3 +1,5 @@
+using System.ComponentModel;
+
 namespace DocMind.Models;
 
 /// <summary>POST /v1/llm/models 请求体 — 列出提供商可用模型（Ollama 本地 / 云端 /models）。
@@ -54,7 +56,7 @@ public sealed record LlmModelMeta
 }
 
 /// <summary>UI 层模型列表项：模型名 + 上下文窗口 + 规格摘要。</summary>
-public sealed class LlmModelItem
+public sealed class LlmModelItem : INotifyPropertyChanged
 {
     /// <summary>模型 ID（如 deepseek-chat、gpt-4o-mini）。</summary>
     public string Name { get; init; }
@@ -71,6 +73,45 @@ public sealed class LlmModelItem
     /// <summary>规格摘要文本。</summary>
     public string? SummaryText { get; init; }
 
+    private bool _isTesting;
+    private string _testStatus = "未测试";
+    private bool? _testOk;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    public bool IsTesting
+    {
+        get => _isTesting;
+        private set
+        {
+            if (_isTesting == value) return;
+            _isTesting = value;
+            PropertyChanged?.Invoke(this, new(nameof(IsTesting)));
+        }
+    }
+
+    public string TestStatus
+    {
+        get => _testStatus;
+        private set
+        {
+            if (_testStatus == value) return;
+            _testStatus = value;
+            PropertyChanged?.Invoke(this, new(nameof(TestStatus)));
+        }
+    }
+
+    public bool? TestOk
+    {
+        get => _testOk;
+        private set
+        {
+            if (_testOk == value) return;
+            _testOk = value;
+            PropertyChanged?.Invoke(this, new(nameof(TestOk)));
+        }
+    }
+
     public LlmModelItem(
         string name,
         int? contextWindow = null,
@@ -83,6 +124,13 @@ public sealed class LlmModelItem
         MaxOutputTokens = maxOutputTokens;
         IsReasoningModel = isReasoningModel;
         SummaryText = summaryText;
+    }
+
+    public void SetTestState(bool isTesting, bool? ok, string status)
+    {
+        IsTesting = isTesting;
+        TestOk = ok;
+        TestStatus = status;
     }
 
     /// <summary>上下文窗口友好显示（如 "128K"、"1M"、"—"）。</summary>

@@ -69,12 +69,17 @@ public partial class GroundTruthViewerControl : UserControl
             PdfViewerContainer.Visibility = Visibility.Visible;
             TextLocateBanner.Visibility = Visibility.Collapsed;
 
+            // 分屏沉浸：关键点收成紧凑条，把纵向空间让给 PDF 主视区
+            SetKeyPointsCompact(true);
+            ExpandHalfScreenForPdf();
+
             InnerPdfViewer.SourcePath = src.Source;
             InnerPdfViewer.TargetPage = src.Page;
             InnerPdfViewer.TargetSnippet = src.Snippet;
         }
         else
         {
+            SetKeyPointsCompact(false);
             PdfViewerContainer.Visibility = Visibility.Collapsed;
             TextViewerContainer.Visibility = Visibility.Visible;
             UpdateTextOriginalBody(src);
@@ -141,6 +146,48 @@ public partial class GroundTruthViewerControl : UserControl
 
         OriginalFileBodyText.Visibility = Visibility.Collapsed;
         SnippetFallbackBox.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>关键点区紧凑模式：PDF 分屏时收起长摘录，优先保证原著可读面积。</summary>
+    private void SetKeyPointsCompact(bool compact)
+    {
+        try
+        {
+            if (FindName("KeyPointsCard") is FrameworkElement card)
+            {
+                card.Margin = compact ? new Thickness(0, 0, 0, 6) : new Thickness(0, 0, 0, 8);
+            }
+            if (FindName("SnippetScroll") is FrameworkElement snip)
+            {
+                // 外层 Border 固定 MaxHeight=140；紧凑时用更小值收成一条
+                snip.MaxHeight = compact ? 72 : 140;
+            }
+            if (FindName("AnswerSupportBox") is FrameworkElement ans)
+            {
+                // 非紧凑时必须放开高度：固定 120 会截断长答案支撑句
+                ans.MaxHeight = compact ? 56 : double.PositiveInfinity;
+            }
+            if (FindName("KeyPointsHint") is FrameworkElement hint)
+            {
+                hint.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+            }
+        }
+        catch
+        {
+            // 控件命名变更时不阻断打开
+        }
+    }
+
+    /// <summary>PDF 对照默认半屏沉浸阅读（对齐 ima）。</summary>
+    private void ExpandHalfScreenForPdf()
+    {
+        if (DataContext is ChatViewModel vm && vm.SourceDrawerWidth < 800)
+        {
+            _previousWidth = vm.SourceDrawerWidth;
+            vm.SourceDrawerWidth = 880;
+            _isExpanded = true;
+            ToggleExpandButton.ToolTip = "还原协同抽屉宽度";
+        }
     }
 
     private void ToggleExpandButton_Click(object sender, RoutedEventArgs e)

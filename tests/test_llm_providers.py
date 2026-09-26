@@ -359,6 +359,28 @@ class TestLlmTestEndpoint:
         assert data["model"] == "mock-model"
         assert data["reply_preview"] == "pong"
 
+    def test_switching_provider_does_not_reuse_runtime_credentials(self, client, monkeypatch: pytest.MonkeyPatch) -> None:
+        from doc2mind.server import http as http_mod
+
+        runtime = client.app.state.doc2mind.settings  # type: ignore[attr-defined]
+        runtime.llm_provider = "openai"
+        runtime.llm_api_key = "old-provider-key"
+        runtime.llm_base_url = "https://old.example/v1"
+        runtime.llm_model = "old-provider-model"
+        captured: list[Settings] = []
+
+        def fake_get(settings):
+            captured.append(settings)
+            return _OkClient()
+
+        monkeypatch.setattr(http_mod, "get_llm_client", fake_get)
+        response = client.post("/v1/llm/test", json={"provider": "ollama"})
+
+        assert response.json()["ok"] is True
+        assert captured[0].llm_api_key is None
+        assert captured[0].llm_base_url is None
+        assert captured[0].llm_model == ""
+
     def test_llm_error_returns_classified_error(self, client, monkeypatch: pytest.MonkeyPatch) -> None:
         from doc2mind.server import http as http_mod
 
@@ -746,6 +768,28 @@ class TestLlmModelsEndpoint:
         assert captured[0].llm_base_url == "https://api.deepseek.com/v1"
         # 不修改运行时配置
         assert client.app.state.doc2mind.settings.llm_api_key is None  # type: ignore[attr-defined]
+
+    def test_switching_provider_does_not_reuse_runtime_credentials(self, client, monkeypatch: pytest.MonkeyPatch) -> None:
+        from doc2mind.server import http as http_mod
+
+        runtime = client.app.state.doc2mind.settings  # type: ignore[attr-defined]
+        runtime.llm_provider = "openai"
+        runtime.llm_api_key = "old-provider-key"
+        runtime.llm_base_url = "https://old.example/v1"
+        runtime.llm_model = "old-provider-model"
+        captured: list[Settings] = []
+
+        def fake_get(settings):
+            captured.append(settings)
+            return _ModelsClient()
+
+        monkeypatch.setattr(http_mod, "get_llm_client", fake_get)
+        response = client.post("/v1/llm/models", json={"provider": "ollama"})
+
+        assert response.json()["ok"] is True
+        assert captured[0].llm_api_key is None
+        assert captured[0].llm_base_url is None
+        assert captured[0].llm_model == ""
 
     def test_404_appends_manual_input_hint(self, client, monkeypatch: pytest.MonkeyPatch) -> None:
         from doc2mind.server import http as http_mod

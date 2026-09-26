@@ -482,6 +482,22 @@ public class GraphViewModelTests
     }
 
     [Fact]
+    public void IsLlmConfigured_EnabledOllamaProfileWithoutKey_ReturnsTrue()
+    {
+        var settings = new AppSettings
+        {
+            LlmProvider = "none",
+            LlmProfiles = new List<LlmProfile>
+            {
+                new() { Id = "ollama", Name = "本地 Ollama", Provider = "ollama", IsEnabled = true }
+            }
+        };
+        var vm = new GraphViewModel(new FakeDoc2kbApiService(), null, settings);
+
+        Assert.True(vm.IsLlmConfigured);
+    }
+
+    [Fact]
     public async Task ExtractGraphAsync_Unconfigured_DoesNotCallApi()
     {
         var fake = new FakeDoc2kbApiService();

@@ -78,21 +78,49 @@ public class SkeletonControl : Control
 
     private void StartPulseAnimation()
     {
-        // 创建未冻结的可动画 brush 实例，绑定到模板根
         _animBrush = new SolidColorBrush(FromColor);
 
-        var anim = new ColorAnimation
+        // 系统关闭动画时回退静态呈现：直接落在低色，不做脉冲
+        if (!SystemParameters.ClientAreaAnimation)
         {
-            From = FromColor,
-            To = ToColor,
-            Duration = new Duration(System.TimeSpan.FromMilliseconds(1200)),
+            SkeletonBrush = _animBrush;
+            return;
+        }
+
+        var pulseMs = TryFindPulseMs();
+        var half = new Duration(System.TimeSpan.FromMilliseconds(pulseMs / 2.0));
+        var easeInOut = new QuadraticEase { EasingMode = EasingMode.EaseInOut };
+
+        // 脉冲 = 高亮层 Opacity 0→1→0 往返、全程 EaseInOut，柔和不刺眼。
+        // 用 Opacity 而非 ColorAnimation：WPF 的 ColorAnimation 不支持 EasingFunction，且 Opacity 动画成本最低
+        var pulse = new DoubleAnimation
+        {
+            From = 0,
+            To = 1,
+            Duration = half,
             AutoReverse = true,
             RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = easeInOut,
         };
 
-        _animBrush.BeginAnimation(SolidColorBrush.ColorProperty, anim);
+        var highlight = new SolidColorBrush(ToColor) { Opacity = 0 };
+        highlight.BeginAnimation(UIElement.OpacityProperty, pulse);
 
-        // 同步到 SkeletonBrush 供模板使用（模板用 {TemplateBinding SkeletonBrush}）
+        // 同步到模板槽位：SkeletonBrush 为低色底层，HighlightBrush 为高亮覆盖层
         SkeletonBrush = _animBrush;
+        HighlightBrush = highlight;
+    }
+
+    /// <summary>脉冲周期挂 SkeletonPulseMs(1400) Token，缺失时回退 1400。</summary>
+    private static double TryFindPulseMs()
+    {
+        try
+        {
+            return Application.Current?.TryFindResource("SkeletonPulseMs") is double ms ? ms : 1400;
+        }
+        catch
+        {
+            return 1400;
+        }
     }
 }

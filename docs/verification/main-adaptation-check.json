@@ -1,0 +1,408 @@
+{
+  "time": "2026-09-21 11:23:15",
+  "repo": "E:\\DocMindY",
+  "pass": 80,
+  "fail": 0,
+  "items": [
+    {
+      "name": "import.all",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "config.citation_min_score",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "config.citation_bg_ratio",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "config.background_hit_limit",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "config.stage_elapsed_enabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "config.llm_first_token_slow_ms",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "config.search_provider",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "config.mcp_client_enabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "config.longform_enabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "config.agent_mode_enabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "config.agent_native_tool_calling",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "config.thinking_meta_filter_enabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "config.longform_max_sections",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rag.partition_citation_hits",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rag._hit_supports_query",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rag._stage_fields_from_timing",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rag.src[stage_retrieval_ms]",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rag.src[stage_first_token_ms]",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rag.src[已等待]",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rag.src[citation_gate]",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rag.src[longform_outline]",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rag.src[thinking_meta_filter_enabled]",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rag.src[无可用库内依据]",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rag.src[search_provider]",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rag.src[partition_citation_hits]",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigResponse.search_provider",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigResponse.citation_min_score",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigResponse.mcp_client_enabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigResponse.longform_enabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigResponse.agent_mode_enabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigResponse.agent_native_tool_calling",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigResponse.thinking_meta_filter_enabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigResponse.background_hit_limit",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigResponse.stage_elapsed_enabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigResponse.llm_first_token_slow_ms",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigUpdate.search_provider",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigUpdate.citation_min_score",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigUpdate.agent_mode_enabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.ConfigUpdate.mcp_client_enabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "http.api_key_masked",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate.cite_good",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate.off_to_bg",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate.weak_discard",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate.cross_check",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate.dropped_fields",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "provider.builtin_default",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "provider.nokey_fallback",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mcp.disabled_by_default",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "base.ChatToolTurn.wants_tools",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "openai.chat_with_tools",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "openai.supports_tool_calling",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "prompt_policy.done_frame_extras",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "thinking.drop_english_meta",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "thinking.keep_chinese",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "longform.outline_event",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "longform.produces_text",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "longform.parse_outline",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.src/doc2mind/core/agent/longform.py",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.src/doc2mind/core/agent/runtime/mcp_client.py",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.src/doc2mind/core/search/provider.py",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.tests/test_dispatch_t0_t8_acceptance.py",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.tests/test_dispatch_t9_t15.py",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.tests/test_commercial_gates.py",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.tests/test_business_matrix.py",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.docs/api.md",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.docs/agents/dispatch/MERGE-STRATEGY-T0.md",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.scripts/selftest_t0_t15.py",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.tools/calibrate_citation_threshold.py",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.index.html",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file.docs/verification/manual-checklist-results.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "wpf.DocMind/AppSettings.cs:AgentModeEnabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "wpf.DocMind/ViewModels/SettingsViewModel.cs:AgentModeEnabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "wpf.DocMind/Views/SettingsView.xaml:AgentModeEnabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "wpf.DocMind/Services/IDoc2kbApiService.cs:onAgentEvent",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "wpf.DocMind/Services/Doc2kbApiService.cs:onAgentEvent",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "wpf.DocMind/ViewModels/ChatViewModel.cs:onAgentEvent",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "api.md[stage_retrieval_ms]",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "api.md[citation_gate]",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "api.md[search_provider]",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "api.md[llm_first_token_slow_ms]",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}
