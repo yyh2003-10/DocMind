@@ -105,11 +105,16 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task<LlmModelsResult> LlmModelsAsync(LlmModelsRequest req, CancellationToken ct = default)
         => SendAsync<LlmModelsResult>(HttpMethod.Post, "v1/llm/models", req, ct);
 
-    public Task<ChatSessionListResponse> ListChatsAsync(int limit = 50, CancellationToken ct = default)
-        => SendAsync<ChatSessionListResponse>(HttpMethod.Get, BuildUri("v1/chats", new Dictionary<string, string?>
+    public Task<ChatSessionListResponse> ListChatsAsync(int limit = 50, string? q = null, CancellationToken ct = default)
+    {
+        var query = new Dictionary<string, string?>
         {
             ["limit"] = limit.ToString(),
-        }), null, ct);
+        };
+        if (!string.IsNullOrWhiteSpace(q))
+            query["q"] = q.Trim();
+        return SendAsync<ChatSessionListResponse>(HttpMethod.Get, BuildUri("v1/chats", query), null, ct);
+    }
 
     public Task<ChatSessionDetail> GetChatAsync(string chatId, CancellationToken ct = default)
         => SendAsync<ChatSessionDetail>(HttpMethod.Get, $"v1/chats/{Uri.EscapeDataString(chatId)}", null, ct);
@@ -141,13 +146,22 @@ public class Doc2kbApiService : IDoc2kbApiService
     public Task<SampleIngestResult> IngestSampleAsync(string collection = "default", CancellationToken ct = default)
         => SendAsync<SampleIngestResult>(HttpMethod.Post, "v1/sample/ingest", new { Collection = collection }, ct);
 
+    public Task<BackupResponse> CreateBackupAsync(string? outputPath = null, CancellationToken ct = default)
+        => SendAsync<BackupResponse>(HttpMethod.Post, "v1/backup", new BackupCreateRequest(outputPath), ct);
+
+    public Task<BackupResponse> RestoreBackupAsync(string backupPath, CancellationToken ct = default)
+        => SendAsync<BackupResponse>(HttpMethod.Post, "v1/backup/restore", new BackupRestoreRequest(backupPath), ct);
+
+    public Task<BackupResponse> CreateDiagnosticBundleAsync(string? outputPath = null, bool includeLogs = false, CancellationToken ct = default)
+        => SendAsync<BackupResponse>(HttpMethod.Post, "v1/diagnostics/bundle", new DiagnosticBundleRequest(outputPath, includeLogs), ct);
+
     public Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default)
         => SendAsync<ChatResponse>(HttpMethod.Post, "v1/chat", req, ct);
 
     public async Task<ChatStreamResult> ChatStreamAsync(
         ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone,
         Action<string>? onStatus = null, Action<string>? onThinking = null,
-        Action? onRestart = null, Action<string, string>? onAgentEvent = null,
+        Action? onRestart = null, Action<string, string>? onAgentEvent = null, Action<string, string>? onPermissionRequest = null,
         CancellationToken ct = default)
     {
         var reqBody = JsonSerializer.Serialize(req, JsonOptions);
@@ -244,14 +258,13 @@ public class Doc2kbApiService : IDoc2kbApiService
                     }
 
                     // 容错前缀解析（AUD-016）：标准为 "data: "，代理可能改写为无空格 "data:"，
-                    // 两种都接受，避免静默丢帧
-                    const string prefix = "data:";
-                    if (!line.StartsWith(prefix, StringComparison.Ordinal))
+                    // 两种都接受，避免静默丢帧；重复拼接的多层前缀也一并剥掉
+                    if (!line.StartsWith("data:", StringComparison.Ordinal))
                     {
                         continue;
                     }
 
-                    var payload = line[prefix.Length..].TrimStart();
+                    var payload = StripSsePrefix(line);
                     if (payload == "[DONE]")
                     {
                         break;
@@ -319,6 +332,14 @@ public class Doc2kbApiService : IDoc2kbApiService
                         && onAgentEvent is not null)
                     {
                         var agentType = typeAgent.GetString() ?? "";
+                        if (agentType == "permission_request")
+                        {
+                            var reqId = root.TryGetProperty("request_id", out var rid) ? (rid.GetString() ?? "") : "";
+                            var pTool = root.TryGetProperty("tool_id", out var pt) ? (pt.GetString() ?? "") : "";
+                            onPermissionRequest?.Invoke(reqId, pTool);
+                            onAgentEvent?.Invoke("permission_request", string.IsNullOrWhiteSpace(pTool) ? reqId : $"{pTool} ({reqId})");
+                            continue;
+                        }
                         if (agentType is "agent_plan" or "tool_call" or "tool_result" or "artifact_ready")
                         {
                             var toolId = root.TryGetProperty("tool_id", out var tid) ? (tid.GetString() ?? "")
@@ -492,6 +513,10 @@ public class Doc2kbApiService : IDoc2kbApiService
             evidence = new EvidenceSummary
             {
                 LocalCount = ev.TryGetProperty("local_count", out var lc) && lc.TryGetInt32(out var lcv) ? lcv : 0,
+                LocalCiteCount = ev.TryGetProperty("local_cite_count", out var lcc) && lcc.TryGetInt32(out var lccv) ? lccv
+                    : (ev.TryGetProperty("local_count", out lc) && lc.TryGetInt32(out lcv) ? lcv : 0),
+                LocalHitCount = ev.TryGetProperty("local_hit_count", out var lhc) && lhc.TryGetInt32(out var lhcv) ? lhcv
+                    : (ev.TryGetProperty("local_count", out lc) && lc.TryGetInt32(out lcv) ? lcv : 0),
                 WebFetchedCount = ev.TryGetProperty("web_fetched_count", out var wf) && wf.TryGetInt32(out var wfv) ? wfv : 0,
                 WebUnfetchedCount = ev.TryGetProperty("web_unfetched_count", out var wu) && wu.TryGetInt32(out var wuv) ? wuv : 0,
                 GraphInjected = ev.TryGetProperty("graph_injected", out var gi)
@@ -500,6 +525,19 @@ public class Doc2kbApiService : IDoc2kbApiService
                 FallbackGeneralKnowledge = ev.TryGetProperty("fallback_general_knowledge", out var fg)
                     && fg.ValueKind is JsonValueKind.True or JsonValueKind.False
                     && fg.GetBoolean(),
+                CitableTotal = ev.TryGetProperty("citable_total", out var ct) && ct.TryGetInt32(out var ctv) ? ctv : 0,
+                SynthesizedSourceCount = ev.TryGetProperty("synthesized_source_count", out var ssc) && ssc.TryGetInt32(out var sscv) ? sscv : 0,
+                SingleSource = ev.TryGetProperty("single_source", out var ss)
+                    && ss.ValueKind is JsonValueKind.True or JsonValueKind.False
+                    && ss.GetBoolean(),
+                WebOnly = ev.TryGetProperty("web_only", out var wo)
+                    && wo.ValueKind is JsonValueKind.True or JsonValueKind.False
+                    && wo.GetBoolean(),
+                DegradedRetrieval = ev.TryGetProperty("degraded_retrieval", out var dr)
+                    && dr.ValueKind is JsonValueKind.True or JsonValueKind.False
+                    && dr.GetBoolean(),
+                PromptTrack = ev.TryGetProperty("prompt_track", out var pt) && pt.ValueKind == JsonValueKind.String
+                    ? pt.GetString() : null,
                 CitationAudit = citationAudit,
             };
         }
@@ -577,6 +615,102 @@ public class Doc2kbApiService : IDoc2kbApiService
 
     public Task<JobStatus> CurateAsync(CurateRequest req, CancellationToken ct = default)
         => SendAsync<JobStatus>(HttpMethod.Post, "v1/curate", req, ct);
+    public async Task<bool> ResolveAgentPermissionAsync(string requestId, bool allow, CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object?> { ["decision"] = allow ? "allow" : "deny" };
+        var json = await SendRawAsync(HttpMethod.Post, $"v1/agent/permission/{Uri.EscapeDataString(requestId)}", body, ct);
+        return json.Contains("\"resolved\":true") || json.Contains("\"resolved\": true");
+    }
+
+    public Task<CurateRunsResponse> ListCurateRunsAsync(int days = 7, int limit = 50, CancellationToken ct = default)
+        => SendAsync<CurateRunsResponse>(HttpMethod.Get, $"v1/curate-runs?days={days}&limit={limit}", null, ct);
+
+    public async Task<LibraryEvalResult> EvalLibraryAsync(string? collection = null, int sample = 30, CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object?> { ["sample"] = sample };
+        if (!string.IsNullOrWhiteSpace(collection)) body["collection"] = collection;
+        var json = await SendRawAsync(HttpMethod.Post, "v1/eval/library", body, ct);
+        return ParseEvalLibrary(json);
+    }
+
+    public Task<RetrievalRecommendedResult> GetRetrievalRecommendedAsync(CancellationToken ct = default)
+        => SendRecommendedAsync(HttpMethod.Get, "v1/config/retrieval-recommended", null, ct);
+
+    public Task<RetrievalRecommendedResult> ApplyRetrievalRecommendedAsync(CancellationToken ct = default)
+        => SendRecommendedAsync(HttpMethod.Post, "v1/config/retrieval-recommended", new Dictionary<string, object?>(), ct);
+
+    private async Task<RetrievalRecommendedResult> SendRecommendedAsync(HttpMethod method, string path, object? body, CancellationToken ct)
+    {
+        var json = await SendRawAsync(method, path, body, ct);
+        return ParseRecommended(json);
+    }
+
+    private static LibraryEvalResult ParseEvalLibrary(string json)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            static double? Num(System.Text.Json.JsonElement e, params string[] names)
+            {
+                foreach (var n in names)
+                {
+                    if (e.TryGetProperty(n, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.Number)
+                        return v.GetDouble();
+                }
+                return null;
+            }
+            var suggestions = new List<string>();
+            if (root.TryGetProperty("suggestions", out var sug) && sug.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var s in sug.EnumerateArray())
+                {
+                    var t = s.ToString();
+                    if (!string.IsNullOrWhiteSpace(t)) suggestions.Add(t);
+                }
+            }
+            return new LibraryEvalResult
+            {
+                SelfRecallAtK = Num(root, "self_recall_at_k", "self_recall", "recall"),
+                Mrr = Num(root, "mrr"),
+                Sample = root.TryGetProperty("sample", out var sp) && sp.TryGetInt32(out var spi) ? spi : 0,
+                Suggestions = suggestions,
+                Summary = root.TryGetProperty("summary", out var sum) ? sum.ToString() : null,
+                RawJson = json,
+            };
+        }
+        catch
+        {
+            return new LibraryEvalResult { RawJson = json };
+        }
+    }
+
+    private static RetrievalRecommendedResult ParseRecommended(string json)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var changes = new Dictionary<string, string>();
+            if (root.TryGetProperty("changes", out var ch) && ch.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                foreach (var p in ch.EnumerateObject())
+                    changes[p.Name] = p.Value.ToString();
+            }
+            return new RetrievalRecommendedResult
+            {
+                AlignedBefore = root.TryGetProperty("aligned_before", out var ab) && ab.ValueKind == System.Text.Json.JsonValueKind.True,
+                Applied = root.TryGetProperty("applied", out var ap) && ap.ValueKind == System.Text.Json.JsonValueKind.True,
+                Description = root.TryGetProperty("description", out var d) ? d.ToString() : "",
+                Changes = changes,
+                RawJson = json,
+            };
+        }
+        catch
+        {
+            return new RetrievalRecommendedResult { RawJson = json };
+        }
+    }
 
     public Task<JobStatus> GetJobAsync(string jobId, CancellationToken ct = default)
         => SendAsync<JobStatus>(HttpMethod.Get, $"v1/jobs/{Uri.EscapeDataString(jobId)}", null, ct);
@@ -610,6 +744,12 @@ public class Doc2kbApiService : IDoc2kbApiService
 
     public Task<LocalAiEnvironment> GetLocalAiEnvironmentAsync(CancellationToken ct = default)
         => SendAsync<LocalAiEnvironment>(HttpMethod.Get, "v1/system/local-ai-environment", null, ct);
+
+    public Task<OllamaPullStatus> StartOllamaPullAsync(string model, CancellationToken ct = default)
+        => SendAsync<OllamaPullStatus>(HttpMethod.Post, "v1/system/ollama/pull", new { model_name = model }, ct);
+
+    public Task<OllamaPullStatus> GetOllamaPullStatusAsync(CancellationToken ct = default)
+        => SendAsync<OllamaPullStatus>(HttpMethod.Get, "v1/system/ollama/pull/status", null, ct);
 
     public Task InstallGpuAsync(string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default)
         => InstallViaSseAsync("v1/system/install-gpu", path, "GPU install", onLog, onDone, ct);
@@ -688,11 +828,10 @@ public class Doc2kbApiService : IDoc2kbApiService
                     if (string.IsNullOrWhiteSpace(nextLine))
                         continue;
 
-                    const string prefix = "data:";
-                    if (!nextLine.StartsWith(prefix, StringComparison.Ordinal))
+                    if (!nextLine.StartsWith("data:", StringComparison.Ordinal))
                         continue;
 
-                    var payload = nextLine[prefix.Length..].TrimStart();
+                    var payload = StripSsePrefix(nextLine);
                     if (payload == "[DONE]")
                         break;
 
@@ -815,11 +954,10 @@ public class Doc2kbApiService : IDoc2kbApiService
                     if (string.IsNullOrWhiteSpace(nextLine))
                         continue;
 
-                    const string prefix = "data:";
-                    if (!nextLine.StartsWith(prefix, StringComparison.Ordinal))
+                    if (!nextLine.StartsWith("data:", StringComparison.Ordinal))
                         continue;
 
-                    var payload = nextLine[prefix.Length..].TrimStart();
+                    var payload = StripSsePrefix(nextLine);
                     if (payload == "[DONE]")
                         break;
 
@@ -965,12 +1103,12 @@ public class Doc2kbApiService : IDoc2kbApiService
                     if (string.IsNullOrWhiteSpace(line))
                         continue;
 
-                    // 容错前缀解析（AUD-016）：标准为 "data: "，代理可能改写为无空格 "data:"
-                    const string prefix = "data:";
-                    if (!line.StartsWith(prefix, StringComparison.Ordinal))
+                    // 容错前缀解析（AUD-016）：标准为 "data: "，代理可能改写为无空格 "data:"，
+                    // 重复拼接的多层前缀也一并剥掉
+                    if (!line.StartsWith("data:", StringComparison.Ordinal))
                         continue;
 
-                    var payload = line[prefix.Length..].TrimStart();
+                    var payload = StripSsePrefix(line);
                     if (payload == "[DONE]")
                         break;
 
@@ -1102,6 +1240,15 @@ public class Doc2kbApiService : IDoc2kbApiService
         return await SendAsync<PptInspectionReportDto>(HttpMethod.Post, "v1/creative/inspect", body, ct);
     }
 
+    public Task<ArtifactVersionResponse> SaveArtifactVersionAsync(string artifactId, CreativeExportRequest draft, CancellationToken ct = default)
+        => SendAsync<ArtifactVersionResponse>(HttpMethod.Post, $"v1/creative/artifacts/{Uri.EscapeDataString(artifactId)}/versions", draft, ct);
+
+    public Task<List<ArtifactVersionSummary>> ListArtifactVersionsAsync(string artifactId, CancellationToken ct = default)
+        => SendAsync<List<ArtifactVersionSummary>>(HttpMethod.Get, $"v1/creative/artifacts/{Uri.EscapeDataString(artifactId)}/versions", null, ct);
+
+    public Task<ArtifactVersionResponse> GetArtifactVersionAsync(string artifactId, string versionId, CancellationToken ct = default)
+        => SendAsync<ArtifactVersionResponse>(HttpMethod.Get, $"v1/creative/artifacts/{Uri.EscapeDataString(artifactId)}/versions/{Uri.EscapeDataString(versionId)}", null, ct);
+
     public Task<LibraryStatus> GetLibraryStatusAsync(CancellationToken ct = default)
         => SendAsync<LibraryStatus>(HttpMethod.Get, "v1/library/status", null, ct);
 
@@ -1151,7 +1298,7 @@ public class Doc2kbApiService : IDoc2kbApiService
                         // 容错前缀解析（AUD-016）：标准为 "data: "，代理可能改写为无空格 "data:"
                         if (line.StartsWith("data:", StringComparison.Ordinal))
                         {
-                            var json = line["data:".Length..].TrimStart();
+                            var json = StripSsePrefix(line);
                             if (string.IsNullOrWhiteSpace(json) || json == "[DONE]") continue;
 
                             try
@@ -1192,6 +1339,23 @@ public class Doc2kbApiService : IDoc2kbApiService
         return cts;
     }
 
+    /// <summary>请求并返回原始 JSON 字符串（宽松解析用）。</summary>
+    private async Task<string> SendRawAsync(HttpMethod method, string uri, object? payload, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(method, uri);
+        AttachAuthHeader(request);
+        if (payload is not null)
+        {
+            request.Content = System.Net.Http.Json.JsonContent.Create(payload, options: JsonOptions);
+        }
+        using var response = await _httpClient.SendAsync(request, ct).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new ApiException("HTTP_" + (int)response.StatusCode, Truncate(body, 400));
+        }
+        return body;
+    }
     private async Task<T> SendAsync<T>(HttpMethod method, string uri, object? payload, CancellationToken ct)
     {
         // 调试日志：请求出参
@@ -1289,6 +1453,22 @@ public class Doc2kbApiService : IDoc2kbApiService
         var buf = new byte[2048];
         var n = await stream.ReadAsync(buf.AsMemory(0, buf.Length)).ConfigureAwait(false);
         return n == 0 ? string.Empty : Encoding.UTF8.GetString(buf, 0, n);
+    }
+
+    /// <summary>剥掉 SSE "data:" 前缀并去前导空白。
+    /// 容忍代理/后端重复拼接的多层前缀——曾出现 "data: data: {...}"，
+    /// 端上只剥一次后 payload 仍以 'd' 开头，JsonDocument.Parse 直接抛 PARSE_ERROR，
+    /// 导致整轮对话判定失败（HTML 气泡随之空白）。</summary>
+    private static string StripSsePrefix(string line)
+    {
+        var s = line.TrimStart();
+        while (s.StartsWith("data:", StringComparison.Ordinal))
+        {
+            // 每剥一层都要再去一次空白，否则 "data: data: {...}" 剥一次后
+            // 残留的前导空格会让下一轮 StartsWith 判定失败，只剥一层就退出
+            s = s["data:".Length..].TrimStart();
+        }
+        return s;
     }
 
     private static string Truncate(string s, int max)

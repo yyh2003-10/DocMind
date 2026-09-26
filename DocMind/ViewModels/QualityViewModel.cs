@@ -36,19 +36,15 @@ public partial class QualityViewModel : ViewModelBase
                 return true;
             }
             var provider = _appSettings.LlmProvider?.Trim() ?? "";
-            if (provider.Length == 0 || string.Equals(provider, "none", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-            if (string.Equals(provider, "ollama", StringComparison.OrdinalIgnoreCase))
+            if (provider.Length > 0 && !string.Equals(provider, "none", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(provider, "ollama", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(_appSettings.LlmApiKey)))
             {
                 return true;
             }
-            if (!string.IsNullOrWhiteSpace(_appSettings.LlmApiKey))
-            {
-                return true;
-            }
-            return _appSettings.LlmProfiles?.Any(p => !string.IsNullOrWhiteSpace(p.ApiKey)) == true;
+            return _appSettings.LlmProfiles?.Any(p => p is { IsEnabled: true }
+                && (string.Equals(p.Provider, "ollama", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(p.ApiKey))) == true;
         }
     }
 
@@ -586,4 +582,140 @@ public partial class QualityViewModel : ViewModelBase
 
     private static int CountOf(JsonElement root, string key)
         => root.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Array ? v.GetArrayLength() : 0;
+
+    // ===================== 整理历史 / 检索自评估 / 推荐配置 =====================
+
+    private string _curateRunsText = "尚未加载";
+    private string _evalResultText = "";
+    private string _recommendedText = "";
+    private bool _isEvalRunning;
+
+    /// <summary>最近整理运行摘要。</summary>
+    public string CurateRunsText
+    {
+        get => _curateRunsText;
+        private set => SetProperty(ref _curateRunsText, value);
+    }
+
+    /// <summary>检索自评估结果摘要。</summary>
+    public string EvalResultText
+    {
+        get => _evalResultText;
+        private set => SetProperty(ref _evalResultText, value);
+    }
+
+    /// <summary>推荐检索配置摘要。</summary>
+    public string RecommendedText
+    {
+        get => _recommendedText;
+        private set => SetProperty(ref _recommendedText, value);
+    }
+
+    public bool IsEvalRunning
+    {
+        get => _isEvalRunning;
+        private set
+        {
+            if (SetProperty(ref _isEvalRunning, value))
+                RunEvalCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    /// <summary>加载最近整理运行记录。</summary>
+    [RelayCommand]
+    private async Task LoadCurateRunsAsync()
+    {
+        try
+        {
+            var resp = await _apiService.ListCurateRunsAsync(days: 7, limit: 20);
+            if (resp.Items.Count == 0)
+            {
+                CurateRunsText = "近 7 天没有整理运行记录。";
+                return;
+            }
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"近 7 天 {resp.Items.Count} 次整理：");
+            foreach (var it in resp.Items.Take(5))
+            {
+                var kind = it.DryRun ? "预览" : "落盘";
+                sb.Append($"\n· {it.StartedAt} [{kind}] {string.Join("/", it.Actions)} · 改动 {it.ChangedDocIds.Count} 篇 · 跳过 {it.SkippedCount} · 错误 {it.ErrorCount}");
+                if (!string.IsNullOrWhiteSpace(it.Note)) sb.Append($"（{it.Note}）");
+            }
+            if (resp.Items.Count > 5) sb.Append($"\n… 共 {resp.Total} 条");
+            CurateRunsText = sb.ToString();
+        }
+        catch (Exception ex)
+        {
+            CurateRunsText = $"加载失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>运行本库检索自评估。</summary>
+    [RelayCommand(CanExecute = nameof(CanRunEval))]
+    private async Task RunEvalAsync()
+    {
+        if (IsEvalRunning) return;
+        IsEvalRunning = true;
+        EvalResultText = "评估中…";
+        try
+        {
+            var r = await _apiService.EvalLibraryAsync(sample: 20);
+            var sb = new System.Text.StringBuilder();
+            if (r.SelfRecallAtK is { } recall) sb.Append($"SelfRecall@k {recall:P1}");
+            if (r.Mrr is { } mrr) sb.Append(string.IsNullOrEmpty(sb.ToString()) ? $"MRR {mrr:P1}" : $" · MRR {mrr:P1}");
+            if (r.Sample > 0) sb.Append($" · 样本 {r.Sample}");
+            if (r.Suggestions.Count > 0)
+            {
+                sb.Append("\n建议：");
+                foreach (var s in r.Suggestions.Take(5)) sb.Append($"\n· {s}");
+            }
+            if (sb.Length == 0) sb.Append("评估完成，无指标返回。");
+            EvalResultText = sb.ToString();
+        }
+        catch (Exception ex)
+        {
+            EvalResultText = $"评估失败：{ex.Message}";
+        }
+        finally
+        {
+            IsEvalRunning = false;
+        }
+    }
+
+    private bool CanRunEval => !IsEvalRunning && !IsBusy;
+
+    /// <summary>加载推荐检索配置预览。</summary>
+    [RelayCommand]
+    private async Task LoadRecommendedAsync()
+    {
+        try
+        {
+            var r = await _apiService.GetRetrievalRecommendedAsync();
+            RecommendedText = (r.AlignedBefore ? "当前已对齐推荐配置。" : "当前配置与推荐不一致。")
+                + (string.IsNullOrWhiteSpace(r.Description) ? "" : $"\n{r.Description}");
+        }
+        catch (Exception ex)
+        {
+            RecommendedText = $"加载失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>一键应用推荐检索配置。</summary>
+    [RelayCommand]
+    private async Task ApplyRecommendedAsync()
+    {
+        try
+        {
+            var r = await _apiService.ApplyRetrievalRecommendedAsync();
+            RecommendedText = r.Applied
+                ? $"已应用推荐配置。{r.Description}"
+                : "推荐配置已对齐，无需修改。";
+            _notifications?.Success("推荐检索配置已应用", "检索配置");
+        }
+        catch (Exception ex)
+        {
+            RecommendedText = $"应用失败：{ex.Message}";
+            _notifications?.Error($"应用推荐配置失败：{ex.Message}", "检索配置");
+        }
+    }
 }

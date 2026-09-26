@@ -58,7 +58,7 @@
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
                             Visibility="{Binding SelectedSource.IsWebSource, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}">
                     <Path Data="{StaticResource IconGlobe}" Style="{StaticResource IconSmStyle}"
-                          Stroke="{StaticResource PrimaryBrush}" VerticalAlignment="Center"
+                          Stroke="{DynamicResource PrimaryBrush}" VerticalAlignment="Center"
                           Margin="0,0,5,0"/>
                     <TextBlock Text="网页原文对照"
                                FontSize="14"
@@ -181,6 +181,7 @@
 
         <!-- 3. 关键点对照卡片：答案表述 ↔ 库内引用原文，始终可见 -->
         <Border Grid.Row="2"
+                x:Name="KeyPointsCard"
                 Background="{DynamicResource PrimaryLightBrush}"
                 BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
@@ -209,7 +210,8 @@
                            Foreground="{DynamicResource TextSecondaryBrush}"
                            Margin="0,0,0,2"
                            Visibility="{Binding DataContext.HasSelectedSourceAnswerSupport, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}"/>
-                <Border Background="{DynamicResource CardBrush}"
+                <Border x:Name="AnswerSupportBox"
+                        Background="{DynamicResource CardBrush}"
                         CornerRadius="6"
                         Padding="8,6"
                         Margin="0,0,0,6"
@@ -237,7 +239,7 @@
                         CornerRadius="6"
                         Padding="8,6"
                         MaxHeight="140">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ScrollViewer x:Name="SnippetScroll" VerticalScrollBarVisibility="Auto">
                         <TextBlock Text="{Binding DataContext.SelectedSourceSnippet, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                    FontSize="12"
                                    Foreground="{DynamicResource TextPrimaryBrush}"
@@ -246,7 +248,8 @@
                     </ScrollViewer>
                 </Border>
 
-                <TextBlock Text="下方为原文件视图，PDF 将自动跳转到引用页并高亮对应段落。"
+                <TextBlock x:Name="KeyPointsHint"
+                           Text="下方为原文件视图，PDF 将自动跳转到引用页并高亮对应段落。"
                            FontSize="10"
                            Foreground="{DynamicResource TextTertiaryBrush}"
                            TextWrapping="Wrap"

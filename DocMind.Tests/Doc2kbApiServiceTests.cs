@@ -310,4 +310,24 @@ public class Doc2kbApiServiceSseParserTests
         Assert.Equal(0, result.TotalChunks);
         Assert.Empty(result.Sources);
     }
+
+    [Fact]
+    public void ChatStream_ToleratesDuplicatedDataPrefix()
+    {
+        // 回归防护：后端 done 帧曾拼出 "data: data: {...}" 双前缀，
+        // 端上只剥一次前缀时 payload 仍以 'd' 开头，JsonDocument.Parse 直接抛
+        // PARSE_ERROR，整轮回答判定失败（HTML 气泡随之空白）。
+        var sse = "data: data: {\"token\":\"双前缀也认\"}\n\n"
+                  + "data: data: {\"done\":true,\"chat_id\":\"c-dup\",\"model\":\"m\",\"provider\":\"p\","
+                  + "\"total_chunks\":1,\"elapsed_ms\":9,\"partial\":false,\"sources\":[]}\n\n"
+                  + "data: data: [DONE]\n\n";
+        var (service, _) = CreateService(sse);
+        var tokens = new List<string>();
+
+        var result = Run(new ChatRequest { Query = "q" }, service, tokens);
+
+        Assert.Equal("双前缀也认", Assert.Single(tokens));
+        Assert.Equal("c-dup", result.ChatId);
+        Assert.Equal(1, result.TotalChunks);
+    }
 }

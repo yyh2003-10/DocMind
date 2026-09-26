@@ -43,7 +43,10 @@ dependencies = [
     "python-pptx==1.0.2",
     "markdown-it-py==4.0.0",
     "beautifulsoup4==4.15.0",
-    "lxml==6.0.4",
+    "lxml>=6.0.4",
+    "lxml_html_clean>=0.4.0",
+    # 网页正文提取（Apache-2.0；优先于手写 BS4 正文路径，失败自动回退）
+    "trafilatura>=1.12.0",
     # 嵌入引擎 (ONNX，替代 PyTorch)
     "fastembed==0.8.0",
     # 向量存储

@@ -75,6 +75,7 @@ public partial class SettingsViewModel : ViewModelBase
     private bool _stopBackendOnExit = true;
     private bool _autoCurateOnIngest = true;
     private bool _agentModeEnabled;
+    private string _defaultChatMode = "rag";
     private string? _autoIngestPath;
     private string _autoIngestCollection = "default";
     private bool _autoIngestRecursive;
@@ -229,6 +230,7 @@ public partial class SettingsViewModel : ViewModelBase
     private bool _isDirty;
     private bool _isTestingConnection;
     private bool _isFetchingModels;
+    private bool _isTestingModels;
     // 加载/上次保存时的 key/base_url/model/system_prompt 快照：base_url/model/system_prompt 用于推送清除语义
     // （曾配置过+现清空 → 推 "" 显式清除）；key 用于「清除」按钮可见性（与后端 llm_api_key_configured 合并判断）
     private string? _savedApiKeyAtLoad;
@@ -247,6 +249,168 @@ public partial class SettingsViewModel : ViewModelBase
     private string? _activeBackendEmbedModel;
     private string? _activeBackendLlmProvider;
     private string? _activeBackendLlmModel;
+    private readonly UserMemoryService? _userMemory;
+    private string _memoryStatsText = "尚未加载";
+    private string _costStatsText = "尚未加载";
+
+    /// <summary>用户记忆统计文案。</summary>
+    public string MemoryStatsText
+    {
+        get => _memoryStatsText;
+        private set => SetProperty(ref _memoryStatsText, value);
+    }
+
+    /// <summary>LLM 费用统计文案。</summary>
+    public string CostStatsText
+    {
+        get => _costStatsText;
+        private set => SetProperty(ref _costStatsText, value);
+    }
+
+    private System.Collections.ObjectModel.ObservableCollection<DocMind.Models.MemoryEntry> _memoryEntries = new();
+    private DocMind.Models.MemoryEntry? _selectedMemoryEntry;
+    private string _memoryEditDraft = "";
+
+    /// <summary>记忆条目列表。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<DocMind.Models.MemoryEntry> MemoryEntries
+    {
+        get => _memoryEntries;
+        private set => SetProperty(ref _memoryEntries, value);
+    }
+
+    /// <summary>当前选中的记忆。</summary>
+    public DocMind.Models.MemoryEntry? SelectedMemoryEntry
+    {
+        get => _selectedMemoryEntry;
+        set
+        {
+            if (SetProperty(ref _selectedMemoryEntry, value))
+            {
+                MemoryEditDraft = value?.Content ?? "";
+                DeleteMemoryCommand.NotifyCanExecuteChanged();
+                SaveMemoryEditCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>记忆编辑草稿。</summary>
+    public string MemoryEditDraft
+    {
+        get => _memoryEditDraft;
+        set
+        {
+            if (SetProperty(ref _memoryEditDraft, value ?? ""))
+                SaveMemoryEditCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    /// <summary>加载记忆列表。</summary>
+    [CommunityToolkit.Mvvm.Input.RelayCommand]
+    private async Task LoadMemoriesAsync()
+    {
+        if (_userMemory is null) return;
+        try
+        {
+            var list = await System.Threading.Tasks.Task.Run(() => _userMemory.GetAllAsync());
+            MemoryEntries = new System.Collections.ObjectModel.ObservableCollection<DocMind.Models.MemoryEntry>(list);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"加载记忆列表失败: {ex.Message}", "Memory");
+        }
+    }
+
+    /// <summary>保存记忆编辑。</summary>
+    [CommunityToolkit.Mvvm.Input.RelayCommand(CanExecute = nameof(CanSaveMemoryEdit))]
+    private async Task SaveMemoryEditAsync()
+    {
+        var entry = SelectedMemoryEntry;
+        if (_userMemory is null || entry is null) return;
+        var draft = MemoryEditDraft?.Trim() ?? "";
+        if (draft.Length == 0 || draft == entry.Content) return;
+        try
+        {
+            await System.Threading.Tasks.Task.Run(() => _userMemory.ReplaceAsync(entry.Content, draft, entry.Category));
+            await LoadMemoriesAsync();
+            _notifications?.Success("记忆已更新", "记忆");
+        }
+        catch (Exception ex)
+        {
+            _notifications?.Error($"保存记忆失败：{ex.Message}", "记忆");
+        }
+    }
+
+    private bool CanSaveMemoryEdit =>
+        _userMemory is not null && SelectedMemoryEntry is not null
+        && !string.IsNullOrWhiteSpace(MemoryEditDraft)
+        && MemoryEditDraft.Trim() != SelectedMemoryEntry.Content;
+
+    /// <summary>删除选中记忆。</summary>
+    [CommunityToolkit.Mvvm.Input.RelayCommand(CanExecute = nameof(CanDeleteMemory))]
+    private async Task DeleteMemoryAsync()
+    {
+        var entry = SelectedMemoryEntry;
+        if (_userMemory is null || entry is null) return;
+        try
+        {
+            await System.Threading.Tasks.Task.Run(() => _userMemory.DeleteByIdAsync(entry.Id));
+            SelectedMemoryEntry = null;
+            await LoadMemoriesAsync();
+            _notifications?.Success("记忆已删除", "记忆");
+        }
+        catch (Exception ex)
+        {
+            _notifications?.Error($"删除记忆失败：{ex.Message}", "记忆");
+        }
+    }
+
+    private bool CanDeleteMemory => _userMemory is not null && SelectedMemoryEntry is not null;
+
+    /// <summary>刷新记忆与费用面板。</summary>
+    [CommunityToolkit.Mvvm.Input.RelayCommand]
+    private async Task RefreshUsageStatsAsync()
+    {
+        try
+        {
+            if (_userMemory is not null)
+            {
+                // SQLite 同步 API：必须进线程池，避免 await 同步完成时卡死 UI 线程
+                var mem = await System.Threading.Tasks.Task.Run(() => _userMemory.GetStatsAsync());
+                var memories = await System.Threading.Tasks.Task.Run(() => _userMemory.GetAllAsync());
+                MemoryEntries = new System.Collections.ObjectModel.ObservableCollection<DocMind.Models.MemoryEntry>(memories);
+                MemoryStatsText = $"记忆 {mem.EntryCount} 条 · 已用 {mem.UsedChars}/{mem.MaxChars} 字符（{mem.UsagePercent:F0}%）"
+                    + (mem.IsNearLimit ? " · 接近容量上限" : "");
+            }
+            else
+            {
+                MemoryStatsText = "记忆服务未注入";
+            }
+        }
+        catch (Exception ex)
+        {
+            MemoryStatsText = $"记忆统计失败：{ex.Message}";
+        }
+
+        try
+        {
+            if (_costTracker is not null)
+            {
+                var today = await System.Threading.Tasks.Task.Run(() => _costTracker.GetTodayCostAsync());
+                var month = await System.Threading.Tasks.Task.Run(() => _costTracker.GetMonthCostAsync());
+                CostStatsText = $"今日  · 本月 ";
+            }
+            else
+            {
+                CostStatsText = "费用服务未注入";
+            }
+        }
+        catch (Exception ex)
+        {
+            CostStatsText = $"费用统计失败：{ex.Message}";
+        }
+    }
+    private readonly CostTracker? _costTracker;
+
     private bool _isBackendConfigLoaded;
     private bool _showApiKeyClearConfirm;
 
@@ -260,6 +424,8 @@ public partial class SettingsViewModel : ViewModelBase
     // persist=false 不落盘（保存才持久化）；实现输入即可测试、调用，无需先点保存。
     private System.Windows.Threading.DispatcherTimer? _llmAutoApplyTimer;
     private bool _isAutoApplyingLlm;
+    private bool _llmAutoApplyPending;
+    private long _llmModelsRequestVersion;
     // 表单回填中（下拉选服务商/应用档案前回填）：抑制自动推送（应用档案走完整保存流程自带推送）
     private bool _isBackfillingLlmForm;
     // 上次已推送后端运行时的 LLM 连接快照（避免重复推送）
@@ -275,6 +441,8 @@ public partial class SettingsViewModel : ViewModelBase
     private bool _isCheckingProfiles;
     // 重建服务商下拉期间抑制「选中即应用」副作用（构造初始化/增删档案时只高亮，不触发 ApplyPreset）
     private bool _isRebuildingProviderOptions;
+    // 构造函数期间抑制 IsDirty/PropertyChanged/Timer 副作用，避免 WPF 布局阶段属性链递归导致 StackOverflow。
+    private bool _isInitializing;
 
     public SettingsViewModel(
         AppSettings appSettings,
@@ -283,9 +451,14 @@ public partial class SettingsViewModel : ViewModelBase
         IDoc2kbApiService apiService,
         GpuWarningViewModel gpuWarning,
         BackendProcessService? backendProcess = null,
-        ResourcePathPanelViewModel? resourcePaths = null)
+        ResourcePathPanelViewModel? resourcePaths = null,
+        UserMemoryService? userMemory = null,
+        CostTracker? costTracker = null)
     {
+        _isInitializing = true;
         _appSettings = appSettings;
+        _userMemory = userMemory;
+        _costTracker = costTracker;
         _notifications = notifications;
         _themeService = themeService;
         _apiService = apiService;
@@ -294,18 +467,26 @@ public partial class SettingsViewModel : ViewModelBase
         ResourcePaths = resourcePaths;
         Title = "设置";
 
+        LlmModels.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasModels));
+
         // 异步预检外部组件路径（高概率区快扫，秒级；不阻塞设置页打开）
         if (resourcePaths is not null)
         {
             _ = resourcePaths.RefreshAsync();
         }
+
+        _ = RefreshUsageStatsAsync();
+
+        // 自定义搭配默认选中当前/轻量项，便于用户混搭
+        // 默认「平衡」预设：高效简便定位（初始化不标脏）
+        ApplyPresetInternal("balanced", markDirty: false);
         
         _gpuWarning.PropertyChanged += (s, e) =>
         {
-            if (e.PropertyName == nameof(GpuWarningViewModel.Dismissed))
-            {
-                IsDirty = true;
-            }
+            // 故意保留：Dismissed 变化在设置页打开时不再直接标记 IsDirty，
+            // 避免 WPF 布局/测量阶段属性链递归导致 StackOverflow。
+            // 若以后确需关联，请改为仅记录日志并同步设置页相关状态，勿在 setter 中触发 SaveCommand 相关逻辑。
+            DebugLog.Debug($"GpuWarning.PropertyChanged: {e.PropertyName ?? "(null)"}", "Settings");
         };
 
         // 加载当前值到可编辑字段
@@ -317,6 +498,19 @@ public partial class SettingsViewModel : ViewModelBase
         _stopBackendOnExit = _appSettings.StopBackendOnExit;
         _autoCurateOnIngest = _appSettings.AutoCurateOnIngest;
         _agentModeEnabled = _appSettings.AgentModeEnabled;
+        _longformEnabled = _appSettings.LongformEnabled;
+        _longformMaxSections = _appSettings.LongformMaxSections is >= 2 and <= 16 ? _appSettings.LongformMaxSections : 8;
+        _longformMaxChars = _appSettings.LongformMaxChars is >= 1000 and <= 100000 ? _appSettings.LongformMaxChars : 12000;
+        _searchProvider = string.IsNullOrWhiteSpace(_appSettings.SearchProvider) ? "builtin" : _appSettings.SearchProvider;
+        _searchProviderApiKey = _appSettings.SearchProviderApiKey ?? "";
+        _searchProviderEndpoint = _appSettings.SearchProviderEndpoint;
+        _defaultChatMode = string.IsNullOrWhiteSpace(_appSettings.DefaultChatMode)
+            ? "rag"
+            : _appSettings.DefaultChatMode.Trim().ToLowerInvariant();
+        if (_defaultChatMode is not ("rag" or "agent" or "auto"))
+        {
+            _defaultChatMode = "rag";
+        }
         _autoIngestPath = _appSettings.AutoIngestPath;
         _autoIngestCollection = _appSettings.AutoIngestCollection;
         _autoIngestRecursive = _appSettings.AutoIngestRecursive;
@@ -339,6 +533,11 @@ public partial class SettingsViewModel : ViewModelBase
         _githubToken = _appSettings.GithubToken;
         _llmBaseUrl = _appSettings.LlmBaseUrl;
         _llmModel = _appSettings.LlmModel;
+        foreach (var model in _appSettings.LlmAvailableModels ?? new List<string>())
+        {
+            if (!string.IsNullOrWhiteSpace(model) && !LlmModels.Any(m => string.Equals(m.Name, model.Trim(), StringComparison.OrdinalIgnoreCase)))
+                LlmModels.Add(new LlmModelItem(model.Trim()));
+        }
         _llmTemperature = _appSettings.LlmTemperature;
         _llmMaxTokens = _appSettings.LlmMaxTokens;
         _llmTimeoutSec = _appSettings.LlmTimeoutSec > 0 ? _appSettings.LlmTimeoutSec : 300;
@@ -430,6 +629,8 @@ public partial class SettingsViewModel : ViewModelBase
         // 不阻塞构造；后端不可达/未实现时静默跳过（收尾置空响应）。
         _ = LoadBackendConfigAsync();
         _ = DetectLocalAiAsync();
+
+        _isInitializing = false;
     }
 
     // ===================== 本地 AI 环境智能感知 =====================
@@ -450,6 +651,8 @@ public partial class SettingsViewModel : ViewModelBase
                 OnPropertyChanged(nameof(OllamaStatusText));
                 OnPropertyChanged(nameof(LmStudioStatusText));
                 OnPropertyChanged(nameof(LocalGgufCountText));
+                OnPropertyChanged(nameof(BundleRecommendations));
+                OnPropertyChanged(nameof(HasBundleRecommendations));
             }
         }
     }
@@ -466,6 +669,16 @@ public partial class SettingsViewModel : ViewModelBase
     public string OllamaStatusText => IsOllamaRunning ? "运行中 (已就绪)" : "未启动";
     public string LmStudioStatusText => IsLmStudioRunning ? "运行中 (已就绪)" : "未启动";
     public string LocalGgufCountText => LocalAiEnv?.LocalGgufCount > 0 ? $"已扫描到本地 {LocalAiEnv.LocalGgufCount} 个 GGUF 大模型" : "";
+
+    /// <summary>档位整套搭配（bundle）条目；当前档位排最前。干净电脑也有完整 5 档。</summary>
+    public List<AutoSetupRecommendation> BundleRecommendations
+        => LocalAiEnv?.Recommendations?
+               .Where(r => r.Kind == "bundle")
+               .OrderByDescending(r => r.IsCurrentTier)
+               .ToList()
+           ?? new List<AutoSetupRecommendation>();
+
+    public bool HasBundleRecommendations => BundleRecommendations.Count > 0;
 
     [RelayCommand]
     public async Task DetectLocalAiAsync()
@@ -529,6 +742,946 @@ public partial class SettingsViewModel : ViewModelBase
         _ = RefreshLlmModelsAsync();
     }
 
+    // ===== 机型档位整套搭配（bundle） =====
+
+    /// <summary>打开 Ollama 下载页钩子（测试用；null = 真实 Process.Start）。</summary>
+    internal Action<string>? OpenInstallerUrlOverride;
+
+    /// <summary>「是否打开下载页」确认钩子（测试用；null = 真实 MessageBox）。</summary>
+    internal Func<string?, bool>? ConfirmInstallerOpenOverride;
+
+    // ===================== 自定义搭配：对话 / 嵌入 / 重排 可分开选 =====================
+
+    /// <summary>可选嵌入模型（知识库向量；换模型需重建索引）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<CustomEmbedOption> EmbedOptions { get; } = new()
+    {
+        new("BAAI/bge-small-zh-v1.5", "bge-small-zh（轻量 · 内置默认）", "约 100MB，CPU 可跑，中文够用"),
+        new("jinaai/jina-embeddings-v2-base-zh", "jina-zh（中文检索更强）", "约 500MB，需重建索引"),
+        new("intfloat/multilingual-e5-large", "e5-large（多语言最强）", "约 1.2GB，较吃资源，需重建索引"),
+    };
+
+    /// <summary>可选本地对话模型（Ollama / LM Studio；与档位解耦，可混搭）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<CustomChatOption> ChatModelOptions { get; } = new()
+    {
+        new("qwen3:0.6b", "Qwen3-0.6B", "极轻 · 约 0.6GB · 质量偏弱"),
+        new("qwen3:1.7b", "Qwen3-1.7B", "轻 · 约 1.4GB · CPU 可用"),
+        new("qwen3:4b", "Qwen3-4B", "较轻 · 约 2.6GB · 入门显卡"),
+        new("phi4-mini:3.8b", "Phi-4-mini 3.8B", "较轻 · 约 2.8GB · 编码/推理更强"),
+        new("qwen3:8b", "Qwen3-8B", "中等 · 约 5.2GB · 主流显卡全速"),
+        new("qwen3:14b", "Qwen3-14B", "较重 · 约 9GB · 12GB+ 显存"),
+        new("qwen3:30b-a3b", "Qwen3-30B-A3B (MoE)", "重 · 约 19GB · 24GB+ 显存"),
+        new("qwen3:32b", "Qwen3-32B", "最重 · 约 20GB · 质量最强更慢"),
+    };
+
+    private CustomEmbedOption? _customEmbed;
+    private CustomChatOption? _customChat;
+    private bool _customRerankEnabled = true;
+
+    public CustomEmbedOption? CustomEmbed
+    {
+        get => _customEmbed;
+        set
+        {
+            if (SetProperty(ref _customEmbed, value))
+            {
+                if (!_suppressPresetAutoCustom && SelectedPresetId != "custom") { SelectedPresetId = "custom"; NotifyPresetFlags(); }
+                UpdateConfigLoadSummary();
+            }
+        }
+    }
+
+    public CustomChatOption? CustomChat
+    {
+        get => _customChat;
+        set
+        {
+            if (SetProperty(ref _customChat, value))
+            {
+                if (!_suppressPresetAutoCustom && SelectedPresetId != "custom") { SelectedPresetId = "custom"; NotifyPresetFlags(); }
+                UpdateConfigLoadSummary();
+            }
+        }
+    }
+
+    /// <summary>检索后重排（提升精度、增加延迟/占用；纯 CPU 建议关）。</summary>
+    public bool CustomRerankEnabled
+    {
+        get => _customRerankEnabled;
+        set
+        {
+            if (SetProperty(ref _customRerankEnabled, value))
+            {
+                if (!_suppressPresetAutoCustom && SelectedPresetId != "custom") { SelectedPresetId = "custom"; NotifyPresetFlags(); }
+                UpdateConfigLoadSummary();
+            }
+        }
+    }
+
+    // ===================== 一体化模型配置（预设填表 + 统一应用） =====================
+
+    private bool _useLocalChat = true;
+
+    /// <summary>使用本地对话（Ollama / LM Studio）。</summary>
+    public bool UseLocalChat
+    {
+        get => _useLocalChat;
+        set
+        {
+            if (SetProperty(ref _useLocalChat, value))
+            {
+                if (value) UseCloudChat = false;
+                OnPropertyChanged(nameof(UseCloudChat));
+            }
+        }
+    }
+
+    private string _cloudProtocol = "openai";
+
+    /// <summary>云端协议：openai | openai-compatible | anthropic | gemini。</summary>
+    public string CloudProtocol
+    {
+        get => _cloudProtocol;
+        set
+        {
+            if (SetProperty(ref _cloudProtocol, value ?? "openai"))
+            {
+                ApplyCloudProtocolDefaults();
+                OnPropertyChanged(nameof(CloudProtocolLabel));
+            }
+        }
+    }
+
+    public string CloudProtocolLabel => _cloudProtocol switch
+    {
+        "anthropic" => "Anthropic（Claude）",
+        "gemini" => "Google（Gemini）",
+        "openai-compatible" => "OpenAI 兼容（自定义）",
+        _ => "OpenAI",
+    };
+
+    private void ApplyCloudProtocolDefaults()
+    {
+        switch (_cloudProtocol)
+        {
+            case "anthropic":
+                if (string.IsNullOrWhiteSpace(LlmBaseUrl) || LlmBaseUrl.Contains("openai") || LlmBaseUrl.Contains("11434") || LlmBaseUrl.Contains("1234"))
+                    LlmBaseUrl = "https://api.anthropic.com";
+                if (string.IsNullOrWhiteSpace(LlmModel) || LlmModel.StartsWith("gpt") || LlmModel.StartsWith("qwen"))
+                    LlmModel = "claude-sonnet-4-5";
+                LlmProvider = "anthropic";
+                break;
+            case "gemini":
+                if (string.IsNullOrWhiteSpace(LlmBaseUrl) || LlmBaseUrl.Contains("openai") || LlmBaseUrl.Contains("11434") || LlmBaseUrl.Contains("1234"))
+                    LlmBaseUrl = "https://generativelanguage.googleapis.com/v1beta/openai";
+                if (string.IsNullOrWhiteSpace(LlmModel) || LlmModel.StartsWith("gpt") || LlmModel.StartsWith("claude") || LlmModel.StartsWith("qwen"))
+                    LlmModel = "gemini-2.5-flash";
+                LlmProvider = "gemini";
+                break;
+            case "openai-compatible":
+                LlmProvider = "openai";
+                break;
+            default:
+                if (string.IsNullOrWhiteSpace(LlmBaseUrl) || LlmBaseUrl.Contains("anthropic") || LlmBaseUrl.Contains("11434"))
+                    LlmBaseUrl = "https://api.openai.com/v1";
+                if (string.IsNullOrWhiteSpace(LlmModel) || LlmModel.StartsWith("claude") || LlmModel.StartsWith("gemini"))
+                    LlmModel = "gpt-4o-mini";
+                LlmProvider = "openai";
+                break;
+        }
+    }
+
+    /// <summary>使用云端 API 对话。</summary>
+    public bool UseCloudChat
+    {
+        get => !_useLocalChat;
+        set
+        {
+            if (SetProperty(ref _useLocalChat, !value))
+            {
+                OnPropertyChanged(nameof(UseLocalChat));
+                OnPropertyChanged(nameof(UseCloudChat));
+            }
+        }
+    }
+
+    private bool _showAdvancedBundles;
+
+    /// <summary>是否展开「高级：整套档位安装」。</summary>
+    public bool ShowAdvancedBundles
+    {
+        get => _showAdvancedBundles;
+        set => SetProperty(ref _showAdvancedBundles, value);
+    }
+
+    private string _selectedPresetId = "balanced";
+    private bool _suppressPresetAutoCustom;
+    private string _runtimeChoice = "ollama";
+    private string _configLoadSummary = "";
+
+    /// <summary>当前预设 id：ultralight / light / balanced / performance / custom。</summary>
+    public string SelectedPresetId
+    {
+        get => _selectedPresetId;
+        private set => SetProperty(ref _selectedPresetId, value);
+    }
+
+    /// <summary>本地运行时：ollama / lmstudio。</summary>
+    public string RuntimeChoice
+    {
+        get => _runtimeChoice;
+        set
+        {
+            if (SetProperty(ref _runtimeChoice, value))
+                UpdateConfigLoadSummary();
+        }
+    }
+
+    /// <summary>负载摘要（选完即变，便于「轻压力」决策）。</summary>
+    public string ConfigLoadSummary
+    {
+        get => _configLoadSummary;
+        private set => SetProperty(ref _configLoadSummary, value);
+    }
+
+    public bool IsPresetUltralight => SelectedPresetId == "ultralight";
+    public bool IsPresetLight => SelectedPresetId == "light";
+    public bool IsPresetBalanced => SelectedPresetId == "balanced";
+    public bool IsPresetPerformance => SelectedPresetId == "performance";
+    public bool IsPresetCustom => SelectedPresetId == "custom";
+
+    private void NotifyPresetFlags()
+    {
+        OnPropertyChanged(nameof(IsPresetUltralight));
+        OnPropertyChanged(nameof(IsPresetLight));
+        OnPropertyChanged(nameof(IsPresetBalanced));
+        OnPropertyChanged(nameof(IsPresetPerformance));
+        OnPropertyChanged(nameof(IsPresetCustom));
+        OnPropertyChanged(nameof(SelectedPresetId));
+    }
+
+    /// <summary>预设只「填表」，不直接写配置；点「应用并保存」才生效。</summary>
+    private void ApplyPresetInternal(string presetId, bool markDirty = true)
+    {
+        _suppressPresetAutoCustom = true;
+        try
+        {
+            ApplyPresetCore(presetId);
+        }
+        finally
+        {
+            _suppressPresetAutoCustom = false;
+        }
+        SelectedPresetId = presetId;
+        NotifyPresetFlags();
+        UpdateConfigLoadSummary();
+        if (markDirty)
+            IsDirty = true;
+    }
+
+    private void ApplyPresetCore(string presetId)
+    {
+        switch (presetId)
+        {
+            case "ultralight":
+                CustomChat = ChatModelOptions.FirstOrDefault(o => o.Id == "qwen3:1.7b");
+                CustomEmbed = EmbedOptions.FirstOrDefault(o => o.Id == "BAAI/bge-small-zh-v1.5");
+                CustomRerankEnabled = false;
+                break;
+            case "light":
+                CustomChat = ChatModelOptions.FirstOrDefault(o => o.Id == "qwen3:4b");
+                CustomEmbed = EmbedOptions.FirstOrDefault(o => o.Id == "BAAI/bge-small-zh-v1.5");
+                CustomRerankEnabled = true;
+                break;
+            case "balanced":
+                CustomChat = ChatModelOptions.FirstOrDefault(o => o.Id == "qwen3:8b")
+                    ?? ChatModelOptions.FirstOrDefault(o => o.Id == "qwen3:4b");
+                CustomEmbed = EmbedOptions.FirstOrDefault(o => o.Id == "BAAI/bge-small-zh-v1.5");
+                CustomRerankEnabled = true;
+                break;
+            case "performance":
+                CustomChat = ChatModelOptions.FirstOrDefault(o => o.Id == "qwen3:14b")
+                    ?? ChatModelOptions.LastOrDefault();
+                CustomEmbed = EmbedOptions.FirstOrDefault(o => o.Id == "jinaai/jina-embeddings-v2-base-zh")
+                    ?? EmbedOptions.LastOrDefault();
+                CustomRerankEnabled = true;
+                break;
+            default:
+                return;
+        }
+    }
+
+    [RelayCommand]
+    public void ApplyPreset(string? presetId) => ApplyPresetInternal(presetId ?? "balanced");
+
+    private void UpdateConfigLoadSummary()
+    {
+        var chat = CustomChat?.Id ?? "";
+        var load = chat switch
+        {
+            "qwen3:0.6b" or "qwen3:1.7b" => "轻",
+            "qwen3:4b" or "phi4-mini:3.8b" => "较轻",
+            "qwen3:8b" => "中等",
+            "qwen3:14b" => "较重",
+            _ => "重",
+        };
+        var embed = CustomEmbed?.Id ?? "";
+        var embedLabel = embed switch
+        {
+            "BAAI/bge-small-zh-v1.5" => "嵌入轻量",
+            "jinaai/jina-embeddings-v2-base-zh" => "嵌入中等",
+            "intfloat/multilingual-e5-large" => "嵌入较重",
+            _ => "嵌入自定义",
+        };
+        var rt = RuntimeChoice == "lmstudio" ? "LM Studio" : "Ollama";
+        ConfigLoadSummary = $"{rt} · 对话负载 {load} · {embedLabel} · 重排 {(CustomRerankEnabled ? "开" : "关")}";
+    }
+
+    /// <summary>统一应用：运行时 + 对话 + 嵌入 + 重排。</summary>
+    [RelayCommand]
+    public void ApplyUnifiedConfig()
+    {
+        if (CustomChat is null && CustomEmbed is null)
+        {
+            _notifications.Warning("请至少选择对话模型或嵌入模型", "模型配置");
+            return;
+        }
+
+        if (UseLocalChat)
+        {
+            if (RuntimeChoice == "lmstudio")
+            {
+                LlmProvider = "openai";
+                LlmBaseUrl = string.IsNullOrWhiteSpace(LocalAiEnv?.LmStudio?.BaseUrl)
+                    ? "http://127.0.0.1:1234/v1"
+                    : LocalAiEnv.LmStudio.BaseUrl;
+            }
+            else
+            {
+                LlmProvider = "ollama";
+                LlmBaseUrl = string.IsNullOrWhiteSpace(LocalAiEnv?.Ollama?.BaseUrl)
+                    ? "http://127.0.0.1:11434"
+                    : LocalAiEnv.Ollama.BaseUrl;
+            }
+            if (CustomChat is not null)
+            {
+                LlmModel = CustomChat.Id;
+                LlmApiKey = "";
+            }
+        }
+        else
+        {
+            // 云端 API：按协议设置 provider，地址/模型/Key 用表单值
+            LlmProvider = CloudProtocol switch
+            {
+                "anthropic" => "anthropic",
+                "gemini" => "gemini",
+                _ => "openai",
+            };
+        }
+        if (CustomEmbed is not null)
+        {
+            EmbedModel = CustomEmbed.Id;
+        }
+        RerankEnabled = CustomRerankEnabled;
+        if (!CustomRerankEnabled)
+            RerankModel = "BAAI/bge-reranker-base";
+
+        StatusMessage = $"已应用：{ConfigLoadSummary}";
+        IsDirty = true;
+        _ = ApplyUnifiedConfigAsync();
+    }
+
+    private async Task ApplyUnifiedConfigAsync()
+    {
+        StartProgress("应用模型配置", "写入设置并同步后端…");
+        try
+        {
+            // 本地模式：服务未运行则静默拉起（带进度）
+            if (UseLocalChat)
+            {
+                var running = RuntimeChoice == "lmstudio"
+                    ? LocalAiEnv?.LmStudio?.Running == true
+                    : LocalAiEnv?.Ollama?.Running == true;
+                if (!running)
+                {
+                    UpdateProgress(detail: "正在启动本地运行时…");
+                    await Task.Run(() => StartInstalledRuntime(null));
+                    await Task.Delay(1500);
+                }
+            }
+
+            UpdateProgress(50, "测试连接…");
+            await TestConnectionAsync();
+
+            UpdateProgress(80, "刷新模型列表…");
+            await RefreshLlmModelsAsync();
+
+            UpdateProgress(100, "完成");
+            StopProgress("配置已生效");
+            _notifications.Success("模型配置已应用；若更换了嵌入模型，请重建索引", "模型配置");
+        }
+        catch (Exception ex)
+        {
+            StopProgress("失败");
+            _notifications.Error($"应用配置失败：{ex.Message}", "模型配置");
+        }
+    }
+
+    /// <summary>应用自定义搭配：嵌入 / 对话 / 重排 独立生效。</summary>
+    [RelayCommand]
+    public void ApplyCustomMix()
+    {
+        if (CustomEmbed is null && CustomChat is null)
+        {
+            _notifications.Warning("请先选择对话模型或嵌入模型", "自定义搭配");
+            return;
+        }
+
+        if (CustomEmbed is not null)
+        {
+            EmbedModel = CustomEmbed.Id;
+        }
+        RerankEnabled = CustomRerankEnabled;
+        if (!CustomRerankEnabled)
+            RerankModel = "BAAI/bge-reranker-base";
+
+        if (LocalAiEnv?.Ollama?.Running == true)
+        {
+            LlmProvider = "ollama";
+            LlmBaseUrl = string.IsNullOrWhiteSpace(LocalAiEnv.Ollama.BaseUrl) ? "http://127.0.0.1:11434" : LocalAiEnv.Ollama.BaseUrl;
+        }
+        else if (LocalAiEnv?.LmStudio?.Running == true)
+        {
+            LlmProvider = "openai";
+            LlmBaseUrl = string.IsNullOrWhiteSpace(LocalAiEnv.LmStudio.BaseUrl) ? "http://127.0.0.1:1234/v1" : LocalAiEnv.LmStudio.BaseUrl;
+        }
+        else
+        {
+            LlmProvider = "ollama";
+            LlmBaseUrl = "http://127.0.0.1:11434";
+        }
+
+        if (CustomChat is not null)
+        {
+            LlmModel = CustomChat.Id;
+            LlmApiKey = "";
+        }
+
+        var embedPart = CustomEmbed is not null ? $"嵌入 {CustomEmbed.Id}" : "嵌入未改";
+        var chatPart = CustomChat is not null ? $"对话 {CustomChat.Id}" : "对话未改";
+        StatusMessage = $"已应用自定义搭配：{embedPart} · {chatPart} · 重排 {(CustomRerankEnabled ? "开" : "关")}";
+        _notifications.Success("自定义搭配已应用；若更换了嵌入模型，请重建索引", "自定义搭配");
+        _ = TestConnectionAsync();
+        _ = RefreshLlmModelsAsync();
+        IsDirty = true;
+    }
+
+    [RelayCommand]
+    public void ApplyBundle(AutoSetupRecommendation? bundle)
+    {
+        if (bundle is null || bundle.Kind != "bundle") return;
+
+        // 后端四态分流（C# 侧对 installed 态做二次校验，防止探测滞后误开下载页）：
+        // ready/model_missing → 应用整套配置
+        // installed_stopped   → 自动启动已装运行时
+        // runtime_missing     → 确认后才打开 Ollama 下载页
+        if (bundle.State == "installed_stopped")
+        {
+            StartInstalledRuntime(bundle);
+            return;
+        }
+        if (bundle.State == "runtime_missing")
+        {
+            // 二次校验：本机明明探测到已安装（后端 state 可能滞后于刚装好的场景）→ 不下载，改走启动
+            if (LocalAiEnv?.Ollama?.Installed == true || LocalAiEnv?.LmStudio?.Installed == true)
+            {
+                _notifications.Warning("本机已检测到 Ollama / LM Studio 安装，无需下载。请手动启动服务并开启 Local Server 后点「重新探测」，或点「自定义地址」直接绑定。", "无需下载");
+                return;
+            }
+            // 打开下载页前显式确认（避免误触导致浏览器反复弹下载页）
+            if (ConfirmInstallerOpenOverride is not null)
+            {
+                if (!ConfirmInstallerOpenOverride(bundle.InstallerUrl)) return;
+            }
+            else
+            {
+                var confirm = System.Windows.MessageBox.Show(
+                    "本机未检测到 Ollama / LM Studio 服务。\n\n" +
+                    "是否打开 Ollama 下载页？（装好后回来点「重新探测」即可）",
+                    "安装 Ollama", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
+                if (confirm != System.Windows.MessageBoxResult.Yes) return;
+            }
+            if (!string.IsNullOrWhiteSpace(bundle.InstallerUrl))
+            {
+                if (OpenInstallerUrlOverride is not null)
+                {
+                    OpenInstallerUrlOverride(bundle.InstallerUrl);
+                }
+                else
+                {
+                    try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(bundle.InstallerUrl) { UseShellExecute = true }); }
+                    catch (Exception ex) { DebugLog.Warn($"打开 Ollama 下载页失败: {ex.Message}", "Settings"); }
+                }
+            }
+            return;
+        }
+
+        // 整套下发：嵌入 + 重排（极轻量档关闭）+ LLM 三字段一次设置
+        EmbedModel = bundle.EmbedModel;
+        RerankEnabled = bundle.RerankEnabled;
+        if (!bundle.RerankEnabled || string.IsNullOrWhiteSpace(bundle.RerankModel))
+        {
+            RerankModel = "BAAI/bge-reranker-base"; // 保持合法值，开关已关不会参与检索
+        }
+        else
+        {
+            RerankModel = bundle.RerankModel;
+        }
+        // provider/base_url 按实际运行的运行时选择：
+        // Ollama 走原生协议（URL 不带 /v1）；LM Studio 走 OpenAI 兼容（带 /v1）；
+        // 都没探测到时兜底 Ollama 默认地址。固定写 openai+11434/v1 在 Ollama 运行时连接必败。
+        if (LocalAiEnv?.Ollama?.Running == true)
+        {
+            LlmProvider = "ollama";
+            LlmBaseUrl = string.IsNullOrWhiteSpace(LocalAiEnv.Ollama.BaseUrl) ? "http://127.0.0.1:11434" : LocalAiEnv.Ollama.BaseUrl;
+        }
+        else if (LocalAiEnv?.LmStudio?.Running == true)
+        {
+            LlmProvider = "openai";
+            LlmBaseUrl = string.IsNullOrWhiteSpace(LocalAiEnv.LmStudio.BaseUrl) ? "http://127.0.0.1:1234/v1" : LocalAiEnv.LmStudio.BaseUrl;
+        }
+        else
+        {
+            LlmProvider = "openai";
+            LlmBaseUrl = "http://127.0.0.1:11434/v1";
+        }
+        LlmApiKey = "";
+        if (!string.IsNullOrWhiteSpace(bundle.Model))
+        {
+            LlmModel = bundle.Model;
+        }
+        StatusMessage = $"✅ 已应用「{bundle.Title}」整套搭配（模型: {LlmModel}）";
+        _notifications.Success($"已应用整套搭配（{bundle.Title}），嵌入模型变更后需重建索引", "机型档位");
+        _ = TestConnectionAsync();
+        _ = RefreshLlmModelsAsync();
+    }
+
+    [RelayCommand]
+    public void CopyPullCommand(AutoSetupRecommendation? bundle)
+    {
+        if (bundle is null || string.IsNullOrWhiteSpace(bundle.PullCommand)) return;
+        try
+        {
+            System.Windows.Clipboard.SetText(bundle.PullCommand);
+            _notifications.Info($"已复制：{bundle.PullCommand}", "拉取命令");
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"复制拉取命令失败: {ex.Message}", "Settings");
+        }
+    }
+
+    // ===================== 一键安装（开箱即用）：确认一次 → 后台拉取 → 进度 → 自动应用整套 =====================
+
+    private string _pullState = "idle"; // idle / pulling / done / error
+    public string PullState { get => _pullState; private set { if (SetProperty(ref _pullState, value)) { OnPropertyChanged(nameof(IsPulling)); OnPropertyChanged(nameof(PullProgressText)); } } }
+
+    private double _pullPercent;
+    public double PullPercent { get => _pullPercent; private set { if (SetProperty(ref _pullPercent, value)) OnPropertyChanged(nameof(PullProgressText)); } }
+
+    private string _pullModel = "";
+    public string PullModel { get => _pullModel; private set => SetProperty(ref _pullModel, value); }
+
+    public bool IsPulling => PullState == "pulling";
+    public string PullProgressText => PullState switch
+    {
+        "pulling" => $"正在下载 {PullModel}… {PullPercent:0}%",
+        "done" => $"{PullModel} 下载完成",
+        "error" => "下载失败（可在设置页重试或复制命令手动拉取）",
+        _ => "",
+    };
+
+    /// <summary>「一键安装」确认钩子（测试注入；null = 真实 MessageBox）。</summary>
+    internal Func<AutoSetupRecommendation, bool>? ConfirmOneClickSetupOverride;
+
+    /// <summary>一键安装：model_missing 态直接由应用代跑 ollama pull（用户点击即授权），完成后自动应用整套配置。</summary>
+    [RelayCommand]
+    public async Task OneClickSetupAsync(AutoSetupRecommendation? bundle)
+    {
+        if (bundle is null || bundle.Kind != "bundle" || IsPulling) return;
+        if (bundle.State == "runtime_missing" || bundle.State == "installed_stopped")
+        {
+            ApplyBundle(bundle); // 缺运行时/未启动走既有四态分流
+            return;
+        }
+
+        // 一键安装走魔搭加速源：从 pull_command 提取完整模型引用
+        // （如 "modelscope.cn/Qwen/Qwen3-8B-GGUF:Q4_K_M"），bundle.Model 的短名
+        // （qwen3:8b）走 ollama.com 官方源，国内拉取慢。
+        // 提取失败时才回退短名（此时退化为官方源，仍可用）。
+        var pullRef = bundle.PullCommand;
+        if (pullRef.StartsWith("ollama pull ", StringComparison.OrdinalIgnoreCase))
+            pullRef = pullRef["ollama pull ".Length..].Trim();
+        if (string.IsNullOrWhiteSpace(pullRef) || !pullRef.Contains('/'))
+            pullRef = bundle.Model; // 不像完整引用 → 回退
+        var model = pullRef;
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            _notifications.Warning("该档位没有可拉取的对话模型", "一键安装");
+            return;
+        }
+
+        // 一次性确认（告知磁盘占用，用户点击即授权代拉）
+        var sizeGb = bundle.ChatOptions.FirstOrDefault(o => o.ModelId == bundle.Model)?.SizeGb ?? 0;
+        var sizeText = sizeGb > 0 ? $"约 {sizeGb:0.#}GB" : "数 GB";
+        if (ConfirmOneClickSetupOverride is not null)
+        {
+            if (!ConfirmOneClickSetupOverride(bundle)) return;
+        }
+        else
+        {
+            var confirm = System.Windows.MessageBox.Show(
+                $"将自动下载本地模型「{model}」（{sizeText}），下载完成后自动配置嵌入 / 对话 / 重排三件套。\n\n是否继续？",
+                "一键配置本地 AI", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
+            if (confirm != System.Windows.MessageBoxResult.Yes) return;
+        }
+
+        try
+        {
+            var st = await _apiService.StartOllamaPullAsync(model);
+            PullState = st.State; PullPercent = st.Percent; PullModel = model;
+            if (st.State == "error")
+            {
+                _notifications.Error($"拉取失败：{st.Error}", "一键安装");
+                return;
+            }
+            // 轮询进度直至终态（2s 间隔，最长 30 分钟）
+            for (var i = 0; i < 900; i++)
+            {
+                await Task.Delay(2000);
+                var s = await _apiService.GetOllamaPullStatusAsync();
+                PullState = s.State; PullPercent = s.Percent;
+                if (s.State is "done" or "error") break;
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"一键拉取异常: {ex.Message}", "Settings");
+            PullState = "error";
+            _notifications.Error($"拉取失败：{ex.Message}", "一键安装");
+            return;
+        }
+
+        if (PullState != "done")
+        {
+            _notifications.Error("模型下载未完成，可稍后在设置页重试", "一键安装");
+            return;
+        }
+
+        // 拉取完成 → 重新探测（模型已就绪会变 ready）→ 应用整套
+        await DetectLocalAiAsync();
+        var ready = BundleRecommendations.FirstOrDefault(b => b.Tier == bundle.Tier) ?? bundle;
+        ApplyBundle(ready);
+        _notifications.Success($"「{bundle.Title}」已就绪并完成配置", "一键安装");
+    }
+
+    // ===================== 统一可视化进度（>5s 操作必用） =====================
+
+    private bool _isProgressVisible;
+    private string _progressTitle = "";
+    private string _progressDetail = "";
+    private double _progressPercent = -1; // <0 = 不定进度
+    private int _progressElapsedSec;
+    private System.Threading.CancellationTokenSource? _progressCts;
+
+    public bool IsProgressVisible
+    {
+        get => _isProgressVisible;
+        private set
+        {
+            if (SetProperty(ref _isProgressVisible, value))
+                OnPropertyChanged(nameof(HasProgressCancel));
+        }
+    }
+
+    public string ProgressTitle
+    {
+        get => _progressTitle;
+        private set => SetProperty(ref _progressTitle, value);
+    }
+
+    public string ProgressDetail
+    {
+        get => _progressDetail;
+        private set => SetProperty(ref _progressDetail, value);
+    }
+
+    /// <summary>0-100；-1 表示不定进度（转圈）。</summary>
+    public double ProgressPercent
+    {
+        get => _progressPercent;
+        private set
+        {
+            if (SetProperty(ref _progressPercent, value))
+                OnPropertyChanged(nameof(IsProgressIndeterminate));
+        }
+    }
+
+    public bool IsProgressIndeterminate => _progressPercent < 0;
+    public bool HasProgressCancel => IsProgressVisible;
+
+    public string ProgressElapsedText => _progressElapsedSec < 60
+        ? $"{_progressElapsedSec}s"
+        : $"{_progressElapsedSec / 60}m{_progressElapsedSec % 60:00}s";
+
+    private void StartProgress(string title, string detail = "")
+    {
+        ProgressTitle = title;
+        ProgressDetail = detail;
+        ProgressPercent = -1;
+        _progressElapsedSec = 0;
+        OnPropertyChanged(nameof(ProgressElapsedText));
+        IsProgressVisible = true;
+        _progressCts?.Cancel();
+        _progressCts = new System.Threading.CancellationTokenSource();
+        var ct = _progressCts.Token;
+        _ = Task.Run(async () =>
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(1000, ct).ContinueWith(_ => { });
+                if (ct.IsCancellationRequested) break;
+                _progressElapsedSec++;
+                await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    OnPropertyChanged(nameof(ProgressElapsedText));
+                });
+            }
+        }, ct);
+    }
+
+    private void UpdateProgress(double percent = -1, string? detail = null)
+    {
+        if (percent >= 0) ProgressPercent = percent;
+        if (detail is not null) ProgressDetail = detail;
+    }
+
+    private void StopProgress(string? doneDetail = null)
+    {
+        _progressCts?.Cancel();
+        _progressCts = null;
+        if (doneDetail is not null) ProgressDetail = doneDetail;
+        IsProgressVisible = false;
+    }
+
+    [RelayCommand]
+    private void CancelProgress()
+    {
+        _progressCts?.Cancel();
+        StopProgress("已取消");
+        StatusMessage = "操作已取消";
+    }
+
+    [RelayCommand]
+    public void StartInstalledRuntime(AutoSetupRecommendation? bundle)
+    {
+        // 资源策略：仅当前对话走本地模型时才拉起 Ollama / LM Studio
+        if (!UseLocalChat)
+        {
+            _notifications.Info("当前对话使用云端 API，无需启动本地运行时", "按需启动");
+            return;
+        }
+
+        var targetName = "本地运行时";
+        string? installPath = null;
+        string? cli = null;
+        if (LocalAiEnv?.Ollama?.Installed == true)
+        {
+            targetName = "Ollama";
+            installPath = LocalAiEnv.Ollama.InstallPath;
+            cli = "ollama";
+        }
+        else if (LocalAiEnv?.LmStudio?.Installed == true)
+        {
+            targetName = "LM Studio";
+            installPath = LocalAiEnv.LmStudio.InstallPath;
+        }
+        else
+        {
+            _notifications.Warning("未检测到已安装的 Ollama / LM Studio", "运行时启动");
+            return;
+        }
+
+        StartProgress($"正在静默启动 {targetName}", "进程已拉起，等待服务就绪…");
+        StatusMessage = $"正在启动 {targetName}…";
+        _ = RunStartRuntimeWithProgressAsync(targetName, installPath, cli);
+    }
+
+    private async Task RunStartRuntimeWithProgressAsync(string name, string? installPath, string? cli)
+    {
+        try
+        {
+            var ok = TryStartRuntime(installPath, cli);
+            if (!ok)
+            {
+                StopProgress("启动失败");
+                _notifications.Warning($"{name} 启动失败，请手动打开后点「重新探测」", "运行时启动");
+                return;
+            }
+
+            for (var i = 0; i < 15; i++)
+            {
+                UpdateProgress(detail: $"等待 {name} 服务就绪… {(i + 1) * 2}s");
+                await Task.Delay(2000);
+                await DetectLocalAiAsync();
+                var running = name == "Ollama"
+                    ? LocalAiEnv?.Ollama?.Running == true
+                    : LocalAiEnv?.LmStudio?.Running == true;
+                if (running)
+                {
+                    StopProgress($"{name} 已就绪");
+                    _notifications.Success($"{name} 已启动并就绪", "运行时启动");
+                    StatusMessage = $"{name} 已就绪";
+                    return;
+                }
+            }
+            StopProgress("等待超时");
+            _notifications.Warning($"{name} 可能仍在启动，请稍后点「重新探测」", "运行时启动");
+        }
+        catch (Exception ex)
+        {
+            StopProgress("异常");
+            DebugLog.Warn($"启动 {name} 进度流程失败: {ex.Message}", "Settings");
+        }
+    }
+
+    private static bool TryStartRuntime(string? installPath, string? cliName)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(installPath) && System.IO.File.Exists(installPath))
+            {
+                // LM Studio 主程序启动即服务；Ollama 主程序同理（带 GUI 时服务随启动）
+                var guiPsi = new System.Diagnostics.ProcessStartInfo(installPath)
+                {
+                    UseShellExecute = true,
+                    WindowStyle = System.Diagnostics.ProcessWindowStyle.Minimized,
+                };
+                System.Diagnostics.Process.Start(guiPsi);
+                return true;
+            }
+            if (cliName is not null)
+            {
+                // 静默启动：不弹 cmd 黑框，不抢前台
+                var psi = new System.Diagnostics.ProcessStartInfo(cliName, "serve")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+                System.Diagnostics.Process.Start(psi);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"启动运行时失败 ({installPath ?? cliName}): {ex.Message}", "Settings");
+        }
+        return false;
+    }
+
+    [RelayCommand]
+    public void ConfigureCustomRuntimeUrl(AutoSetupRecommendation? bundle)
+    {
+        // 用户自行配置服务地址（覆盖所有四态：装了没被扫到 / 服务在非常规端口 / 远程地址）
+        var isOllama = LocalAiEnv?.Ollama?.Installed == true || LocalAiEnv?.Ollama?.Running == true;
+        var defaultUrl = isOllama ? "http://127.0.0.1:11434" : "http://127.0.0.1:1234/v1";
+        var title = isOllama ? "Ollama" : "LM Studio / OpenAI 兼容服务";
+        var input = ShowTextInput(
+            "自定义本地服务地址",
+            $"输入 {title} 的 Local Server 地址（OpenAI 兼容需带 /v1）：",
+            defaultUrl);
+        if (string.IsNullOrWhiteSpace(input)) return;
+
+        var url = input.Trim().TrimEnd('/');
+        var provider = LocalAiEnv?.Ollama?.Running == true || LocalAiEnv?.Ollama?.Installed == true ? "ollama" : "openai";
+        if (provider == "openai" && !url.EndsWith("/v1"))
+        {
+            var addV1 = System.Windows.MessageBox.Show(
+                "OpenAI 兼容协议（LM Studio）的 base_url 通常需要 /v1 后缀。\n\n是否自动补上 /v1？",
+                "地址确认", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
+            if (addV1 == System.Windows.MessageBoxResult.Yes)
+                url += "/v1";
+        }
+
+        LlmProvider = provider;
+        LlmBaseUrl = url;
+        LlmApiKey = "";
+        _notifications.Success($"已设置 {title} 地址：{url}，请保存后测试连接", "自定义地址");
+        _ = TestConnectionAsync();
+        _ = RefreshLlmModelsAsync();
+    }
+
+    /// <summary>代码级单行输入对话框（项目无现成 XAML 输入窗体，避免新增资源引用风险）。
+    /// 返回 null 表示取消。</summary>
+    private static string? ShowTextInput(string title, string prompt, string initial)
+    {
+        var dlg = new System.Windows.Window
+        {
+            Title = title,
+            Width = 460,
+            Height = 190,
+            WindowStartupLocation = System.Windows.WindowStartupLocation.CenterOwner,
+            Owner = System.Windows.Application.Current.MainWindow,
+            ResizeMode = System.Windows.ResizeMode.NoResize,
+            WindowStyle = System.Windows.WindowStyle.ToolWindow,
+        };
+        var panel = new System.Windows.Controls.StackPanel { Margin = new System.Windows.Thickness(16) };
+        var label = new System.Windows.Controls.TextBlock
+        {
+            Text = prompt,
+            TextWrapping = System.Windows.TextWrapping.Wrap,
+            Margin = new System.Windows.Thickness(0, 0, 0, 8),
+        };
+        var box = new System.Windows.Controls.TextBox
+        {
+            Text = initial,
+            Padding = new System.Windows.Thickness(6, 4, 6, 4),
+            FontSize = 13,
+        };
+        panel.Children.Add(label);
+        panel.Children.Add(box);
+
+        var buttons = new System.Windows.Controls.StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+            Margin = new System.Windows.Thickness(0, 12, 0, 0),
+        };
+        string? result = null;
+        var okBtn = new System.Windows.Controls.Button { Content = "确定", MinWidth = 72, Padding = new System.Windows.Thickness(10, 5, 10, 5), Margin = new System.Windows.Thickness(0, 0, 8, 0) };
+        okBtn.Click += (_, _) => { result = box.Text; dlg.DialogResult = true; };
+        var cancelBtn = new System.Windows.Controls.Button { Content = "取消", MinWidth = 72, Padding = new System.Windows.Thickness(10, 5, 10, 5) };
+        cancelBtn.Click += (_, _) => { dlg.DialogResult = false; };
+        buttons.Children.Add(okBtn);
+        buttons.Children.Add(cancelBtn);
+        panel.Children.Add(buttons);
+        dlg.Content = panel;
+
+        // 回车确定
+        box.KeyDown += (_, e) =>
+        {
+            if (e.Key == System.Windows.Input.Key.Enter)
+            {
+                result = box.Text;
+                dlg.DialogResult = true;
+            }
+        };
+        return dlg.ShowDialog() == true ? result : null;
+    }
+
     /// <summary>拉取后端 /v1/config 回填运行时真相：API Key 是否已配置（可能由环境变量/
     /// 后端注入，本地 appsettings 未必有）、config.toml 是否损坏、实际生效的嵌入模型/LLM 配置。
     /// 不覆盖用户正在编辑的字段。
@@ -543,6 +1696,7 @@ public partial class SettingsViewModel : ViewModelBase
                 return;
             }
             _backendApiKeyConfigured = cfg.LlmApiKeyConfigured;
+            OnPropertyChanged(nameof(ActiveBackendApiKeyConfigured));
             OnPropertyChanged(nameof(HasSavedApiKey));
             OnPropertyChanged(nameof(ApiKeyStatusText));
 
@@ -651,7 +1805,70 @@ public partial class SettingsViewModel : ViewModelBase
         set => SetDirty(ref _agentModeEnabled, value);
     }
 
+    /// <summary>全局默认回答模式：rag | agent | auto。与 Agent 总闸分离。</summary>
+    public string DefaultChatMode
+    {
+        get => _defaultChatMode;
+        set
+        {
+            var v = (value ?? "rag").Trim().ToLowerInvariant();
+            if (v is not ("rag" or "agent" or "auto"))
+            {
+                v = "rag";
+            }
+            SetDirty(ref _defaultChatMode, v);
+        }
+    }
+
     /// <summary>启动时自动 ingest 的目录路径（空表示不自动导入）。</summary>
+    private bool _longformEnabled;
+    private int _longformMaxSections = 8;
+    private int _longformMaxChars = 12000;
+    private string _searchProvider = "builtin";
+    private string _searchProviderApiKey = "";
+    private string? _searchProviderEndpoint;
+
+    /// <summary>长文大纲编排开关（交付轨专用）。</summary>
+    public bool LongformEnabled
+    {
+        get => _longformEnabled;
+        set => SetDirty(ref _longformEnabled, value);
+    }
+
+    /// <summary>长文最大章节数（2-16）。</summary>
+    public int LongformMaxSections
+    {
+        get => _longformMaxSections;
+        set => SetDirty(ref _longformMaxSections, Math.Clamp(value, 2, 16));
+    }
+
+    /// <summary>长文总字数上限。</summary>
+    public int LongformMaxChars
+    {
+        get => _longformMaxChars;
+        set => SetDirty(ref _longformMaxChars, Math.Clamp(value, 1000, 100000));
+    }
+
+    /// <summary>联网搜索 Provider：builtin / tavily / bocha / serpapi。</summary>
+    public string SearchProvider
+    {
+        get => _searchProvider;
+        set => SetDirty(ref _searchProvider, string.IsNullOrWhiteSpace(value) ? "builtin" : value.Trim().ToLowerInvariant());
+    }
+
+    /// <summary>搜索 Provider API Key（明文仅本机内存；保存后推后端不落本地日志）。</summary>
+    public string SearchProviderApiKey
+    {
+        get => _searchProviderApiKey;
+        set => SetDirty(ref _searchProviderApiKey, value ?? "");
+    }
+
+    /// <summary>搜索 Provider 自定义端点（http-json 用）。</summary>
+    public string? SearchProviderEndpoint
+    {
+        get => _searchProviderEndpoint;
+        set => SetDirty(ref _searchProviderEndpoint, value);
+    }
     public string? AutoIngestPath
     {
         get => _autoIngestPath;
@@ -757,6 +1974,9 @@ public partial class SettingsViewModel : ViewModelBase
     /// 保证「后端有 key 但本地快照没有」时用户仍能清除。</summary>
     public bool HasSavedApiKey => !string.IsNullOrWhiteSpace(_savedApiKeyAtLoad) || _backendApiKeyConfigured;
 
+    /// <summary>后端当前实际生效的 API Key 状态（来自 GET /v1/config）。</summary>
+    public bool ActiveBackendApiKeyConfigured => _backendApiKeyConfigured;
+
     // ── 批次 2：配置状态透明化属性 ──
     /// <summary>后端实际生效的嵌入模型名（来自 GET /v1/config，状态卡展示）。</summary>
     public string? ActiveBackendEmbedModel
@@ -826,6 +2046,9 @@ public partial class SettingsViewModel : ViewModelBase
         Add("整理", "入库自动 AI 整理", cfg.AutoCurateOnIngest ? "开启" : "关闭", realtime);
 
         Add("Agent（进阶）", "模式", cfg.AgentModeEnabled ? "已启用" : "未启用（默认）", "需后端 agent_mode_enabled=true");
+        Add("长文编排", "开关/章节/字数", $"{(cfg.LongformEnabled ? "开" : "关")} / {cfg.LongformMaxSections} / {cfg.LongformMaxChars}", "交付轨专用");
+        Add("搜索 Provider", "提供商", cfg.SearchProvider, cfg.SearchProviderApiKeyConfigured ? "Key 已配置" : "未配置 Key（回落 builtin）");
+        Add("Agent（进阶）", "默认回答模式", cfg.ChatModeDefault ?? "rag", realtime);
         Add("Agent（预留）", "工作区写入策略", cfg.AgentFileWritePolicy, "进阶能力启用后生效");
 
         OnPropertyChanged(nameof(EffectiveConfigItems));
@@ -1023,7 +2246,89 @@ public partial class SettingsViewModel : ViewModelBase
     public LlmModelItem? SelectedModelCandidate
     {
         get => _selectedModelCandidate;
-        set => SetProperty(ref _selectedModelCandidate, value);
+        set
+        {
+            if (SetProperty(ref _selectedModelCandidate, value) && value is not null
+                && !string.Equals(LlmModel, value.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                LlmModel = value.Name;
+            }
+        }
+    }
+
+    public bool IsTestingModels
+    {
+        get => _isTestingModels;
+        private set => SetProperty(ref _isTestingModels, value);
+    }
+
+    [RelayCommand]
+    private void SetDefaultModel(LlmModelItem? model)
+    {
+        if (model is null) return;
+        SelectedModelCandidate = model;
+        LlmModel = model.Name;
+        _appSettings.LlmProvider = LlmProvider;
+        _appSettings.LlmBaseUrl = LlmBaseUrl;
+        _appSettings.LlmModel = model.Name;
+        _appSettings.LlmAvailableModels = LlmModels.Select(m => m.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        _appSettings.Save();
+        StatusMessage = $"已将「{model.Name}」设为当前服务商默认模型，已持久化保存。";
+    }
+
+    [RelayCommand]
+    private async Task TestModelAsync(LlmModelItem? model)
+    {
+        if (model is null || IsTestingModels) return;
+        await TestModelCoreAsync(model);
+    }
+
+    [RelayCommand]
+    private async Task TestAllModelsAsync()
+    {
+        if (IsTestingModels || LlmModels.Count == 0) return;
+
+        IsTestingModels = true;
+        StatusMessage = $"正在逐个测试 {LlmModels.Count} 个模型…";
+        try
+        {
+            foreach (var model in LlmModels.ToList())
+            {
+                await TestModelCoreAsync(model);
+            }
+
+            var passed = LlmModels.Count(m => m.TestOk == true);
+            StatusMessage = $"模型测试完成：{passed}/{LlmModels.Count} 可用";
+        }
+        finally
+        {
+            IsTestingModels = false;
+        }
+    }
+
+    private async Task TestModelCoreAsync(LlmModelItem model)
+    {
+        model.SetTestState(true, null, "测试中…");
+        try
+        {
+            var result = await _apiService.LlmTestAsync(new LlmTestRequest
+            {
+                Provider = string.IsNullOrWhiteSpace(LlmProvider) ? null : LlmProvider.Trim(),
+                ApiKey = string.IsNullOrWhiteSpace(LlmApiKey) ? null : LlmApiKey.Trim(),
+                BaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl) ? null : LlmBaseUrl.Trim(),
+                Model = model.Name,
+                Timeout = 20,
+            });
+
+            var status = result.Ok
+                ? $"可用 · {result.ElapsedMs} ms"
+                : $"失败 · {result.Error ?? "未知错误"}";
+            model.SetTestState(false, result.Ok, status);
+        }
+        catch (Exception ex)
+        {
+            model.SetTestState(false, false, $"失败 · {ex.Message}");
+        }
     }
 
     /// <summary>把当前模型输入（LlmModel）加入该服务商的模型候选列表（去重；不落盘，保存服务商时生效）。</summary>
@@ -1111,7 +2416,10 @@ public partial class SettingsViewModel : ViewModelBase
         {
             if (SetProperty(ref _selectedPreset, value ?? AvailablePresets[0]))
             {
-                ApplyPreset(_selectedPreset);
+                if (!_isInitializing)
+                {
+                    ApplyPreset(_selectedPreset);
+                }
                 OnPropertyChanged(nameof(SelectedPresetConsoleUrl));
                 OnPropertyChanged(nameof(HasPresetConsoleUrl));
             }
@@ -1238,6 +2546,86 @@ public partial class SettingsViewModel : ViewModelBase
         finally
         {
             IsRunningDoctor = false;
+        }
+    }
+
+    // --- 备份与诊断包（Phase 6：普通用户可恢复）---
+    [RelayCommand]
+    public async Task CreateBackupAsync()
+    {
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "保存 DocMind 知识库备份",
+            Filter = "DocMind 备份 (*.docmind.zip)|*.docmind.zip|Zip 文件 (*.zip)|*.zip",
+            FileName = $"docmind-{DateTime.Now:yyyyMMdd-HHmmss}.docmind.zip",
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+        try
+        {
+            StatusMessage = "正在创建知识库备份...";
+            var result = await _apiService.CreateBackupAsync(dialog.FileName);
+            StatusMessage = $"备份完成：{result.Path}";
+            _notifications.Success($"知识库备份已保存\n{result.Path}", "备份完成");
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"备份失败：{ex.Message}";
+            _notifications.Error($"创建备份失败：{ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    public async Task RestoreBackupAsync()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "选择 DocMind 知识库备份",
+            Filter = "DocMind 备份 (*.docmind.zip;*.zip)|*.docmind.zip;*.zip",
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+        var confirm = System.Windows.MessageBox.Show(
+            "恢复会替换当前知识库。后端会自动保留恢复前的数据库副本，是否继续？",
+            "确认恢复知识库", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
+        if (confirm != System.Windows.MessageBoxResult.Yes)
+            return;
+        try
+        {
+            StatusMessage = "正在恢复知识库...";
+            var result = await _apiService.RestoreBackupAsync(dialog.FileName);
+            StatusMessage = "知识库恢复完成，请重新检测索引状态";
+            _notifications.Success($"恢复完成。原数据库副本：{result.PreviousBackup ?? "无"}", "恢复完成");
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"恢复失败：{ex.Message}";
+            _notifications.Error($"恢复知识库失败：{ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    public async Task CreateDiagnosticBundleAsync()
+    {
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "保存 DocMind 诊断包",
+            Filter = "Zip 文件 (*.zip)|*.zip",
+            FileName = $"docmind-diagnostics-{DateTime.Now:yyyyMMdd-HHmmss}.zip",
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+        try
+        {
+            StatusMessage = "正在打包脱敏诊断信息...";
+            var result = await _apiService.CreateDiagnosticBundleAsync(dialog.FileName, includeLogs: false);
+            StatusMessage = $"诊断包已保存：{result.Path}";
+            _notifications.Success($"诊断包已保存\n{result.Path}", "诊断包完成");
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"诊断包失败：{ex.Message}";
+            _notifications.Error($"创建诊断包失败：{ex.Message}");
         }
     }
 
@@ -1485,7 +2873,7 @@ public partial class SettingsViewModel : ViewModelBase
     private bool SetDirty<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? name = null)
     {
         var changed = SetProperty(ref field, value, name);
-        if (changed)
+        if (changed && !_isInitializing)
         {
             IsDirty = true;
         }
@@ -1498,10 +2886,10 @@ public partial class SettingsViewModel : ViewModelBase
     // 提供商/Key/地址/模型变化后防抖 1.2s 推送后端运行时（persist=false，不落盘）：
     // 输入即可测试、调用（对话/RAG 走后端运行时配置），点「保存」才持久化到本地+config.toml。
 
-    /// <summary>LLM 连接字段变化后重置防抖计时器（表单回填/档案应用期间跳过）。</summary>
+    /// <summary>LLM 连接字段变化后重置防抖计时器（表单回填/档案应用/构造初始化期间跳过）。</summary>
     private void ScheduleLlmAutoApply()
     {
-        if (_isBackfillingLlmForm || IsApplyingProfile)
+        if (_isInitializing || _isBackfillingLlmForm || IsApplyingProfile)
         {
             return;
         }
@@ -1527,13 +2915,18 @@ public partial class SettingsViewModel : ViewModelBase
     {
         if (_isAutoApplyingLlm || IsApplyingProfile)
         {
+            if (_isAutoApplyingLlm)
+            {
+                _llmAutoApplyPending = true;
+            }
             return;
         }
 
         string? pushProvider = string.IsNullOrWhiteSpace(LlmProvider) ? null : LlmProvider.Trim();
-        string? pushApiKey = string.IsNullOrWhiteSpace(LlmApiKey) ? null : LlmApiKey!.Trim();
-        string? pushBaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl) ? null : LlmBaseUrl.Trim();
-        string? pushModel = string.IsNullOrWhiteSpace(LlmModel) ? null : LlmModel.Trim();
+        var providerChanged = !string.Equals(pushProvider, _appliedLlmProvider, StringComparison.OrdinalIgnoreCase);
+        string? pushApiKey = string.IsNullOrWhiteSpace(LlmApiKey) ? (providerChanged ? "" : null) : LlmApiKey!.Trim();
+        string? pushBaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl) ? (providerChanged ? "" : null) : LlmBaseUrl.Trim();
+        string? pushModel = string.IsNullOrWhiteSpace(LlmModel) ? (providerChanged ? "" : null) : LlmModel.Trim();
         if (pushProvider == _appliedLlmProvider && pushApiKey == _appliedLlmApiKey
             && pushBaseUrl == _appliedLlmBaseUrl && pushModel == _appliedLlmModel)
         {
@@ -1575,6 +2968,11 @@ public partial class SettingsViewModel : ViewModelBase
         finally
         {
             _isAutoApplyingLlm = false;
+            if (_llmAutoApplyPending && !IsApplyingProfile)
+            {
+                _llmAutoApplyPending = false;
+                await AutoApplyLlmConnectionAsync();
+            }
         }
     }
 
@@ -1608,6 +3006,8 @@ public partial class SettingsViewModel : ViewModelBase
             //   留空      → 保留原值（本地密文不覆盖、后端不修改）；
             //   点了「清除」→ 本地置空 + 后端显式清除。
             var hasApiKeyInput = !string.IsNullOrWhiteSpace(LlmApiKey);
+            var llmProviderChanged = !string.Equals(
+                LlmProvider?.Trim(), _appSettings.LlmProvider?.Trim(), StringComparison.OrdinalIgnoreCase);
             
             if (_appSettings.LlmKeyDecryptFailed && !hasApiKeyInput && !_clearApiKeyRequested)
             {
@@ -1618,7 +3018,7 @@ public partial class SettingsViewModel : ViewModelBase
 
             var effectiveApiKey = hasApiKeyInput
                 ? LlmApiKey!.Trim()
-                : (_clearApiKeyRequested ? null : _appSettings.LlmApiKey);
+                : (_clearApiKeyRequested || llmProviderChanged ? null : _appSettings.LlmApiKey);
 
             // GitHub Token 同语义：非空 → 使用输入值；留空 → 保留原值；点「清除」→ 置空
             var hasGithubTokenInput = !string.IsNullOrWhiteSpace(GithubToken);
@@ -1644,6 +3044,14 @@ public partial class SettingsViewModel : ViewModelBase
             _appSettings.StopBackendOnExit = StopBackendOnExit;
             _appSettings.AutoCurateOnIngest = AutoCurateOnIngest;
             _appSettings.AgentModeEnabled = AgentModeEnabled;
+            _appSettings.LongformEnabled = LongformEnabled;
+            _appSettings.LongformMaxSections = LongformMaxSections;
+            _appSettings.LongformMaxChars = LongformMaxChars;
+            _appSettings.SearchProvider = SearchProvider;
+            if (!string.IsNullOrEmpty(SearchProviderApiKey))
+                _appSettings.SearchProviderApiKey = SearchProviderApiKey;
+            _appSettings.SearchProviderEndpoint = SearchProviderEndpoint;
+            _appSettings.DefaultChatMode = DefaultChatMode;
             _appSettings.AutoIngestPath = AutoIngestPath;
             _appSettings.AutoIngestCollection = AutoIngestCollection;
             _appSettings.AutoIngestRecursive = AutoIngestRecursive;
@@ -1715,11 +3123,11 @@ public partial class SettingsViewModel : ViewModelBase
                 // key：非空推明文；留空推 null（不修改后端已配置值）；「清除」推 "" 显式清除
                 string? pushApiKey = hasApiKeyInput
                     ? LlmApiKey!.Trim()
-                    : (_clearApiKeyRequested ? "" : null);
+                    : (_clearApiKeyRequested || llmProviderChanged ? "" : null);
                 // base_url 清除语义：之前配置过、现在被清空 → 传 "" 显式清除；
                 // 之前就没配置 → 传 null 不修改（避免误清后端手动配置的值）
                 var pushBaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl)
-                    ? (string.IsNullOrWhiteSpace(_savedBaseUrlAtLoad) ? null : "")
+                    ? (llmProviderChanged || !string.IsNullOrWhiteSpace(_savedBaseUrlAtLoad) ? "" : null)
                     : LlmBaseUrl.Trim();
 
                 var pushed = await _apiService.UpdateConfigAsync(new BackendConfigUpdate
@@ -1741,7 +3149,7 @@ public partial class SettingsViewModel : ViewModelBase
                     LlmApiKey = pushApiKey,
                     LlmBaseUrl = pushBaseUrl,
                     LlmModel = string.IsNullOrWhiteSpace(LlmModel)
-                        ? (string.IsNullOrWhiteSpace(_savedModelAtLoad) ? null : "")
+                        ? (llmProviderChanged || !string.IsNullOrWhiteSpace(_savedModelAtLoad) ? "" : null)
                         : LlmModel.Trim(),
                     LlmTemperature = LlmTemperature,
                     LlmMaxTokens = LlmMaxTokens,
@@ -1759,6 +3167,17 @@ public partial class SettingsViewModel : ViewModelBase
                     WatchPaths = WatchPaths.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToList(),
                     WatchDebounceSeconds = WatchDebounceSeconds,
                     AutoCurateOnIngest = AutoCurateOnIngest,
+                    // Agent 模式必须同步到后端，否则客户端勾选后服务端仍 agent_mode_enabled=false 回落 RAG
+                    AgentModeEnabled = AgentModeEnabled,
+                    AgentNativeToolCalling = true,
+                    AgentFileWritePolicy = "session_allow",
+                    ChatModeDefault = DefaultChatMode,
+                    LongformEnabled = LongformEnabled,
+                    LongformMaxSections = LongformMaxSections,
+                    LongformMaxChars = LongformMaxChars,
+                    SearchProvider = SearchProvider,
+                    SearchProviderApiKey = string.IsNullOrEmpty(SearchProviderApiKey) ? null : SearchProviderApiKey,
+                    SearchProviderEndpoint = SearchProviderEndpoint,
                 });
                 // 后端提示（如切换模型后维度变化需重建索引）
                 if (!string.IsNullOrWhiteSpace(pushed.Notice))
@@ -2111,11 +3530,9 @@ public partial class SettingsViewModel : ViewModelBase
             {
                 LlmMaxTokens = profile.MaxTokens.Value;
             }
-            if (!string.IsNullOrWhiteSpace(profile.ApiKey))
-            {
-                // setter 会同步清除 _clearApiKeyRequested
-                LlmApiKey = profile.ApiKey;
-            }
+            // Replace the form value even when the profile has no key, so a prior
+            // provider's secret cannot be carried into the newly selected profile.
+            LlmApiKey = string.IsNullOrWhiteSpace(profile.ApiKey) ? null : profile.ApiKey;
             // 名称自动默认（用户可改）
             ProfileNameInput = profile.Name;
         }
@@ -2190,10 +3607,9 @@ public partial class SettingsViewModel : ViewModelBase
     /// <summary>当前选中服务商是否已启用（停用后不出现在对话页点选列表）。</summary>
     public bool IsSelectedProviderEnabled => SelectedProfile?.IsEnabled != false;
 
-    /// <summary>把当前选中服务商设为默认（写 ActiveProfileId 并落盘；仅用于设置页默认高亮，
-    /// 对话页「默认」项实际用设置页 LlmProvider/LlmModel（应用档案时推送后端生效）。</summary>
+    /// <summary>把当前选中服务商设为默认并立即应用到全局配置、后端及各业务页。</summary>
     [RelayCommand]
-    private void SetDefaultProvider()
+    private async Task SetDefaultProviderAsync()
     {
         if (SelectedProfile is not { } profile)
         {
@@ -2201,15 +3617,11 @@ public partial class SettingsViewModel : ViewModelBase
             _notifications.Warning("请先在左侧选中一个自定义服务商", "设为默认");
             return;
         }
-        _appSettings.ActiveProfileId = profile.Id;
-        _appSettings.Save();
+        await ApplyProfileAsync();
         OnPropertyChanged(nameof(IsSelectedProviderDefault));
-        // 注意：对话页「默认」项实际用设置页 LlmProvider/LlmModel（应用档案时推送），
-        // 此处的默认标记仅用于设置页高亮；如需对话页默认走该档案，请点「应用该服务商」
-        StatusMessage = $"已将「{profile.Name}」标记为默认服务商（高亮）。若要让对话页默认使用它，请点「应用该服务商」";
-        _notifications.Success($"已将「{profile.Name}」标记为默认服务商（高亮）", "设为默认");
-        DebugLog.Info($"设默认服务商标记: {profile.Name} ({profile.Id})", "Settings");
-        RaiseProviderConfigChanged();
+        StatusMessage = $"已将「{profile.Name}」设为默认并应用到全部业务";
+        _notifications.Success(StatusMessage, "默认服务商");
+        DebugLog.Info($"设为默认并应用服务商: {profile.Name} ({profile.Id})", "Settings");
     }
 
     /// <summary>切换当前选中服务商的启用/停用状态（停用后不出现在对话页点选列表，配置保留）。</summary>
@@ -2222,6 +3634,13 @@ public partial class SettingsViewModel : ViewModelBase
             return;
         }
         profile.IsEnabled = !profile.IsEnabled;
+        // LlmProfile is a persistence model rather than an observable item;
+        // replace the collection slot so the profile list refreshes immediately.
+        var profileIndex = SavedProfiles.IndexOf(profile);
+        if (profileIndex >= 0)
+        {
+            SavedProfiles[profileIndex] = profile;
+        }
         _appSettings.LlmProfiles = SavedProfiles.ToList();
         _appSettings.Save();
         OnPropertyChanged(nameof(IsSelectedProviderEnabled));
@@ -2391,8 +3810,17 @@ public partial class SettingsViewModel : ViewModelBase
 
             // 回填表单（值变化自动置 IsDirty）
             LoadProfileIntoForm(profile);
+            // Selecting a profile is form-only; applying a keyless profile must also
+            // explicitly clear any previously configured global/backend key.
+            _clearApiKeyRequested = string.IsNullOrWhiteSpace(profile.ApiKey);
+            if (_clearApiKeyRequested)
+            {
+                IsDirty = true;
+                SaveCommand.NotifyCanExecuteChanged();
+            }
             // 记录激活档案（随 Save 落盘；仅高亮用，不强制改配置）
             _appSettings.ActiveProfileId = profile.Id;
+            OnPropertyChanged(nameof(IsSelectedProviderDefault));
             // 走完整保存流程：本地落盘 + 推送后端（免重启生效）
             await SaveAsync();
             // key 解密失败的档案：应用成功但需重输 key——最终状态消息必须保留此提醒
@@ -2561,6 +3989,7 @@ public partial class SettingsViewModel : ViewModelBase
             return;
 
         IsTestingConnection = true;
+        StartProgress("测试连接", "检测后端与 LLM…");
         StatusMessage = "测试连接中…";
         DebugLog.Info("开始测试连接", "Settings");
 
@@ -2614,6 +4043,7 @@ public partial class SettingsViewModel : ViewModelBase
         finally
         {
             IsTestingConnection = false;
+        StopProgress();
         }
     }
 
@@ -2623,28 +4053,45 @@ public partial class SettingsViewModel : ViewModelBase
     [RelayCommand]
     private async Task RefreshLlmModelsAsync()
     {
-        if (IsFetchingModels)
-            return;
-
         if (string.IsNullOrWhiteSpace(LlmProvider) || LlmProvider == "none")
         {
             StatusMessage = "❌ 请先选择 LLM 提供商，再获取模型列表";
             return;
         }
 
+        var requestVersion = ++_llmModelsRequestVersion;
+        var requestedProvider = LlmProvider.Trim();
+        var requestedApiKey = string.IsNullOrWhiteSpace(LlmApiKey) ? null : LlmApiKey.Trim();
+        var requestedBaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl) ? null : LlmBaseUrl.Trim();
         IsFetchingModels = true;
         StatusMessage = "获取模型列表中…";
-        DebugLog.Info($"开始获取模型列表: provider={LlmProvider}", "Settings");
+        DebugLog.Info($"开始获取模型列表: provider={requestedProvider}", "Settings");
 
         try
         {
             var result = await _apiService.LlmModelsAsync(new LlmModelsRequest
             {
-                Provider = LlmProvider.Trim(),
-                ApiKey = string.IsNullOrWhiteSpace(LlmApiKey) ? null : LlmApiKey.Trim(),
-                BaseUrl = string.IsNullOrWhiteSpace(LlmBaseUrl) ? null : LlmBaseUrl.Trim(),
+                Provider = requestedProvider,
+                ApiKey = requestedApiKey,
+                BaseUrl = requestedBaseUrl,
                 Timeout = 10,
             });
+
+            if (requestVersion != _llmModelsRequestVersion)
+            {
+                DebugLog.Info($"忽略过期模型列表响应: provider={requestedProvider}", "Settings");
+                return;
+            }
+
+            var inputsStillMatch = string.Equals(requestedProvider, LlmProvider?.Trim(), StringComparison.OrdinalIgnoreCase)
+                && string.Equals(requestedApiKey, string.IsNullOrWhiteSpace(LlmApiKey) ? null : LlmApiKey.Trim(), StringComparison.Ordinal)
+                && string.Equals(requestedBaseUrl, string.IsNullOrWhiteSpace(LlmBaseUrl) ? null : LlmBaseUrl.Trim(), StringComparison.OrdinalIgnoreCase);
+            if (!inputsStillMatch || (result.Ok && !string.Equals(requestedProvider, result.Provider, StringComparison.OrdinalIgnoreCase)))
+            {
+                StatusMessage = "配置已变更，旧模型列表结果已丢弃，请重新获取";
+                DebugLog.Info($"忽略过期模型列表响应: provider={requestedProvider}", "Settings");
+                return;
+            }
 
             if (result.Ok)
             {
@@ -2667,6 +4114,15 @@ public partial class SettingsViewModel : ViewModelBase
                 // 自动选中第一个模型作为默认模型（全量导入后无需手动点选）
                 LlmModel = LlmModels.FirstOrDefault()?.Name ?? LlmModel;
                 SelectedModelCandidate = LlmModels.FirstOrDefault();
+                _appSettings.LlmAvailableModels = LlmModels
+                    .Select(item => item.Name.Trim())
+                    .Where(name => name.Length > 0)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                _appSettings.LlmProvider = LlmProvider;
+                _appSettings.LlmBaseUrl = LlmBaseUrl;
+                _appSettings.LlmModel = LlmModel;
+                _appSettings.Save();
                 StatusMessage = $"✅ 获取到 {result.Models.Count} 个模型（{result.Provider}），已自动导入全部模型到该服务商";
                 DebugLog.Info($"模型列表获取成功: provider={result.Provider} count={result.Models.Count}", "Settings");
             }
@@ -2683,7 +4139,10 @@ public partial class SettingsViewModel : ViewModelBase
         }
         finally
         {
-            IsFetchingModels = false;
+            if (requestVersion == _llmModelsRequestVersion)
+            {
+                IsFetchingModels = false;
+            }
         }
     }
 
@@ -2818,4 +4277,17 @@ public sealed record ProviderOption(
     public bool IsCustom => Profile is not null;
 
     public override string ToString() => DisplayName;
+}
+
+
+/// <summary>自定义嵌入模型选项。</summary>
+public sealed record CustomEmbedOption(string Id, string Label, string Note)
+{
+    public string Display => $"{Label} — {Note}";
+}
+
+/// <summary>自定义对话模型选项。</summary>
+public sealed record CustomChatOption(string Id, string Label, string Note)
+{
+    public string Display => $"{Label} — {Note}";
 }

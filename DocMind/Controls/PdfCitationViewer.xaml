@@ -23,7 +23,7 @@
             <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="320">
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,8">
                     <Path Data="{StaticResource IconWarning}" Style="{StaticResource IconSmStyle}"
-                          Stroke="{StaticResource WarningBrush}" VerticalAlignment="Center"
+                          Stroke="{DynamicResource WarningBrush}" VerticalAlignment="Center"
                           Margin="0,0,6,0"/>
                     <TextBlock Text="无法加载 PDF 阅览器"
                                FontSize="15"
@@ -62,6 +62,18 @@
                        TextWrapping="Wrap"
                        Foreground="{DynamicResource WarningBrush}"/>
         </Border>
+
+        <!-- 2c. 一键重定位：滚动离开后找回引用高亮 -->
+        <Button x:Name="RelocateButton"
+                Click="RelocateButton_Click"
+                Content="定位"
+                Style="{DynamicResource SecondaryButtonStyle}"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Margin="8,40,8,0"
+                Padding="10,4"
+                Panel.ZIndex="10"
+                ToolTip="重新定位到引用页并高亮原文段落"/>
 
         <!-- 3. 加载中遮罩 -->
         <Border x:Name="LoadingOverlay"

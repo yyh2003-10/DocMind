@@ -745,6 +745,146 @@ public partial class ChatViewModel : ViewModelBase
         IsInspectionReportOpen = false;
     }
 
+    // ===================== 创作物版本管理 =====================
+
+    private System.Collections.ObjectModel.ObservableCollection<DocMind.Models.ArtifactVersionSummary> _artifactVersions = new();
+    private DocMind.Models.ArtifactVersionSummary? _selectedArtifactVersion;
+    private bool _isVersionPanelOpen;
+
+    /// <summary>当前创作物的版本列表。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<DocMind.Models.ArtifactVersionSummary> ArtifactVersions
+    {
+        get => _artifactVersions;
+        private set => SetProperty(ref _artifactVersions, value);
+    }
+
+    /// <summary>选中的历史版本。</summary>
+    public DocMind.Models.ArtifactVersionSummary? SelectedArtifactVersion
+    {
+        get => _selectedArtifactVersion;
+        set
+        {
+            if (SetProperty(ref _selectedArtifactVersion, value))
+                RestoreArtifactVersionCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    /// <summary>版本面板是否展开。</summary>
+    public bool IsVersionPanelOpen
+    {
+        get => _isVersionPanelOpen;
+        set => SetProperty(ref _isVersionPanelOpen, value);
+    }
+
+    /// <summary>保存当前创作物为一个新版本。</summary>
+    [RelayCommand]
+    private async Task SaveArtifactVersionAsync()
+    {
+        var artifact = SelectedArtifact;
+        if (artifact == null || string.IsNullOrWhiteSpace(artifact.RawContent))
+        {
+            _notifications?.Warning("没有可存版本的创作物");
+            return;
+        }
+        try
+        {
+            var draft = new DocMind.Models.CreativeExportRequest
+            {
+                Content = artifact.RawContent,
+                Format = artifact.Type,
+                Title = artifact.Title,
+            };
+            await _apiService.SaveArtifactVersionAsync(artifact.Id, draft);
+            await LoadArtifactVersionsAsync();
+            IsVersionPanelOpen = true;
+            _notifications?.Success("已保存版本", "版本");
+        }
+        catch (Exception ex)
+        {
+            _notifications?.Error($"保存版本失败：{ex.Message}");
+            DebugLog.Warn($"保存创作物版本失败: {ex.Message}", "Chat");
+        }
+    }
+
+    /// <summary>加载版本列表。</summary>
+    [RelayCommand]
+    private async Task LoadArtifactVersionsAsync()
+    {
+        var artifact = SelectedArtifact;
+        if (artifact == null) return;
+        try
+        {
+            var list = await _apiService.ListArtifactVersionsAsync(artifact.Id);
+            ArtifactVersions = new System.Collections.ObjectModel.ObservableCollection<DocMind.Models.ArtifactVersionSummary>(list);
+            IsVersionPanelOpen = true;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"加载版本列表失败: {ex.Message}", "Chat");
+        }
+    }
+
+    /// <summary>把选中版本恢复为当前草稿（不自动再导出）。</summary>
+    [RelayCommand(CanExecute = nameof(CanRestoreVersion))]
+    private async Task RestoreArtifactVersionAsync()
+    {
+        var artifact = SelectedArtifact;
+        var ver = SelectedArtifactVersion;
+        if (artifact == null || ver == null) return;
+        try
+        {
+            var full = await _apiService.GetArtifactVersionAsync(artifact.Id, ver.VersionId);
+            if (full != null && !string.IsNullOrWhiteSpace(full.Content))
+            {
+                artifact.RawContent = full.Content;
+                if (!string.IsNullOrWhiteSpace(full.Title))
+                    artifact.Title = full.Title!;
+                // 触发预览刷新
+                SelectedArtifact = artifact;
+                OnPropertyChanged(nameof(SelectedArtifact));
+                _notifications?.Success($"已恢复版本 v{ver.Version}", "版本");
+            }
+        }
+        catch (Exception ex)
+        {
+            _notifications?.Error($"恢复版本失败：{ex.Message}");
+        }
+    }
+
+    private bool CanRestoreVersion => SelectedArtifact != null && SelectedArtifactVersion != null;
+
+    /// <summary>按体检报告建议修订当前 PPT（1 轮，续写/重发提示给模型）。</summary>
+    [RelayCommand]
+    private async Task ReviseFromInspectionAsync()
+    {
+        var report = InspectionReport;
+        var artifact = SelectedArtifact;
+        if (report == null || artifact == null || string.IsNullOrWhiteSpace(artifact.RawContent))
+            return;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("请根据以下 PPT 体检结果修订演示文稿，只改结构与表达，不编造无依据事实；");
+        sb.AppendLine("保持 Artifact 语法（`---` 分页、`### 卡片`、`<!-- note: -->` 备注），输出完整修订后的全文。");
+        sb.AppendLine($"体检得分：{report.Score}（{report.Grade}）");
+        if (!string.IsNullOrWhiteSpace(report.Summary))
+            sb.AppendLine($"总结：{report.Summary}");
+        foreach (var issue in report.Issues.Take(8))
+        {
+            sb.Append("- ");
+            if (!string.IsNullOrWhiteSpace(issue.Category)) sb.Append($"[{issue.Category}] ");
+            sb.Append(issue.Message);
+            if (!string.IsNullOrWhiteSpace(issue.FixSuggestion)) sb.Append($" → {issue.FixSuggestion}");
+            sb.AppendLine();
+        }
+        foreach (var rec in report.Recommendations.Take(5))
+            sb.AppendLine($"- 建议：{rec}");
+
+        CloseInspectionReport();
+        // 以续写方式提交：不新开用户气泡，把修订要求并入本轮
+        InputText = sb.ToString();
+        await ContinueWritingAsync();
+    }
+
     private bool _isSlideShowOpen;
     private bool _isSpeakerNotesVisibleInSlideShow = true;
 
@@ -847,12 +987,13 @@ public partial class ChatViewModel : ViewModelBase
         SelectedSource = src;
         IsSourceDrawerOpen = true;
 
-        // 原文件 × 关键点对照：PDF 需要更宽的阅读面，过窄时自动放宽
+        // 原文件 × 关键点对照：PDF 默认半屏沉浸阅读（对齐 ima 分屏），
+        // 过窄时自动放宽到半屏档；用户仍可拖把手或点展开再放大。
         var isPdf = string.Equals(src.Format, "pdf", StringComparison.OrdinalIgnoreCase)
                     || src.Source.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
-        if (isPdf && SourceDrawerWidth < 640)
+        if (isPdf && SourceDrawerWidth < 800)
         {
-            SourceDrawerWidth = 720;
+            SourceDrawerWidth = 880;
         }
 
         StatusMessage = $"原文对照：{src.DisplayTitle} ({src.ScoreBadgeText})";

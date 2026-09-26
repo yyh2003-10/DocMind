@@ -168,6 +168,9 @@
     <!-- 影片放映 -->
     <Geometry x:Key="IconPlay">M23 7l-7 5 7 5zM1 5v14l14-7z</Geometry>
 
+    <!-- 停止 -->
+    <Geometry x:Key="IconStop">M7 7h10v10H7z</Geometry>
+
     <!-- 自检/检查 -->
     <Geometry x:Key="IconInspect">M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11</Geometry>
 

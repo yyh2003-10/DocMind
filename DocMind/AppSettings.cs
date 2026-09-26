@@ -110,8 +110,48 @@ public class AppSettings
     public int LlmMaxTokens { get; set; } = 8192;
 
     // ── Agent 进阶能力预留（默认关闭；基础产品不暴露危险能力）──
-    /// <summary>是否在对话请求中允许 Agent 模式（后端 agentMode）。默认 false = 仅 RAG。</summary>
+    /// <summary>是否在对话请求中允许 Agent 模式（后端 agentMode）。默认 false = 仅 RAG。
+    /// 与「默认回答模式」分离：本项是能力总闸。</summary>
     public bool AgentModeEnabled { get; set; } = false;
+
+    /// <summary>对话页最后选择的回答模式（rag/agent/auto）。重启后恢复。</summary>
+    public string? LastChatMode { get; set; }
+
+    /// <summary>全局默认回答模式（rag/agent/auto）。出厂 rag；设置页可改并推后端。</summary>
+    public string DefaultChatMode { get; set; } = "rag";
+    /// <summary>长文大纲编排开关。</summary>
+    public bool LongformEnabled { get; set; } = false;
+    /// <summary>长文最大章节数。</summary>
+    public int LongformMaxSections { get; set; } = 8;
+    /// <summary>长文总字数上限。</summary>
+    public int LongformMaxChars { get; set; } = 12000;
+    /// <summary>联网搜索 Provider。</summary>
+    public string SearchProvider { get; set; } = "builtin";
+    /// <summary>搜索 Provider API Key（本地敏感字段，仅本机）。</summary>
+    public string? SearchProviderApiKey { get; set; }
+    /// <summary>搜索 Provider 端点。</summary>
+    public string? SearchProviderEndpoint { get; set; }
+
+    /// <summary>对话页最后选择的回答渲染格式（"markdown" | "html"）。
+    /// html = HTML 体验模式（整页 HTML 沙箱气泡）；重启后恢复。异常值按 markdown 处理。</summary>
+    public string? LastAnswerFormat { get; set; }
+
+    /// <summary>HTML 气泡是否允许引用公网 CDN 资源（默认允许）。
+    /// 关闭时收紧气泡内 CSP 的 script-src/connect-src，仅内联资源可用。
+    /// 注意：此开关只约束端上 WebView2 沙箱 CSP，后端不消费。</summary>
+    public bool HtmlAllowCdn { get; set; } = true;
+
+    /// <summary>解析对话页应恢复的回答模式：LastChatMode → DefaultChatMode → auto（UI 初始）。</summary>
+    public string ResolveChatMode()
+    {
+        var last = (LastChatMode ?? "").Trim().ToLowerInvariant();
+        if (last is "rag" or "agent" or "auto")
+        {
+            return last;
+        }
+        var def = (DefaultChatMode ?? "").Trim().ToLowerInvariant();
+        return def is "rag" or "agent" or "auto" ? def : "auto";
+    }
 
     /// <summary>Agent 工作区写入策略：ask | session_allow | always_allow_workspace。</summary>
     public string AgentFileWritePolicy { get; set; } = "session_allow";

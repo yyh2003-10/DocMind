@@ -36,11 +36,15 @@ from doc2mind.core.agent.planner import (
     TOOLS as AGENT_TOOLS,
 )
 from doc2mind.core.agent.prompt_policy import (
+    PROMPT_TRACK_DEEP_QA,
     PROMPT_TRACK_DELIVERY,
+    PROMPT_TRACK_RAG,
+    apply_answer_format,
     apply_prompt_track,
     boost_max_tokens,
     build_continue_query,
     done_frame_extras,
+    is_definition_query,
     resolve_prompt_track,
 )
 from doc2mind.core.config import Settings, get_settings, parse_rrf_weights
@@ -105,6 +109,9 @@ _SYSTEM_PROMPT_SLIM = (
     "1. 只回答用户本轮问题，主题不得偏移；\n"
     "2. 资料与本轮主题无关时，明确说明未命中，再基于通用知识回答本轮主题；\n"
     "3. 引用编号只能来自给出的资料列表，禁止编造；无依据就不要用编号；\n"
+    "3.1 文末来源说明只能写本轮实际给出的资料条数（如「基于本轮 5 条资料」），"
+    "禁止编造编号范围（如「本地知识库（11-15）」）、禁止写不存在的页码/集合名；"
+    "编号只能是单个 [n]，不要写 (n-m) 区间；\n"
     "4. 禁止输出 JSON 工具调用或 function_call；\n"
     "5. 【回答篇幅原则】：\n"
     "   - 简单问候/闲聊：1-3句话，自然友好，不要分析\n"
@@ -124,7 +131,9 @@ _SYSTEM_PROMPT = (
     "2. 【深入透彻】：不要给出死板机械的简单复述，要结合上下文深入剖析「核心机制、设计考量、最佳实践、潜在隐患/踩坑防范」；\n"
     "3. 【多维溯源】：优先参考【本地知识库原著切片】（本地 Ground Truth），并融合【知识图谱实体拓扑】与【实时联网资料】；"
     "关键事实必须标注对应来源编号，格式严格为 [1]、[2] 等与资料列表一致的编号；"
-    "禁止编造不存在的编号；若资料中无依据，明确说明知识库中未找到，不要用编号包装推测；\n"
+    "禁止编造不存在的编号；若资料中无依据，明确说明知识库中未找到，不要用编号包装推测；"
+    "文末若写来源说明，只能写本轮实际资料条数（如「基于本轮 3 条资料」），"
+    "禁止「本地知识库（11-15）」这类编造的编号区间或页码；\n"
     "4. 【实战导向】：涉及代码或实现时，提供结构良好、带有中文注释的代码片段或架构逻辑；\n"
     "5. 【结构清晰】：善用 Markdown 标题、清晰层级、表格对比与加粗强调；\n"
     "6. 【Agent 主动洞察】：在回答主体结束时，简明提炼出 1-2 条高价值的「💡 架构洞察 / 知识沉淀建议」；\n"
@@ -254,15 +263,16 @@ def _resolve_effective_max_tokens(
             metadata_provider=_build_metadata_provider(client),
             metadata_cache=metadata_cache,
         )
-        if prompt_track == PROMPT_TRACK_DELIVERY and effective:
+        if prompt_track in (PROMPT_TRACK_DELIVERY, PROMPT_TRACK_DEEP_QA) and effective:
             boosted = boost_max_tokens(
                 effective, prompt_track, ceiling=MAX_TOKENS_CEILING
             )
             if boosted and boosted != effective:
                 logger.info(
-                    "交付轨输出上限抬升: %s -> %s (原来源=%s)", effective, boosted, source
+                    "轨输出上限抬升(%s): %s -> %s (原来源=%s)",
+                    prompt_track, effective, boosted, source,
                 )
-                effective, source = boosted, f"{source}+delivery_boost"
+                effective, source = boosted, f"{source}+{prompt_track}_boost"
         logger.info("输出上限=%s, 来源=%s, 推导=%s", effective, source, derivation)
         return effective, source
     except Exception as e:  # noqa: BLE001 — 降级链故障兜底 registry
@@ -292,6 +302,58 @@ def _cap_history(
         and str(m.get("content", "")).startswith(_PLACEHOLDER_PREFIX)
     ]
     return placeholders + trimmed
+
+
+_HTML_FENCE_RE = re.compile(r"```html\s*.*?\s*```", re.DOTALL | re.IGNORECASE)
+
+
+def _looks_like_html_answer(content: str) -> bool:
+    """assistant 回答是否为 HTML 体验消息（```html 围栏或整页 HTML 开头）。
+
+    与端上 HtmlAnswerBubble.LooksLikeHtml 同判据：后端会话体不存 render_mode，
+    双方独立按内容探测。
+    """
+    s = (content or "").lstrip()
+    return s.startswith(("```html", "<!DOCTYPE", "<!doctype", "<html"))
+
+
+def _fold_html_message(content: str, max_chars: int = 400) -> str:
+    """把整页 HTML 回答折叠为纯文本摘要（供 LLM 上下文，不落盘）。
+
+    整页 HTML 回灌进多轮历史会造成 token 复利（单条 40%~150% 膨胀）。
+    折叠策略：剥 ```html 围栏 → 去掉 head/style/script 块 → 剥全部标签 →
+    压缩空白 → 截断到 max_chars 加省略标记。
+    """
+    s = _HTML_FENCE_RE.sub(lambda m: m.group(0).split("\n", 1)[-1].rsplit("```", 1)[0], content or "")
+    s = re.sub(r"<(head|style|script)\b.*?</\1>", " ", s, flags=re.DOTALL | re.IGNORECASE)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"&nbsp;?", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) > max_chars:
+        s = s[:max_chars].rstrip() + "…"
+    return s or "（整页 HTML，无可提取文本）"
+
+
+def _fold_history_for_llm(history: list[dict[str, str]]) -> list[dict[str, str]]:
+    """返回折叠后的历史副本：assistant 的整页 HTML 消息替换为纯文本摘要。
+
+    只作用于喂给 LLM 的副本，不回写内存缓存 / DB——UI 历史重载仍拿原文。
+    """
+    folded: list[dict[str, str]] = []
+    changed = False
+    for msg in history:
+        if (
+            msg.get("role") == "assistant"
+            and _looks_like_html_answer(str(msg.get("content", "")))
+        ):
+            folded.append({
+                **msg,
+                "content": f"（上一条 HTML 体验回答，正文摘要）{_fold_html_message(str(msg.get('content', '')))}",
+            })
+            changed = True
+        else:
+            folded.append(msg)
+    return folded if changed else history
 
 
 def _truncate_history_by_token_budget(
@@ -623,10 +685,14 @@ def _build_evidence_summary(
     research_citation_support: dict[str, Any] | None = None,
     citation_gate: dict[str, Any] | None = None,
     timing: dict[str, Any] | None = None,
+    degraded_retrieval: bool | None = None,
+    prompt_track: str | None = None,
 ) -> dict[str, Any]:
     """构建 done 帧 / 非流式响应的结构化证据摘要。
 
     前端据此渲染「证据条」，避免客户端自行拼业务逻辑。旧客户端忽略未知字段。
+    local_count = 进入引用列表的本地条数（可引用）；
+    local_hit_count = 门控前检索命中数（来自 citation_gate.hit_count）。
     """
     local_count = 0
     web_fetched_count = 0
@@ -639,17 +705,39 @@ def _build_evidence_summary(
                 web_unfetched_count += 1
         elif src.source_type == "local":
             local_count += 1
+    gate = citation_gate or {}
+    try:
+        local_hit_count = int(gate.get("hit_count", local_count) or local_count)
+    except (TypeError, ValueError):
+        local_hit_count = local_count
+    synthesized = 0
+    if citation_audit is not None:
+        support = citation_audit.get("evidence_support")
+        cited = citation_audit.get("cited")
+        synthesized = len(support if support else (cited or []))
+    citable_total = local_count + web_fetched_count + web_unfetched_count
+    web_only = local_count == 0 and (web_fetched_count + web_unfetched_count) > 0
+    single_source = citable_total <= 1
     result = {
         "local_count": local_count,
+        "local_cite_count": local_count,
+        "local_hit_count": local_hit_count,
         "web_fetched_count": web_fetched_count,
         "web_unfetched_count": web_unfetched_count,
         "graph_injected": graph_injected,
         "fallback_general_knowledge": fallback_general_knowledge,
+        "citable_total": citable_total,
+        "synthesized_source_count": synthesized,
+        "single_source": single_source,
+        "web_only": web_only,
     }
+    if degraded_retrieval is not None:
+        result["degraded_retrieval"] = bool(degraded_retrieval)
+    if prompt_track:
+        result["prompt_track"] = prompt_track
     if citation_audit is not None:
         result["citation_audit"] = citation_audit
     # 科研场景扩展字段（design 决策 D-1 / D-4）：仅 research + flag 开启时非空。
-    # 默认不插入 key，保证既有 evidence 结构与旧客户端逐 key 完全一致。
     if routing is not None:
         result["routing"] = routing
     if research_citation_support is not None:
@@ -763,6 +851,7 @@ def _append_turn(
     assistant_content: str | None,
     db_path: Path | None = None,
     sources: list[SourceRef] | None = None,
+    trajectory: list[dict] | str | None = None,
 ) -> None:
     """记录一轮对话：内存 LRU 更新 + SQLite 持久化（含引用来源元数据）。
 
@@ -813,12 +902,21 @@ def _append_turn(
                     for s in sources
                 ], ensure_ascii=False)
         # 单事务落库 user + assistant，避免孤儿 user 轮与并发交错（AUD-008）
+        trajectory_json = None
+        if trajectory:
+            with contextlib.suppress(Exception):
+                trajectory_json = (
+                    trajectory
+                    if isinstance(trajectory, str)
+                    else json.dumps(trajectory, ensure_ascii=False)
+                )
         store.append_turn(
             chat_id,
             user_content,
             assistant_content,
             title_hint=user_content,
             sources_json=sources_json,
+            trajectory_json=trajectory_json,
         )
     except ChatStoreError as e:
         logger.warning(
@@ -1041,6 +1139,46 @@ def _parse_attachments(
     return header + "\n" + "\n\n".join(parsed_blocks), sources
 
 
+def _refine_web_query_for_second_pass(query: str) -> str:
+    """深度联网证据偏弱时的二次检索改写（对标搜索 Agent「搜完再改词」）。"""
+    q = (query or "").strip()
+    if not q:
+        return q
+    is_def = bool(
+        re.search(r"是什么|什么是|啥是|定义|原理|含义|概念|知道|简介|介绍|了解|啥是", q)
+        or q.rstrip().endswith(("吗", "？", "?"))
+    )
+    if is_def:
+        core = re.sub(r"你知道|请问|帮我|介绍一下?|想了解|吗|？|\?|\s+", "", q).strip()
+        if not core:
+            core = q
+        return f"{core} 定义 单位 工程意义 公式 规范"
+    return f"{q} 官方 文档 综述 多来源"
+
+
+def _web_evidence_is_weak(citable: list[Any]) -> bool:
+    """可引用网页证据是否偏弱：0/1 条、全部未精读、或几乎同域单源。"""
+    if not citable:
+        return True
+    fetched = [
+        c
+        for c in citable
+        if getattr(c, "content_fetched", False) and (getattr(c, "content", "") or "").strip()
+    ]
+    if len(citable) < 2:
+        return True
+    if not fetched:
+        return True
+    domains = {
+        (getattr(c, "domain", "") or "").lower()
+        for c in citable
+        if (getattr(c, "domain", "") or "").strip()
+    }
+    if len(domains) <= 1 and len(citable) < 3:
+        return True
+    return False
+
+
 def rag_answer(
     query: str,
     collection: str | None = "default",
@@ -1061,6 +1199,7 @@ def rag_answer(
     github_token: str | None = None,
     rag_mode: str | None = None,
     memory_context: str | None = None,
+    answer_format: str | None = None,
 ) -> RagAnswer:
     """RAG 问答主入口（非流式，一次性返回完整回答）。"""
     s = settings or get_settings()
@@ -1071,8 +1210,9 @@ def rag_answer(
     if model_override and not llm_client:
         s = dc_replace(s, llm_model=model_override.strip())
 
-    # 1. 解析会话
+    # 1. 解析会话（HTML 体验消息折叠为纯文本摘要，防 token 复利；只折叠 LLM 副本）
     cid, history = _load_history(chat_id, s.db_path)
+    history = _fold_history_for_llm(history)
 
     # 2. LLM 客户端
     try:
@@ -1104,6 +1244,8 @@ def rag_answer(
         store=store, embedder=embedder,
         attachments=attachments, github_token=github_token, llm_client=client,
         memory_context=memory_context, use_slim_prompt=slim,
+        prompt_track=PROMPT_TRACK_RAG,
+        answer_format=answer_format,
         timing_out=timing,
     )
     try:
@@ -1111,6 +1253,7 @@ def rag_answer(
             next(_ctx_gen)  # 消费状态字符串（非流式路径不推送）
     except StopIteration as e:
         hits, context, sources, messages = e.value
+        prompt_track = str(timing.get("prompt_track_final") or PROMPT_TRACK_RAG)
 
     # 4.5 无命中且无外部/实体/附件上下文时的处理
     fallback_general_knowledge = False
@@ -1143,6 +1286,7 @@ def rag_answer(
         user_config=s.llm_max_tokens,
         registry_spec=model_spec,
         client=client,
+        prompt_track=prompt_track,
     )
     t_gen_start = time.perf_counter()
     try:
@@ -1198,6 +1342,8 @@ def rag_answer(
         citation_audit=citation_audit,
         citation_gate=timing.get("citation_gate"),
         timing=timing,
+        degraded_retrieval=bool((timing.get("retrieval_meta") or {}).get("degraded")),
+        prompt_track=str(timing.get("prompt_track_final") or PROMPT_TRACK_RAG),
     )
     return RagAnswer(
         answer=reply,
@@ -1234,6 +1380,7 @@ def rag_answer_stream(
     rag_mode: str | None = None,
     memory_context: str | None = None,
     response_mode: str | None = None,
+    answer_format: str | None = None,
     continue_writing: bool = False,
 ) -> Iterator[str]:
     """RAG 流式问答，逐 token 产出 SSE 格式 JSON 行。
@@ -1243,6 +1390,7 @@ def rag_answer_stream(
     a fixed pipeline search engine.
 
     response_mode: "rag" | "delivery" | None(auto)
+    answer_format: "markdown" | "html"（html = 助手气泡整页 HTML 体验）
     continue_writing: True 时走交付轨续写，不重复检索，合并进上一条回答。
     """
     s = settings or get_settings()
@@ -1255,8 +1403,9 @@ def rag_answer_stream(
     if model_override and not llm_client:
         s = dc_replace(s, llm_model=model_override.strip())
 
-    # 1. 解析会话
+    # 1. 解析会话（HTML 体验消息折叠为纯文本摘要，防 token 复利；只折叠 LLM 副本）
     cid, history = _load_history(chat_id, s.db_path)
+    history = _fold_history_for_llm(history)
     if continue_writing:
         query = build_continue_query(query)
 
@@ -1283,7 +1432,36 @@ def rag_answer_stream(
         agent_plan = None
         prompt_track = PROMPT_TRACK_DELIVERY
     else:
-        agent_plan = plan_with_llm(query, client, history, settings=s)
+        # 必须先给状态：规划是同步 LLM 调用，慢模型（gpt-oss 等）可卡数十秒～数分钟，
+        # 否则前端只有「回答模式」pill，用户以为卡死并手动停止。
+        yield json.dumps(
+            {"type": "status", "message": "正在规划回答策略（意图/工具）..."},
+            ensure_ascii=False,
+        )
+        plan_t0 = time.perf_counter()
+        try:
+            agent_plan = plan_with_llm(query, client, history, settings=s)
+            plan_ms = int((time.perf_counter() - plan_t0) * 1000)
+            if plan_ms >= 8000:
+                yield json.dumps(
+                    {
+                        "type": "status",
+                        "message": f"✔ 回答策略：规划完成（{plan_ms / 1000:.1f}s，type={getattr(agent_plan, 'query_type', '?')}）",
+                    },
+                    ensure_ascii=False,
+                )
+        except Exception as plan_ex:  # noqa: BLE001 —— 规划失败回落规则，不阻断对话
+            logger.warning("LLM 规划失败，回落规则规划: %s", plan_ex)
+            from doc2mind.core.agent.planner import _fallback_regex_plan
+
+            agent_plan = _fallback_regex_plan(query)
+            yield json.dumps(
+                {
+                    "type": "status",
+                    "message": "⚠ 回答策略：LLM 规划失败/超时，已改用规则规划",
+                },
+                ensure_ascii=False,
+            )
         prompt_track = resolve_prompt_track(
             query_type=getattr(agent_plan, "query_type", None),
             creative_mode=getattr(agent_plan, "creative_mode", None),
@@ -1343,7 +1521,9 @@ def rag_answer_stream(
                     _lf_frames.append((yield_name, payload))
 
             _lf_frames: list[tuple[str, dict]] = []
-            yield "正在生成长文大纲..."
+            yield json.dumps(
+                {"type": "status", "message": "正在生成长文大纲..."}, ensure_ascii=False
+            )
             longform_result = run_longform(
                 query,
                 llm_client=client,
@@ -1356,9 +1536,15 @@ def rag_answer_stream(
             for name, payload in _lf_frames:
                 yield json.dumps({"type": name, **payload}, ensure_ascii=False)
             if longform_result and longform_result.status == "succeeded":
-                yield (
-                    f"✔ 长文大纲：{len(longform_result.plan.sections)} 节已完成"
-                    f"（约 {len(longform_result.final_text)} 字）"
+                yield json.dumps(
+                    {
+                        "type": "status",
+                        "message": (
+                            f"✔ 长文大纲：{len(longform_result.plan.sections)} 节已完成"
+                            f"（约 {len(longform_result.final_text)} 字）"
+                        ),
+                    },
+                    ensure_ascii=False,
                 )
         except Exception as lf_ex:  # noqa: BLE001 —— 大纲失败回落普通生成
             logger.debug("长文编排降级为普通 delivery 生成: %s", lf_ex)
@@ -1385,6 +1571,7 @@ def rag_answer_stream(
             "4. 禁止输出 JSON 工具调用。\n",
             prompt_track,
         )
+        cont_system = apply_answer_format(cont_system, answer_format)
         if persona and persona in _PERSONA_PROMPTS:
             cont_system = _PERSONA_PROMPTS[persona].split("\n", 1)[0] + "\n\n" + cont_system
         truncated_history = _cap_history(
@@ -1487,6 +1674,7 @@ def rag_answer_stream(
                 memory_context=memory_context, use_slim_prompt=slim,
                 agent_plan=agent_plan,
                 prompt_track=prompt_track,
+                answer_format=answer_format,
                 timing_out=timing,
             )
             stopped_early = False
@@ -1502,6 +1690,7 @@ def rag_answer_stream(
                     yield json.dumps({"type": "status", "message": status_msg}, ensure_ascii=False)
             except StopIteration as e:
                 hits, context, sources, messages = e.value
+                prompt_track = str(timing.get("prompt_track_final") or prompt_track)
 
     if stopped_early:
         yield json.dumps({
@@ -1888,6 +2077,10 @@ def rag_answer_stream(
             reflection = (
                 f"已综合 {', '.join(ref_summary)} 生成回答，共约 {len(reply)} 字"
             )
+            if local_cited == 0 and web_cited > 0:
+                reflection += "；本轮无库内可引用依据，仅基于网页资料"
+            if len(cited_support) <= 1:
+                reflection += "；证据强度：弱（单一来源）"
             if disclaimer_only:
                 reflection += f"（另 {len(disclaimer_only)} 条资料经判断与主题无关，未作依据）"
         elif sources:
@@ -1898,6 +2091,16 @@ def rag_answer_stream(
         else:
             reflection = f"基于通用知识回答（知识库未命中直接依据），共约 {len(reply)} 字"
         yield json.dumps({"type": "thinking", "text": reflection}, ensure_ascii=False)
+        # 库内空引用时的可操作建议（网页-only 或门控清空本地）
+        local_src_n = sum(1 for src in sources if src.source_type == "local")
+        if local_src_n == 0 and sources:
+            yield json.dumps({
+                "type": "thinking",
+                "text": (
+                    "知识库未命中可引用原文；若需更高权威性，"
+                    "可导入教材/规范/项目文档后重新提问。"
+                ),
+            }, ensure_ascii=False)
 
     # 8. 保存历史。被用户停止或中途异常产出的部分回答一律不写入历史——
     # 截断内容若被当作完整 assistant 消息进入后续上下文，会污染多轮对话。
@@ -1910,7 +2113,8 @@ def rag_answer_stream(
     elif continue_writing is False and (stream_error is not None or stopped or not reply.strip()):
         # 多轮上下文保全：
         # - 失败/空答：写入用户问题 + 失败说明，避免下一句完全失忆
-        # - 用户主动停止：只记用户问题，不把半截回答当成完整 assistant（沿用原契约）
+        # - 用户主动停止：本轮完全不落历史（user/assistant 都不写）——
+        #   截断问答若进入多轮上下文会污染后续对话；done 帧已提示「未保存到会话历史」。
         if stream_error is not None:
             _append_turn(
                 cid, query,
@@ -1918,7 +2122,7 @@ def rag_answer_stream(
                 s.db_path, sources=None,
             )
         elif stopped:
-            _append_turn(cid, query, None, s.db_path, sources=None)
+            pass  # 主动停止：内存 LRU 与 SQLite 均不落盘
         else:
             _append_turn(cid, query, "（本轮未生成有效回答）", s.db_path, sources=None)
 
@@ -1991,6 +2195,8 @@ def rag_answer_stream(
             research_citation_support=research_citation_support,
             citation_gate=timing.get("citation_gate"),
             timing=timing,
+            degraded_retrieval=bool((timing.get("retrieval_meta") or {}).get("degraded")),
+            prompt_track=prompt_track,
         ),
         **stage_fields,
         **done_frame_extras(
@@ -2083,6 +2289,7 @@ def partition_citation_hits(
     reranked_usable: bool = False,
     bg_ratio: float = 0.6,
     user_enabled_web: bool = False,
+    entity_grounded: bool = False,
 ) -> CitationPartition:
     """把检索命中分为引用 / 背景 / 丢弃 三档。
 
@@ -2093,6 +2300,8 @@ def partition_citation_hits(
     重排可用时用 rerank_score；否则用 max(vector, bm25) 并叠加主题门。
     无显著主题 token 时主题门不启用，避免误杀通识问法。
     高分但无词汇重叠的命中降为背景而非丢弃，降低同义改写误杀风险。
+    entity_grounded=True（本轮注入了知识图谱实体上下文）时跳过主题门：
+    实体题检索到的切片常与问句无表面词重叠，再套主题门会把唯一本地证据杀成背景。
     """
     citation_min = max(0.0, float(citation_min_score or 0.0))
     ratio = max(0.0, min(1.0, float(bg_ratio or 0.0)))
@@ -2121,7 +2330,8 @@ def partition_citation_hits(
 
     for h in hits:
         rel = _hit_rel(h)
-        supports = _hit_supports_query(query, h)
+        # 图谱实体上下文已锚定本轮主题：跳过表面词主题门，保留本地证据可引用
+        supports = True if entity_grounded else _hit_supports_query(query, h)
         score_ok = not (reranked_usable and citation_min > 0 and rel < citation_min)
         if reranked_usable and citation_min > 0 and rel < citation_min:
             score_below_min += 1
@@ -2817,6 +3027,7 @@ def _build_context_and_messages(
     use_slim_prompt: bool = False,
     agent_plan: Any | None = None,
     prompt_track: str = "rag",
+    answer_format: str | None = None,
     timing_out: dict[str, Any] | None = None,
 ) -> Iterator[tuple[list[SearchHit], str, list[SourceRef], list[dict[str, str]]]]:
     """检索 + 构建多源上下文 + 组装消息。yield 状态字符串供调用方实时推送。
@@ -2840,6 +3051,16 @@ def _build_context_and_messages(
     t_retrieval_start: float | None = None
     t_web_start: float | None = None
     citation_gate: dict[str, Any] | None = None
+    # 证据/轨升级用的可观测计数（P0/P1）
+    retrieval_meta: dict[str, Any] = {
+        "local_hit_count": 0,
+        "local_cite_count": 0,
+        "web_citable_count": 0,
+        "web_fetch_failed": 0,
+        "degraded": False,
+        "degraded_reason": "",
+        "deep_web": str(web_search_mode or "").strip().lower() == "deep",
+    }
 
 
     # 0. 附件解析与上下文注入（用户显式导入的文档/图片材料）
@@ -3012,7 +3233,16 @@ def _build_context_and_messages(
             # 聊天状态行，不再静默——此前重排模型配错会静默降级纯 RRF，
             # 用户完全看不到相关度已退化。
             if rstats is not None and rstats.degraded and rstats.degraded_reason:
+                retrieval_meta["degraded"] = True
+                retrieval_meta["degraded_reason"] = rstats.degraded_reason
                 yield f"⚠ 检索降级：{rstats.degraded_reason}"
+                if "维度" in (rstats.degraded_reason or "") or "重建索引" in (
+                    rstats.degraded_reason or ""
+                ):
+                    yield (
+                        "⚠ 操作建议：请到「文档库」页执行「重建索引」后再评估检索质量；"
+                        "本轮可能只有词法召回，库内语义依据不足。"
+                    )
 
             # 2.1 查询扩展（C1，可选）：LLM 生成多查询变体 / HyDE 假设文档，
             #     分别检索后合并去重，提升长尾/多义查询召回。LLM 不可用或失败
@@ -3077,6 +3307,7 @@ def _build_context_and_messages(
                         reranked_usable=reranked_usable,
                         bg_ratio=bg_ratio,
                         user_enabled_web=bool(user_enabled_web or enable_web_search),
+                        entity_grounded=bool(entity_context and str(entity_context).strip()),
                     )
                     cite_hits = partition.cite_hits
                     bg_hits = partition.bg_hits
@@ -3198,6 +3429,8 @@ def _build_context_and_messages(
                         hit_names.append(n)
                 detail_docs = "、".join(hit_names[:4])
                 rerank_tag = "（已重排精排）" if (rstats.reranked if rstats else False) else ""
+                retrieval_meta["local_hit_count"] = original_hit_count
+                retrieval_meta["local_cite_count"] = len(cite_hits)
                 if local_as_citable:
                     gate_note = ""
                     if demote_reason:
@@ -3208,11 +3441,12 @@ def _build_context_and_messages(
                             + (f"，超限 {bg_overflow} 条已丢弃" if bg_overflow else "")
                         )
                     yield (
-                        f"✔ 检索知识库：命中 {len(hits)} 个分块{rerank_tag}（{detail_docs}）{gate_note}"
+                        f"✔ 检索知识库：命中 {len(hits)} 个分块 · 可引用 {len(cite_hits)}"
+                        f"{rerank_tag}（{detail_docs}）{gate_note}"
                     )
                 elif web_will_cite or bg_hits:
                     yield (
-                        f"✔ 检索知识库：命中 {original_hit_count} 个分块{rerank_tag}"
+                        f"✔ 检索知识库：命中 {original_hit_count} 个分块 · 可引用 0{rerank_tag}"
                         f"（低分丢弃 {d_score} / 主题不符 {d_topic} / 降为背景 {len(bg_hits)}）"
                         f"（{detail_docs}）"
                     )
@@ -3221,6 +3455,8 @@ def _build_context_and_messages(
                     pass
             else:
                 yield "✔ 检索知识库：未命中本地分块"
+                retrieval_meta["local_hit_count"] = 0
+                retrieval_meta["local_cite_count"] = 0
                 citation_gate = {
                     "citation_min_score": float(getattr(s, "citation_min_score", 0.0) or 0.0),
                     "hit_count": 0,
@@ -3451,6 +3687,71 @@ def _build_context_and_messages(
                         used_snippet_fallback = True
                 fetched_count = sum(1 for wr in citable if wr.content_fetched)
                 skipped_count = len(web_results) - len(citable)
+
+                # 深度联网 + 证据偏弱 → 追加一轮改写检索（借鉴搜索 Agent 多轮整合形态）
+                if _is_deep_web and _web_evidence_is_weak(citable):
+                    _left = max(0.0, (_web_deadline - time.monotonic()) if _web_deadline else 0.0)
+                    if _left >= 8.0:
+                        refined_q = _refine_web_query_for_second_pass(query)
+                        yield (
+                            f"✔ 联网证据偏弱（可引用 {len(citable)}），"
+                            f"追加改写检索：「{refined_q[:40]}」..."
+                        )
+                        try:
+                            from doc2mind.core.search.web_search import get_web_search_service as _get_ws
+
+                            _svc2 = _get_ws()
+                            if hasattr(_svc2, "set_searxng_bases"):
+                                _svc2.set_searxng_bases(
+                                    getattr(s, "web_search_searxng_url", "") or ""
+                                )
+                            _more = _svc2.search(
+                                refined_q,
+                                max_results=16,
+                                github_token=github_token,
+                                on_progress=None,
+                                deadline=time.monotonic() + max(8.0, _left - 2.0),
+                                llm_client=llm_client,
+                                mode="deep",
+                            )
+                            _seen = {getattr(wr, "url", "") for wr in web_results if getattr(wr, "url", "")}
+                            _added = [w for w in _more if getattr(w, "url", "") and w.url not in _seen]
+                            if _added:
+                                web_results = list(web_results) + _added
+                                yield f"✔ 二次检索新增 {len(_added)} 条候选，重新筛选引用..."
+                                citable = [
+                                    wr
+                                    for wr in web_results
+                                    if wr.content_fetched and (wr.content or "").strip()
+                                ]
+                                used_snippet_fallback = False
+                                if not citable:
+                                    snippet_pool = [
+                                        wr
+                                        for wr in web_results
+                                        if wr.relevance_score >= 0.15
+                                        and (wr.title or wr.url or "").strip()
+                                    ]
+                                    if snippet_pool:
+                                        citable = snippet_pool[: 8 if _is_deep_web else 5]
+                                        used_snippet_fallback = True
+                                fetched_count = sum(1 for wr in citable if wr.content_fetched)
+                                skipped_count = len(web_results) - len(citable)
+                                yield (
+                                    f"✔ 二次检索后可引用 {len(citable)} 条"
+                                    f"（已精读 {fetched_count}）"
+                                )
+                            else:
+                                yield "✔ 二次检索未发现新 URL，沿用首轮结果"
+                        except Exception as rex:  # noqa: BLE001 —— 补搜失败不阻断生成
+                            yield f"⚠ 二次检索失败，沿用首轮结果: {rex}"
+                    else:
+                        yield f"✔ 联网剩余预算 {_left:.0f}s，跳过补搜"
+
+                retrieval_meta["web_citable_count"] = len(citable)
+                retrieval_meta["web_fetch_failed"] = sum(
+                    1 for wr in web_results if not wr.content_fetched
+                )
                 if citable:
                     web_titles = [f"《{wr.title[:18]}》({wr.domain})" for wr in citable[:3]]
                     web_summary = "、".join(web_titles)
@@ -3537,6 +3838,28 @@ def _build_context_and_messages(
         full_context, context_blocks, sources, s, query, history
     )
 
+    # 3.6 定义题 deep_qa 升级：检索/联网结束后再定轨，避免规划时无证据过早放开篇幅
+    local_cite_n = sum(1 for src in sources if src.source_type == "local")
+    retrieval_meta["local_cite_count"] = local_cite_n
+    citable_total = len(sources)
+    track_upgrade_reason = ""
+    if prompt_track not in (PROMPT_TRACK_DELIVERY, PROMPT_TRACK_DEEP_QA):
+        upgraded = resolve_prompt_track(
+            query=query,
+            deep_web=bool(retrieval_meta.get("deep_web")),
+            citable_count=citable_total,
+            local_cite_count=local_cite_n,
+        )
+        if upgraded == PROMPT_TRACK_DEEP_QA:
+            prompt_track = upgraded
+            track_upgrade_reason = (
+                f"deep_qa（可引用 {citable_total} / 库内 {local_cite_n}"
+                f" / 深度联网 {retrieval_meta.get('deep_web')}）"
+            )
+            yield f"✔ 回答策略：定义题结构化（{track_upgrade_reason}）"
+    timing["prompt_track_final"] = prompt_track
+    timing["retrieval_meta"] = dict(retrieval_meta)
+
     # 4. 组装消息
     if use_slim_prompt:
         system_prompt = _SYSTEM_PROMPT_SLIM
@@ -3592,8 +3915,23 @@ def _build_context_and_messages(
                 "请结合本地事实与联网前沿资料给出深入透彻、带有代码示例与注释的专业解答。"
             )
 
-    # P0：交付轨覆盖篇幅压制（必须在最终 messages 组装前统一应用）
+    # P0：交付/定义轨覆盖篇幅压制（必须在最终 messages 组装前统一应用）
     system_prompt = apply_prompt_track(system_prompt, prompt_track)
+    # 渲染轨：HTML 体验（与内容轨正交，叠加在内容轨之后）
+    system_prompt = apply_answer_format(system_prompt, answer_format)
+
+    # 单源/无库内纪律：即使未升级到 deep_qa，也不许单源伪装成权威
+    if sources:
+        local_n = sum(1 for src in sources if src.source_type == "local")
+        total_src = len(sources)
+        if total_src <= 1 or (local_n == 0 and total_src >= 1):
+            system_prompt += (
+                "\n【证据提示】本轮可引用来源偏少"
+                f"（合计 {total_src} 条，库内 {local_n} 条）。"
+                "若仅依据 1 条资料作答，必须写明「证据强度：弱（单一来源）」；"
+                "若本地知识库无可引用原文，应说明本轮主要依赖外部网页，"
+                "不得伪装成知识库权威结论。\n"
+            )
 
     # 用户记忆：独立框定，绝不拼进检索 query，也不进 SourceRef
     memory_block = ""

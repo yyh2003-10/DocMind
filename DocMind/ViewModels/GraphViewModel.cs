@@ -35,20 +35,15 @@ public partial class GraphViewModel : ViewModelBase
                 return true;
             }
             var provider = _appSettings.LlmProvider?.Trim() ?? "";
-            if (provider.Length == 0 || string.Equals(provider, "none", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-            if (string.Equals(provider, "ollama", StringComparison.OrdinalIgnoreCase))
+            if (provider.Length > 0 && !string.Equals(provider, "none", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(provider, "ollama", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(_appSettings.LlmApiKey)))
             {
                 return true;
             }
-            // 设置页已配置 Key，或存在已带 Key 的服务商档案（对话页可按请求携带）
-            if (!string.IsNullOrWhiteSpace(_appSettings.LlmApiKey))
-            {
-                return true;
-            }
-            return _appSettings.LlmProfiles?.Any(p => !string.IsNullOrWhiteSpace(p.ApiKey)) == true;
+            return _appSettings.LlmProfiles?.Any(p => p is { IsEnabled: true }
+                && (string.Equals(p.Provider, "ollama", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(p.ApiKey))) == true;
         }
     }
 
@@ -1403,7 +1398,7 @@ var trimmed = q.Trim().TrimStart(' ', '：', ':');
         if (_appSettings == null) return null;
         if (!string.IsNullOrWhiteSpace(_appSettings.ActiveProfileId) && _appSettings.LlmProfiles is { Count: > 0 })
         {
-            var activeProfile = _appSettings.LlmProfiles.FirstOrDefault(p => p.Id == _appSettings.ActiveProfileId);
+            var activeProfile = _appSettings.LlmProfiles.FirstOrDefault(p => p.Id == _appSettings.ActiveProfileId && p.IsEnabled);
             if (!string.IsNullOrWhiteSpace(activeProfile?.Model))
             {
                 return activeProfile.Model;
@@ -1417,7 +1412,7 @@ var trimmed = q.Trim().TrimStart(' ', '：', ':');
         if (_appSettings == null) return null;
         if (!string.IsNullOrWhiteSpace(_appSettings.ActiveProfileId) && _appSettings.LlmProfiles is { Count: > 0 })
         {
-            var activeProfile = _appSettings.LlmProfiles.FirstOrDefault(p => p.Id == _appSettings.ActiveProfileId);
+            var activeProfile = _appSettings.LlmProfiles.FirstOrDefault(p => p.Id == _appSettings.ActiveProfileId && p.IsEnabled);
             if (activeProfile != null && !string.IsNullOrWhiteSpace(activeProfile.Provider) && activeProfile.Provider != "none")
             {
                 return new ProviderConfig

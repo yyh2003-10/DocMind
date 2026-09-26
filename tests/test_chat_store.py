@@ -158,3 +158,82 @@ class TestListAndDelete:
         store = ChatStore(db)
         with pytest.raises(ChatStoreError):
             store.list_sessions()
+
+
+class TestSearchAndFts:
+    """会话关键字过滤 + 跨会话消息检索 + FTS 索引维护。"""
+
+    def test_list_sessions_filters_by_title_or_content(self, store) -> None:
+        store.append_turn("a", "什么是挠度", "挠度是梁的位移", title_hint="什么是挠度")
+        store.append_turn("b", "机器学习入门", "监督学习...", title_hint="机器学习入门")
+        store.append_turn("c", "无关问题", "正文里提到挠度定义", title_hint="无关问题")
+
+        by_title = store.list_sessions(q="挠度")
+        assert {s.chat_id for s in by_title} >= {"a", "c"}
+
+        by_ml = store.list_sessions(q="机器学习")
+        assert [s.chat_id for s in by_ml] == ["b"]
+
+        assert store.count_sessions(q="挠度") == len(by_title)
+        assert store.count_sessions(q="不存在的关键字xyz") == 0
+
+    def test_search_messages_returns_matching_content(self, store) -> None:
+        store.append_turn("a", "q", "关于 DocMind 架构的说明", title_hint="q")
+        store.append_turn("b", "q", "其他内容", title_hint="q")
+        hits = store.search_messages("DocMind")
+        assert len(hits) == 1
+        assert hits[0]["chat_id"] == "a"
+        assert "DocMind" in hits[0]["content"]
+
+        scoped = store.search_messages("DocMind", chat_id="b")
+        assert scoped == []
+
+    def test_fts_table_created_and_indexes_chinese(self, tmp_path) -> None:
+        import sqlite3
+
+        db = tmp_path / "fts.db"
+        store = ChatStore(db)
+        store.append_turn("c1", "你知道挠度吗", "挠度是结构位移", title_hint="你知道挠度吗")
+
+        conn = sqlite3.connect(db)
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+            assert "chat_messages_fts" in tables
+            n = conn.execute("SELECT COUNT(*) FROM chat_messages_fts").fetchone()[0]
+            assert n == 2
+            # CJK 分词后按字可命中
+            hit = conn.execute(
+                "SELECT rowid FROM chat_messages_fts WHERE chat_messages_fts MATCH ?",
+                ('"挠" AND "度"',),
+            ).fetchone()
+            assert hit is not None
+        finally:
+            conn.close()
+
+    def test_delete_session_removes_fts_rows(self, store) -> None:
+        import sqlite3
+
+        store.append_turn("gone", "问题", "回答内容", title_hint="问题")
+        store.delete_session("gone")
+        conn = sqlite3.connect(store._db_path)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM chat_messages_fts").fetchone()[0] == 0
+        finally:
+            conn.close()
+
+    def test_update_last_assistant_refreshes_fts(self, store) -> None:
+        import sqlite3
+
+        store.append_turn("c", "q", "旧回答", title_hint="q")
+        assert store.update_last_assistant_content("c", "新回答含机器学习")
+        conn = sqlite3.connect(store._db_path)
+        try:
+            hit = conn.execute(
+                "SELECT rowid FROM chat_messages_fts WHERE chat_messages_fts MATCH ?",
+                ('"机" AND "器" AND "学" AND "习"',),
+            ).fetchone()
+            assert hit is not None
+        finally:
+            conn.close()

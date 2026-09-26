@@ -30,6 +30,30 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="microseconds")
 
 
+def _is_cjk(ch: str) -> bool:
+    o = ord(ch)
+    return (
+        0x4E00 <= o <= 0x9FFF
+        or 0x3400 <= o <= 0x4DBF
+        or 0xF900 <= o <= 0xFAFF
+    )
+
+
+def _segment_cjk(text: str) -> str:
+    """CJK 字符之间插空格，使 FTS5 unicode61 能按字索引中文。"""
+    if not text:
+        return ""
+    parts: list[str] = []
+    prev_cjk = False
+    for ch in text:
+        cjk = _is_cjk(ch)
+        if cjk and prev_cjk:
+            parts.append(" ")
+        parts.append(ch)
+        prev_cjk = cjk
+    return "".join(parts)
+
+
 @dataclass(frozen=True)
 class ChatSessionSummary:
     """会话列表项。"""
@@ -49,6 +73,7 @@ class ChatMessageRow:
     content: str
     created_at: str
     sources_json: str | None = None
+    trajectory_json: str | None = None
 
 
 class ChatStoreError(Exception):
@@ -104,7 +129,8 @@ class ChatStore:
                     role         TEXT NOT NULL,
                     content      TEXT NOT NULL,
                     created_at   TEXT NOT NULL,
-                    sources_json TEXT
+                    sources_json TEXT,
+                    trajectory_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_chat_messages_chat_id
                     ON chat_messages(chat_id, id);
@@ -115,10 +141,50 @@ class ChatStore:
                 cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_messages)").fetchall()]
                 if "sources_json" not in cols:
                     conn.execute("ALTER TABLE chat_messages ADD COLUMN sources_json TEXT")
+                if "trajectory_json" not in cols:
+                    conn.execute("ALTER TABLE chat_messages ADD COLUMN trajectory_json TEXT")
             except sqlite3.Error:
                 pass
+            # FTS5 会话全文索引（rowid 对齐 chat_messages.id；CJK 入库时分词）
+            conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts "
+                "USING fts5(content, tokenize='unicode61')"
+            )
+            self._rebuild_fts_if_needed(conn)
             conn.commit()
             self._schema_ready = True
+
+    def _rebuild_fts_if_needed(self, conn: sqlite3.Connection) -> None:
+        """FTS 行数与消息数不一致时全量重建（兼容升级/历史库）。"""
+        try:
+            msg_n = conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0]
+            fts_n = conn.execute("SELECT COUNT(*) FROM chat_messages_fts").fetchone()[0]
+            if msg_n == fts_n:
+                return
+            conn.execute("DELETE FROM chat_messages_fts")
+            rows = conn.execute("SELECT id, content FROM chat_messages").fetchall()
+            conn.executemany(
+                "INSERT INTO chat_messages_fts(rowid, content) VALUES (?, ?)",
+                [(r[0], _segment_cjk(r[1] or "")) for r in rows],
+            )
+        except sqlite3.Error:
+            pass
+
+    @staticmethod
+    def _fts_index_message(conn: sqlite3.Connection, msg_id: int, content: str) -> None:
+        conn.execute("DELETE FROM chat_messages_fts WHERE rowid = ?", (msg_id,))
+        conn.execute(
+            "INSERT INTO chat_messages_fts(rowid, content) VALUES (?, ?)",
+            (msg_id, _segment_cjk(content or "")),
+        )
+
+    @staticmethod
+    def _fts_drop_for_chat(conn: sqlite3.Connection, chat_id: str) -> None:
+        conn.execute(
+            "DELETE FROM chat_messages_fts WHERE rowid IN "
+            "(SELECT id FROM chat_messages WHERE chat_id = ?)",
+            (chat_id,),
+        )
 
     def _ensure_parent_dir(self) -> None:
         try:
@@ -133,6 +199,7 @@ class ChatStore:
         content: str,
         title_hint: str | None = None,
         sources_json: str | None = None,
+        trajectory_json: str | None = None,
     ) -> None:
         """追加一条消息；会话不存在时隐式创建（标题取 title_hint / 首条内容截断）。
 
@@ -157,11 +224,12 @@ class ChatStore:
                         "VALUES (?, ?, ?, ?)",
                         (chat_id, title, now, now),
                     )
-                conn.execute(
-                    "INSERT INTO chat_messages (chat_id, role, content, created_at, sources_json) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (chat_id, role, content, now, sources_json),
+                cur = conn.execute(
+                    "INSERT INTO chat_messages (chat_id, role, content, created_at, sources_json, trajectory_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (chat_id, role, content, now, sources_json, trajectory_json),
                 )
+                self._fts_index_message(conn, int(cur.lastrowid or 0), content)
                 conn.execute(
                     "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
                     (now, chat_id),
@@ -194,6 +262,7 @@ class ChatStore:
                     "UPDATE chat_messages SET content = ? WHERE id = ?",
                     (content, row[0]),
                 )
+                self._fts_index_message(conn, int(row[0]), content)
                 conn.execute(
                     "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
                     (now, chat_id),
@@ -209,6 +278,7 @@ class ChatStore:
         assistant_content: str | None,
         title_hint: str | None = None,
         sources_json: str | None = None,
+        trajectory_json: str | None = None,
     ) -> None:
         """一轮对话（user + 可选 assistant）在**单事务**内落库。
 
@@ -238,16 +308,20 @@ class ChatStore:
                         "VALUES (?, ?, ?, ?)",
                         (chat_id, title, now, now),
                     )
-                conn.execute(
-                    "INSERT INTO chat_messages (chat_id, role, content, created_at, sources_json) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (chat_id, "user", user_content, now, None),
+                cur_u = conn.execute(
+                    "INSERT INTO chat_messages (chat_id, role, content, created_at, sources_json, trajectory_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (chat_id, "user", user_content, now, None, None),
                 )
+                self._fts_index_message(conn, int(cur_u.lastrowid or 0), user_content)
                 if assistant_content is not None:
-                    conn.execute(
-                        "INSERT INTO chat_messages (chat_id, role, content, created_at, sources_json) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (chat_id, "assistant", assistant_content, now, sources_json),
+                    cur_a = conn.execute(
+                        "INSERT INTO chat_messages (chat_id, role, content, created_at, sources_json, trajectory_json) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (chat_id, "assistant", assistant_content, now, sources_json, trajectory_json),
+                    )
+                    self._fts_index_message(
+                        conn, int(cur_a.lastrowid or 0), assistant_content
                     )
                 conn.execute(
                     "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
@@ -279,7 +353,7 @@ class ChatStore:
             with self._conn() as conn:
                 self._ensure_schema(conn)
                 rows = conn.execute(
-                    "SELECT role, content, created_at, sources_json FROM chat_messages "
+                    "SELECT role, content, created_at, sources_json, trajectory_json FROM chat_messages "
                     "WHERE chat_id = ? ORDER BY id",
                     (chat_id,),
                 ).fetchall()
@@ -289,6 +363,7 @@ class ChatStore:
                         content=r["content"],
                         created_at=r["created_at"],
                         sources_json=r["sources_json"],
+                        trajectory_json=r["trajectory_json"],
                     )
                     for r in rows
                 ]
@@ -318,17 +393,36 @@ class ChatStore:
         except sqlite3.Error as e:
             raise ChatStoreError(f"读取会话失败: {e}") from e
 
-    def list_sessions(self, limit: int = 50, offset: int = 0) -> list[ChatSessionSummary]:
-        """按更新时间倒序列出会话（默认最近 50 个）。"""
+    @staticmethod
+    def _session_filter_sql(q: str | None) -> tuple[str, tuple]:
+        """按关键字过滤会话：标题 LIKE 或 消息内容 LIKE（跨会话搜索）。"""
+        if not q or not q.strip():
+            return "", ()
+        like = f"%{q.strip()}%"
+        return (
+            " AND s.id IN ("
+            "  SELECT id FROM chat_sessions WHERE title LIKE ? "
+            "  UNION "
+            "  SELECT chat_id FROM chat_messages WHERE content LIKE ?"
+            ")",
+            (like, like),
+        )
+
+    def list_sessions(
+        self, limit: int = 50, offset: int = 0, q: str | None = None
+    ) -> list[ChatSessionSummary]:
+        """按更新时间倒序列出会话（默认最近 50 个）。q 非空时按标题/内容过滤。"""
         try:
             with self._conn() as conn:
                 self._ensure_schema(conn)
+                where, params = self._session_filter_sql(q)
                 rows = conn.execute(
                     "SELECT s.id, s.title, s.created_at, s.updated_at, "
                     "(SELECT COUNT(*) FROM chat_messages m WHERE m.chat_id = s.id) AS msg_count "
                     "FROM chat_sessions s "
+                    f"WHERE 1=1{where} "
                     "ORDER BY s.updated_at DESC, s.id DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
+                    (*params, limit, offset),
                 ).fetchall()
                 return [
                     ChatSessionSummary(
@@ -343,21 +437,71 @@ class ChatStore:
         except sqlite3.Error as e:
             raise ChatStoreError(f"列出会话失败: {e}") from e
 
-    def count_sessions(self) -> int:
-        """返回会话总数（供分页列表的 total 字段使用，AUD-013）。"""
+    def count_sessions(self, q: str | None = None) -> int:
+        """返回会话总数（供分页列表的 total 字段使用，AUD-013）。q 非空时返回过滤后数量。"""
         try:
             with self._conn() as conn:
                 self._ensure_schema(conn)
-                r = conn.execute("SELECT COUNT(*) FROM chat_sessions").fetchone()
+                where, params = self._session_filter_sql(q)
+                r = conn.execute(
+                    f"SELECT COUNT(*) FROM chat_sessions s WHERE 1=1{where}", params
+                ).fetchone()
                 return int(r[0]) if r else 0
         except sqlite3.Error as e:
             raise ChatStoreError(f"统计会话失败: {e}") from e
+
+    def search_messages(
+        self,
+        query: str,
+        limit: int = 10,
+        chat_id: str | None = None,
+    ) -> list[dict[str, str | None]]:
+        """跨会话消息检索（LIKE，中文可靠）。返回 content/role/created_at/chat_id/title。"""
+        if not query or not query.strip():
+            return []
+        like = f"%{query.strip()}%"
+        try:
+            with self._conn() as conn:
+                self._ensure_schema(conn)
+                if chat_id:
+                    rows = conn.execute(
+                        "SELECT m.content, m.role, m.created_at, m.chat_id, "
+                        "COALESCE(s.title, '') AS title "
+                        "FROM chat_messages m "
+                        "LEFT JOIN chat_sessions s ON s.id = m.chat_id "
+                        "WHERE m.chat_id = ? AND m.content LIKE ? "
+                        "ORDER BY m.id DESC LIMIT ?",
+                        (chat_id, like, limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT m.content, m.role, m.created_at, m.chat_id, "
+                        "COALESCE(s.title, '') AS title "
+                        "FROM chat_messages m "
+                        "LEFT JOIN chat_sessions s ON s.id = m.chat_id "
+                        "WHERE m.content LIKE ? "
+                        "ORDER BY m.id DESC LIMIT ?",
+                        (like, limit),
+                    ).fetchall()
+                return [
+                    {
+                        "content": r["content"],
+                        "role": r["role"],
+                        "created_at": r["created_at"],
+                        "chat_id": r["chat_id"],
+                        "title": r["title"],
+                    }
+                    for r in rows
+                ]
+        except sqlite3.Error as e:
+            raise ChatStoreError(f"搜索会话消息失败: {e}") from e
 
     def delete_session(self, chat_id: str) -> bool:
         """删除会话及其全部消息（级联）；不存在返回 False。"""
         try:
             with self._conn() as conn:
                 self._ensure_schema(conn)
+                self._fts_drop_for_chat(conn, chat_id)
                 cur = conn.execute("DELETE FROM chat_sessions WHERE id = ?", (chat_id,))
                 return cur.rowcount > 0
         except sqlite3.Error as e:

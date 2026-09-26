@@ -45,6 +45,36 @@ public class DocumentsViewModelTests
     }
 
     [Fact]
+    public async Task NotifyFileWatcherChange_RefreshesActivePageAndInvalidatesInactiveCache()
+    {
+        var loadCount = 0;
+        var fake = new FakeDoc2kbApiService();
+        fake.OnListDocuments = (_, _, _, _, _, _, _) =>
+        {
+            loadCount++;
+            return Task.FromResult(new DocumentListResponse
+            {
+                Documents = Array.Empty<Document>(),
+                Total = 0,
+                Page = 1,
+                PageSize = 20,
+            });
+        };
+
+        var vm = CreateVm(fake);
+        await vm.EnsureLoadedAsync();
+        Assert.Equal(1, loadCount);
+
+        vm.NotifyFileWatcherChange(isActive: false);
+        await vm.EnsureLoadedAsync();
+        Assert.Equal(2, loadCount);
+
+        vm.NotifyFileWatcherChange(isActive: true);
+        await Task.Delay(100);
+        Assert.Equal(3, loadCount);
+    }
+
+    [Fact]
     public async Task SearchQuery_ResetsPage_AndTriggersRefresh()
     {
         var loadCount = 0;

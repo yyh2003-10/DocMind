@@ -45,6 +45,18 @@ namespace DocMind.Controls
             }
         }
 
+        private static double TryFindDouble(string key, double fallback)
+        {
+            try
+            {
+                return Application.Current?.TryFindResource(key) is double v ? v : fallback;
+            }
+            catch
+            {
+                return fallback;
+            }
+        }
+
         private static Brush? TryFindBrush(string key)
         {
             try
@@ -57,35 +69,33 @@ namespace DocMind.Controls
             }
         }
 
-        private FrameworkElement CreateToastItem(ToastNotification notification)
-        {
-            var (bgKey, accentKey) = notification.Type switch
+        /// <summary>语义分类 →（淡底 Token 键、强调色 Token 键、图标资源键）三元组。</summary>
+        private static (string BgKey, string AccentKey, string IconKey) ResolveKind(ToastType type) =>
+            type switch
             {
-                ToastType.Success => ("SuccessLightBrush", "SuccessBrush"),
-                ToastType.Warning => ("WarningLightBrush", "WarningBrush"),
-                ToastType.Error => ("DangerLightBrush", "DangerBrush"),
-                _ => ("PrimaryLightBrush", "PrimaryBrush"),
-            };
-            var iconKey = notification.Type switch
-            {
-                ToastType.Success => "IconCheck",
-                ToastType.Warning => "IconWarning",
-                ToastType.Error => "IconCross",
-                _ => "IconList",
+                ToastType.Success => ("SuccessLightBrush", "SuccessBrush", "IconCheck"),
+                ToastType.Warning => ("WarningLightBrush", "WarningBrush", "IconWarning"),
+                ToastType.Error => ("DangerLightBrush", "DangerBrush", "IconCross"),
+                _ => ("InfoLightBrush", "InfoBrush", "IconLightbulb"),
             };
 
+        private FrameworkElement CreateToastItem(ToastNotification notification)
+        {
+            var (bgKey, accentKey, iconKey) = ResolveKind(notification.Type);
+
             var bg = TryFindBrush(bgKey)
-                     ?? new SolidColorBrush(Color.FromRgb(240, 255, 244));
+                     ?? new SolidColorBrush(Color.FromRgb(32, 48, 36));
             var accent = TryFindBrush(accentKey)
-                         ?? new SolidColorBrush(Color.FromRgb(79, 70, 229));
+                         ?? new SolidColorBrush(Color.FromRgb(129, 140, 248));
             var textColor = TryFindBrush("TextPrimaryBrush")
-                            ?? new SolidColorBrush(Color.FromRgb(26, 32, 44));
+                            ?? new SolidColorBrush(Color.FromRgb(245, 245, 247));
             var mutedText = TryFindBrush("TextTertiaryBrush")
-                            ?? new SolidColorBrush(Color.FromRgb(160, 174, 192));
+                            ?? new SolidColorBrush(Color.FromRgb(142, 142, 147));
             var cardBrush = TryFindBrush("CardBrush")
-                            ?? new SolidColorBrush(Colors.White);
-            var borderBrush = TryFindBrush("BorderBrush")
-                              ?? new SolidColorBrush(Color.FromRgb(229, 229, 234));
+                            ?? new SolidColorBrush(Color.FromRgb(28, 28, 30));
+            var borderBrush = TryFindBrush("ElevatedBorderBrush")
+                              ?? TryFindBrush("BorderBrush")
+                              ?? new SolidColorBrush(Color.FromRgb(56, 56, 58));
 
             var iconGeometry = (Geometry)Application.Current.FindResource(iconKey);
 
@@ -226,21 +236,31 @@ namespace DocMind.Controls
 
             closeBtn.MouseDown += (_, _) => Dismiss();
 
-            // 入场：自底上移 + 淡入
+            // 入场：自底上移 8px + 淡入 + 轻 scale(0.97→1)，时长挂 MotionNormalMs(180)；系统关闭动画时即时静态呈现
+            var motionNormal = System.TimeSpan.FromMilliseconds(TryFindDouble("MotionNormalMs", 180));
             if (SystemParameters.ClientAreaAnimation)
             {
                 border.Opacity = 0;
-                border.RenderTransform = new TranslateTransform(0, 8);
-                var fadeIn = new DoubleAnimation(0, 1, new Duration(System.TimeSpan.FromMilliseconds(180)))
+                var scale = new ScaleTransform(0.97, 0.97);
+                var translate = new TranslateTransform(0, 8);
+                border.RenderTransformOrigin = new Point(1, 1);
+                border.RenderTransform = new TransformGroup { Children = { scale, translate } };
+                var fadeIn = new DoubleAnimation(0, 1, motionNormal)
                 {
                     EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
                 };
-                var slideIn = new DoubleAnimation(8, 0, new Duration(System.TimeSpan.FromMilliseconds(180)))
+                var slideIn = new DoubleAnimation(8, 0, motionNormal)
+                {
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+                };
+                var scaleUp = new DoubleAnimation(0.97, 1, motionNormal)
                 {
                     EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
                 };
                 border.BeginAnimation(UIElement.OpacityProperty, fadeIn);
                 border.BeginAnimation(TranslateTransform.YProperty, slideIn);
+                border.BeginAnimation(ScaleTransform.ScaleXProperty, scaleUp);
+                border.BeginAnimation(ScaleTransform.ScaleYProperty, scaleUp);
             }
 
             return border;

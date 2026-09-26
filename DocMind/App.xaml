@@ -16,8 +16,11 @@ xmlns:helpers="clr-namespace:DocMind.Helpers">
             <helpers:ZeroToVisibilityConverter x:Key="ZeroToVis"/>
             <helpers:SourceHighlightConverter x:Key="SourceHighlight"/>
             <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="Styles/Theme.xaml"/>
+                <!-- Icons 必须先于 Theme 合并：Theme 内的样式（如 EmptyStateIconStyle）
+                     以 StaticResource BasedOn 引用 Icons 里的 IconMdStyle，
+                     合并顺序颠倒会在解析 Theme 时抛“无法找到资源”XamlParseException -->
                 <ResourceDictionary Source="Styles/Icons.xaml"/>
+                <ResourceDictionary Source="Styles/Theme.xaml"/>
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Application.Resources>

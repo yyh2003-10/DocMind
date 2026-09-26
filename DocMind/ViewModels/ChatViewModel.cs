@@ -96,9 +96,136 @@ public partial class ChatViewModel : ViewModelBase
     /// <summary>用户点击「前往配置大模型」请求事件。MainViewModel 订阅后跳转到设置页。</summary>
     public event Action? NavigateToSettingsRequested;
 
+    /// <summary>用户点击「导入资料」请求事件。MainViewModel 订阅后跳转到导入页。</summary>
+    public event Action? NavigateToImportRequested;
+
+    /// <summary>用户点击「去重建索引」请求事件。MainViewModel 订阅后跳转到文档页。</summary>
+    public event Action? NavigateToDocumentsRequested;
+
     /// <summary>导航前往设置页。</summary>
     [RelayCommand]
     private void NavigateToSettings() => NavigateToSettingsRequested?.Invoke();
+
+    /// <summary>导航前往导入页。</summary>
+    [RelayCommand]
+    private void NavigateToImport() => NavigateToImportRequested?.Invoke();
+
+    /// <summary>导航前往文档页（重建索引入口）。</summary>
+    [RelayCommand]
+    private void NavigateToDocuments() => NavigateToDocumentsRequested?.Invoke();
+    // ===================== 知识库健康：换嵌入后未重建 → 对话页持久横幅（P0.1） =====================
+
+    private bool _libraryNeedsReindex;
+    private string _libraryStatusSummary = "";
+
+    /// <summary>知识库是否需要重建索引（换嵌入模型/维度不一致时 true）。</summary>
+    public bool LibraryNeedsReindex
+    {
+        get => _libraryNeedsReindex;
+        private set
+        {
+            if (SetProperty(ref _libraryNeedsReindex, value))
+                OnPropertyChanged(nameof(ShowLibraryReindexBanner));
+        }
+    }
+
+    /// <summary>库状态摘要（横幅副文案）。</summary>
+    public string LibraryStatusSummary
+    {
+        get => _libraryStatusSummary;
+        private set => SetProperty(ref _libraryStatusSummary, value);
+    }
+
+    /// <summary>是否显示重建索引横幅。</summary>
+    public bool ShowLibraryReindexBanner => LibraryNeedsReindex;
+    // ===================== L2 权限确认卡片 =====================
+
+    private string? _pendingPermissionRequestId;
+    private string _pendingPermissionToolId = "";
+    private bool _hasPendingPermission;
+
+    /// <summary>是否有待确认的 Agent 写入权限请求。</summary>
+    public bool HasPendingPermission
+    {
+        get => _hasPendingPermission;
+        private set => SetProperty(ref _hasPendingPermission, value);
+    }
+
+    /// <summary>待确认权限的请求 ID。</summary>
+    public string? PendingPermissionRequestId
+    {
+        get => _pendingPermissionRequestId;
+        private set => SetProperty(ref _pendingPermissionRequestId, value);
+    }
+
+    /// <summary>待确认权限的工具名。</summary>
+    public string PendingPermissionToolId
+    {
+        get => _pendingPermissionToolId;
+        private set => SetProperty(ref _pendingPermissionToolId, value);
+    }
+
+    /// <summary>允许本次写入（并授权本会话后续写入）。</summary>
+    [RelayCommand]
+    private async Task AllowPermissionAsync()
+    {
+        var id = PendingPermissionRequestId;
+        if (string.IsNullOrWhiteSpace(id)) return;
+        try
+        {
+            await _apiService.ResolveAgentPermissionAsync(id, allow: true);
+            StatusMessage = "已授权工作区写入";
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"权限放行失败: {ex.Message}", "Chat");
+        }
+        finally
+        {
+            HasPendingPermission = false;
+            PendingPermissionRequestId = null;
+        }
+    }
+
+    /// <summary>拒绝本次写入。</summary>
+    [RelayCommand]
+    private async Task DenyPermissionAsync()
+    {
+        var id = PendingPermissionRequestId;
+        if (string.IsNullOrWhiteSpace(id)) return;
+        try
+        {
+            await _apiService.ResolveAgentPermissionAsync(id, allow: false);
+            StatusMessage = "已拒绝工作区写入";
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"权限拒绝失败: {ex.Message}", "Chat");
+        }
+        finally
+        {
+            HasPendingPermission = false;
+            PendingPermissionRequestId = null;
+        }
+    }
+
+    /// <summary>刷新知识库状态（启动/切到对话页/后端恢复时调用）。</summary>
+    [RelayCommand]
+    public async Task RefreshLibraryStatusAsync()
+    {
+        try
+        {
+            var status = await _apiService.GetLibraryStatusAsync();
+            LibraryNeedsReindex = status.NeedsReindex;
+            LibraryStatusSummary = string.IsNullOrWhiteSpace(status.Summary)
+                ? (status.NeedsReindex ? "嵌入模型或维度与索引不一致，请重建索引后再提问。" : "")
+                : status.Summary;
+        }
+        catch
+        {
+            // 后端不可达时不打扰对话页；下次恢复在线再刷
+        }
+    }
 
     private string _inputText = string.Empty;
     private bool _isBusy;
@@ -127,6 +254,54 @@ public partial class ChatViewModel : ViewModelBase
     /// <summary>联网搜索模式候选：关闭 / 普通搜索 / 深度搜索。</summary>
     public ObservableCollection<WebSearchModeChoice> WebSearchModes { get; } =
         new(WebSearchModeChoice.All);
+
+    /// <summary>回答模式候选：自动 / 知识库 RAG / Agent 工具。</summary>
+    public ObservableCollection<ChatModeChoice> ChatModes { get; } =
+        new(ChatModeChoice.All);
+
+    private ChatModeChoice _selectedChatMode = ChatModeChoice.Auto;
+
+    /// <summary>当前回答模式（持久化 LastChatMode）。</summary>
+    public ChatModeChoice SelectedChatMode
+    {
+        get => _selectedChatMode;
+        set
+        {
+            var next = value ?? ChatModeChoice.Auto;
+            if (SetProperty(ref _selectedChatMode, next))
+            {
+                _appSettings.LastChatMode = next.Key;
+                try { _appSettings.Save(); } catch { /* 落盘失败不阻断 */ }
+                OnPropertyChanged(nameof(ChatModeHint));
+            }
+        }
+    }
+
+    /// <summary>输入框旁模式提示（总闸关闭时提醒 Agent 会回落）。</summary>
+    public string ChatModeHint =>
+        SelectedChatMode.Key == "agent" && !_appSettings.AgentModeEnabled
+            ? "Agent 总闸未开，本轮将回落 RAG"
+            : SelectedChatMode.Label;
+
+    private bool _isHtmlAnswerMode;
+
+    /// <summary>HTML 体验模式：开启后本轮回答按整页 HTML 沙箱气泡渲染（持久化 LastAnswerFormat）。
+    /// 注意 HTML 气泡比纯 Markdown 多 40%–150% token，UI 开关旁须有提示。</summary>
+    public bool IsHtmlAnswerMode
+    {
+        get => _isHtmlAnswerMode;
+        set
+        {
+            if (SetProperty(ref _isHtmlAnswerMode, value))
+            {
+                _appSettings.LastAnswerFormat = value ? "html" : "markdown";
+                try { _appSettings.Save(); } catch { /* 落盘失败不阻断 */ }
+            }
+        }
+    }
+
+    /// <summary>HTML 气泡是否允许引用公网 CDN 资源（透传设置页 HtmlAllowCdn，气泡 CSP 消费）。</summary>
+    public bool HtmlAllowCdn => _appSettings.HtmlAllowCdn;
 
     /// <summary>是否开启实时联网搜索（true = 普通或深度；兼容旧绑定/测试）。</summary>
     public bool IsWebSearchEnabled
@@ -281,7 +456,8 @@ public partial class ChatViewModel : ViewModelBase
         // 模型名为空时仅跳过默认分组种子（无法预设具体模型）。
         _configuredProvider = string.IsNullOrWhiteSpace(_appSettings.LlmProvider) ? "none" : _appSettings.LlmProvider;
         // 默认提供商是否"已配置好"：本地 LlmApiKey 非空视为已配置；后端拉回后用 llm_api_key_configured 覆盖
-        _defaultKeyConfigured = !string.IsNullOrWhiteSpace(_appSettings.LlmApiKey);
+        _defaultKeyConfigured = IsKeyOptionalProvider(_appSettings.LlmProvider)
+            || !string.IsNullOrWhiteSpace(_appSettings.LlmApiKey);
         if (!string.IsNullOrWhiteSpace(_appSettings.LlmModel))
         {
             _configuredModel = _appSettings.LlmModel;
@@ -295,6 +471,16 @@ public partial class ChatViewModel : ViewModelBase
         {
             _defaultProviderModels.Add(_appSettings.LastChatModel.Trim());
         }
+
+        // 还原回答模式（LastChatMode → DefaultChatMode）
+        _selectedChatMode = ChatModeChoice.FromKey(_appSettings.ResolveChatMode());
+        OnPropertyChanged(nameof(SelectedChatMode));
+        OnPropertyChanged(nameof(ChatModeHint));
+
+        // 还原 HTML 体验模式开关（LastAnswerFormat；异常值按 markdown）
+        _isHtmlAnswerMode = string.Equals(
+            (_appSettings.LastAnswerFormat ?? "markdown").Trim().ToLowerInvariant(), "html",
+            StringComparison.Ordinal);
 
         // 模型选择器：首项「默认模型」伪值 + 默认提供商分组 + 各启用服务商的全部模型
         // Key 已在 App.LoadSettings 解密为明文；停用的服务商不出现在点选列表
@@ -329,9 +515,13 @@ public partial class ChatViewModel : ViewModelBase
 
         Messages.CollectionChanged += (_, _) =>
         {
+            OnPropertyChanged(nameof(HasMessages));
             OnPropertyChanged(nameof(ShowEmptyGuide));
             OnPropertyChanged(nameof(EmptyGuideText));
             OnPropertyChanged(nameof(MessagesCountText));
+            OnPropertyChanged(nameof(HasHtmlMessage));
+        OnPropertyChanged(nameof(HtmlDisplaySource));
+        OnPropertyChanged(nameof(IsHtmlStreaming));
             UpdateMessageFlags();
         };
 
@@ -359,7 +549,7 @@ public partial class ChatViewModel : ViewModelBase
         // 本地有 Key 即视为已配置；本地为空时保留后端权威态（Key 可能由后端 config.toml
         // 或环境变量提供）。不可用本地空值覆盖为 false——否则整个默认分组与
         // 「默认 · xx」首项都会消失，表现为保存后对话页模型下拉变空。
-        if (!string.IsNullOrWhiteSpace(_appSettings.LlmApiKey))
+        if (IsKeyOptionalProvider(newProvider) || !string.IsNullOrWhiteSpace(_appSettings.LlmApiKey))
         {
             _defaultKeyConfigured = true;
         }
@@ -432,7 +622,9 @@ public partial class ChatViewModel : ViewModelBase
         if (_appSettings.LlmProfiles is { Count: > 0 })
         {
             // 只显示启用且已配 Key 的服务商档案（"已配置好"才算可选）
-            foreach (var p in _appSettings.LlmProfiles.Where(p => p is not null && p.IsEnabled && !string.IsNullOrWhiteSpace(p.ApiKey)))
+            foreach (var p in _appSettings.LlmProfiles.Where(p => p is not null && p.IsEnabled
+                && (string.Equals(p.Provider, "ollama", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(p.ApiKey))))
             {
                 // 保存的 Models + 本会话实时拉取的 _profileLiveModels（去重）
                 var models = (p.Models ?? new List<string>()).ToList();
@@ -522,6 +714,9 @@ public partial class ChatViewModel : ViewModelBase
 
     private static string NormalizeEndpoint(string? url) => (url ?? "").Trim().TrimEnd('/');
 
+    private static bool IsKeyOptionalProvider(string? provider) =>
+        string.Equals(provider?.Trim(), "ollama", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>可勾选的知识库集合列表（复选框）。</summary>
     public ObservableCollection<CollectionItem> Collections { get; }
 
@@ -541,8 +736,9 @@ public partial class ChatViewModel : ViewModelBase
     public ObservableCollection<ChatSessionItem> Sessions { get; }
 
     private string _sessionSearchFilter = string.Empty;
+    private CancellationTokenSource? _sessionSearchCts;
 
-    /// <summary>会话列表搜索关键字（侧边栏即时过滤）。</summary>
+    /// <summary>会话列表搜索关键字（侧边栏即时过滤 + 后端全库搜索）。</summary>
     public string SessionSearchFilter
     {
         get => _sessionSearchFilter;
@@ -551,7 +747,26 @@ public partial class ChatViewModel : ViewModelBase
             if (SetProperty(ref _sessionSearchFilter, value))
             {
                 OnPropertyChanged(nameof(FilteredSessions));
+                _ = SearchSessionsDebouncedAsync(value);
             }
+        }
+    }
+
+    /// <summary>输入防抖后请求后端 /v1/chats?q=（标题/消息内容），找回不在 top50 的历史会话。</summary>
+    private async Task SearchSessionsDebouncedAsync(string? q)
+    {
+        _sessionSearchCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _sessionSearchCts = cts;
+        try
+        {
+            await Task.Delay(280, cts.Token);
+            var search = string.IsNullOrWhiteSpace(q) ? null : q.Trim();
+            await LoadSessionsAsync(selectChatId: null, search: search, cancellationToken: cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // 输入又变了，丢弃本次
         }
     }
 
@@ -1475,11 +1690,16 @@ public partial class ChatViewModel : ViewModelBase
                 {
                     userDisplay = $"[📎 附件: {string.Join(", ", attachLabels)}]\n{query}";
                 }
-                Messages.Add(new ChatMessage { Role = "user", Content = userDisplay });
+                var userMsg = new ChatMessage { Role = "user", Content = userDisplay };
+                AttachFeedbackSink(userMsg);
+                Messages.Add(userMsg);
             }
 
             // 添加流式占位（先空内容，逐 token 追加）
-            assistantMsg = new ChatMessage { Role = "assistant", Content = "", IsLoading = true, IsWaitingForFirstToken = true };
+            // 模式快照：发出时把当前模式写进消息，历史渲染只读本消息字段，
+            // 不读全局开关（中途切模式不影响历史消息渲染）
+            assistantMsg = new ChatMessage { Role = "assistant", Content = "", IsLoading = true, IsWaitingForFirstToken = true, AnswerFormat = IsHtmlAnswerMode ? "html" : "markdown" };
+            AttachFeedbackSink(assistantMsg);
             Messages.Add(assistantMsg);
         }
 
@@ -1619,9 +1839,13 @@ public partial class ChatViewModel : ViewModelBase
                         ? "delivery"
                         : null,
                     ContinueWriting = continueWriting,
-                    // Agent 升级预留：默认不发送（AppSettings.AgentModeEnabled=false）
-                    // 打开后请求体带 agentMode=true，后端 runtime 接管工具链
-                    AgentMode = !continueWriting && _appSettings.AgentModeEnabled,
+                    // 回答模式：会话内选择优先；chatMode 供后端 resolve_chat_mode 路由。
+                    // AgentMode 兼容标志受总闸约束（AgentModeEnabled 关闭时不声明，
+                    // 基础产品不暴露 Agent 能力；后端仍按 chatMode 回落 RAG）
+                    ChatMode = continueWriting ? "rag" : SelectedChatMode.Key,
+                    AgentMode = !continueWriting && SelectedChatMode.Key == "agent" && _appSettings.AgentModeEnabled,
+                    // 渲染轨：HTML 体验模式随请求下发；markdown 走后端默认（null 透传）
+                    AnswerFormat = IsHtmlAnswerMode ? "html" : null,
                 },
                 onToken: token =>
                 {
@@ -1682,16 +1906,31 @@ public partial class ChatViewModel : ViewModelBase
                 {
                     void ApplyAgent()
                     {
-                        // T7：Agent 轨迹（工具名/状态/摘要）进入思考折叠区，默认关闭时不会触发
+                        // T7：Agent 轨迹进入思考折叠区；低价值结果收成短标签，避免时间线被「无变化」淹没
                         var label = kind switch
                         {
                             "agent_plan" => $"Agent 规划：{detail}",
                             "tool_call" => $"调用工具 {detail}",
-                            "tool_result" => $"工具结果 {detail}",
+                            "tool_result" when IsNoiseAgentDetail(detail) => $"✔ {CompactAgentResult(detail)}",
+                            "tool_result" => $"✔ 工具结果 {detail}",
                             "artifact_ready" => $"产物就绪 {detail}",
+                            "permission_request" => $"⚠ 权限请求 {detail}（当前写入策略可能已自动放行）",
                             _ => detail,
                         };
                         assistantMsg.AddThinkingStep(label);
+                        // 同步进轨迹时间线（回看/实时共用）
+                        var step = new DocMind.Models.AgentTrajectoryStep
+                        {
+                            Step = (assistantMsg.TrajectorySteps?.Count ?? 0) + 1,
+                            Type = kind,
+                            ToolId = detail,
+                            Summary = detail,
+                            FinalText = detail,
+                        };
+                        var list = assistantMsg.TrajectorySteps is { } existing
+                            ? new System.Collections.Generic.List<DocMind.Models.AgentTrajectoryStep>(existing) { step }
+                            : new System.Collections.Generic.List<DocMind.Models.AgentTrajectoryStep> { step };
+                        assistantMsg.TrajectorySteps = list;
                     }
 
                     if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
@@ -1703,7 +1942,20 @@ public partial class ChatViewModel : ViewModelBase
                         ApplyAgent();
                     }
                 },
-                onThinking: thinking =>
+                                onPermissionRequest: (requestId, toolId) =>
+                {
+                    void ApplyPerm()
+                    {
+                        PendingPermissionRequestId = requestId;
+                        PendingPermissionToolId = string.IsNullOrWhiteSpace(toolId) ? "工作区写入" : toolId;
+                        HasPendingPermission = !string.IsNullOrWhiteSpace(requestId);
+                        assistantMsg.AddThinkingStep($"⚠ 等待授权：{PendingPermissionToolId}");
+                    }
+                    if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
+                        dispatcher.InvokeAsync(ApplyPerm);
+                    else
+                        ApplyPerm();
+                },onThinking: thinking =>
                 {
                     void ApplyThinking()
                     {
@@ -1748,6 +2000,9 @@ public partial class ChatViewModel : ViewModelBase
                     void ApplyDone()
                     {
                         assistantMsg.IsLoading = false;
+                        OnPropertyChanged(nameof(HtmlDisplaySource));
+                        OnPropertyChanged(nameof(IsHtmlStreaming));
+                        OnPropertyChanged(nameof(HasHtmlMessage));
                         assistantMsg.CompleteThinking(sw.ElapsedMilliseconds);
                         // 优先用后端 done 帧 model_spec 确认的显示名（而非本地预测的模型 ID）
                         assistantMsg.Model = string.IsNullOrEmpty(result.ModelDisplayName)
@@ -1921,7 +2176,19 @@ public partial class ChatViewModel : ViewModelBase
             assistantMsg.FailThinkingStep(null, "已停止生成");
             if (string.IsNullOrEmpty(assistantMsg.Content))
             {
-                assistantMsg.Content = "（已停止生成）";
+                // 空正文时带上最后阶段，避免用户只看到「已停止」不知卡在哪
+                var last = assistantMsg.ThinkingSteps.LastOrDefault() ?? "";
+                var stage = last.Contains("规划")
+                    ? "卡在回答规划（LLM 未返回）"
+                    : last.Contains("联网") || last.Contains("搜索")
+                        ? "卡在联网检索"
+                        : last.Contains("检索")
+                            ? "卡在知识库检索"
+                            : last.Contains("生成")
+                                ? "卡在正文生成（模型未出 token）"
+                                : "尚未进入正文生成";
+                assistantMsg.Content = $"（已停止生成 · {stage} · 用时 {sw.Elapsed.TotalSeconds:0.#}s）\n\n" +
+                    "💡 慢模型规划/深度联网可能超过 1–3 分钟。可：改「知识库 RAG」+关深度搜索先拿短答，或换更快模型后重试。";
             }
         }
         catch (ApiException ex)
@@ -2156,12 +2423,14 @@ public partial class ChatViewModel : ViewModelBase
         RegenerateCommand.NotifyCanExecuteChanged();
     }
 
-    /// <summary>拉取历史会话列表（后端不可达时静默）。selectChatId 非空时选中该会话。</summary>
-    private async Task LoadSessionsAsync(string? selectChatId = null)
+    /// <summary>拉取历史会话列表（后端不可达时静默）。selectChatId 非空时选中该会话；
+    /// search 非空时走后端全库过滤（标题/消息内容）。</summary>
+    private async Task LoadSessionsAsync(string? selectChatId = null, string? search = null, CancellationToken cancellationToken = default)
     {
         try
         {
-            var list = await _apiService.ListChatsAsync(limit: 50);
+            var list = await _apiService.ListChatsAsync(limit: 50, q: search, ct: cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             _isLoadingSessions = true;
             try
             {
@@ -2176,6 +2445,7 @@ public partial class ChatViewModel : ViewModelBase
                         UpdatedAt = s.UpdatedAt,
                     });
                 }
+                OnPropertyChanged(nameof(FilteredSessions));
 
                 // 选中目标会话：优先 selectChatId（新完成的首答），否则跟随当前 chatId
                 var targetId = selectChatId ?? _chatId;
@@ -2187,7 +2457,7 @@ public partial class ChatViewModel : ViewModelBase
             {
                 _isLoadingSessions = false;
             }
-            DebugLog.Info($"会话列表加载完成: {Sessions.Count} 个", "Chat");
+            DebugLog.Info($"会话列表加载完成: {Sessions.Count} 个 q={search ?? "-"}", "Chat");
         }
         catch (Exception ex)
         {
@@ -2209,7 +2479,14 @@ public partial class ChatViewModel : ViewModelBase
                     Role = m.Role,
                     Content = m.Content,
                     Sources = m.Sources,
+                    TrajectorySteps = m.Trajectory,
                 };
+                // 渲染模式探测（选项 A，零后端改动）：后端会话体不存 render_mode，
+                // 按内容判——含 ```html 围栏或 <!DOCTYPE/<html 开头 → HTML 体验消息
+                if (m.Role == "assistant" && Controls.HtmlAnswerBubble.LooksLikeHtml(m.Content))
+                {
+                    msg.AnswerFormat = "html";
+                }
                 // 历史消息正文里的 [n] 角标同样可点击打开来源
                 msg.SourceMarkerRequested += index =>
                 {
@@ -2219,6 +2496,7 @@ public partial class ChatViewModel : ViewModelBase
                         OpenSource(src);
                     }
                 };
+                AttachFeedbackSink(msg);
                 Messages.Add(msg);
             }
             _chatId = session.ChatId;
@@ -2362,6 +2640,56 @@ public partial class ChatViewModel : ViewModelBase
         }
     }
 
+    /// <summary>会话含 HTML 体验消息时可用：把该消息的自包含整页 HTML 写为 .html 文件（可双击在浏览器打开）。</summary>
+    public bool HasHtmlMessage => Messages.Any(m => m.IsHtmlAnswer);
+
+    /// <summary>HTML 阅读区展示的整页 HTML（取最近一条 HTML 体验消息）。</summary>
+    public string? HtmlDisplaySource =>
+        Messages.LastOrDefault(m => m.IsHtmlAnswer)?.Content;
+
+    /// <summary>HTML 阅读区是否仍在生成（转发到该条的 IsLoading）。</summary>
+    public bool IsHtmlStreaming =>
+        Messages.LastOrDefault(m => m.IsHtmlAnswer)?.IsLoading == true;
+
+    [RelayCommand]
+    private void ExportHtmlPage()
+    {
+        var htmlMsg = Messages.FirstOrDefault(m => m.IsHtmlAnswer);
+        if (htmlMsg is null)
+        {
+            _notifications?.Warning("当前会话没有 HTML 体验消息可导出");
+            return;
+        }
+
+        try
+        {
+            var page = Controls.HtmlAnswerBubble.StripHtmlFence(htmlMsg.Content);
+            if (string.IsNullOrWhiteSpace(page))
+            {
+                _notifications?.Warning("HTML 内容为空，无法导出");
+                return;
+            }
+            var saveFileDialog = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "导出 HTML 页面",
+                Filter = "HTML 文件 (*.html)|*.html|所有文件 (*.*)|*.*",
+                FileName = $"DocMind_Page_{DateTime.Now:yyyyMMdd_HHmmss}.html",
+                DefaultExt = ".html",
+            };
+            if (saveFileDialog.ShowDialog() == true)
+            {
+                System.IO.File.WriteAllText(saveFileDialog.FileName, page, System.Text.Encoding.UTF8);
+                _notifications?.Success($"HTML 页面已导出至：{System.IO.Path.GetFileName(saveFileDialog.FileName)}");
+                StatusMessage = $"已导出文件：{saveFileDialog.FileName}";
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Error($"导出 HTML 页面异常: {ex.Message}", "Chat", ex);
+            _notifications?.Error($"导出失败: {ex.Message}");
+        }
+    }
+
     /// <summary>在 Windows 文件资源管理器中定位当前引用的原文件。</summary>
     [RelayCommand]
     private void RevealSourceInExplorer()
@@ -2395,6 +2723,51 @@ public partial class ChatViewModel : ViewModelBase
             DebugLog.Warn($"在资源管理器中定位失败: {ex.Message}", "Chat");
             _notifications?.Error($"定位文件失败: {ex.Message}");
         }
+    }
+
+    /// <summary>Agent 工具结果是否为低价值（无变化/无提取/跳过…），主时间线只留短标签。</summary>
+    private static bool IsNoiseAgentDetail(string? detail)
+    {
+        if (string.IsNullOrWhiteSpace(detail))
+        {
+            return true;
+        }
+        string[] markers =
+        {
+            "无变化", "无提取", "无关联", "未变化", "无更新", "已跳过", "跳过",
+            "映射不可用", "结果不可用", "强制完成", "完整性评分",
+        };
+        return markers.Any(m => detail.Contains(m, StringComparison.Ordinal));
+    }
+
+    /// <summary>把冗长工具结果收成 ≤16 字摘要；失败/降级信息保留在 Detail（由 ThinkingStep.Parse 承接）。</summary>
+    private static string CompactAgentResult(string detail)
+    {
+        var d = detail.Trim();
+        if (d.Contains("映射不可用", StringComparison.Ordinal))
+        {
+            return "LLM 映射不可用";
+        }
+        if (d.Contains("结果不可用", StringComparison.Ordinal))
+        {
+            return "LLM 结果不可用";
+        }
+        if (d.Contains("无变化", StringComparison.Ordinal) || d.Contains("无提取", StringComparison.Ordinal))
+        {
+            return "无变化";
+        }
+        if (d.Contains("跳过", StringComparison.Ordinal))
+        {
+            return "已跳过";
+        }
+        // 「toolId: summary」形态：只留 toolId + 截短 summary
+        var cut = d.IndexOf(':');
+        if (cut > 0 && cut < 12 && d.Length > cut + 1)
+        {
+            var tail = d[(cut + 1)..].Trim();
+            return tail.Length <= 12 ? $"{d[..cut].Trim()}·{tail}" : $"{d[..cut].Trim()}·{tail[..12]}…";
+        }
+        return d.Length <= 16 ? d : d[..16] + "…";
     }
 
     /// <summary>使用系统默认应用程序打开引用的原文件。</summary>
@@ -2486,7 +2859,9 @@ public partial class ChatViewModel : ViewModelBase
             // 2) 各启用且有 Key 的服务商档案：实时拉取该账号下真实可用模型，缓存到 _profileLiveModels
             if (_appSettings.LlmProfiles is { Count: > 0 })
             {
-                foreach (var p in _appSettings.LlmProfiles.Where(p => p is not null && p.IsEnabled && !string.IsNullOrWhiteSpace(p.ApiKey)))
+                foreach (var p in _appSettings.LlmProfiles.Where(p => p is not null && p.IsEnabled
+                    && (string.Equals(p.Provider, "ollama", StringComparison.OrdinalIgnoreCase)
+                        || !string.IsNullOrWhiteSpace(p.ApiKey))))
                 {
                     try
                     {

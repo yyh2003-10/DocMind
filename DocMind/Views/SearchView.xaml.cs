@@ -116,7 +116,15 @@ public partial class SearchView : UserControl
             // ignore
         }
         // 深色下用半透明琥珀，避免浅黄块
-        return new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0x9F, 0x0A));
+        try
+        {
+            if (Application.Current?.TryFindResource("PrimaryLightBrush") is Brush b)
+                return b;
+            if (Application.Current?.TryFindResource("SelectedBrush") is Brush s)
+                return s;
+        }
+        catch { }
+        return new SolidColorBrush(Color.FromArgb(0x55, 0x81, 0x8C, 0xF8));
     }
 
     /// <summary>激活时自动聚焦搜索框。</summary>

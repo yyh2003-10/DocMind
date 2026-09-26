@@ -282,6 +282,8 @@ RAG 对话问答：从知识库检索相关文档，调用 LLM 生成回答并�
 
 RAG **流式**对话（SSE）：WPF 对话页实际使用的端点。请求体与 `POST /v1/chat` 完全一致（含 `topK`/`chatId`/`providerConfig`/`enableWebSearch`/`attachments`/`ragMode` 等字段），并新增 P0 字段：`responseMode`（`rag`|`delivery`，可省略自动推断）、`continueWriting`（bool，续写：不重复检索，基于会话历史补全并合并进上一条 assistant），以及 P1：`agentMode`（bool）或 `mode="agent"` — **仅当后端 `agent_mode_enabled=true` 时生效**；为 false 时服务端忽略并回落 RAG（商用默认关闭进阶能力）。启用后 SSE 追加 `agent_plan` / `tool_call` / `tool_result` / `artifact_ready` 帧，done 帧含 `mode:"agent"`、`tools_used`、`artifacts`、`workspace_root`。响应为 `text/event-stream`，携带 `Cache-Control: no-cache` / `X-Accel-Buffering: no` 头；空闲超 15s 发送心跳注释帧 `: heartbeat` 防代理掐断。
 
+**ChatMode（2026-09）**：请求可带 `chatMode`：`rag` | `agent` | `auto`（优先级高于 `agentMode`）。`auto` 为规则路由（深度联网+定义/任务题→Agent，其余→RAG）。配置项：`chat_mode_default`（出厂 `rag`）、`chat_mode_auto_enabled`。路由后 SSE 先发 `status`「回答模式：…」；done 帧附加 `chat_mode` / `chat_mode_requested` / `chat_mode_reason` / `chat_mode_degraded`。门禁 `agent_mode_enabled=false` 时 agent/auto 升级可见降级为 RAG。
+
 **SSE 帧类型（`data: ` 前缀 JSON 行，`data: [DONE]` 结束）：**
 
 **阶段耗时与慢模型提示（兼容：旧客户端忽略未知字段）：**
@@ -380,6 +382,8 @@ RAG **流式**对话（SSE）：WPF 对话页实际使用的端点。请求体�
   "stage_elapsed_enabled": true,
   "llm_first_token_slow_ms": 30000,
   "agent_mode_enabled": false,
+  "chat_mode_default": "rag",
+  "chat_mode_auto_enabled": true,
   "agent_native_tool_calling": true,
   "agent_file_write_policy": "session_allow"
 }
@@ -392,6 +396,8 @@ RAG **流式**对话（SSE）：WPF 对话页实际使用的端点。请求体�
   "background_hit_limit": 5,
   "stage_elapsed_enabled": true,
   "agent_mode_enabled": false,
+  "chat_mode_default": "rag",
+  "chat_mode_auto_enabled": true,
   "agent_native_tool_calling": true,
   "persist": true
 }
@@ -463,7 +469,7 @@ LLM 连接测试：用传入参数构造**临时**客户端发一条极小消息
 
 历史会话列表（持久化在 SQLite `chat_sessions` 表，重启不丢失）。按更新时间倒序。
 
-**查询参数：** `limit`（默认 50，上限 200）、`offset`（默认 0）
+**查询参数：** `limit`（默认 50，上限 200）、`offset`（默认 0）、`q`（可选，按标题/消息内容模糊搜索；设置后 `total` 为匹配会话数）
 
 **响应 200：**
 ```jsonc
@@ -844,6 +850,9 @@ AI 整理知识库（LLM 调用耗时，走异步任务；报告在 `job.report`
 |---|---|---|
 | `/v1/config` | GET/POST | 后端配置读写（llm_* / rag_* / chunk_* 等字段）；POST 实时生效，API Key 字段写入不回显 |
 | `/v1/doctor` | GET/POST | 全维体检报告（Python/存储/模型/LLM 连通性）与自愈 |
+| `/v1/diagnostics/bundle` | POST | 导出脱敏诊断包（doctor/runtime，可选日志），不包含知识库原文 |
+| `/v1/backup` | POST | 使用 SQLite 在线备份 API 创建知识库一致性备份 |
+| `/v1/backup/restore` | POST | 校验并恢复备份，恢复前自动保留当前数据库副本 |
 | `/v1/sample/ingest` | POST | 一键导入内置示例知识库（对话页「一键导入官方示例库」） |
 
 ### 摄入扩展
@@ -870,6 +879,8 @@ AI 整理知识库（LLM 调用耗时，走异步任务；报告在 `job.report`
 |---|---|---|
 | `/v1/creative/export` | POST | 把对话/知识内容编译导出为 PPTX/DOCX/XLSX/HTML 物理文件 |
 | `/v1/creative/inspect` | POST | 对 PPT 大纲做体检评分（0-100）与排版/密度诊断 |
+| `/v1/creative/artifacts/{artifact_id}/versions` | GET/POST | 保存 Artifact 草稿并查看版本历史（含来源元数据） |
+| `/v1/creative/artifacts/{artifact_id}/versions/{version_id}` | GET | 读取指定 Artifact 版本，用于重新生成或继续编辑 |
 
 ### 系统环境（`/v1/system/*`）
 | 端点 | 方法 | 说明 |

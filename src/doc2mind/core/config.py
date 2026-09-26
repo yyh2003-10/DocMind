@@ -120,6 +120,11 @@ class Settings:
     agent_max_steps: int = 8
     # T8：是否允许 provider 原生 tool-calling（仍受 agent_mode_enabled 总开关约束）
     agent_native_tool_calling: bool = True
+    # 对话默认回答模式：rag | agent | auto。出厂 rag（分发保守）；个人可改 auto。
+    # 与 agent_mode_enabled 分离：总闸管能力，本项管策略。
+    chat_mode_default: str = "rag"
+    # auto 规则路由总开关；false 时请求 auto 等价 rag
+    chat_mode_auto_enabled: bool = True
     # T6：搜索 Provider 插件：builtin（默认，多引擎抓取）| tavily | bocha | serpapi
     # 无 key 时自动回落 builtin，不崩溃；密钥不回显。
     search_provider: str = "builtin"
@@ -290,7 +295,7 @@ class Settings:
     # 与纯文本类型可读）。
     attachment_allowed_dirs: list[str] = field(default_factory=list)
 
-    # LLM 调用超时（秒），0 = 使用默认值 180s
+    # LLM 调用超时（秒），0 = 使用默认值 600s（大模型 TTFT 可能很长）
     llm_timeout: float = 0.0
 
     # 联网搜索总预算（秒）：多引擎聚合 + 正文精读的硬上限。

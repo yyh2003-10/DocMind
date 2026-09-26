@@ -2,6 +2,7 @@ from doc2mind.core.agent.runtime.executors import (
     bind_runtime_executors,
     make_export_executor,
     make_kb_search_executor,
+    make_web_search_executor,
     make_workspace_executors,
 )
 from doc2mind.core.agent.runtime.chat_agent import agent_answer_stream
@@ -54,6 +55,7 @@ __all__ = [
     "bind_runtime_executors",
     "make_export_executor",
     "make_kb_search_executor",
+    "make_web_search_executor",
     "make_workspace_executors",
     "agent_answer_stream",
 ]

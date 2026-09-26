@@ -98,7 +98,16 @@ public sealed record ChatRequest
     [System.Text.Json.Serialization.JsonPropertyName("continueWriting")]
     public bool ContinueWriting { get; init; }
 
-    /// <summary>Agent 模式（进阶，默认 false）。由 AppSettings.AgentModeEnabled 控制是否发送。</summary>
+    /// <summary>Agent 模式（兼容旧字段；chatMode 优先）。由对话页回答模式选择器映射。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("agentMode")]
     public bool AgentMode { get; init; }
+
+    /// <summary>回答模式："rag" | "agent" | "auto"。优先级高于 agentMode。
+    /// null/空 = 用服务端 chat_mode_default。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("chatMode")]
+    public string? ChatMode { get; init; }
+
+    /// <summary>回答渲染格式："markdown"（普通气泡）| "html"（整页 HTML 沙箱气泡）；null = markdown。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("answerFormat")]
+    public string? AnswerFormat { get; init; }
 }

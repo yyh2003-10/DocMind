@@ -8,9 +8,9 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>DocMind</RootNamespace>
     <AssemblyName>DocMind</AssemblyName>
-    <Version>1.0.1</Version>
-    <AssemblyVersion>1.0.1.0</AssemblyVersion>
-    <FileVersion>1.0.1.0</FileVersion>
+    <Version>1.0.2</Version>
+    <AssemblyVersion>1.0.2.0</AssemblyVersion>
+    <FileVersion>1.0.2.0</FileVersion>
     <ApplicationIcon>Assets\DocMind.ico</ApplicationIcon>
 
     <!-- 单文件发布（仅 Release） -->

@@ -56,7 +56,7 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Func<LlmModelsRequest, CancellationToken, Task<LlmModelsResult>>? OnLlmModels { get; set; }
 
     // ── 会话历史 ──
-    public Func<int, CancellationToken, Task<ChatSessionListResponse>>? OnListChats { get; set; }
+    public Func<int, string?, CancellationToken, Task<ChatSessionListResponse>>? OnListChats { get; set; }
     public Func<string, CancellationToken, Task<ChatSessionDetail>>? OnGetChat { get; set; }
     public Func<string, CancellationToken, Task>? OnDeleteChat { get; set; }
 
@@ -80,14 +80,17 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Task<LocalAiEnvironment> GetLocalAiEnvironmentAsync(CancellationToken ct = default)
         => Task.FromResult<LocalAiEnvironment>(null!);
 
+    // ── 一键拉取：测试注入点（实现在文件尾部「库状态」区，OnStartOllamaPull 可自定义行为）──
+    public Func<string, OllamaPullStatus>? OnStartOllamaPull;
+
     public Task<LlmTestResult> LlmTestAsync(LlmTestRequest req, CancellationToken ct = default)
         => OnLlmTest?.Invoke(req, ct) ?? throw new NotImplementedException();
 
     public Task<LlmModelsResult> LlmModelsAsync(LlmModelsRequest req, CancellationToken ct = default)
         => OnLlmModels?.Invoke(req, ct) ?? throw new NotImplementedException();
 
-    public Task<ChatSessionListResponse> ListChatsAsync(int limit = 50, CancellationToken ct = default)
-        => OnListChats?.Invoke(limit, ct) ?? Task.FromResult(new ChatSessionListResponse());
+    public Task<ChatSessionListResponse> ListChatsAsync(int limit = 50, string? q = null, CancellationToken ct = default)
+        => OnListChats?.Invoke(limit, q, ct) ?? Task.FromResult(new ChatSessionListResponse());
 
     public Task<ChatSessionDetail> GetChatAsync(string chatId, CancellationToken ct = default)
         => OnGetChat?.Invoke(chatId, ct) ?? Task.FromResult(new ChatSessionDetail { ChatId = chatId });
@@ -114,7 +117,7 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default)
         => OnChat?.Invoke(req, ct) ?? throw new NotImplementedException();
 
-    public async Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, Action? onRestart = null, Action<string, string>? onAgentEvent = null, CancellationToken ct = default)
+    public async Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, Action? onRestart = null, Action<string, string>? onAgentEvent = null, Action<string, string>? onPermissionRequest = null, CancellationToken ct = default)
     {
         if (OnChatStreamWithStatus is not null)
         {
@@ -171,6 +174,27 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
 
     public Task<JobStatus> CurateAsync(CurateRequest req, CancellationToken ct = default)
         => OnCurate?.Invoke(req, ct) ?? throw new NotImplementedException();
+    public Task<bool> ResolveAgentPermissionAsync(string requestId, bool allow, CancellationToken ct = default)
+        => Task.FromResult(true);
+
+    public Task<CurateRunsResponse> ListCurateRunsAsync(int days = 7, int limit = 50, CancellationToken ct = default)
+        => Task.FromResult(new CurateRunsResponse());
+
+    public Task<LibraryEvalResult> EvalLibraryAsync(string? collection = null, int sample = 30, CancellationToken ct = default)
+        => Task.FromResult(new LibraryEvalResult { Sample = sample, Summary = "ok" });
+
+    public Task<RetrievalRecommendedResult> GetRetrievalRecommendedAsync(CancellationToken ct = default)
+        => Task.FromResult(new RetrievalRecommendedResult { Description = "builtin" });
+
+    public Task<RetrievalRecommendedResult> ApplyRetrievalRecommendedAsync(CancellationToken ct = default)
+        => Task.FromResult(new RetrievalRecommendedResult { Applied = true, Description = "applied" });
+
+    public Task<OllamaPullStatus> StartOllamaPullAsync(string model, CancellationToken ct = default)
+        => Task.FromResult(OnStartOllamaPull?.Invoke(model) ?? new OllamaPullStatus { Model = model, State = "done" });
+
+    public Task<OllamaPullStatus> GetOllamaPullStatusAsync(CancellationToken ct = default)
+        => Task.FromResult(new OllamaPullStatus { State = "idle" });
+
 
     public Func<string, CancellationToken, Task<JobStatus>>? OnCancelJob { get; set; }
 
@@ -372,6 +396,19 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
             ArchetypeDiversity = 4,
         });
 
+    public Func<string, CreativeExportRequest, CancellationToken, Task<ArtifactVersionResponse>>? OnSaveArtifactVersion { get; set; }
+    public Func<string, CancellationToken, Task<List<ArtifactVersionSummary>>>? OnListArtifactVersions { get; set; }
+    public Func<string, string, CancellationToken, Task<ArtifactVersionResponse>>? OnGetArtifactVersion { get; set; }
+
+    public Task<ArtifactVersionResponse> SaveArtifactVersionAsync(string artifactId, CreativeExportRequest draft, CancellationToken ct = default)
+        => OnSaveArtifactVersion?.Invoke(artifactId, draft, ct) ?? Task.FromResult(new ArtifactVersionResponse());
+
+    public Task<List<ArtifactVersionSummary>> ListArtifactVersionsAsync(string artifactId, CancellationToken ct = default)
+        => OnListArtifactVersions?.Invoke(artifactId, ct) ?? Task.FromResult(new List<ArtifactVersionSummary>());
+
+    public Task<ArtifactVersionResponse> GetArtifactVersionAsync(string artifactId, string versionId, CancellationToken ct = default)
+        => OnGetArtifactVersion?.Invoke(artifactId, versionId, ct) ?? Task.FromResult(new ArtifactVersionResponse());
+
     // ── 事件流订阅 ──
     public Func<Action<EventMessage>, CancellationToken, IDisposable>? OnSubscribeEvents { get; set; }
 
@@ -383,6 +420,8 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
 
     public Task<LibraryStatus> GetLibraryStatusAsync(CancellationToken ct = default)
         => Task.FromResult(LibraryStatus);
+
+    // ── Curate runs / 检索自评估 / 推荐参数 ──
 
     public string? LastProfile { get; private set; }
 
@@ -416,9 +455,12 @@ public sealed class FakeDoc2kbApiService : IDoc2kbApiService
     public Task<TrashPurgeResponse> PurgeTrashAsync(int olderThanDays = 30, CancellationToken ct = default)
         => OnPurgeTrash?.Invoke(olderThanDays, ct) ?? Task.FromResult(new TrashPurgeResponse { Purged = 0 });
 
-    public Task<LibraryStatus> GetLibraryStatusAsync(CancellationToken ct = default)
-        => Task.FromResult(new LibraryStatus { Status = "ok", Summary = "知识库状态正常" });
+    public Task<BackupResponse> CreateBackupAsync(string? outputPath = null, CancellationToken ct = default)
+        => Task.FromResult(new BackupResponse(true, outputPath ?? "C:\\fake\\docmind.docmind.zip"));
 
-    public Task<ProfileSwitchResult> SetUsageProfileAsync(string profile, CancellationToken ct = default)
-        => Task.FromResult(new ProfileSwitchResult { Profile = profile });
+    public Task<BackupResponse> RestoreBackupAsync(string backupPath, CancellationToken ct = default)
+        => Task.FromResult(new BackupResponse(true, "C:\\fake\\docmind.db", PreviousBackup: "C:\\fake\\docmind.pre-restore.db"));
+
+    public Task<BackupResponse> CreateDiagnosticBundleAsync(string? outputPath = null, bool includeLogs = false, CancellationToken ct = default)
+        => Task.FromResult(new BackupResponse(true, outputPath ?? "C:\\fake\\diagnostics.zip"));
 }

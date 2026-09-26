@@ -1,4 +1,4 @@
-<UserControl x:Class="DocMind.Views.SettingsView"
+﻿<UserControl x:Class="DocMind.Views.SettingsView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -21,14 +21,14 @@
         <!-- 左侧分类 Tab 导航项样式 -->
         <Style x:Key="SettingsNavTabStyle" TargetType="RadioButton">
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="12,10"/>
             <Setter Property="Margin" Value="0,0,0,6"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
             <Setter Property="HorizontalContentAlignment" Value="Left"/>
-            <Setter Property="FocusVisualStyle" Value="{DynamicResource FocusVisualStyleCompact}"/>
+            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusVisualStyleCompact}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
@@ -45,7 +45,7 @@
                             <Border x:Name="Border"
                                     Background="{TemplateBinding Background}"
                                     BorderThickness="0"
-                                    CornerRadius="8"
+                                    CornerRadius="{StaticResource CornerMd}"
                                     Padding="{TemplateBinding Padding}"
                                     Margin="6,0,0,0">
                                 <ContentPresenter VerticalAlignment="Center" TextElement.Foreground="{TemplateBinding Foreground}"/>
@@ -53,16 +53,16 @@
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Border" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                                <Setter TargetName="Border" Property="Background" Value="{StaticResource HoverBrush}"/>
                             </Trigger>
                             <Trigger Property="IsKeyboardFocused" Value="True">
-                                <Setter TargetName="Border" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                                <Setter TargetName="Border" Property="Background" Value="{StaticResource HoverBrush}"/>
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Border" Property="Background" Value="{DynamicResource PrimaryLightBrush}"/>
+                                <Setter TargetName="Border" Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
                                 <Setter TargetName="ActiveIndicator" Property="Visibility" Value="Visible"/>
                                 <Setter TargetName="ActiveIndicator" Property="Opacity" Value="1"/>
-                                <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}"/>
+                                <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/>
                                 <Trigger.EnterActions>
                                     <BeginStoryboard>
                                         <Storyboard>
@@ -86,14 +86,25 @@
         </Style>
     </UserControl.Resources>
 
-    <Grid Margin="0">
+    <Grid Margin="0" Background="{DynamicResource BackgroundBrush}">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
+        <!-- 根级标题：独立于分类面板，确保设置页打开时一定可见 -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource PrimaryLightBrush}"
+                Padding="16,10"
+                Margin="0,0,0,8">
+            <TextBlock Text="偏好设置"
+                       FontSize="18" FontWeight="Bold"
+                       Foreground="{DynamicResource TextPrimaryBrush}"/>
+        </Border>
+
         <!-- ===== 主体区域：左侧分类侧栏 + 右侧配置面板 ===== -->
-        <Grid Grid.Row="0">
+        <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="220"/>
                 <ColumnDefinition Width="*"/>
@@ -103,8 +114,8 @@
                  左侧垂直分类导航栏
                  ========================================================= -->
             <Border Grid.Column="0"
-                    Background="{StaticResource SidebarBackgroundBrush}"
-                    BorderBrush="{StaticResource BorderBrush}"
+                    Background="{DynamicResource SidebarBackgroundBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}"
                     BorderThickness="0,0,1,0"
                     Padding="14,16,14,16">
                 <DockPanel>
@@ -112,9 +123,9 @@
                     <StackPanel DockPanel.Dock="Top" Margin="2,0,0,18">
                         <StackPanel Orientation="Horizontal">
                             <Path Data="{StaticResource IconSettings}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                            <TextBlock Text="偏好设置" FontSize="16" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                            <TextBlock Text="偏好设置" FontSize="{StaticResource FontSizeSubtitle}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}"/>
                         </StackPanel>
-                        <TextBlock Text="模块化分类与系统调优" FontSize="11" Foreground="{StaticResource TextTertiaryBrush}" Margin="0,3,0,0"/>
+                        <TextBlock Text="模块化分类与系统调优" FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextTertiaryBrush}" Margin="0,3,0,0"/>
                     </StackPanel>
 
                     <!-- 5 大分类导航列表 -->
@@ -127,8 +138,8 @@
                             <StackPanel Orientation="Horizontal">
                                 <Path Data="{StaticResource IconAi}" Style="{StaticResource IconSmStyle}" Margin="0,0,10,0" VerticalAlignment="Center"/>
                                 <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Text="AI 模型与对话" FontWeight="SemiBold" FontSize="13"/>
-                                    <TextBlock Text="本地感知 / 云端模型" FontSize="10" Foreground="{StaticResource TextTertiaryBrush}"/>
+                                    <TextBlock Text="AI 模型与对话" FontWeight="SemiBold" FontSize="{StaticResource FontSizeBody}"/>
+                                    <TextBlock Text="本地感知 / 云端模型" FontSize="{StaticResource FontSizeMicro}" Foreground="{DynamicResource TextTertiaryBrush}"/>
                                 </StackPanel>
                             </StackPanel>
                         </RadioButton>
@@ -141,8 +152,8 @@
                             <StackPanel Orientation="Horizontal">
                                 <Path Data="{StaticResource IconBook}" Style="{StaticResource IconSmStyle}" Margin="0,0,10,0" VerticalAlignment="Center"/>
                                 <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Text="知识库与检索" FontWeight="SemiBold" FontSize="13"/>
-                                    <TextBlock Text="嵌入向量 / 切片 / RAG" FontSize="10" Foreground="{StaticResource TextTertiaryBrush}"/>
+                                    <TextBlock Text="知识库与检索" FontWeight="SemiBold" FontSize="{StaticResource FontSizeBody}"/>
+                                    <TextBlock Text="嵌入向量 / 切片 / RAG" FontSize="{StaticResource FontSizeMicro}" Foreground="{DynamicResource TextTertiaryBrush}"/>
                                 </StackPanel>
                             </StackPanel>
                         </RadioButton>
@@ -155,8 +166,8 @@
                             <StackPanel Orientation="Horizontal">
                                 <Path Data="{StaticResource IconPalette}" Style="{StaticResource IconSmStyle}" Margin="0,0,10,0" VerticalAlignment="Center"/>
                                 <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Text="界面与外观" FontWeight="SemiBold" FontSize="13"/>
-                                    <TextBlock Text="浅色 / 深色 / 跟随系统" FontSize="10" Foreground="{StaticResource TextTertiaryBrush}"/>
+                                    <TextBlock Text="界面与外观" FontWeight="SemiBold" FontSize="{StaticResource FontSizeBody}"/>
+                                    <TextBlock Text="浅色 / 深色 / 跟随系统" FontSize="{StaticResource FontSizeMicro}" Foreground="{DynamicResource TextTertiaryBrush}"/>
                                 </StackPanel>
                             </StackPanel>
                         </RadioButton>
@@ -169,8 +180,8 @@
                             <StackPanel Orientation="Horizontal">
                                 <Path Data="{StaticResource IconPlug}" Style="{StaticResource IconSmStyle}" Margin="0,0,10,0" VerticalAlignment="Center"/>
                                 <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Text="算力与体检" FontWeight="SemiBold" FontSize="13"/>
-                                    <TextBlock Text="GPU 加速 / 环境自愈" FontSize="10" Foreground="{StaticResource TextTertiaryBrush}"/>
+                                    <TextBlock Text="算力与体检" FontWeight="SemiBold" FontSize="{StaticResource FontSizeBody}"/>
+                                    <TextBlock Text="GPU 加速 / 环境自愈" FontSize="{StaticResource FontSizeMicro}" Foreground="{DynamicResource TextTertiaryBrush}"/>
                                 </StackPanel>
                             </StackPanel>
                         </RadioButton>
@@ -183,8 +194,8 @@
                             <StackPanel Orientation="Horizontal">
                                 <Path Data="{StaticResource IconGlobe}" Style="{StaticResource IconSmStyle}" Margin="0,0,10,0" VerticalAlignment="Center"/>
                                 <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Text="服务与关于" FontWeight="SemiBold" FontSize="13"/>
-                                    <TextBlock Text="FastAPI 后端 / 存储 / 版本" FontSize="10" Foreground="{StaticResource TextTertiaryBrush}"/>
+                                    <TextBlock Text="服务与关于" FontWeight="SemiBold" FontSize="{StaticResource FontSizeBody}"/>
+                                    <TextBlock Text="FastAPI 后端 / 存储 / 版本" FontSize="{StaticResource FontSizeMicro}" Foreground="{DynamicResource TextTertiaryBrush}"/>
                                 </StackPanel>
                             </StackPanel>
                         </RadioButton>
@@ -207,7 +218,7 @@
                     <Border Background="{DynamicResource PrimaryLightBrush}"
                             BorderBrush="{DynamicResource PrimaryBrush}"
                             BorderThickness="1"
-                            CornerRadius="8"
+                            CornerRadius="{StaticResource CornerMd}"
                             Padding="16,10"
                             Margin="0,0,0,16"
                             Visibility="{Binding ShowRestartBanner, Converter={StaticResource BoolToVis}}">
@@ -228,7 +239,7 @@
                                     <Path Data="{StaticResource IconLightbulb}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
                                     <TextBlock Text="关键运行参数已更新" FontWeight="Bold" Foreground="{DynamicResource PrimaryBrush}"/>
                                 </StackPanel>
-                                <TextBlock Text="{Binding RestartBannerText}" FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding RestartBannerText}" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,2,0,0" TextWrapping="Wrap"/>
                             </StackPanel>
                         </DockPanel>
                     </Border>
@@ -237,12 +248,12 @@
                          批次 2：当前生效配置状态卡
                          ═══════════════════════════════════════════════════════ -->
                     <Border Style="{StaticResource CardStyle}"
-                            Margin="0,0,0,18"
+                            Margin="0,0,0,20"
                             Visibility="{Binding IsBackendConfigLoaded, Converter={StaticResource BoolToVis}}">
                         <StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                 <Path Data="{StaticResource IconChart}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                <TextBlock Text="当前生效配置（来自后端）" FontWeight="SemiBold" FontSize="13"/>
+                                <TextBlock Text="当前生效配置（来自后端）" Style="{StaticResource SubtitleText}"/>
                             </StackPanel>
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -256,17 +267,17 @@
                                     <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
                                 <!-- 嵌入模型 -->
-                                <TextBlock Grid.Row="0" Grid.Column="0" Text="嵌入模型：" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,0,6"/>
-                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding ActiveBackendEmbedModel, FallbackValue='—'}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,0,6"/>
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="嵌入模型：" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,0,6"/>
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding ActiveBackendEmbedModel, FallbackValue='—'}" FontSize="{StaticResource FontSizeCaption}" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,0,6"/>
                                 <!-- API Key 状态 -->
-                                <TextBlock Grid.Row="0" Grid.Column="2" Text="API Key：" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="16,0,0,6"/>
-                                <TextBlock Grid.Row="0" Grid.Column="3" FontSize="12" VerticalAlignment="Center" Margin="0,0,0,6">
+                                <TextBlock Grid.Row="0" Grid.Column="2" Text="API Key：" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="16,0,0,6"/>
+                                <TextBlock Grid.Row="0" Grid.Column="3" FontSize="{StaticResource FontSizeCaption}" VerticalAlignment="Center" Margin="0,0,0,6">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
                                             <Setter Property="Text" Value="未配置"/>
                                             <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
                                             <Style.Triggers>
-                                                <DataTrigger Binding="{Binding HasSavedApiKey}" Value="True">
+                                                <DataTrigger Binding="{Binding ActiveBackendApiKeyConfigured}" Value="True">
                                                     <Setter Property="Text" Value="已配置"/>
                                                     <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
                                                 </DataTrigger>
@@ -275,16 +286,16 @@
                                     </TextBlock.Style>
                                 </TextBlock>
                                 <!-- LLM 提供商 -->
-                                <TextBlock Grid.Row="1" Grid.Column="0" Text="LLM 提供商：" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding ActiveBackendLlmProvider, FallbackValue='—'}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="LLM 提供商：" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding ActiveBackendLlmProvider, FallbackValue='—'}" FontSize="{StaticResource FontSizeCaption}" FontWeight="SemiBold" VerticalAlignment="Center"/>
                                 <!-- LLM 模型 -->
-                                <TextBlock Grid.Row="1" Grid.Column="2" Text="LLM 模型：" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="16,0,0,0"/>
-                                <TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding ActiveBackendLlmModel, FallbackValue='—'}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Row="1" Grid.Column="2" Text="LLM 模型：" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                                <TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding ActiveBackendLlmModel, FallbackValue='—'}" FontSize="{StaticResource FontSizeCaption}" FontWeight="SemiBold" VerticalAlignment="Center"/>
                             </Grid>
 
                             <!-- FC-04：完整生效配置清单 -->
                             <TextBlock Text="生效明细（与后端运行时一致；标注实时/重启语义）"
-                                       FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,12,0,6"/>
+                                       FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,12,0,6"/>
                             <ItemsControl ItemsSource="{Binding EffectiveConfigItems}" MaxHeight="220">
                                 <ItemsControl.Template>
                                     <ControlTemplate TargetType="ItemsControl">
@@ -302,10 +313,10 @@
                                                 <ColumnDefinition Width="*"/>
                                                 <ColumnDefinition Width="120"/>
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="{Binding Category}" FontSize="11" Foreground="{StaticResource TextTertiaryBrush}"/>
-                                            <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
-                                            <TextBlock Grid.Column="2" Text="{Binding Value}" FontSize="11" FontWeight="SemiBold" TextWrapping="Wrap"/>
-                                            <TextBlock Grid.Column="3" Text="{Binding EffectHint}" FontSize="10" Foreground="{StaticResource TextTertiaryBrush}" HorizontalAlignment="Right"/>
+                                            <TextBlock Grid.Column="0" Text="{Binding Category}" FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextTertiaryBrush}"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding Value}" FontSize="{StaticResource FontSizeSmall}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                            <TextBlock Grid.Column="3" Text="{Binding EffectHint}" FontSize="{StaticResource FontSizeMicro}" Foreground="{DynamicResource TextTertiaryBrush}" HorizontalAlignment="Right"/>
                                         </Grid>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
@@ -316,535 +327,523 @@
                     <!-- =========================================================
                          面板 1: AI 模型与对话
                          ========================================================= -->
-                    <StackPanel Visibility="{Binding IsAiModelsSelected, Converter={StaticResource BoolToVis}}"
-                                Margin="0,0,0,0">
-                        <!-- 模块标题 -->
-                        <StackPanel Margin="0,0,0,14">
-                            <StackPanel Orientation="Horizontal">
-                                <Path Data="{StaticResource IconAi}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                <TextBlock Text="AI 模型与对话配置" FontSize="18" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <StackPanel Visibility="{Binding IsAiModelsSelected, Converter={StaticResource BoolToVis}, FallbackValue=True}">
+
+                    <TextBlock Text="模型配置"
+                               FontSize="{StaticResource FontSizeTitle}" FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               Margin="0,0,0,4"/>
+                    <TextBlock Text="只配三样：对话模型（本地或云端）、知识库嵌入。其它都收在「高级」。"
+                               FontSize="{StaticResource FontSizeSmall}"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="0,0,0,16"/>
+
+                    <!-- ========== 1. 对话模型 ========== -->
+                    <Border Background="{DynamicResource CardBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="{StaticResource CornerMd}" Padding="16,14" Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock Text="① 对话模型" FontWeight="SemiBold" FontSize="{StaticResource FontSizeBody}"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,8"/>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <RadioButton Content="本地（Ollama / LM Studio）"
+                                             IsChecked="{Binding UseLocalChat, Mode=TwoWay}"
+                                             GroupName="ChatMode" Margin="0,0,16,0"/>
+                                <RadioButton Content="云端 API（OpenAI 兼容）"
+                                             IsChecked="{Binding UseCloudChat, Mode=TwoWay}"
+                                             GroupName="ChatMode"/>
                             </StackPanel>
-                            <TextBlock Text="支持开箱即用的本地 LM Studio / Ollama 感知绑定，以及 DeepSeek / 阿里通义 / 智谱等主流云端服务商。"
-                                       FontSize="12" Foreground="{StaticResource TextTertiaryBrush}" Margin="0,4,0,0"/>
-                            <!-- 批次 2：分区生效标签 -->
-                            <Border Background="{DynamicResource SuccessLightBrush}" CornerRadius="4" Padding="6,3" Margin="0,6,0,0" HorizontalAlignment="Left">
-                                <StackPanel Orientation="Horizontal">
-                                    <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource SuccessBrush}" Margin="0,0,6,0"/>
-                                    <TextBlock Text="模型/Key 参数保存后立即生效" FontSize="11" Foreground="{StaticResource SuccessBrush}"/>
-                                </StackPanel>
-                            </Border>
-                        </StackPanel>
 
-                        <!-- 本地 AI 环境智能感知卡片 -->
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
-                            <StackPanel>
-                                <DockPanel LastChildFill="False" Margin="0,0,0,10">
-                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                        <Path Data="{StaticResource IconStar}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                        <TextBlock Text="本地 AI 环境智能感知" FontWeight="SemiBold" FontSize="13"/>
-                                        <TextBlock Text=" (开箱即用，零配置绑定)" FontSize="11" Foreground="{StaticResource TextTertiaryBrush}" VerticalAlignment="Center" Margin="4,0,0,0"/>
-                                    </StackPanel>
-                                    <Button DockPanel.Dock="Right"
-                                            Command="{Binding DetectLocalAiCommand}"
-                                            IsEnabled="{Binding IsDetectingLocalAi, Converter={StaticResource BoolInvertConverter}}"
-                                            Style="{StaticResource TextButtonStyle}" FontSize="11" Padding="6,2">
-                                        <StackPanel Orientation="Horizontal">
-                                            <Path Data="{StaticResource IconRefresh}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                            <TextBlock Text="重新探测"/>
-                                        </StackPanel>
-                                    </Button>
-                                </DockPanel>
-
-                                <!-- 正在探测 -->
-                                <TextBlock Text="正在扫描本地 Ollama / LM Studio 及模型资产..."
-                                           Visibility="{Binding IsDetectingLocalAi, Converter={StaticResource BoolToVis}}"
-                                           FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
-
-                                <!-- 探测结果与快捷应用按钮 -->
-                                <StackPanel Visibility="{Binding HasLocalAiDetected, Converter={StaticResource BoolToVis}}">
-                                    <!-- 资产概览条 -->
-                                    <WrapPanel Margin="0,0,0,10">
-                                        <!-- LM Studio 状态 -->
-                                        <Border Background="{StaticResource SurfaceBrush}" CornerRadius="{StaticResource CornerMd}" Padding="8,4" Margin="0,0,8,4">
-                                            <StackPanel Orientation="Horizontal">
-                                                <Ellipse Width="8" Height="8" Margin="0,0,6,0" VerticalAlignment="Center">
-                                                    <Ellipse.Style>
-                                                        <Style TargetType="Ellipse">
-                                                            <Setter Property="Fill" Value="{StaticResource TextTertiaryBrush}"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsLmStudioRunning}" Value="True">
-                                                                    <Setter Property="Fill" Value="{StaticResource SuccessBrush}"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Ellipse.Style>
-                                                </Ellipse>
-                                                <TextBlock Text="LM Studio (1234): " FontSize="11" FontWeight="SemiBold"/>
-                                                <TextBlock Text="{Binding LmStudioStatusText}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
-                                            </StackPanel>
-                                        </Border>
-
-                                        <!-- Ollama 状态 -->
-                                        <Border Background="{StaticResource SurfaceBrush}" CornerRadius="{StaticResource CornerMd}" Padding="8,4" Margin="0,0,8,4">
-                                            <StackPanel Orientation="Horizontal">
-                                                <Ellipse Width="8" Height="8" Margin="0,0,6,0" VerticalAlignment="Center">
-                                                    <Ellipse.Style>
-                                                        <Style TargetType="Ellipse">
-                                                            <Setter Property="Fill" Value="{StaticResource TextTertiaryBrush}"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsOllamaRunning}" Value="True">
-                                                                    <Setter Property="Fill" Value="{StaticResource SuccessBrush}"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Ellipse.Style>
-                                                </Ellipse>
-                                                <TextBlock Text="Ollama (11434): " FontSize="11" FontWeight="SemiBold"/>
-                                                <TextBlock Text="{Binding OllamaStatusText}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
-                                            </StackPanel>
-                                        </Border>
-
-                                        <!-- 本地 GGUF 资产 -->
-                                        <Border Background="{StaticResource SurfaceBrush}" CornerRadius="{StaticResource CornerMd}" Padding="8,4" Margin="0,0,8,4"
-                                                Visibility="{Binding LocalGgufCountText, Converter={StaticResource NullToVis}}">
-                                            <TextBlock Text="{Binding LocalGgufCountText}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
-                                        </Border>
-                                    </WrapPanel>
-
-                                    <!-- 快捷应用方案按钮条 -->
-                                    <WrapPanel>
-                                        <Button Command="{Binding ApplyLmStudioPresetCommand}"
-                                                IsEnabled="{Binding IsLmStudioRunning}"
-                                                Style="{StaticResource PrimaryButtonStyle}"
-                                                Padding="12,6" Margin="0,0,8,4" FontSize="11"
-                                                ToolTip="自动绑定 LM Studio 地址与模型，显卡全速推理，向量走轻量 CPU 引擎">
-                                            <StackPanel Orientation="Horizontal">
-                                                <Path Data="{StaticResource IconBolt}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource PrimaryBrush}" Margin="0,0,6,0"/>
-                                                <TextBlock Text="一键套用 LM Studio 极速本地方案"/>
-                                            </StackPanel>
-                                        </Button>
-                                        <Button Command="{Binding ApplyOllamaPresetCommand}"
-                                                IsEnabled="{Binding IsOllamaRunning}"
-                                                Style="{StaticResource SecondaryButtonStyle}"
-                                                Padding="12,6" Margin="0,0,8,4" FontSize="11"
-                                                ToolTip="自动绑定 Ollama 服务与已下载模型，内置 CUDA 引擎加速">
-                                            <StackPanel Orientation="Horizontal">
-                                                <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource SuccessBrush}" Margin="0,0,6,0"/>
-                                                <TextBlock Text="一键套用 Ollama 一体化本地方案"/>
-                                            </StackPanel>
-                                        </Button>
-                                    </WrapPanel>
-                                </StackPanel>
-
-                                <!-- 未发现任何本地服务时的提示 -->
-                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
-                                    <Path Data="{StaticResource IconLightbulb}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                    <TextBlock Text="未检测到运行中的 LM Studio 或 Ollama 服务。若需使用本地大模型，可先启动它们并开启 Local Server 后点击「重新探测」。"
-                                               Visibility="{Binding HasLocalAiDetected, Converter={StaticResource InvertBoolVis}}"
-                                               FontSize="11" Foreground="{StaticResource TextTertiaryBrush}" TextWrapping="Wrap"/>
-                                </StackPanel>
+                            <!-- 本地 -->
+                            <StackPanel Visibility="{Binding UseLocalChat, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="本地模型" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <ComboBox ItemsSource="{Binding ChatModelOptions}"
+                                          SelectedItem="{Binding CustomChat, Mode=TwoWay}"
+                                          DisplayMemberPath="Display"
+                                          MinWidth="360" HorizontalAlignment="Left"
+                                          Margin="0,0,0,6"/>
+                                <TextBlock Text="{Binding OllamaStatusText}"
+                                           Style="{StaticResource SmallText}"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"/>
                             </StackPanel>
-                        </Border>
 
-                        <!-- 服务商配置：左列表 + 右详情 -->
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
-                            <StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
-                                    <Path Data="{StaticResource IconLock}" Style="{StaticResource IconSmStyle}"/>
-                                    <TextBlock Text="服务商与 API 密钥配置" Style="{StaticResource SubtitleText}"/>
-                                </StackPanel>
+                            <!-- 云端 -->
+                            <StackPanel Visibility="{Binding UseCloudChat, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="API 协议" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <ComboBox MinWidth="360" HorizontalAlignment="Left"
+                                          SelectedValue="{Binding CloudProtocol, Mode=TwoWay}"
+                                          SelectedValuePath="Tag"
+                                          Margin="0,0,0,8"
+                                          ToolTip="按服务商选择协议；自定义网关选 OpenAI 兼容">
+                                    <ComboBoxItem Content="OpenAI" Tag="openai"/>
+                                    <ComboBoxItem Content="OpenAI 兼容(自定义)" Tag="openai-compatible"/>
+                                    <ComboBoxItem Content="Anthropic(Claude)" Tag="anthropic"/>
+                                    <ComboBoxItem Content="Google(Gemini)" Tag="gemini"/>
+                                </ComboBox>
+                                <TextBlock Text="API 地址" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <TextBox Text="{Binding LlmBaseUrl, UpdateSourceTrigger=PropertyChanged}"
+                                         Padding="8,6" Margin="0,0,0,8"
+                                         ToolTip="如 https://api.openai.com/v1 或 https://api.deepseek.com/v1"/>
+                                <TextBlock Text="模型名" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <TextBox Text="{Binding LlmModel, UpdateSourceTrigger=PropertyChanged}"
+                                         Padding="8,6" Margin="0,0,0,8"
+                                         ToolTip="如 gpt-4o-mini / deepseek-chat"/>
+                                <TextBlock Text="API Key" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
+                                <TextBox Text="{Binding LlmApiKey, UpdateSourceTrigger=PropertyChanged}"
+                                         Padding="8,6" Margin="0,0,0,4"/>
 
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="260"/>
-                                        <ColumnDefinition Width="20"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-
-                                    <!-- 左列：服务商列表（内置预设 + 自定义服务商） -->
-                                    <Border Grid.Column="0"
-                                            Background="{StaticResource SurfaceBrush}"
-                                            BorderBrush="{StaticResource BorderBrush}"
-                                            BorderThickness="1"
-                                            CornerRadius="8"
-                                            Padding="10">
-                                        <StackPanel>
-                                            <TextBlock Text="服务商列表" Style="{StaticResource CaptionText}" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                                            <ListBox ItemsSource="{Binding ProviderOptions}"
-                                                     SelectedItem="{Binding SelectedProviderOption}"
-                                                     MaxHeight="220"
-                                                     ScrollViewer.VerticalScrollBarVisibility="Auto">
-                                                <ListBox.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <StackPanel Margin="0,3">
-                                                            <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
-                                                            <TextBlock Text="{Binding Description}" FontSize="11"
-                                                                       Foreground="{StaticResource TextTertiaryBrush}"/>
-                                                        </StackPanel>
-                                                    </DataTemplate>
-                                                </ListBox.ItemTemplate>
-                                            </ListBox>
-
-                                            <WrapPanel Margin="0,10,0,0">
-                                                <Button Command="{Binding SetDefaultProviderCommand}"
-                                                        IsEnabled="{Binding HasSelectedProfile}"
-                                                        Style="{StaticResource SecondaryButtonStyle}"
-                                                        Padding="10,4" Margin="0,0,6,4" FontSize="11"
-                                                        ToolTip="把选中的自定义服务商标记为默认（仅设置页高亮；对话页「默认」项用设置页当前模型配置，如需对话页默认使用该服务商请点「应用该服务商」）">
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <Path Data="{StaticResource IconStar}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                                        <TextBlock Text="设为默认"/>
-                                                    </StackPanel>
-                                                </Button>
-                                                <Button Command="{Binding ToggleProviderEnabledCommand}"
-                                                        IsEnabled="{Binding HasSelectedProfile}"
-                                                        Padding="10,4" Margin="0,0,6,4" FontSize="11"
-                                                        ToolTip="启用/停用该服务商（停用后不出现在对话页点选列表，配置保留）">
-                                                    <Button.Style>
-                                                        <Style TargetType="Button" BasedOn="{StaticResource SecondaryButtonStyle}">
-                                                            <Setter Property="Content" Value="停用"/>
-                                                            <Setter Property="Padding" Value="10,4"/>
-                                                            <Setter Property="Margin" Value="0,0,6,4"/>
-                                                            <Setter Property="FontSize" Value="11"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsSelectedProviderEnabled}" Value="False">
-                                                                    <Setter Property="Content" Value="启用"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Button.Style>
-                                                </Button>
-                                                <Button Command="{Binding DeleteProfileCommand}"
-                                                        IsEnabled="{Binding HasSelectedProfile}"
-                                                        Style="{StaticResource TextButtonStyle}"
-                                                        Padding="8,4" Margin="0,0,0,4" FontSize="11"
-                                                        ToolTip="删除选中的自定义服务商（确认后不可恢复）">
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <Path Data="{StaticResource IconTrash}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource DangerBrush}" Margin="0,0,6,0"/>
-                                                        <TextBlock Text="删除"/>
-                                                    </StackPanel>
-                                                </Button>
-                                            </WrapPanel>
-                                        </StackPanel>
-                                    </Border>
-
-                                    <!-- 右列：详情编辑 -->
-                                    <StackPanel Grid.Column="2">
-                                        <DockPanel Margin="0,0,0,8">
-                                            <Button DockPanel.Dock="Right"
-                                                    Command="{Binding OpenPresetConsoleUrlCommand}"
-                                                    Visibility="{Binding HasPresetConsoleUrl, Converter={StaticResource BoolToVis}}"
-                                                    Style="{StaticResource TextButtonStyle}"
-                                                    FontSize="11"
-                                                    Foreground="{StaticResource PrimaryBrush}"
-                                                    HorizontalAlignment="Right"
-                                                    ToolTip="在默认浏览器中打开该服务商的 API 密钥管理控制台">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <Path Data="{StaticResource IconLink}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                                    <TextBlock Text="前往申请/管理此服务商 API Key"/>
-                                                </StackPanel>
-                                            </Button>
-                                            <StackPanel>
-                                                <TextBlock Text="服务商名称" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
-                                                <TextBox Text="{Binding ProfileNameInput, UpdateSourceTrigger=PropertyChanged}"
-                                                         ToolTip="服务商显示名（如「DeepSeek 官方」）；选中内置预设时自动填入，可修改；留空时「添加为服务商」会按预设名/自定义名兜底"/>
-                                            </StackPanel>
-                                        </DockPanel>
-
-                                <Grid Margin="0,0,0,12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="20"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-
-                                    <!-- 接口类型 -->
-                                    <StackPanel Grid.Column="0">
-                                        <TextBlock Text="接口类型" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
-                                        <ComboBox SelectedValue="{Binding LlmProvider}"
-                                                  SelectedValuePath="Content"
-                                                  ToolTip="选预设后会自动填好。使用 Anthropic Claude / Google Gemini 时需手动选择">
-                                            <ComboBoxItem Content="none" IsSelected="True"/>
-                                            <ComboBoxItem Content="openai"/>
-                                            <ComboBoxItem Content="anthropic"/>
-                                            <ComboBoxItem Content="gemini"/>
-                                            <ComboBoxItem Content="ollama"/>
-                                        </ComboBox>
-                                    </StackPanel>
-
-                                    <!-- API 基础地址 -->
-                                    <StackPanel Grid.Column="2">
-                                        <TextBlock Text="API 基础地址（Base URL）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
-                                        <TextBox Text="{Binding LlmBaseUrl, UpdateSourceTrigger=PropertyChanged}"
-                                                 ToolTip="留空用各提供商官方地址。OpenAI 兼容示例 https://api.deepseek.com/v1；Ollama 默认 http://localhost:11434"/>
-                                    </StackPanel>
-                                </Grid>
-
-                                <!-- API Key（批次 2：含状态徽章） -->
-                                <DockPanel Margin="0,0,0,6">
-                                    <TextBlock Text="API Key 密钥" Style="{StaticResource CaptionText}" DockPanel.Dock="Left"/>
-                                    <!-- 状态徽章 -->
-                                    <TextBlock DockPanel.Dock="Right" FontSize="11" VerticalAlignment="Center">
-                                        <TextBlock.Style>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="Text" Value="未配置"/>
-                                                <Setter Property="Foreground" Value="{StaticResource TextTertiaryBrush}"/>
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding HasSavedApiKey}" Value="True">
-                                                        <Setter Property="Text" Value="已配置"/>
-                                                        <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </TextBlock.Style>
-                                    </TextBlock>
-                                </DockPanel>
-                                <Grid Margin="0,0,0,12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <!-- API Key 用密钥输入控件（默认掩码 + 眼睛显隐）：
-                                         继承 TextBox 保留双向绑定链路，落盘仍走 DPAPI 加密 -->
-                                    <controls:SecretInputControl Grid.Column="0"
-                                             Text="{Binding LlmApiKey, UpdateSourceTrigger=PropertyChanged}"
-                                             VerticalContentAlignment="Center"
-                                             ToolTip="对应提供商的 API Key；Ollama / 本地 LM Studio 无需填写。保存时加密存储；留空 = 保留已配置的 Key，点击「清除」可删除"/>
-                                    <Button Grid.Column="1"
-                                            Content="清除"
-                                            Command="{Binding ClearApiKeyCommand}"
-                                            IsEnabled="{Binding HasSavedApiKey}"
-                                            Style="{StaticResource SecondaryButtonStyle}"
-                                            Margin="8,0,0,0"
-                                            Padding="12,4"
-                                            ToolTip="清除已配置的 API Key（保存后生效：本地与后端均删除）。仅留空输入框保存不会清除，会保留原 Key"/>
-                                    <Button Grid.Column="2"
-                                            Content="测试连接"
-                                            Command="{Binding TestConnectionCommand}"
-                                            IsEnabled="{Binding IsTestingConnection, Converter={StaticResource BoolInvertConverter}}"
-                                            Style="{StaticResource SecondaryButtonStyle}"
-                                            Margin="8,0,0,0"
-                                            Padding="12,4"
-                                            ToolTip="用当前输入值测试（无需先保存）：先测后端可达，再向所选提供商发一条最小消息验证 Key 与地址"/>
-                                </Grid>
-
-                                <!-- 批次 2：API Key 清除确认对话框 -->
-                                <Border Background="{DynamicResource WarningLightBrush}" BorderBrush="{DynamicResource WarningBrush}"
-                                        BorderThickness="1" CornerRadius="8" Padding="14,10" Margin="0,0,0,12"
-                                        Visibility="{Binding ShowApiKeyClearConfirm, Converter={StaticResource BoolToVis}}">
-                                    <DockPanel LastChildFill="True">
-                                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                                            <Button Content="确认清除"
-                                                    Command="{Binding ConfirmClearApiKeyCommand}"
-                                                    Style="{StaticResource DangerButtonStyle}"
-                                                    Padding="12,4" Margin="8,0,0,0"/>
-                                            <Button Content="取消"
-                                                    Command="{Binding CancelClearApiKeyCommand}"
-                                                    Style="{StaticResource SecondaryButtonStyle}"
-                                                    Padding="12,4" Margin="8,0,0,0"/>
-                                        </StackPanel>
-                                        <TextBlock Text="清除 API Key 后，保存时会同时删除本地和后端的 Key。" FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center"/>
-                                    </DockPanel>
-                                </Border>
-
-                                <!-- GitHub Token（可选）：联网搜索 GitHub 通道按用户认证 -->
-                                <TextBlock Text="GitHub Token（可选，联网搜索 GitHub 仓库/源码时用）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
-                                <Grid Margin="0,0,0,12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <controls:SecretInputControl Grid.Column="0"
-                                             Text="{Binding GithubToken, UpdateSourceTrigger=PropertyChanged}"
-                                             VerticalContentAlignment="Center"
-                                             ToolTip="GitHub 个人访问令牌（PAT，仅需 public_repo 权限）。每个用户填自己的 Token：随对话请求携带，仅用于本机联网搜索的 GitHub 通道，不会写入后端全局配置或共享给其他用户。留空 = 保留已配置值，点「清除」删除；未配置时用 GitHub 公开额度（10 次/分钟）"/>
-                                    <Button Grid.Column="1"
-                                            Content="清除"
-                                            Command="{Binding ClearGithubTokenCommand}"
-                                            IsEnabled="{Binding HasSavedGithubToken}"
-                                            Style="{StaticResource SecondaryButtonStyle}"
-                                            Margin="8,0,0,0"
-                                            Padding="12,4"
-                                            ToolTip="清除已配置的 GitHub Token（保存后生效）。仅留空输入框保存不会清除，会保留原值"/>
-                                </Grid>
-
-                                <!-- 模型名（默认模型）与模型列表管理 -->
-                                <TextBlock Text="默认模型（下拉中选中的模型 = 该服务商的默认模型）" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <ComboBox Grid.Column="0"
-                                              IsEditable="True"
-                                              Text="{Binding LlmModel, UpdateSourceTrigger=PropertyChanged}"
-                                              ItemsSource="{Binding LlmModels}"
-                                              DisplayMemberPath="Name"
-                                              SelectedItem="{Binding SelectedModelCandidate}"
-                                              ToolTip="当前选中的模型 = 该服务商的默认模型；可手动输入任意模型名"/>
-                                    <Button Grid.Column="1"
-                                            Content="获取模型列表"
-                                            Command="{Binding RefreshLlmModelsCommand}"
-                                            IsEnabled="{Binding IsFetchingModels, Converter={StaticResource BoolInvertConverter}}"
-                                            Style="{StaticResource SecondaryButtonStyle}"
-                                            Margin="8,0,0,0"
-                                            Padding="12,4"
-                                            VerticalAlignment="Top"
-                                            ToolTip="用当前输入的提供商/Key/地址拉取可用模型（无需先保存）：Ollama 列出本地已安装模型；云端调各家模型列表接口"/>
-                                </Grid>
-
-                                <!-- 模型列表：获取后自动全量导入，展示模型名与上下文长度 -->
-                                <TextBlock Text="该服务商的模型列表（获取后自动导入全部模型；保存服务商后，对话页可直接点选这些模型）"
-                                           Style="{StaticResource CaptionText}" FontWeight="SemiBold" Margin="0,10,0,6"/>
-                                <Border Background="{StaticResource SurfaceBrush}"
-                                        BorderBrush="{StaticResource BorderBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="{StaticResource CornerMd}"
-                                        Padding="8"
-                                        Margin="0,0,0,6">
+                                <Border Background="{DynamicResource SurfaceBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                        CornerRadius="{StaticResource CornerSm}" Padding="12,10" Margin="0,10,0,0">
                                     <StackPanel>
-                                        <!-- 已导入模型列表（模型名 + 上下文长度 + 移除） -->
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                            <Path Data="{StaticResource IconList}" Style="{StaticResource IconSmStyle}" Margin="0,0,7,0"/>
+                                            <TextBlock Text="第三方模型列表" Style="{StaticResource SubtitleText}"/>
+                                        </StackPanel>
+                                        <TextBlock Text="获取后会保留在本地；当前选中的模型就是默认模型。可单独测试，也可串行测试全部模型。"
+                                                   Style="{StaticResource SmallText}" Foreground="{DynamicResource TextSecondaryBrush}"
+                                                   TextWrapping="Wrap" Margin="0,0,0,10"/>
+
+                                        <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <ComboBox Grid.Column="0" IsEditable="True"
+                                                      ItemsSource="{Binding LlmModels}"
+                                                      Text="{Binding LlmModel, UpdateSourceTrigger=PropertyChanged}"
+                                                      SelectedItem="{Binding SelectedModelCandidate, Mode=TwoWay}"
+                                                      DisplayMemberPath="Name"
+                                                      MinWidth="260"
+                                                      ToolTip="选择模型即设为默认，也可以手动输入模型名"/>
+                                            <Button Grid.Column="1" Content="获取模型列表"
+                                                    Command="{Binding RefreshLlmModelsCommand}"
+                                                    IsEnabled="{Binding IsFetchingModels, Converter={StaticResource BoolInvertConverter}}"
+                                                    Style="{StaticResource SecondaryButtonStyle}"
+                                                    Padding="12,5" Margin="8,0,0,0"/>
+                                            <Button Grid.Column="2" Content="测试全部"
+                                                    Command="{Binding TestAllModelsCommand}"
+                                                    IsEnabled="{Binding IsTestingModels, Converter={StaticResource BoolInvertConverter}}"
+                                                    Style="{StaticResource SecondaryButtonStyle}"
+                                                    Padding="12,5" Margin="8,0,0,0"/>
+                                        </Grid>
+
                                         <ItemsControl ItemsSource="{Binding LlmModels}">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
-                                                    <DockPanel Margin="0,2">
-                                                        <Button DockPanel.Dock="Right"
-                                                                Command="{Binding DataContext.RemoveModelFromProviderCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                                CommandParameter="{Binding}"
-                                                                Style="{StaticResource TextButtonStyle}"
-                                                                Padding="6,2" FontSize="11"
-                                                                ToolTip="从该服务商模型列表中移除">
-                                                            <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}"/>
-                                                        </Button>
-                                                        <TextBlock FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
-                                                            <Run Text="{Binding Name, Mode=OneWay}"/>
-                                                            <Run Text="  " Foreground="{StaticResource TextTertiaryBrush}" FontSize="11"/>
-                                                            <Run Text="{Binding ContextWindowDisplay, Mode=OneWay}" Foreground="{StaticResource TextTertiaryBrush}" FontSize="11"
-                                                                  ToolTip="上下文窗口（token）"/>
-                                                        </TextBlock>
-                                                    </DockPanel>
+                                                    <Border Background="{DynamicResource CardBrush}"
+                                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                                            CornerRadius="{StaticResource CornerSm}" Padding="9,7" Margin="0,0,0,5">
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <StackPanel Grid.Column="0" MinWidth="0">
+                                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                                                <TextBlock Text="{Binding FullSpecDisplay}" Style="{StaticResource SmallText}"
+                                                                           Foreground="{DynamicResource TextTertiaryBrush}" TextTrimming="CharacterEllipsis"/>
+                                                                <TextBlock Text="{Binding TestStatus}" Style="{StaticResource SmallText}"
+                                                                           Foreground="{DynamicResource TextSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
+                                                            </StackPanel>
+                                                            <Button Grid.Column="1" Content="设为默认"
+                                                                    Command="{Binding DataContext.SetDefaultModelCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                    CommandParameter="{Binding}" Style="{StaticResource TextButtonStyle}"
+                                                                    Padding="8,4" Margin="8,0,0,0"/>
+                                                            <Button Grid.Column="2" Content="测试"
+                                                                    Command="{Binding DataContext.TestModelCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                    CommandParameter="{Binding}" IsEnabled="{Binding DataContext.IsTestingModels, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolInvertConverter}}"
+                                                                    Style="{StaticResource SecondaryButtonStyle}" Padding="8,4" Margin="4,0,0,0"/>
+                                                            <Button Grid.Column="3" Content="移除"
+                                                                    Command="{Binding DataContext.RemoveModelFromProviderCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                    CommandParameter="{Binding}" Style="{StaticResource TextButtonStyle}"
+                                                                    Padding="8,4" Margin="4,0,0,0"/>
+                                                        </Grid>
+                                                    </Border>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
                                         </ItemsControl>
 
-                                        <!-- 空态提示 -->
-                                        <TextBlock Text="暂无模型。点「获取模型列表」自动导入该服务商全部可用模型（含上下文长度等元数据）。"
+                                        <TextBlock Text="暂无模型。点击“获取模型列表”从当前第三方 API 导入，或在上方手动输入模型名。"
                                                    Visibility="{Binding HasModels, Converter={StaticResource InvertBoolVis}}"
-                                                   FontSize="11" Foreground="{StaticResource TextTertiaryBrush}"
-                                                   TextWrapping="Wrap" Margin="0,2,0,0"/>
-                                    </StackPanel>
-                                </Border>
-                                <TextBlock Text="对话页模型下拉可直接点选该服务商全部模型；「添加为服务商」后立即生效。"
-                                           Style="{StaticResource SmallText}"
-                                           Foreground="{StaticResource TextTertiaryBrush}" Margin="0,0,0,4"/>
+                                                   Style="{StaticResource SmallText}" Foreground="{DynamicResource TextTertiaryBrush}"
+                                                   TextWrapping="Wrap" Margin="0,2,0,8"/>
 
-                                <!-- 操作按钮：添加为服务商 / 应用 / 一键体检 -->
-                                <WrapPanel Margin="0,12,0,4">
-                                    <Button Command="{Binding SaveProfileCommand}"
-                                            Style="{StaticResource PrimaryButtonStyle}"
-                                            Padding="12,5" Margin="0,0,8,4" FontSize="11"
-                                            ToolTip="把右侧填写的名称/提供商/地址/Key/模型列表存为一个自定义服务商（Key 加密保存），添加后即可在左侧列表与对话页选用">
-                                        <StackPanel Orientation="Horizontal">
-                                            <Path Data="{StaticResource IconPlus}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                            <TextBlock Text="添加为服务商"/>
-                                        </StackPanel>
-                                    </Button>
-                                    <Button Content="应用该服务商"
-                                            Command="{Binding ApplyProfileCommand}"
-                                            IsEnabled="{Binding CanApplyProfile}"
-                                            Style="{StaticResource SecondaryButtonStyle}"
-                                            Padding="12,5" Margin="0,0,8,4" FontSize="11"
-                                            ToolTip="把左侧选中的档案回填到右侧表单（便于查看/调整参数），不会保存或推送到后端。要把右侧配置存为新档案请点「+ 添加为服务商」；要把右侧配置推送到后端请点顶部「保存」"/>
-                                    <Button Command="{Binding CheckAllProfilesCommand}"
-                                            IsEnabled="{Binding IsCheckingProfiles, Converter={StaticResource BoolInvertConverter}}"
-                                            Style="{StaticResource SecondaryButtonStyle}"
-                                            Padding="12,5" Margin="0,0,0,4" FontSize="11"
-                                            ToolTip="对全部已存服务商逐个测试连通性（协议/地址/Key/模型），结果列在下方">
-                                        <StackPanel Orientation="Horizontal">
-                                            <Path Data="{StaticResource IconSearch}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                            <TextBlock Text="一键体检全部服务商"/>
-                                        </StackPanel>
-                                    </Button>
-                                </WrapPanel>
-
-                                        <!-- 档案一键体检结果列表 -->
-                                        <Border Background="{StaticResource SurfaceBrush}"
-                                                BorderBrush="{StaticResource BorderBrush}"
-                                                BorderThickness="1"
-                                                CornerRadius="{StaticResource CornerMd}"
-                                                Padding="10"
-                                                Margin="0,8,0,0"
-                                                Visibility="{Binding HasProfileCheckResults, Converter={StaticResource BoolToVis}}">
+                                        <!-- 持久化服务商档案：选中只查看，点击“应用”才切换当前配置 -->
+                                        <Border Background="{DynamicResource CardBrush}"
+                                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                                CornerRadius="{StaticResource CornerSm}" Padding="12,10" Margin="0,12,0,0">
                                             <StackPanel>
-                                                <StackPanel Orientation="Horizontal">
-                                                    <Path Data="{StaticResource IconList}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                                    <TextBlock Text="档案体检结果" Style="{StaticResource CaptionText}" FontWeight="SemiBold"/>
-                                                </StackPanel>
-                                                <ItemsControl ItemsSource="{Binding ProfileCheckResults}">
-                                                    <ItemsControl.ItemTemplate>
+                                                <Grid Margin="0,0,0,4">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <Path Data="{StaticResource IconBook}" Style="{StaticResource IconSmStyle}" Margin="0,0,7,0"/>
+                                                            <TextBlock Text="服务商档案" Style="{StaticResource SubtitleText}"/>
+                                                        </StackPanel>
+                                                        <TextBlock Text="保存多个第三方 API 配置，后续可随时选择并切换。"
+                                                                   Style="{StaticResource SmallText}"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                   TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                                    </StackPanel>
+                                                    <Button Grid.Column="1" Content="一键测试全部档案"
+                                                            Command="{Binding CheckAllProfilesCommand}"
+                                                            IsEnabled="{Binding IsCheckingProfiles, Converter={StaticResource BoolInvertConverter}}"
+                                                            Style="{StaticResource SecondaryButtonStyle}"
+                                                            Padding="12,5" VerticalAlignment="Top"/>
+                                                </Grid>
+
+                                                <ListBox ItemsSource="{Binding SavedProfiles}"
+                                                         SelectedItem="{Binding SelectedProfile, Mode=TwoWay}"
+                                                         MaxHeight="220"
+                                                         Margin="0,8,0,8"
+                                                         Visibility="{Binding HasSavedProfiles, Converter={StaticResource BoolToVis}}">
+                                                    <ListBox.ItemTemplate>
                                                         <DataTemplate>
-                                                            <StackPanel Margin="0,3">
-                                                                <StackPanel Orientation="Horizontal">
-                                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Margin="0,0,8,0"/>
-                                                                    <TextBlock Text="{Binding StatusText}" FontSize="11" VerticalAlignment="Center">
-                                                                        <TextBlock.Style>
-                                                                            <Style TargetType="TextBlock">
-                                                                                <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
-                                                                                <Style.Triggers>
-                                                                                    <DataTrigger Binding="{Binding Ok}" Value="False">
-                                                                                        <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
-                                                                                    </DataTrigger>
-                                                                                </Style.Triggers>
-                                                                            </Style>
-                                                                        </TextBlock.Style>
+                                                            <Grid Margin="2,3">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                    <ColumnDefinition Width="Auto"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <StackPanel Grid.Column="0" MinWidth="0">
+                                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
+                                                                               TextTrimming="CharacterEllipsis"/>
+                                                                    <TextBlock Style="{StaticResource SmallText}"
+                                                                               Foreground="{DynamicResource TextTertiaryBrush}"
+                                                                               TextTrimming="CharacterEllipsis">
+                                                                        <Run Text="{Binding Provider}"/>
+                                                                        <Run Text=" · "/>
+                                                                        <Run Text="{Binding Models.Count, StringFormat={}{0} 个模型}"/>
+                                                                        <Run Text=" · "/>
+                                                                        <Run Text="{Binding Model, TargetNullValue=未设置默认模型}"/>
                                                                     </TextBlock>
+                                                                    <TextBlock Text="{Binding BaseUrl, TargetNullValue=使用服务商默认地址}"
+                                                                               Style="{StaticResource SmallText}"
+                                                                               Foreground="{DynamicResource TextTertiaryBrush}"
+                                                                               TextTrimming="CharacterEllipsis"/>
                                                                 </StackPanel>
-                                                                <TextBlock Text="{Binding ErrorDetail}" FontSize="11"
-                                                                           Foreground="{StaticResource TextTertiaryBrush}"
-                                                                           TextWrapping="Wrap"
-                                                                           Visibility="{Binding ErrorDetail, Converter={StaticResource NullToVis}}"/>
-                                                            </StackPanel>
+                                                                <Border Grid.Column="1" CornerRadius="{StaticResource CornerSm}"
+                                                                        Background="{DynamicResource SurfaceBrush}"
+                                                                        Padding="7,3" Margin="10,0,0,0"
+                                                                        VerticalAlignment="Center">
+                                                                    <StackPanel>
+                                                                        <TextBlock Text="已启用" Style="{StaticResource SmallText}"
+                                                                                   Foreground="{DynamicResource SuccessBrush}"
+                                                                                   Visibility="{Binding IsEnabled, Converter={StaticResource BoolToVis}}"/>
+                                                                        <TextBlock Text="已停用" Style="{StaticResource SmallText}"
+                                                                                   Foreground="{DynamicResource TextTertiaryBrush}"
+                                                                                   Visibility="{Binding IsEnabled, Converter={StaticResource InvertBoolVis}}"/>
+                                                                    </StackPanel>
+                                                                </Border>
+                                                            </Grid>
                                                         </DataTemplate>
-                                                    </ItemsControl.ItemTemplate>
-                                                </ItemsControl>
+                                                    </ListBox.ItemTemplate>
+                                                </ListBox>
+
+                                                <TextBlock Text="暂无服务商档案。填写上方 API 信息和档案名称后点击“保存服务商档案”。"
+                                                           Visibility="{Binding HasSavedProfiles, Converter={StaticResource InvertBoolVis}}"
+                                                           Style="{StaticResource SmallText}"
+                                                           Foreground="{DynamicResource TextTertiaryBrush}"
+                                                           TextWrapping="Wrap" Margin="0,4,0,8"/>
+
+                                                <Border Visibility="{Binding HasSelectedProfile, Converter={StaticResource BoolToVis}}"
+                                                        Background="{DynamicResource SurfaceBrush}"
+                                                        CornerRadius="{StaticResource CornerSm}"
+                                                        Padding="10,8">
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding SelectedProfile.Name}" FontWeight="SemiBold"/>
+                                                        <TextBlock Text="{Binding SelectedProfileSummary}"
+                                                                   Style="{StaticResource SmallText}"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                   TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                                            <TextBlock Text="状态：" Style="{StaticResource SmallText}"/>
+                                                            <TextBlock Text="已启用" Style="{StaticResource SmallText}"
+                                                                       Foreground="{DynamicResource SuccessBrush}"
+                                                                       Visibility="{Binding IsSelectedProviderEnabled, Converter={StaticResource BoolToVis}}"/>
+                                                            <TextBlock Text="已停用" Style="{StaticResource SmallText}"
+                                                                       Foreground="{DynamicResource TextTertiaryBrush}"
+                                                                       Visibility="{Binding IsSelectedProviderEnabled, Converter={StaticResource InvertBoolVis}}"/>
+                                                            <TextBlock Text=" · 默认档案：" Style="{StaticResource SmallText}"/>
+                                                            <TextBlock Text="是" Style="{StaticResource SmallText}"
+                                                                       Foreground="{DynamicResource AccentBrush}"
+                                                                       Visibility="{Binding IsSelectedProviderDefault, Converter={StaticResource BoolToVis}}"/>
+                                                            <TextBlock Text="否" Style="{StaticResource SmallText}"
+                                                                       Visibility="{Binding IsSelectedProviderDefault, Converter={StaticResource InvertBoolVis}}"/>
+                                                        </StackPanel>
+                                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                                            <Button Content="应用档案" Command="{Binding ApplyProfileCommand}"
+                                                                    IsEnabled="{Binding CanApplyProfile}"
+                                                                    Style="{StaticResource PrimaryButtonStyle}"
+                                                                    Padding="12,5" Margin="0,0,8,0"/>
+                                                            <Button Content="设为默认" Command="{Binding SetDefaultProviderCommand}"
+                                                                    Style="{StaticResource SecondaryButtonStyle}"
+                                                                    Padding="12,5" Margin="0,0,8,0"/>
+                                                            <Button Content="启用/停用" Command="{Binding ToggleProviderEnabledCommand}"
+                                                                    Style="{StaticResource SecondaryButtonStyle}"
+                                                                    Padding="12,5" Margin="0,0,8,0"/>
+                                                            <Button Content="删除档案" Command="{Binding DeleteProfileCommand}"
+                                                                    Style="{StaticResource TextButtonStyle}" Padding="10,5"/>
+                                                        </StackPanel>
+                                                    </StackPanel>
+                                                </Border>
                                             </StackPanel>
                                         </Border>
 
-                                        <TextBlock Text="暂无服务商。在右侧填好配置后点「添加为服务商」即可固化复用；对话页模型下拉可直接点选。"
-                                                   Visibility="{Binding HasSavedProfiles, Converter={StaticResource InvertBoolVis}}"
-                                                   FontSize="11" Foreground="{StaticResource TextTertiaryBrush}"
-                                                   TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                        <Grid Margin="0,8,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox Grid.Column="0" Text="{Binding ProfileNameInput, UpdateSourceTrigger=PropertyChanged}"
+                                                     ToolTip="填写服务商名称后保存，可持久化该服务商的模型列表与默认模型"/>
+                                            <Button Grid.Column="1" Content="保存服务商档案"
+                                                    Command="{Binding SaveProfileCommand}" Style="{StaticResource PrimaryButtonStyle}"
+                                                    Padding="12,5" Margin="8,0,0,0"/>
+                                        </Grid>
                                     </StackPanel>
-                                </Grid>
+                                </Border>
                             </StackPanel>
-                        </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- ========== 2. 嵌入模型 ========== -->
+                    <Border Background="{DynamicResource CardBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="{StaticResource CornerMd}" Padding="16,14" Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock Text="② 知识库嵌入模型" FontWeight="SemiBold" FontSize="{StaticResource FontSizeBody}"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,4"/>
+                            <TextBlock Text="把文档变成向量供检索；换模型后需重建索引。"
+                                       FontSize="{StaticResource FontSizeSmall}"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+                            <ComboBox ItemsSource="{Binding EmbedOptions}"
+                                      SelectedItem="{Binding CustomEmbed, Mode=TwoWay}"
+                                      DisplayMemberPath="Display"
+                                      MinWidth="360" HorizontalAlignment="Left"
+                                      Margin="0,0,0,8"/>
+                            <CheckBox IsChecked="{Binding CustomRerankEnabled}">
+                                <TextBlock Text="启用重排（检索更准，稍慢）" Style="{StaticResource BodyText}"/>
+                            </CheckBox>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- ========== 3. 保存 ========== -->
+                    <StackPanel Orientation="Horizontal">
+                        <Button Content="保存配置"
+                                Style="{StaticResource PrimaryButtonStyle}"
+                                Command="{Binding ApplyUnifiedConfigCommand}"
+                                Padding="22,10" Margin="0,0,10,0"/>
+                        <Button Content="测试连接"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Command="{Binding TestConnectionCommand}"
+                                Padding="16,10" Margin="0,0,10,0"/>
+                        <Button Content="恢复默认"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Command="{Binding ApplyPresetCommand}"
+                                CommandParameter="balanced"
+                                Padding="16,10"/>
                     </StackPanel>
 
-                    <!-- =========================================================
-                         面板 2: 知识库与检索
-                         ========================================================= -->
-                    <StackPanel Visibility="{Binding IsKnowledgeBaseSelected, Converter={StaticResource BoolToVis}}">
+                    <!-- 统一进度条：>5s 操作 -->
+                    <Border Background="{DynamicResource CardBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="{StaticResource CornerMd}" Padding="14,12" Margin="0,12,0,0"
+                            Visibility="{Binding IsProgressVisible}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <StackPanel Grid.Row="0" Grid.Column="0">
+                                <TextBlock Text="{Binding ProgressTitle}"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                <TextBlock Text="{Binding ProgressDetail}"
+                                           Style="{StaticResource SmallText}"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           TextWrapping="Wrap" Margin="0,2,0,0"/>
+                            </StackPanel>
+
+                            <TextBlock Grid.Row="0" Grid.Column="1"
+                                       Text="{Binding ProgressElapsedText}"
+                                       Style="{StaticResource SmallText}"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       VerticalAlignment="Top" Margin="12,0,0,0"/>
+
+                            <ProgressBar Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                                         Height="6" Margin="0,10,0,0"
+                                         Minimum="0" Maximum="100"
+                                         IsIndeterminate="{Binding IsProgressIndeterminate}"
+                                         Value="{Binding ProgressPercent, Mode=OneWay}"/>
+
+                            <Button Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                                    Content="取消"
+                                    Style="{StaticResource SecondaryButtonStyle}"
+                                    Command="{Binding CancelProgressCommand}"
+                                    HorizontalAlignment="Right"
+                                    Padding="14,6" Margin="0,10,0,0"/>
+                        </Grid>
+                    </Border>
+
+                    <TextBlock Text="{Binding ConfigLoadSummary, FallbackValue=''}"
+                               Style="{StaticResource SmallText}"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="0,10,0,0"/>
+
+                    <!-- 高级：折叠 -->
+                    <Border Background="{DynamicResource SurfaceBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="{StaticResource CornerMd}" Padding="12,10" Margin="0,16,0,0">
+                        <StackPanel>
+                            <CheckBox IsChecked="{Binding ShowAdvancedBundles, Mode=TwoWay}">
+                                <TextBlock Text="高级：整套档位安装 / 批量拉取模型"
+                                           Style="{StaticResource BodyText}"/>
+                            </CheckBox>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 高级模式内容：默认收起，展开后提供本地运行时与整套模型档位。 -->
+                    <Border Background="{DynamicResource CardBrush}"
+                            BorderBrush="{DynamicResource PrimaryBrush}" BorderThickness="1"
+                            CornerRadius="{StaticResource CornerMd}" Padding="16,14" Margin="0,10,0,0"
+                            Visibility="{Binding ShowAdvancedBundles, Converter={StaticResource BoolToVis}}">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                <Path Data="{StaticResource IconSliders}" Style="{StaticResource IconSmStyle}" Margin="0,0,8,0"/>
+                                <TextBlock Text="高级本地运行方案" Style="{StaticResource SubtitleText}"/>
+                            </StackPanel>
+                            <TextBlock Text="按电脑负载选择整套配置；可一键安装、应用或复制命令手动拉取。"
+                                       Style="{StaticResource SmallText}"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       TextWrapping="Wrap" Margin="0,0,0,12"/>
+
+                            <Grid Margin="0,0,0,12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="220"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="运行时" Style="{StaticResource CaptionText}"
+                                           VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                <ComboBox Grid.Column="1" SelectedValue="{Binding RuntimeChoice, Mode=TwoWay}"
+                                          SelectedValuePath="Tag" MinWidth="200">
+                                    <ComboBoxItem Content="Ollama（推荐）" Tag="ollama"/>
+                                    <ComboBoxItem Content="LM Studio" Tag="lmstudio"/>
+                                </ComboBox>
+                                <TextBlock Grid.Column="2" Text="运行时只影响本地模型；云端 API 配置不受影响。"
+                                           Style="{StaticResource SmallText}" Foreground="{DynamicResource TextTertiaryBrush}"
+                                           VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap"/>
+                            </Grid>
+
+                            <ItemsControl ItemsSource="{Binding BundleRecommendations}"
+                                          Visibility="{Binding HasBundleRecommendations, Converter={StaticResource BoolToVis}}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource SurfaceBrush}"
+                                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                                CornerRadius="{StaticResource CornerSm}" Padding="12,10" Margin="0,0,0,8">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Grid.Column="0">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold"/>
+                                                        <TextBlock Text="{Binding Badge}" Style="{StaticResource SmallText}"
+                                                                   Foreground="{DynamicResource SuccessBrush}" Margin="8,0,0,0"/>
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding Description}" Style="{StaticResource SmallText}"
+                                                               Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                                    <TextBlock Style="{StaticResource SmallText}" Foreground="{DynamicResource TextTertiaryBrush}"
+                                                               TextWrapping="Wrap" Margin="0,3,0,0">
+                                                        <Run Text="对话："/><Run Text="{Binding Model}"/>
+                                                        <Run Text="  ·  嵌入："/><Run Text="{Binding EmbedModel}"/>
+                                                    </TextBlock>
+                                                    <TextBlock Text="{Binding InstallHint}" Style="{StaticResource SmallText}"
+                                                               Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                                                    <Button Command="{Binding DataContext.OneClickSetupCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                            CommandParameter="{Binding}" Content="一键安装"
+                                                            Padding="10,5" Margin="0,0,6,0">
+                                                        <Button.Style>
+                                                            <Style TargetType="Button" BasedOn="{StaticResource PrimaryButtonStyle}">
+                                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding State}" Value="model_missing">
+                                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Button.Style>
+                                                    </Button>
+                                                    <Button Command="{Binding DataContext.ApplyBundleCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                            CommandParameter="{Binding}" Content="应用整套" Style="{StaticResource SecondaryButtonStyle}"
+                                                            Padding="10,5" Margin="0,0,6,0"/>
+                                                    <Button Command="{Binding DataContext.CopyPullCommandCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                            CommandParameter="{Binding}" Content="复制命令" Style="{StaticResource TextButtonStyle}"
+                                                            Padding="8,5"/>
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <TextBlock Text="暂未检测到可用档位，请先启动 Ollama / LM Studio 后重新打开设置页。"
+                                       Style="{StaticResource SmallText}" Foreground="{DynamicResource TextTertiaryBrush}"
+                                       TextWrapping="Wrap" Margin="0,2,0,0"
+                                       Visibility="{Binding HasBundleRecommendations, Converter={StaticResource InvertBoolVis}}"/>
+
+                            <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1" CornerRadius="{StaticResource CornerSm}" Padding="10,8" Margin="0,10,0,0"
+                                    Visibility="{Binding IsPulling, Converter={StaticResource BoolToVis}}">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding PullProgressText}" Style="{StaticResource SmallText}"/>
+                                    <ProgressBar Minimum="0" Maximum="100" Value="{Binding PullPercent, Mode=OneWay}" Height="6" Margin="0,6,0,0"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    </StackPanel>
+
+                    <StackPanel Visibility="{Binding IsKnowledgeBaseSelected, Converter={StaticResource BoolToVis}, FallbackValue=True}">
                         <StackPanel Margin="0,0,0,14">
                             <StackPanel Orientation="Horizontal">
                                 <Path Data="{StaticResource IconBook}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                <TextBlock Text="知识库与检索调优" FontSize="18" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                                <TextBlock Text="知识库与检索调优" FontSize="{StaticResource FontSizeTitle}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}"/>
                             </StackPanel>
                             <TextBlock Text="管理本地嵌入向量模型、语义切片策略、召回精度（Top-K）与目录自动监控。"
-                                       FontSize="12" Foreground="{StaticResource TextTertiaryBrush}" Margin="0,4,0,0"/>
+                                       FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource TextTertiaryBrush}" Margin="0,4,0,0"/>
                             <!-- 批次 2：分区生效标签 -->
-                            <Border Background="{DynamicResource SurfaceBrush}" CornerRadius="4" Padding="6,3" Margin="0,6,0,0" HorizontalAlignment="Left">
+                            <Border Background="{DynamicResource SurfaceBrush}" CornerRadius="{StaticResource CornerSm}" Padding="6,3" Margin="0,6,0,0" HorizontalAlignment="Left">
                                 <StackPanel Orientation="Horizontal">
                                     <Path Data="{StaticResource IconRefresh}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                    <TextBlock Text="保存后需重启后端生效" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                    <TextBlock Text="保存后需重启后端生效" FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextSecondaryBrush}"/>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
 
                         <!-- 嵌入模型卡片 -->
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
+                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,20">
                             <StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <Path Data="{StaticResource IconBrain}" Style="{StaticResource IconSmStyle}"/>
                                     <TextBlock Text="文档嵌入向量模型" Style="{StaticResource SubtitleText}"/>
                                 </StackPanel>
@@ -859,8 +858,8 @@
                                         <DataTemplate>
                                             <StackPanel Margin="0,2">
                                                 <TextBlock Text="{Binding Label}" FontWeight="SemiBold"/>
-                                                <TextBlock Text="{Binding ModelId}" FontSize="11"
-                                                           Foreground="{StaticResource TextTertiaryBrush}"/>
+                                                <TextBlock Text="{Binding ModelId}" FontSize="{StaticResource FontSizeSmall}"
+                                                           Foreground="{DynamicResource TextTertiaryBrush}"/>
                                             </StackPanel>
                                         </DataTemplate>
                                     </ComboBox.ItemTemplate>
@@ -871,7 +870,7 @@
                                          ToolTip="填本地 ONNX 模型目录（含 model.onnx / model_optimized.onnx + tokenizer.json）；留空则用上面的模型联网下载"
                                          Margin="0,0,0,6"/>
                                 <TextBlock Style="{StaticResource SmallText}"
-                                           Foreground="{StaticResource TextTertiaryBrush}">
+                                           Foreground="{DynamicResource TextTertiaryBrush}">
                                     留空 = 使用上方下拉的推荐模型（首次自动下载，之后用本地缓存）；填本地目录 = 完全离线使用自己的模型。
                                 </TextBlock>
 
@@ -881,7 +880,7 @@
                                             Command="{Binding DownloadModelCommand}"
                                             IsEnabled="{Binding IsDownloadingModel, Converter={StaticResource BoolInvertConverter}}"
                                             Style="{StaticResource SecondaryButtonStyle}"
-                                            Padding="12,5" FontSize="11"
+                                            Padding="12,5" FontSize="{StaticResource FontSizeSmall}"
                                             ToolTip="手动下载当前选择的嵌入模型到本地缓存（默认首次使用自动下载；此按钮用于断网预下载/修复缓存场景）">
                                         <StackPanel Orientation="Horizontal">
                                             <Path Data="{StaticResource IconDownload}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
@@ -889,11 +888,11 @@
                                         </StackPanel>
                                     </Button>
                                     <TextBlock Text="{Binding ModelDownloadStatusDisplay, Mode=OneWay}"
-                                               FontSize="11"
+                                               FontSize="{StaticResource FontSizeSmall}"
                                                VerticalAlignment="Center"
                                                TextTrimming="CharacterEllipsis"
                                                Margin="0,0,10,0"
-                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
                                 </DockPanel>
                                 <ProgressBar Height="5"
                                              Maximum="1"
@@ -906,9 +905,17 @@
                         </Border>
 
                         <!-- 对话与检索高级参数 -->
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
+                        <Expander IsExpanded="False" Margin="0,0,0,20">
+                            <Expander.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Data="{StaticResource IconSliders}" Style="{StaticResource IconSmStyle}" Margin="0,0,8,0"/>
+                                    <TextBlock Text="高级设置：RAG 检索、分块与文件监控" Style="{StaticResource SubtitleText}"/>
+                                </StackPanel>
+                            </Expander.Header>
                             <StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                        <Border Style="{StaticResource CardStyle}" Margin="0,8,0,20">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <Path Data="{StaticResource IconSliders}" Style="{StaticResource IconSmStyle}"/>
                                     <TextBlock Text="RAG 检索与回答调优" Style="{StaticResource SubtitleText}"/>
                                 </StackPanel>
@@ -922,7 +929,7 @@
                                               ToolTip="切换工作方式：会应用对应的检索默认与回答风格（需后端在线）"/>
                                     <TextBlock Text="{Binding PendingUsageProfileDescription, Mode=OneWay}"
                                                Style="{StaticResource SmallText}"
-                                               Foreground="{StaticResource TextTertiaryBrush}"
+                                               Foreground="{DynamicResource TextTertiaryBrush}"
                                                TextWrapping="Wrap"
                                                Margin="0,6,0,0"/>
                                     <Button Content="应用档案预设"
@@ -934,12 +941,12 @@
                                             Padding="12,6"/>
                                     <TextBlock Text="切换会覆盖 Top-K / 问答模式等手调参数，会先弹确认"
                                                Style="{StaticResource SmallText}"
-                                               Foreground="{StaticResource TextTertiaryBrush}"
+                                               Foreground="{DynamicResource TextTertiaryBrush}"
                                                Margin="0,6,0,0"/>
                                 </StackPanel>
 
                                 <StackPanel Margin="0,0,0,12">
-                                    <TextBlock Text="知识库问答响应策略" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                                    <TextBlock Text="知识库问答响应策略" Style="{StaticResource GroupHeaderStyle}"/>
                                     <ComboBox SelectedValue="{Binding RagMode}" SelectedValuePath="Tag"
                                               ToolTip="混合模式：未搜到本地文档时回退到通用常识解答；严格模式：未搜到本地文档时严格拒绝">
                                         <ComboBoxItem Tag="hybrid">
@@ -948,7 +955,7 @@
                                                     <Path Data="{StaticResource IconGlobe}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
                                                     <TextBlock Text="知识库优先 + 通用知识增强（推荐）" FontWeight="SemiBold"/>
                                                 </StackPanel>
-                                                <TextBlock Text="优先依据本地知识库，未命中时调用大模型通用常识解答并前置提示" FontSize="11" Foreground="{StaticResource TextTertiaryBrush}"/>
+                                                <TextBlock Text="优先依据本地知识库，未命中时调用大模型通用常识解答并前置提示" FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextTertiaryBrush}"/>
                                             </StackPanel>
                                         </ComboBoxItem>
                                         <ComboBoxItem Tag="strict">
@@ -957,7 +964,7 @@
                                                     <Path Data="{StaticResource IconTarget}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
                                                     <TextBlock Text="严格知识库模式" FontWeight="SemiBold"/>
                                                 </StackPanel>
-                                                <TextBlock Text="严格仅基于本地文档回答，未检索到相关内容时直接明确拒绝" FontSize="11" Foreground="{StaticResource TextTertiaryBrush}"/>
+                                                <TextBlock Text="严格仅基于本地文档回答，未检索到相关内容时直接明确拒绝" FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextTertiaryBrush}"/>
                                             </StackPanel>
                                         </ComboBoxItem>
                                     </ComboBox>
@@ -972,7 +979,7 @@
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Grid.Column="0">
                                             <TextBlock Text="检索后重排精排（Reranker）" Style="{StaticResource CaptionText}" Margin="0,0,0,4"/>
-                                            <TextBlock Style="{StaticResource SmallText}" Foreground="{StaticResource TextTertiaryBrush}" TextWrapping="Wrap">
+                                            <TextBlock Style="{StaticResource SmallText}" Foreground="{DynamicResource TextTertiaryBrush}" TextWrapping="Wrap">
                                                 开启后用 cross-encoder 对召回候选逐对打分重排，显著提升回答相关性；模型不可用时自动降级为原始排序。
                                             </TextBlock>
                                         </StackPanel>
@@ -1077,16 +1084,16 @@
                                          ToolTip="自定义 RAG 系统提示词（人设/回答风格/输出格式）；留空使用内置默认：基于检索资料回答、标注 [N] 来源"
                                          Margin="0,0,0,6"/>
                                 <TextBlock Style="{StaticResource SmallText}"
-                                           Foreground="{StaticResource TextTertiaryBrush}">
+                                           Foreground="{DynamicResource TextTertiaryBrush}">
                                     留空 = 使用内置默认专家提示词（包含透彻剖析、多维溯源、实战代码与避坑预警）。
                                 </TextBlock>
                             </StackPanel>
                         </Border>
 
                         <!-- 文档分块高级参数 -->
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
+                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,20">
                             <StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <Path Data="{StaticResource IconScissors}" Style="{StaticResource IconSmStyle}" Margin="0,0,10,0" VerticalAlignment="Center"/>
                                     <TextBlock Text="文档分块切片参数 (Chunking)" Style="{StaticResource SubtitleText}"/>
                                 </StackPanel>
@@ -1120,15 +1127,15 @@
                         </Border>
 
                         <!-- 文件监控自动摄入 -->
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
+                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,20">
                             <StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <Path Data="{StaticResource IconEye}" Style="{StaticResource IconSmStyle}"/>
                                     <TextBlock Text="文件监控自动摄入" Style="{StaticResource SubtitleText}"/>
                                 </StackPanel>
 
                                 <TextBlock Style="{StaticResource SmallText}"
-                                           Foreground="{StaticResource TextTertiaryBrush}"
+                                           Foreground="{DynamicResource TextTertiaryBrush}"
                                            Margin="0,0,0,12">
                                     监控本地目录中的文档（.md, .txt, .pdf, .docx, .xlsx 等），检测到新增或修改后自动摄入知识库。
                                 </TextBlock>
@@ -1163,12 +1170,12 @@
                                 </Grid>
 
                                 <!-- 监控目录列表 -->
-                                <TextBlock Text="已配置监控的目录列表：" Style="{StaticResource CaptionText}" Margin="0,0,0,6"/>
+                                <TextBlock Text="已配置监控的目录列表：" Style="{StaticResource GroupHeaderStyle}"/>
                                 <ListBox ItemsSource="{Binding WatchPaths}"
                                          SelectedItem="{Binding SelectedWatchPath}"
                                          MinHeight="70" MaxHeight="140"
-                                         Background="{StaticResource SurfaceBrush}"
-                                         BorderBrush="{StaticResource BorderBrush}"
+                                         Background="{DynamicResource SurfaceBrush}"
+                                         BorderBrush="{DynamicResource BorderBrush}"
                                          BorderThickness="1"
                                          Margin="0,0,0,10">
                                     <ListBox.ItemTemplate>
@@ -1183,7 +1190,7 @@
                                                         Command="{Binding DataContext.RemoveWatchPathCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
                                                         CommandParameter="{Binding}"
                                                         Background="Transparent" BorderThickness="0" Cursor="Hand" Padding="4,2">
-                                                    <Path Data="{StaticResource IconTrash}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource DangerBrush}"/>
+                                                    <Path Data="{StaticResource IconTrash}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource DangerBrush}"/>
                                                 </Button>
                                             </Grid>
                                         </DataTemplate>
@@ -1201,30 +1208,32 @@
                                 </Grid>
                             </StackPanel>
                         </Border>
+                            </StackPanel>
+                        </Expander>
                     </StackPanel>
 
                     <!-- =========================================================
                          面板 3: 界面与外观
                          ========================================================= -->
-                    <StackPanel Visibility="{Binding IsAppearanceSelected, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Visibility="{Binding IsAppearanceSelected, Converter={StaticResource BoolToVis}, FallbackValue=True}">
                         <StackPanel Margin="0,0,0,14">
                             <StackPanel Orientation="Horizontal">
                                 <Path Data="{StaticResource IconPalette}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                <TextBlock Text="界面外观与个性化" FontSize="18" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                                <TextBlock Text="界面外观与个性化" FontSize="{StaticResource FontSizeTitle}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}"/>
                             </StackPanel>
                             <TextBlock Text="定制属于您的视觉色彩与交互主题。"
-                                       FontSize="12" Foreground="{StaticResource TextTertiaryBrush}" Margin="0,4,0,0"/>
+                                       FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource TextTertiaryBrush}" Margin="0,4,0,0"/>
                         </StackPanel>
 
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
+                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,20">
                             <StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <Path Data="{StaticResource IconImage}" Style="{StaticResource IconSmStyle}"/>
                                     <TextBlock Text="主题色彩模式" Style="{StaticResource SubtitleText}"/>
                                 </StackPanel>
 
                                 <TextBlock Style="{StaticResource SmallText}"
-                                           Foreground="{StaticResource TextTertiaryBrush}"
+                                           Foreground="{DynamicResource TextTertiaryBrush}"
                                            Margin="0,0,0,16">
                                     选择您喜欢的主题风格，即时生效。
                                 </TextBlock>
@@ -1243,13 +1252,13 @@
                                                     <Setter.Value>
                                                         <ControlTemplate TargetType="Button">
                                                             <Border x:Name="Root" Background="{TemplateBinding Background}"
-                                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                                    BorderBrush="{Binding BorderBrush, RelativeSource={RelativeSource TemplatedParent}, TargetNullValue=Transparent, FallbackValue=Transparent}"
                                                                     BorderThickness="{TemplateBinding BorderThickness}"
                                                                     CornerRadius="{StaticResource CornerLg}" Padding="{TemplateBinding Padding}">
                                                                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                                                                     <Path Data="{StaticResource IconSun}" Style="{StaticResource IconSmStyle}" Width="26" Height="26" HorizontalAlignment="Center" Margin="0,0,0,6"/>
-                                                                    <TextBlock Text="浅色模式 (Light)" FontWeight="SemiBold" FontSize="13" HorizontalAlignment="Center"/>
-                                                                    <TextBlock Text="清爽明亮，专注阅读" FontSize="11" Foreground="{StaticResource TextTertiaryBrush}" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                                                                    <TextBlock Text="浅色模式 (Light)" FontWeight="SemiBold" FontSize="{StaticResource FontSizeBody}" HorizontalAlignment="Center"/>
+                                                                    <TextBlock Text="清爽明亮，专注阅读" FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextTertiaryBrush}" HorizontalAlignment="Center" Margin="0,2,0,0"/>
                                                                 </StackPanel>
                                                             </Border>
                                                             <ControlTemplate.Triggers>
@@ -1283,13 +1292,13 @@
                                                     <Setter.Value>
                                                         <ControlTemplate TargetType="Button">
                                                             <Border x:Name="Root" Background="{TemplateBinding Background}"
-                                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                                    BorderBrush="{Binding BorderBrush, RelativeSource={RelativeSource TemplatedParent}, TargetNullValue=Transparent, FallbackValue=Transparent}"
                                                                     BorderThickness="{TemplateBinding BorderThickness}"
                                                                     CornerRadius="{StaticResource CornerLg}" Padding="{TemplateBinding Padding}">
                                                                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                                                                     <Path Data="{StaticResource IconMoon}" Style="{StaticResource IconSmStyle}" Width="26" Height="26" HorizontalAlignment="Center" Margin="0,0,0,6"/>
-                                                                    <TextBlock Text="深色极客 (Dark)" FontWeight="SemiBold" FontSize="13" HorizontalAlignment="Center"/>
-                                                                    <TextBlock Text="沉浸护眼，极客质感" FontSize="11" Foreground="{StaticResource TextTertiaryBrush}" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                                                                    <TextBlock Text="深色极客 (Dark)" FontWeight="SemiBold" FontSize="{StaticResource FontSizeBody}" HorizontalAlignment="Center"/>
+                                                                    <TextBlock Text="沉浸护眼，极客质感" FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextTertiaryBrush}" HorizontalAlignment="Center" Margin="0,2,0,0"/>
                                                                 </StackPanel>
                                                             </Border>
                                                             <ControlTemplate.Triggers>
@@ -1318,36 +1327,36 @@
                     <!-- =========================================================
                          面板 4: 算力与体检
                          ========================================================= -->
-                    <StackPanel Visibility="{Binding IsHardwareSelected, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Visibility="{Binding IsHardwareSelected, Converter={StaticResource BoolToVis}, FallbackValue=True}">
                         <StackPanel Margin="0,0,0,14">
                             <StackPanel Orientation="Horizontal">
                                 <Path Data="{StaticResource IconPlug}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                <TextBlock Text="硬件算力与系统体检" FontSize="18" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                                <TextBlock Text="硬件算力与系统体检" FontSize="{StaticResource FontSizeTitle}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}"/>
                             </StackPanel>
                             <TextBlock Text="GPU 硬件加速诊断、CUDA 环境配置与全链路自检自愈报告。"
-                                       FontSize="12" Foreground="{StaticResource TextTertiaryBrush}" Margin="0,4,0,0"/>
+                                       FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource TextTertiaryBrush}" Margin="0,4,0,0"/>
                         </StackPanel>
 
                         <!-- GPU 加速卡片 -->
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
+                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,20">
                             <StackPanel>
                                 <DockPanel LastChildFill="False" Margin="0,0,0,12">
                                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                         <Path Data="{StaticResource IconPlug}" Style="{StaticResource IconSmStyle}"/>
                                         <TextBlock Text="GPU 硬件加速 (CUDA / TensorRT)" Style="{StaticResource SubtitleText}"/>
-                                        <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource SuccessBrush}"
+                                        <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource SuccessBrush}"
                                                    Visibility="{Binding GpuWarning.GpuAvailable, Converter={StaticResource BoolToVis}}"
                                                    VerticalAlignment="Center" Margin="4,0,0,0"/>
                                     </StackPanel>
                                     <Button DockPanel.Dock="Right" Content="重新诊断"
                                             Command="{Binding GpuWarning.DiagnoseCommand}"
                                             IsEnabled="{Binding GpuWarning.IsDiagnosing, Converter={StaticResource BoolInvertConverter}}"
-                                            Style="{StaticResource TextButtonStyle}" Padding="6,2" FontSize="11"/>
+                                            Style="{StaticResource TextButtonStyle}" Padding="6,2" FontSize="{StaticResource FontSizeSmall}"/>
                                 </DockPanel>
 
                                 <TextBlock Text="正在检测 GPU 运行环境..."
                                            Visibility="{Binding GpuWarning.IsDiagnosing, Converter={StaticResource BoolToVis}}"
-                                           Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+                                           Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,8"/>
 
                                 <!-- 诊断完成后状态 -->
                                 <StackPanel Visibility="{Binding GpuWarning.HasDiagnosis, Converter={StaticResource BoolToVis}}">
@@ -1357,26 +1366,26 @@
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Grid.Column="0" Margin="0,0,24,0">
-                                            <TextBlock FontSize="12" Margin="0,0,0,4">
-                                                <Run Text="加速状态：" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                            <TextBlock FontSize="{StaticResource FontSizeCaption}" Margin="0,0,0,4">
+                                                <Run Text="加速状态：" Foreground="{DynamicResource TextSecondaryBrush}"/>
                                                 <Run Text="{Binding GpuWarning.GpuStatusText, Mode=OneWay}" FontWeight="SemiBold"
                                                      Foreground="{Binding GpuWarning.GpuStatusBrush, Mode=OneWay}"/>
                                             </TextBlock>
-                                            <TextBlock FontSize="12" Margin="0,0,0,4"
+                                            <TextBlock FontSize="{StaticResource FontSizeCaption}" Margin="0,0,0,4"
                                                        Visibility="{Binding GpuWarning.GpuDeviceName, Converter={StaticResource NullToVis}}">
-                                                <Run Text="显卡设备：" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                                <Run Text="显卡设备：" Foreground="{DynamicResource TextSecondaryBrush}"/>
                                                 <Run Text="{Binding GpuWarning.GpuDeviceName, Mode=OneWay}"/>
                                             </TextBlock>
                                         </StackPanel>
                                         <StackPanel Grid.Column="1">
-                                            <TextBlock FontSize="12" Margin="0,0,0,4"
+                                            <TextBlock FontSize="{StaticResource FontSizeCaption}" Margin="0,0,0,4"
                                                        Visibility="{Binding GpuWarning.DriverInfo, Converter={StaticResource NullToVis}}">
-                                                <Run Text="驱动版本：" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                                <Run Text="驱动版本：" Foreground="{DynamicResource TextSecondaryBrush}"/>
                                                 <Run Text="{Binding GpuWarning.DriverInfo, Mode=OneWay}"/>
                                             </TextBlock>
-                                            <TextBlock FontSize="12" Margin="0,0,0,4"
+                                            <TextBlock FontSize="{StaticResource FontSizeCaption}" Margin="0,0,0,4"
                                                        Visibility="{Binding GpuWarning.GpuAvailable, Converter={StaticResource InvertBoolVis}}">
-                                                <Run Text="CUDA 运行时：" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                                <Run Text="CUDA 运行时：" Foreground="{DynamicResource TextSecondaryBrush}"/>
                                                 <Run Text="{Binding GpuWarning.CudaRuntimeInfo, Mode=OneWay}"/>
                                             </TextBlock>
                                         </StackPanel>
@@ -1388,8 +1397,8 @@
                                                   Visibility="{Binding GpuWarning.Warnings.Count, Converter={StaticResource ZeroToVis}}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
-                                                <TextBlock Text="{Binding}" FontSize="11"
-                                                           Foreground="{StaticResource WarningBrush}"
+                                                <TextBlock Text="{Binding}" FontSize="{StaticResource FontSizeSmall}"
+                                                           Foreground="{DynamicResource WarningBrush}"
                                                            Margin="0,2" TextWrapping="Wrap"/>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
@@ -1405,21 +1414,21 @@
                                     <!-- 包列表与安装方案区域（未启用 GPU 或用户主动展开时显示） -->
                                     <StackPanel Visibility="{Binding GpuWarning.CanShowInstallSection, Converter={StaticResource BoolToVis}}">
                                         <!-- 已安装包 -->
-                                        <Border Background="{StaticResource SurfaceBrush}"
+                                        <Border Background="{DynamicResource SurfaceBrush}"
                                                 CornerRadius="{StaticResource CornerMd}" Padding="10,8" Margin="0,0,0,12">
                                             <StackPanel>
-                                                <TextBlock Text="已检测 Python GPU 支持包：" FontWeight="SemiBold" FontSize="11" Margin="0,0,0,4"/>
+                                                <TextBlock Text="已检测 Python GPU 支持包：" FontWeight="SemiBold" FontSize="{StaticResource FontSizeSmall}" Margin="0,0,0,4"/>
                                                 <ItemsControl ItemsSource="{Binding GpuWarning.InstalledPackagesDisplay}">
                                                     <ItemsControl.ItemTemplate>
                                                         <DataTemplate>
                                                             <StackPanel Orientation="Horizontal" Margin="0,1">
-                                                                <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource SuccessBrush}" Margin="0,0,6,0" VerticalAlignment="Center"
+                                                                <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource SuccessBrush}" Margin="0,0,6,0" VerticalAlignment="Center"
                                                       Visibility="{Binding Installed, Converter={StaticResource BoolToVis}}"/>
-                                                <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource WarningBrush}" Margin="0,0,6,0" VerticalAlignment="Center"
+                                                <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource WarningBrush}" Margin="0,0,6,0" VerticalAlignment="Center"
                                                       Visibility="{Binding Installed, Converter={StaticResource InvertBoolVis}}"/>
-                                                                <TextBlock Text="{Binding Name}" FontSize="11"
-                                                                           Margin="0,0,8,0" Foreground="{StaticResource TextSecondaryBrush}"/>
-                                                                <TextBlock Text="{Binding Version}" FontSize="11"/>
+                                                                <TextBlock Text="{Binding Name}" FontSize="{StaticResource FontSizeSmall}"
+                                                                           Margin="0,0,8,0" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                                                <TextBlock Text="{Binding Version}" FontSize="{StaticResource FontSizeSmall}"/>
                                                             </StackPanel>
                                                         </DataTemplate>
                                                     </ItemsControl.ItemTemplate>
@@ -1428,7 +1437,7 @@
                                         </Border>
 
                                         <!-- 安装方案 -->
-                                        <TextBlock Text="选择安装方案：" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,6"/>
+                                        <TextBlock Text="选择安装方案：" FontWeight="SemiBold" FontSize="{StaticResource FontSizeCaption}" Margin="0,0,0,6"/>
                                         <ComboBox ItemsSource="{Binding GpuWarning.AvailablePaths}"
                                                   SelectedValue="{Binding GpuWarning.SelectedPath}"
                                                   SelectedValuePath="Id"
@@ -1436,9 +1445,9 @@
                                             <ComboBox.ItemTemplate>
                                                 <DataTemplate>
                                                     <StackPanel Orientation="Horizontal">
-                                                        <TextBlock Text="{Binding Label}" FontSize="12" Margin="0,0,8,0"/>
-                                                        <TextBlock Text="{Binding Description}" FontSize="11"
-                                                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                                                        <TextBlock Text="{Binding Label}" FontSize="{StaticResource FontSizeCaption}" Margin="0,0,8,0"/>
+                                                        <TextBlock Text="{Binding Description}" FontSize="{StaticResource FontSizeSmall}"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
                                                     </StackPanel>
                                                 </DataTemplate>
                                             </ComboBox.ItemTemplate>
@@ -1471,22 +1480,22 @@
 
                                     <!-- 安装日志 -->
                                     <Border Visibility="{Binding GpuWarning.HasInstallLog, Converter={StaticResource BoolToVis}}"
-                                            Margin="0,10,0,0" BorderBrush="{StaticResource BorderBrush}"
+                                            Margin="0,10,0,0" BorderBrush="{DynamicResource BorderBrush}"
                                             BorderThickness="1" CornerRadius="{StaticResource CornerMd}" Padding="8">
                                         <StackPanel>
                                             <DockPanel LastChildFill="False" Margin="0,0,0,4">
-                                                <TextBlock Text="安装输出日志" FontSize="11" FontWeight="SemiBold"
-                                                           Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
+                                                <TextBlock Text="安装输出日志" FontSize="{StaticResource FontSizeSmall}" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center"/>
                                                 <Button DockPanel.Dock="Right" Content="清空日志"
                                                         Command="{Binding GpuWarning.ClearLogCommand}"
                                                         IsEnabled="{Binding GpuWarning.CanClearLog}"
-                                                        Style="{StaticResource TextButtonStyle}" FontSize="11" Padding="4,2"/>
+                                                        Style="{StaticResource TextButtonStyle}" FontSize="{StaticResource FontSizeSmall}" Padding="4,2"/>
                                             </DockPanel>
                                             <TextBox IsReadOnly="True" Text="{Binding GpuWarning.InstallLog, Mode=OneWay}"
-                                                     FontFamily="Cascadia Mono,Consolas,Courier New" FontSize="11"
+                                                     FontFamily="Cascadia Mono,Consolas,Courier New" FontSize="{StaticResource FontSizeSmall}"
                                                      MaxHeight="160" VerticalScrollBarVisibility="Auto"
                                                      Background="Transparent" BorderThickness="0"
-                                                     Foreground="{StaticResource TextSecondaryBrush}"/>
+                                                     Foreground="{DynamicResource TextSecondaryBrush}"/>
                                         </StackPanel>
                                     </Border>
                                 </StackPanel>
@@ -1494,7 +1503,7 @@
                         </Border>
 
                         <!-- 外部组件路径：手动指定 / 自动寻找可用配置 -->
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18"
+                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,20"
                                 Visibility="{Binding ResourcePaths, Converter={StaticResource NullToVis}}">
                             <StackPanel>
                                 <DockPanel LastChildFill="False" Margin="0,0,0,10">
@@ -1504,7 +1513,7 @@
                                     </StackPanel>
                                     <Button DockPanel.Dock="Right"
                                             Command="{Binding ResourcePaths.RefreshCommand}"
-                                            Style="{StaticResource SecondaryButtonStyle}" Padding="10,4" FontSize="11">
+                                            Style="{StaticResource SecondaryButtonStyle}" Padding="10,4" FontSize="{StaticResource FontSizeSmall}">
                                         <StackPanel Orientation="Horizontal">
                                             <Path Data="{StaticResource IconRefresh}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
                                             <TextBlock Text="重新检测"/>
@@ -1512,12 +1521,12 @@
                                     </Button>
                                 </DockPanel>
                                 <TextBlock Text="可手动指定位置，或点击「自动寻找」让应用在常用目录乃至全盘（含 U 盘）搜索可用配置并自动完成设置。"
-                                           FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"
+                                           FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextSecondaryBrush}"
                                            TextWrapping="Wrap" Margin="0,0,0,8"/>
                                 <ItemsControl ItemsSource="{Binding ResourcePaths.Items}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <Border BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1"
+                                            <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1"
                                                     Padding="0,8">
                                                 <Grid>
                                                     <Grid.ColumnDefinitions>
@@ -1528,22 +1537,22 @@
                                                     </Grid.ColumnDefinitions>
                                                     <StackPanel Grid.Column="0" VerticalAlignment="Center">
                                                         <StackPanel Orientation="Horizontal">
-                                                            <TextBlock Text="{Binding StatusIcon}" FontSize="12" Margin="0,0,6,0"/>
-                                                            <TextBlock Text="{Binding DisplayName}" FontSize="12" FontWeight="SemiBold"/>
-                                                            <TextBlock Text="{Binding SourceLabel}" FontSize="11"
-                                                                       Foreground="{StaticResource TextSecondaryBrush}" Margin="8,0,0,0"/>
+                                                            <TextBlock Text="{Binding StatusIcon}" FontSize="{StaticResource FontSizeCaption}" Margin="0,0,6,0"/>
+                                                            <TextBlock Text="{Binding DisplayName}" FontSize="{StaticResource FontSizeCaption}" FontWeight="SemiBold"/>
+                                                            <TextBlock Text="{Binding SourceLabel}" FontSize="{StaticResource FontSizeSmall}"
+                                                                       Foreground="{DynamicResource TextSecondaryBrush}" Margin="8,0,0,0"/>
                                                         </StackPanel>
-                                                        <TextBlock Text="{Binding PathDisplay}" FontSize="11"
-                                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                        <TextBlock Text="{Binding PathDisplay}" FontSize="{StaticResource FontSizeSmall}"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}"
                                                                    TextTrimming="CharacterEllipsis" Margin="18,2,8,0"/>
-                                                        <TextBlock Text="{Binding StatusText}" FontSize="11"
-                                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                        <TextBlock Text="{Binding StatusText}" FontSize="{StaticResource FontSizeSmall}"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}"
                                                                    TextWrapping="Wrap" Margin="18,2,8,0"/>
                                                     </StackPanel>
                                                     <Button Grid.Column="1"
                                                             Command="{Binding DataContext.ResourcePaths.AutoLocateCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                             CommandParameter="{Binding}"
-                                                            Style="{StaticResource SecondaryButtonStyle}" Padding="10,4" FontSize="11"
+                                                            Style="{StaticResource SecondaryButtonStyle}" Padding="10,4" FontSize="{StaticResource FontSizeSmall}"
                                                             Margin="0,0,8,0">
                                                         <StackPanel Orientation="Horizontal">
                                                             <Path Data="{StaticResource IconSearch}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
@@ -1553,7 +1562,7 @@
                                                     <Button Grid.Column="2"
                                                             Command="{Binding DataContext.ResourcePaths.BrowseCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                             CommandParameter="{Binding}"
-                                                            Style="{StaticResource SecondaryButtonStyle}" Padding="10,4" FontSize="11"
+                                                            Style="{StaticResource SecondaryButtonStyle}" Padding="10,4" FontSize="{StaticResource FontSizeSmall}"
                                                             Margin="0,0,8,0">
                                                         <StackPanel Orientation="Horizontal">
                                                             <Path Data="{StaticResource IconFolder}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
@@ -1562,7 +1571,7 @@
                                                     </Button>
                                                     <Button Grid.Column="3" Content="停止搜索"
                                                             Command="{Binding DataContext.ResourcePaths.CancelScanCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                            Style="{StaticResource TextButtonStyle}" Padding="4,4" FontSize="11"/>
+                                                            Style="{StaticResource TextButtonStyle}" Padding="4,4" FontSize="{StaticResource FontSizeSmall}"/>
                                                 </Grid>
                                             </Border>
                                         </DataTemplate>
@@ -1572,7 +1581,7 @@
                         </Border>
 
                         <!-- 运行依赖就绪状态 (GET /v1/system/dependencies) -->
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
+                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,20">
                             <StackPanel>
                                 <DockPanel LastChildFill="False" Margin="0,0,0,10">
                                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
@@ -1582,7 +1591,7 @@
                                     <Button DockPanel.Dock="Right"
                                             Command="{Binding RefreshDependenciesCommand}"
                                             IsEnabled="{Binding IsDependenciesLoading, Converter={StaticResource BoolInvertConverter}}"
-                                            Style="{StaticResource TextButtonStyle}" FontSize="11" Padding="6,2"
+                                            Style="{StaticResource TextButtonStyle}" FontSize="{StaticResource FontSizeSmall}" Padding="6,2"
                                             HorizontalAlignment="Right" VerticalAlignment="Center">
                                         <StackPanel Orientation="Horizontal">
                                             <Path Data="{StaticResource IconRefresh}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
@@ -1593,7 +1602,7 @@
 
                                 <TextBlock Text="正在检测运行依赖就绪状态..."
                                            Visibility="{Binding IsDependenciesLoading, Converter={StaticResource BoolToVis}}"
-                                           Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+                                           Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,6"/>
 
                                 <ItemsControl ItemsSource="{Binding DependencyCheckSummary}"
                                               Visibility="{Binding HasDependencies, Converter={StaticResource BoolToVis}}">
@@ -1601,16 +1610,16 @@
                                         <DataTemplate>
                                             <DockPanel LastChildFill="False" Margin="0,4">
                                                 <TextBlock DockPanel.Dock="Right" Text="{Binding Detail}"
-                                                           FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"
+                                                           FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextSecondaryBrush}"
                                                            TextWrapping="Wrap" HorizontalAlignment="Right" MaxWidth="340"/>
                                                 <StackPanel Orientation="Horizontal">
-                                                    <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource SuccessBrush}"
+                                                    <Path Data="{StaticResource IconCheck}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource SuccessBrush}"
                                                                Margin="0,0,6,0" VerticalAlignment="Center"
                                                                Visibility="{Binding Ok, Converter={StaticResource BoolToVis}}"/>
-                                                    <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource WarningBrush}"
+                                                    <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource WarningBrush}"
                                                                Margin="0,0,6,0" VerticalAlignment="Center"
                                                                Visibility="{Binding Ok, Converter={StaticResource InvertBoolVis}}"/>
-                                                    <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{Binding Name}" FontSize="{StaticResource FontSizeCaption}" FontWeight="SemiBold"/>
                                                 </StackPanel>
                                             </DockPanel>
                                         </DataTemplate>
@@ -1618,12 +1627,12 @@
                                 </ItemsControl>
 
                                 <TextBlock Text="详细介绍各依赖的安装与状态含义，可在上方「GPU 硬件加速」卡片或下方「系统环境自检」中查看。"
-                                           FontSize="11" Foreground="{StaticResource TextTertiaryBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                           FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextTertiaryBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                             </StackPanel>
                         </Border>
 
                         <!-- 系统环境体检与自愈诊断 (Doctor) -->
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
+                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,20">
                             <StackPanel>
                                 <DockPanel Margin="0,0,0,10">
                                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
@@ -1634,7 +1643,7 @@
                                             Command="{Binding RunDoctorCommand}"
                                             IsEnabled="{Binding IsRunningDoctor, Converter={StaticResource BoolInvertConverter}}"
                                             Style="{StaticResource PrimaryButtonStyle}"
-                                            FontSize="11"
+                                            FontSize="{StaticResource FontSizeSmall}"
                                             Padding="10,4"
                                             HorizontalAlignment="Right"
                                             VerticalAlignment="Center">
@@ -1646,33 +1655,63 @@
                                 </DockPanel>
 
                                 <TextBlock Style="{StaticResource SmallText}"
-                                           Foreground="{StaticResource TextTertiaryBrush}"
+                                           Foreground="{DynamicResource TextTertiaryBrush}"
                                            Margin="0,0,0,12">
                                     一键全面检测 Python 环境、SQLite 向量数据库、嵌入模型缓存、GPU 硬件加速、OCR 模块、大模型连通性与清华/HF镜像网络。
                                 </TextBlock>
 
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                    <Button Command="{Binding CreateBackupCommand}"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Padding="10,4" Margin="0,0,8,0"
+                                            ToolTip="创建包含知识库、会话和索引数据的一致性备份">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Path Data="{StaticResource IconSave}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                            <TextBlock Text="创建备份"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Command="{Binding RestoreBackupCommand}"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Padding="10,4" Margin="0,0,8,0"
+                                            ToolTip="恢复备份前会自动保留当前数据库副本">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Path Data="{StaticResource IconUpload}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                            <TextBlock Text="恢复备份"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Command="{Binding CreateDiagnosticBundleCommand}"
+                                            Style="{StaticResource TextButtonStyle}"
+                                            Padding="10,4"
+                                            ToolTip="导出不含资料原文的环境诊断包">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Path Data="{StaticResource IconFile}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
+                                            <TextBlock Text="导出诊断包"/>
+                                        </StackPanel>
+                                    </Button>
+                                </StackPanel>
+
                                 <!-- 体检中提示 -->
                                 <TextBlock Text="正在检测全系统各项环境与网络连通性，请稍候..."
                                            Visibility="{Binding IsRunningDoctor, Converter={StaticResource BoolToVis}}"
-                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
                                            Margin="0,4,0,8"/>
 
                                 <!-- 诊断报告结果 -->
                                 <StackPanel Visibility="{Binding HasDoctorReport, Converter={StaticResource BoolToVis}}">
                                     <!-- 得分与摘要卡片 -->
-                                    <Border Background="{StaticResource SurfaceBrush}"
-                                            CornerRadius="8" Padding="12,10" Margin="0,0,0,12">
+                                    <Border Background="{DynamicResource SurfaceBrush}"
+                                            CornerRadius="{StaticResource CornerMd}" Padding="12,10" Margin="0,0,0,12">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/>
                                                 <ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
                                             <StackPanel Grid.Column="0" Margin="0,0,16,0" VerticalAlignment="Center">
-                                                <TextBlock Text="健康评分" Style="{StaticResource SmallText}" Foreground="{StaticResource TextTertiaryBrush}"/>
-                                                <TextBlock Text="{Binding DoctorScoreText}" FontSize="22" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}"/>
+                                                <TextBlock Text="健康评分" Style="{StaticResource SmallText}" Foreground="{DynamicResource TextTertiaryBrush}"/>
+                                                <TextBlock Text="{Binding DoctorScoreText}" FontSize="{StaticResource FontSizeTitleLarge}" FontWeight="Bold" Foreground="{DynamicResource PrimaryBrush}"/>
                                             </StackPanel>
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                                <TextBlock Text="{Binding DoctorReport.Summary}" FontWeight="SemiBold" FontSize="13" TextWrapping="Wrap"/>
+                                                <TextBlock Text="{Binding DoctorReport.Summary}" FontWeight="SemiBold" FontSize="{StaticResource FontSizeBody}" TextWrapping="Wrap"/>
                                             </StackPanel>
                                         </Grid>
                                     </Border>
@@ -1681,7 +1720,7 @@
                                     <ItemsControl ItemsSource="{Binding DoctorReport.Checks}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
-                                                <Border BorderBrush="{StaticResource BorderBrush}"
+                                                <Border BorderBrush="{DynamicResource BorderBrush}"
                                                         BorderThickness="0,0,0,1"
                                                         Padding="0,6" Margin="0,2">
                                                     <Grid>
@@ -1691,15 +1730,15 @@
                                                             <ColumnDefinition Width="*"/>
                                                         </Grid.ColumnDefinitions>
                                                         <TextBlock Grid.Column="0" Text="{Binding BadgeText}"
-                                                                   FontWeight="SemiBold" FontSize="11"
+                                                                   FontWeight="SemiBold" FontSize="{StaticResource FontSizeSmall}"
                                                                    VerticalAlignment="Center"/>
                                                         <TextBlock Grid.Column="1" Text="{Binding Name}"
-                                                                   FontWeight="Medium" FontSize="12"
+                                                                   FontWeight="Medium" FontSize="{StaticResource FontSizeCaption}"
                                                                    VerticalAlignment="Center"/>
                                                         <StackPanel Grid.Column="2">
-                                                            <TextBlock Text="{Binding Message}" FontSize="12" Foreground="{StaticResource TextPrimaryBrush}" TextWrapping="Wrap"/>
-                                                            <TextBlock Text="{Binding FixSuggestion}" FontSize="11"
-                                                                       Foreground="{StaticResource WarningBrush}"
+                                                            <TextBlock Text="{Binding Message}" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource TextPrimaryBrush}" TextWrapping="Wrap"/>
+                                                            <TextBlock Text="{Binding FixSuggestion}" FontSize="{StaticResource FontSizeSmall}"
+                                                                       Foreground="{DynamicResource WarningBrush}"
                                                                        TextWrapping="Wrap" Margin="0,2,0,0"
                                                                        Visibility="{Binding FixSuggestion, Converter={StaticResource NullToVis}}"/>
                                                         </StackPanel>
@@ -1716,18 +1755,18 @@
                     <!-- =========================================================
                          面板 5: 服务与关于
                          ========================================================= -->
-                    <StackPanel Visibility="{Binding IsAboutServiceSelected, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Visibility="{Binding IsAboutServiceSelected, Converter={StaticResource BoolToVis}, FallbackValue=True}">
                         <StackPanel Margin="0,0,0,14">
                             <StackPanel Orientation="Horizontal">
                                 <Path Data="{StaticResource IconGlobe}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
-                                <TextBlock Text="后端服务与关于信息" FontSize="18" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                                <TextBlock Text="后端服务与关于信息" FontSize="{StaticResource FontSizeTitle}" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}"/>
                             </StackPanel>
                             <TextBlock Text="FastAPI 后端进程生命周期、连接端口管理与应用系统信息。"
-                                       FontSize="12" Foreground="{StaticResource TextTertiaryBrush}" Margin="0,4,0,0"/>
+                                       FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource TextTertiaryBrush}" Margin="0,4,0,0"/>
                         </StackPanel>
 
                         <!-- 后端连接与进程卡片 -->
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
+                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,20">
                             <StackPanel>
                                 <DockPanel LastChildFill="False" Margin="0,0,0,14">
                                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -1737,7 +1776,7 @@
                                     <Button DockPanel.Dock="Right"
                                             Command="{Binding RestartBackendCommand}"
                                             Style="{StaticResource SecondaryButtonStyle}"
-                                            Padding="10,4" FontSize="11"
+                                            Padding="10,4" FontSize="{StaticResource FontSizeSmall}"
                                             ToolTip="强力清理可能残留的旧进程，释放 8765 端口并重新拉起最新后端">
                                         <StackPanel Orientation="Horizontal">
                                             <Path Data="{StaticResource IconRefresh}" Style="{StaticResource IconSmStyle}" Margin="0,0,6,0"/>
@@ -1787,7 +1826,7 @@
                                 </Grid>
 
                                 <!-- 启动与退出策略 -->
-                                <TextBlock Text="进程生命周期策略" Style="{StaticResource CaptionText}" Margin="0,0,0,8"/>
+                                <TextBlock Text="进程生命周期策略" Style="{StaticResource GroupHeaderStyle}"/>
                                 <StackPanel Margin="4,0,0,8">
                                     <CheckBox IsChecked="{Binding AutoStartBackend}" Margin="0,0,0,6">
                                         <TextBlock Text="启动客户端时自动拉起后端服务" Style="{StaticResource BodyText}"/>
@@ -1798,7 +1837,7 @@
                                 </StackPanel>
 
                                 <!-- 知识库自动整理（curate） -->
-                                <TextBlock Text="知识库自动整理" Style="{StaticResource CaptionText}" Margin="0,12,0,8"/>
+                                <TextBlock Text="知识库自动整理" Style="{StaticResource GroupHeaderStyle}"/>
                                 <StackPanel Margin="4,0,0,8">
                                     <CheckBox IsChecked="{Binding AutoCurateOnIngest}" Margin="0,0,0,6"
                                               ToolTip="关闭后入库只写元数据，不调 LLM 跑 enrich/categorize/extract。可在质量看板或由 Agent 主动跑 curate（dedup/consolidate 永不自动跑）。">
@@ -1807,23 +1846,136 @@
                                 </StackPanel>
 
                                 <!-- Agent 模式（进阶，默认关闭） -->
-                                <TextBlock Text="Agent 模式（进阶，默认关闭）" Style="{StaticResource CaptionText}" Margin="0,12,0,8"/>
+                                <TextBlock Text="Agent 与回答模式（进阶）" Style="{StaticResource GroupHeaderStyle}"/>
                                 <StackPanel Margin="4,0,0,8">
                                     <CheckBox IsChecked="{Binding AgentModeEnabled}" Margin="0,0,0,6"
-                                              ToolTip="开启后对话请求携带 agentMode，服务端可展示工具轨迹（agent_plan/tool_call）。后端 agent_mode_enabled=false 时仍会回落普通 RAG。写入策略：ask / session_allow / always_allow_workspace。">
-                                        <TextBlock Text="允许对话使用 Agent 工具链（检索/工作区等白名单）" Style="{StaticResource BodyText}"/>
+                                              ToolTip="能力总闸：开启并保存后推送后端 agent_mode_enabled=true。关闭时请求 Agent/auto 升级会回落 RAG。">
+                                        <TextBlock Text="允许对话使用 Agent 工具链（能力总闸）" Style="{StaticResource BodyText}"/>
                                     </CheckBox>
-                                    <TextBlock Style="{StaticResource SmallText}" Foreground="{StaticResource TextTertiaryBrush}"
-                                               TextWrapping="Wrap"
-                                               Text="默认关闭，不改变现有 RAG 体验。开启后对话区会出现思考/工具轨迹；任意 shell/危险工具不会开放。"/>
+                                    <TextBlock Text="默认回答模式" Style="{StaticResource CaptionText}" Margin="0,6,0,4"/>
+                                    <ComboBox MinWidth="160" HorizontalAlignment="Left"
+                                              SelectedValue="{Binding DefaultChatMode, Mode=TwoWay}"
+                                              SelectedValuePath="Tag"
+                                              ToolTip="全局默认：自动（规则路由）/ 知识库 RAG（出厂，更快）/ Agent 工具。对话页可临时切换，本项只决定新建会话的初始值。">
+                                        <ComboBoxItem Content="知识库 RAG（出厂推荐）" Tag="rag"/>
+                                        <ComboBoxItem Content="自动（规则路由）" Tag="auto"/>
+                                        <ComboBoxItem Content="Agent 工具" Tag="agent"/>
+                                    </ComboBox>
+                                    <TextBlock Style="{StaticResource SmallText}" Foreground="{DynamicResource TextTertiaryBrush}"
+                                               TextWrapping="Wrap" Margin="0,8,0,0"
+                                               Text="总闸与默认模式分离：总闸管「能不能用 Agent」，默认模式管「新建对话先走哪条」。开启总闸 + 默认「自动」时，深度联网/定义题/任务题会升级 Agent，其余走 RAG。保存会同步后端。"/>
                                 </StackPanel>
+
+                                <!-- 长文大纲编排 -->
+                                <TextBlock Text="长文编排（进阶）" Style="{StaticResource GroupHeaderStyle}"/>
+                                <StackPanel Margin="4,0,0,8">
+                                    <CheckBox IsChecked="{Binding LongformEnabled}" Margin="0,0,0,6"
+                                              ToolTip="交付轨（报告/方案）启用大纲→分块→汇总。默认关闭。">
+                                        <TextBlock Text="启用长文大纲编排" Style="{StaticResource BodyText}"/>
+                                    </CheckBox>
+                                    <Grid Margin="0,4,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="80"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="100"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="最大章节" Style="{StaticResource CaptionText}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                        <TextBox Grid.Column="1" Text="{Binding LongformMaxSections, UpdateSourceTrigger=PropertyChanged}"
+                                                 VerticalAlignment="Center" Padding="6,4" Margin="0,0,16,0"/>
+                                        <TextBlock Grid.Column="2" Text="总字数上限" Style="{StaticResource CaptionText}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                        <TextBox Grid.Column="3" Text="{Binding LongformMaxChars, UpdateSourceTrigger=PropertyChanged}"
+                                                 VerticalAlignment="Center" Padding="6,4"/>
+                                    </Grid>
+                                    <TextBlock Style="{StaticResource SmallText}" Foreground="{DynamicResource TextTertiaryBrush}"
+                                               TextWrapping="Wrap" Margin="0,8,0,0"
+                                               Text="章节 2–16，字数 1000–100000。仅交付轨生效。"/>
+                                </StackPanel>
+
+                                <!-- 联网搜索 Provider -->
+                                <TextBlock Text="联网搜索 Provider" Style="{StaticResource GroupHeaderStyle}"/>
+                                <StackPanel Margin="4,0,0,8">
+                                    <ComboBox MinWidth="200" HorizontalAlignment="Left"
+                                              SelectedValue="{Binding SearchProvider, Mode=TwoWay}"
+                                              SelectedValuePath="Tag"
+                                              ToolTip="内置免费；外部搜索可提升深度联网质量。未配置 Key 自动回落 builtin。">
+                                        <ComboBoxItem Content="内置（免费，默认）" Tag="builtin"/>
+                                        <ComboBoxItem Content="Tavily" Tag="tavily"/>
+                                        <ComboBoxItem Content="Bocha" Tag="bocha"/>
+                                        <ComboBoxItem Content="SerpAPI" Tag="serpapi"/>
+                                        <ComboBoxItem Content="自定义 HTTP-JSON" Tag="http"/>
+                                    </ComboBox>
+                                    <TextBlock Text="API Key" Style="{StaticResource CaptionText}" Margin="0,8,0,4"/>
+                                    <TextBox Text="{Binding SearchProviderApiKey, UpdateSourceTrigger=PropertyChanged}"
+                                             Padding="8,6" MaxLength="200"/>
+                                    <TextBlock Text="自定义端点（http-json 用）" Style="{StaticResource CaptionText}" Margin="0,8,0,4"/>
+                                    <TextBox Text="{Binding SearchProviderEndpoint, UpdateSourceTrigger=PropertyChanged}"
+                                             Padding="8,6"/>
+                                    <TextBlock Style="{StaticResource SmallText}" Foreground="{DynamicResource TextTertiaryBrush}"
+                                               TextWrapping="Wrap" Margin="0,8,0,0"
+                                               Text="未配置 Key 时后端自动回落内置搜索。"/>
+                                </StackPanel>
+
+                                <!-- 记忆与费用 -->
+                                <TextBlock Text="记忆与费用" Style="{StaticResource GroupHeaderStyle}"/>
+                                <StackPanel Margin="4,0,0,8">
+                                    <TextBlock Text="{Binding MemoryStatsText}" Style="{StaticResource BodyText}" TextWrapping="Wrap"/>
+                                    <TextBlock Text="{Binding CostStatsText}" Style="{StaticResource BodyText}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                    <Button Content="刷新统计" HorizontalAlignment="Left" Margin="0,10,0,0"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Command="{Binding RefreshUsageStatsCommand}"
+                                            Padding="12,6"/>
+                                    <TextBlock Style="{StaticResource SmallText}" Foreground="{DynamicResource TextTertiaryBrush}"
+                                               TextWrapping="Wrap" Margin="0,8,0,0"
+                                               Text="记忆用于跨会话个性化；费用按已知模型价目估算。"/>
+                                <!-- 记忆条目管理 -->
+                                <TextBlock Text="记忆条目" Style="{StaticResource CaptionText}" Margin="0,14,0,6"/>
+                                <ListBox ItemsSource="{Binding MemoryEntries}"
+                                         SelectedItem="{Binding SelectedMemoryEntry, Mode=TwoWay}"
+                                         MaxHeight="180"
+                                         Margin="0,0,0,8">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding Content}"
+                                                           FontSize="{StaticResource FontSizeCaption}"
+                                                           TextWrapping="Wrap"/>
+                                                <TextBlock FontSize="10"
+                                                           Foreground="{DynamicResource TextTertiaryBrush}">
+                                                    <Run Text="{Binding Category, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding Source, Mode=OneWay}"/>
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <TextBox Text="{Binding MemoryEditDraft, UpdateSourceTrigger=PropertyChanged}"
+                                         AcceptsReturn="True"
+                                         TextWrapping="Wrap"
+                                         MinHeight="48"
+                                         Margin="0,0,0,8"
+                                         Padding="8,6"/>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Content="保存修改"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Command="{Binding SaveMemoryEditCommand}"
+                                            Padding="12,6" Margin="0,0,8,0"/>
+                                    <Button Content="删除"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Command="{Binding DeleteMemoryCommand}"
+                                            Padding="12,6" Margin="0,0,8,0"/>
+                                    <Button Content="刷新"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Command="{Binding LoadMemoriesCommand}"
+                                            Padding="12,6"/>
+                                </StackPanel>
+                            </StackPanel>
                             </StackPanel>
                         </Border>
 
                         <!-- 关于卡片 -->
-                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,18">
+                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,20">
                             <StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <Path Data="{StaticResource IconBook}" Style="{StaticResource IconMdStyle}" Margin="0,0,10,0" VerticalAlignment="Center"/>
                                     <TextBlock Text="关于 DocMind" Style="{StaticResource SubtitleText}"/>
                                 </StackPanel>
@@ -1844,7 +1996,7 @@
                                 </TextBlock>
 
                                 <TextBlock Style="{StaticResource SmallText}"
-                                           Foreground="{StaticResource TextTertiaryBrush}"
+                                           Foreground="{DynamicResource TextTertiaryBrush}"
                                            TextWrapping="Wrap"
                                            Margin="0,10,0,0">
                                     DocMind 采用 100% 本地私有化知识库引擎，支持 PDF、Word、Excel、PPT、Markdown 等全格式解析与秒级向量检索，数据完全存储在本地，安全无泄漏风险。
@@ -1859,9 +2011,9 @@
         </Grid>
 
         <!-- ===== 底部固定工具条 ===== -->
-        <Border Grid.Row="1"
-                Background="{StaticResource SurfaceBrush}"
-                BorderBrush="{StaticResource BorderBrush}"
+        <Border Grid.Row="2"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="0,1,0,0"
                 Padding="16,10,16,10">
             <Grid>
@@ -1899,18 +2051,18 @@
 
                 <Border Grid.Column="2"
                         CornerRadius="{StaticResource CornerLg}"
-                        Background="{StaticResource WarningLightBrush}"
+                        Background="{DynamicResource WarningLightBrush}"
                         Padding="12,5"
                         VerticalAlignment="Center"
                         Visibility="{Binding IsDirty, Converter={StaticResource BoolToVis}}">
                     <StackPanel Orientation="Horizontal">
                         <Ellipse Width="6" Height="6"
-                                 Fill="{StaticResource WarningBrush}"
+                                 Fill="{DynamicResource WarningBrush}"
                                  VerticalAlignment="Center"
                                  Margin="0,0,6,0"/>
                         <TextBlock Text="有未保存的修改"
                                    Style="{StaticResource SmallText}"
-                                   Foreground="{StaticResource WarningBrush}"/>
+                                   Foreground="{DynamicResource WarningBrush}"/>
                     </StackPanel>
                 </Border>
             </Grid>

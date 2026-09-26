@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from doc2mind.core.config import Settings
+from doc2mind.core.loader.base import make_source, stream_file_hash
 from doc2mind.core.loader.detect import is_supported
 from doc2mind.core.pipeline import ingest_path, run_background_curate
 from doc2mind.core.store.sqlite_vec import VectorStore
@@ -62,7 +63,7 @@ class FileWatcher:
         self._pending: set[str] = set()
         self._flush_timer: threading.Timer | None = None
         # 单 worker 串行摄入
-        self._queue: queue.Queue[str | None] = queue.Queue()
+        self._queue: queue.Queue[tuple[str, str, str | None] | None] = queue.Queue()
         self._worker: threading.Thread | None = None
 
     @property
@@ -100,6 +101,16 @@ class FileWatcher:
             def on_modified(self, event: FileSystemEvent) -> None:
                 if not event.is_directory:
                     self.outer._schedule_ingest(event.src_path)
+
+            def on_deleted(self, event: FileSystemEvent) -> None:
+                if not event.is_directory:
+                    self.outer._schedule_file_event("deleted", event.src_path)
+
+            def on_moved(self, event: Any) -> None:
+                if not event.is_directory:
+                    self.outer._schedule_file_event(
+                        "moved", event.src_path, event.dest_path
+                    )
 
         handler = _Handler(self)
         self._observer = Observer()
@@ -200,7 +211,23 @@ class FileWatcher:
             self._pending.clear()
             self._flush_timer = None
         for path_str in batch:
-            self._queue.put(path_str)
+            self._queue.put(("ingest", path_str, None))
+
+    def _schedule_file_event(
+        self, kind: str, source_path: str, destination_path: str | None = None
+    ) -> None:
+        """把删除/移动交给同一个串行 worker，避免与导入并发写库。"""
+        try:
+            source = str(Path(source_path).resolve())
+            destination = (
+                str(Path(destination_path).resolve()) if destination_path else None
+            )
+        except OSError:
+            return
+
+        with self._lock:
+            self._ensure_worker_locked()
+            self._queue.put((kind, source, destination))
 
     # --- 执行：单 worker 串行摄入 ---
 
@@ -210,9 +237,15 @@ class FileWatcher:
             if item is None:  # 停止哨兵
                 break
             try:
-                self._ingest_file(Path(item))
+                kind, source, destination = item
+                if kind == "ingest":
+                    self._ingest_file(Path(source))
+                elif kind == "deleted":
+                    self._emit_source_missing(Path(source))
+                elif kind == "moved" and destination is not None:
+                    self._handle_moved(Path(source), Path(destination))
             except Exception as e:  # noqa: BLE001 — 单文件异常不影响 worker
-                logger.warning("自动摄入文件异常（%s）: %s", item, e)
+                logger.warning("文件监控事件处理异常（%s）: %s", item, e)
 
     def _shared_store(self) -> VectorStore | None:
         """取共享单例 store（未就绪返回 None，由 ingest_path 自行兜底）。"""
@@ -223,7 +256,121 @@ class FileWatcher:
         except Exception:  # noqa: BLE001 — 单例未就绪时回退独立 store
             return None
 
-    def _ingest_file(self, p: Path) -> None:
+    def _notify(self, payload: dict[str, Any]) -> None:
+        if self._on_ingested is None:
+            return
+        try:
+            self._on_ingested(payload)
+        except Exception as cb_err:  # noqa: BLE001
+            logger.warning("on_ingested 回调异常: %s", cb_err)
+
+    def _emit_move_ingest_failure(self, p: Path, error: str) -> None:
+        self._notify(
+            {
+                "type": "file_ingested",
+                "path": make_source(p),
+                "collection": self._collection,
+                "result": "failed",
+                "document_id": None,
+                "error": error,
+            }
+        )
+
+    def _emit_source_missing(
+        self, p: Path, store: VectorStore | None = None
+    ) -> None:
+        store = store or self._shared_store()
+        if store is None:
+            return
+        source = make_source(p)
+        try:
+            docs = store.find_documents_by_source(source)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("查询已删除文件来源失败（%s）: %s", source, e)
+            return
+
+        if p.is_file():
+            return
+        for doc in docs:
+            self._notify(
+                {
+                    "type": "file_source_missing",
+                    "path": doc.source,
+                    "collection": doc.collection,
+                    "document_id": doc.id,
+                    "result": "source_missing",
+                    "error": "源文件已不存在；知识库中的索引内容仍保留",
+                }
+            )
+
+    def _handle_moved(self, source_path: Path, destination_path: Path) -> None:
+        """内容未变时跟随路径移动；内容变化则保留旧知识并摄入新文件。"""
+        store = self._shared_store()
+        old_source = make_source(source_path)
+        new_source = make_source(destination_path)
+        docs = []
+        if store is not None:
+            try:
+                docs = store.find_documents_by_source(old_source)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("查询移动前来源失败（%s）: %s", old_source, e)
+
+        if not is_supported(destination_path):
+            self._emit_source_missing(source_path, store)
+            return
+        if not destination_path.is_file():
+            self._emit_source_missing(source_path, store)
+            return
+
+        try:
+            file_hash, _ = stream_file_hash(destination_path)
+        except OSError as e:
+            logger.warning("读取移动后的文件失败（%s）: %s", destination_path, e)
+            self._emit_source_missing(source_path, store)
+            self._emit_move_ingest_failure(
+                destination_path,
+                f"无法读取移动后的文件: {e}。请检查文件是否仍存在及当前进程是否有读取权限，然后重新保存或导入该文件。",
+            )
+            return
+
+        if store is not None and any(doc.file_hash == file_hash for doc in docs):
+            try:
+                if self._write_lock is not None:
+                    with self._write_lock:
+                        moved = store.relocate_documents(
+                            old_source, new_source, file_hash
+                        )
+                else:
+                    moved = store.relocate_documents(
+                        old_source, new_source, file_hash
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("更新移动后文档来源失败（%s）: %s", destination_path, e)
+                moved = 0
+            if moved:
+                self._notify(
+                    {
+                        "type": "file_moved",
+                        "path": new_source,
+                        "old_path": old_source,
+                        "result": "source_updated",
+                        "document_id": docs[0].id if len(docs) == 1 else None,
+                    }
+                )
+                return
+
+        self._emit_source_missing(source_path, store)
+        try:
+            # 移动后的路径必须保留自己的来源记录；普通按内容去重会留下无来源的新文件。
+            self._ingest_file(destination_path, force=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("移动后的文件摄入失败（%s）: %s", destination_path, e)
+            self._emit_move_ingest_failure(
+                destination_path,
+                f"移动后的文件摄入失败: {e}。请检查文件格式和后端状态后重新导入。",
+            )
+
+    def _ingest_file(self, p: Path, *, force: bool = False) -> None:
         if not p.is_file():
             return
 
@@ -236,6 +383,7 @@ class FileWatcher:
                 settings=self._settings,
                 collection=self._collection,
                 recursive=False,
+                force=force,
                 store=store,
                 cancel_event=None,
             )
@@ -264,14 +412,11 @@ class FileWatcher:
             "failed" if summary.failed > 0 else "skipped"
         )
         payload = {
+            "type": "file_ingested",
             "path": str(p),
             "collection": self._collection,
             "result": status,
             "document_id": item.document_id if item is not None else None,
             "error": item.error if item is not None else "摄入失败",
         }
-        if self._on_ingested is not None:
-            try:
-                self._on_ingested(payload)
-            except Exception as cb_err:  # noqa: BLE001
-                logger.warning("on_ingested 回调异常: %s", cb_err)
+        self._notify(payload)

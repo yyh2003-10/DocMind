@@ -28,6 +28,23 @@ public class ThinkingStepTests
     }
 
     [Fact]
+    public void Parse_LocalHitAndCite_ShowsHonestCounts()
+    {
+        var ok = ThinkingStep.Parse("✔ 检索知识库：命中 3 个分块 · 可引用 3（a.md）");
+        Assert.Equal("库内命中 3 · 可引用 3", ok.Summary);
+
+        var zero = ThinkingStep.Parse("✔ 检索知识库：命中 5 个分块 · 可引用 0（低分丢弃 3 / 主题不符 2 / 降为背景 0）（x.md）");
+        Assert.Equal("库内命中 5 · 可引用 0", zero.Summary);
+    }
+
+    [Fact]
+    public void Parse_DefinitionStrategyPill()
+    {
+        var step = ThinkingStep.Parse("✔ 回答策略：定义题结构化（deep_qa（可引用 2 / 库内 0 / 深度联网 True））");
+        Assert.Equal("定义题结构化", step.Summary);
+    }
+
+    [Fact]
     public void Parse_LocalMiss()
     {
         var step = ThinkingStep.Parse("✔ 检索知识库：未命中本地分块");
@@ -60,6 +77,25 @@ public class ThinkingStepTests
     {
         var none = ThinkingStep.Parse("✔ 联网搜索：无需联网检索或未检索到高相关页面");
         Assert.Equal("联网 · 无结果", none.Summary);
+    }
+
+    [Fact]
+    public void Parse_AgentToolAndRescue_Summary()
+    {
+        var tool = ThinkingStep.Parse("调用工具 web_search");
+        Assert.Equal("工具 · 联网搜索", tool.Summary);
+        var kb = ThinkingStep.Parse("调用工具 kb_search");
+        Assert.Equal("工具 · 知识库", kb.Summary);
+        var plan = ThinkingStep.Parse("Agent 规划：knowledge_base + web_search");
+        Assert.Equal("Agent 规划", plan.Summary);
+        var rescue = ThinkingStep.Parse("✔ 联网证据偏弱（可引用 1），追加改写检索：「挠度 定义...」");
+        Assert.Equal("联网 · 补搜", rescue.Summary);
+        var modeAgent = ThinkingStep.Parse("✔ 回答模式：Agent 工具循环 · 自动模式：深度联网 + 研究/定义型问题 → Agent 工具循环");
+        Assert.Equal("模式 · Agent", modeAgent.Summary);
+        var modeRag = ThinkingStep.Parse("✔ 回答模式：RAG 知识库问答 · 用户指定 RAG 模式");
+        Assert.Equal("模式 · RAG", modeRag.Summary);
+        var modeDegrade = ThinkingStep.Parse("⚠ 回答模式：RAG 知识库问答 · 后端未开启 Agent（agent_mode_enabled=false），本轮回落 RAG");
+        Assert.Equal("模式 · 回落 RAG", modeDegrade.Summary);
     }
 
     [Fact]
@@ -110,6 +146,43 @@ public class ThinkingStepTests
         var noDetail = ThinkingStep.Parse("正在生成回答...");
         noDetail.ToggleCommand.Execute(null);
         Assert.False(noDetail.IsExpanded);
+    }
+
+    [Fact]
+    public void Parse_LlmMappingUnavailable_CompactsToWarn()
+    {
+        var step = ThinkingStep.Parse("已使用或映射（LLM 映射不可用）");
+        Assert.Equal(ThinkingStepKind.Warn, step.Kind);
+        Assert.True(step.IsDegraded);
+        Assert.Equal("LLM 映射不可用", step.Summary);
+        Assert.Contains("映射不可用", step.Detail);
+        Assert.True(step.HasDetail);
+    }
+
+    [Fact]
+    public void Parse_NoChangeResult_IsNoiseDone()
+    {
+        var step = ThinkingStep.Parse("✔ 内存表：无变化");
+        Assert.Equal(ThinkingStepKind.Done, step.Kind);
+        Assert.True(step.IsNoise);
+        Assert.False(step.IsDegraded);
+    }
+
+    [Fact]
+    public void Parse_AgentToolResultNoise_IsCompacted()
+    {
+        var step = ThinkingStep.Parse("✔ 工具结果 kb_search: 无变化");
+        Assert.True(step.IsNoise);
+        Assert.Equal(ThinkingStepKind.Done, step.Kind);
+    }
+
+    [Fact]
+    public void Parse_UnknownDegradedLine_UsesWarnAndShortSummary()
+    {
+        var step = ThinkingStep.Parse("知识库检索 | 知识提取 | 文本投影（LLM 结果不可用）");
+        Assert.Equal(ThinkingStepKind.Warn, step.Kind);
+        Assert.True(step.IsDegraded);
+        Assert.Equal("LLM 结果不可用", step.Summary);
     }
 }
 

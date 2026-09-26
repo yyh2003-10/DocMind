@@ -50,10 +50,20 @@ def builtin_tool_specs() -> list[ToolSpec]:
         ToolSpec(
             tool_id="web_search",
             display_name="联网搜索",
-            description="检索公开网络资料，补充知识库未覆盖的最新信息。",
+            description=(
+                "检索公开网络资料，补充知识库未覆盖的最新信息。"
+                "证据不足或来源单一时，可用不同关键词再次调用以交叉印证。"
+            ),
             parameters_schema={
                 "type": "object",
-                "properties": {"query": {"type": "string"}},
+                "properties": {
+                    "query": {"type": "string", "description": "检索词"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["normal", "deep"],
+                        "description": "normal=常规；deep=扩源比对",
+                    },
+                },
                 "required": ["query"],
             },
         ),

@@ -118,6 +118,7 @@
     #viewerContainer {
       flex: 1;
       overflow: auto;
+      overscroll-behavior: contain;
       position: absolute;
       top: 38px;
       bottom: 0;
@@ -133,6 +134,14 @@
       border-radius: 4px;
       overflow: hidden;
       position: relative;
+    }
+
+    .pdfViewer .page canvas {
+      image-rendering: auto;
+    }
+
+    .textLayer .docmind-citation-highlight {
+      opacity: 0.95;
     }
 
     /* 高亮核心样式与呼吸动效 */
@@ -217,6 +226,7 @@
     </div>
 
     <div class="toolbar-group">
+      <button id="relocateBtn" class="btn" title="重新定位到引用段落">定位</button>
       <button id="zoomOutBtn" class="btn" title="缩小">-</button>
       <button id="zoomFitBtn" class="btn" title="适合宽度">自适应</button>
       <button id="zoomInBtn" class="btn" title="放大">+</button>

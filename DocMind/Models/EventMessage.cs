@@ -7,6 +7,7 @@ public record EventMessage(
     [property: JsonPropertyName("type")] string Type,
     [property: JsonPropertyName("ts")] string? Ts = null,
     [property: JsonPropertyName("path")] string? Path = null,
+    [property: JsonPropertyName("old_path")] string? OldPath = null,
     [property: JsonPropertyName("collection")] string? Collection = null,
     [property: JsonPropertyName("result")] string? Result = null,
     [property: JsonPropertyName("document_id")] string? DocumentId = null,

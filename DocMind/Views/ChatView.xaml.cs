@@ -90,6 +90,56 @@ public partial class ChatView : UserControl
         }
     }
 
+    /// <summary>
+    /// 消息气泡内的 FlowDocumentScrollViewer / TextBox 会在 MouseWheel 冒泡阶段吞掉滚轮
+    /// （即使 VerticalScrollBarVisibility=Disabled），导致外层 MessageScroll 收不到滚轮、
+    /// 鼠标停在回答正文上无法上下滚动。在 Preview 隧道阶段由外层统一消费并滚动消息列表。
+    /// </summary>
+    private void MessageScroll_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (sender is not ScrollViewer sv)
+        {
+            return;
+        }
+
+        // 先放行给事件源所在的内层可滚动控件（WebView2 气泡、思考详情等）：
+        // 内层还能沿滚轮方向继续滚时绝不接管，否则其内部滚动全部失效；
+        // 内层已到边界（或无内层滚动区）才由外层统一滚动。
+        if (e.OriginalSource is DependencyObject source && CanInnerScroll(source, e.Delta))
+        {
+            return; // 不置 Handled，让事件正常到达内层
+        }
+
+        // 一格滚轮（±120）约等于 3 行，按 24px 行高折算，与系统默认手感接近
+        double pixels = e.Delta / 120.0 * 48.0;
+        double maxOffset = Math.Max(0, sv.ExtentHeight - sv.ViewportHeight);
+        double newOffset = Math.Max(0, Math.Min(maxOffset, sv.VerticalOffset - pixels));
+        sv.ScrollToVerticalOffset(newOffset);
+        e.Handled = true;
+    }
+
+    /// <summary>判断滚轮事件源到外层之间是否存在可沿本次方向继续滚动的内层滚动区。</summary>
+    private static bool CanInnerScroll(DependencyObject source, double delta)
+    {
+        DependencyObject? current = source;
+        while (current is not null)
+        {
+            if (current is ScrollViewer inner && inner.ScrollableHeight > 0)
+            {
+                return delta < 0
+                    ? inner.VerticalOffset < inner.ScrollableHeight // 向下滚（内容上移）
+                    : inner.VerticalOffset > 0;                     // 向上滚
+            }
+            // 事件源可能是 Run/TextElement 等 ContentElement（非 Visual），
+            // 直接调 VisualTreeHelper.GetParent 会抛 InvalidOperationException；
+            // 非 Visual 节点用逻辑树向上，仍找不到再终止。
+            current = current is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D
+                ? System.Windows.Media.VisualTreeHelper.GetParent(current)
+                : System.Windows.LogicalTreeHelper.GetParent(current);
+        }
+        return false;
+    }
+
     /// <summary>处理内容增加时的自动滚动，保持在底部时的吸附效果（用户向上回看时不强行拉回底部）。</summary>
     private void MessageScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
@@ -132,6 +182,40 @@ public partial class ChatView : UserControl
         if (sender is FlowDocumentScrollViewer viewer)
         {
             viewer.Document = null;
+        }
+    }
+
+    /// <summary>HTML 体验气泡加载完成：接线引用角标桥（气泡内 a.cite 点击 → 复用 SourceRef 打开链路）。</summary>
+    private void HtmlBubble_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Controls.HtmlAnswerBubble bubble)
+        {
+            return;
+        }
+        if (bubble.DataContext is not ViewModels.ChatMessage msg || _vm is null)
+        {
+            return;
+        }
+        bubble.CiteRequested -= OnHtmlBubbleCiteRequested;
+        bubble.CiteRequested += OnHtmlBubbleCiteRequested;
+    }
+
+    private void OnHtmlBubbleCiteRequested(object? sender, int index)
+    {
+        if (sender is not Controls.HtmlAnswerBubble bubble)
+        {
+            return;
+        }
+        if (bubble.DataContext is not ViewModels.ChatMessage msg)
+        {
+            return;
+        }
+        // 复用现有链路：展开来源列表 + 高亮 + 打开抽屉
+        msg.NotifySourceMarker(index);
+        var src = msg.Sources?.FirstOrDefault(s => s.Index == index);
+        if (src is not null)
+        {
+            _vm?.OpenSourceCommand.Execute(src);
         }
     }
 

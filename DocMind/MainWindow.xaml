@@ -72,8 +72,8 @@
 
     <!-- 根容器 — 模拟窗口内容区，带圆角 -->
     <Border x:Name="WindowBorder"
-            Background="{StaticResource BackgroundBrush}"
-            BorderBrush="{StaticResource BorderBrush}"
+            Background="{DynamicResource BackgroundBrush}"
+            BorderBrush="{DynamicResource BorderBrush}"
             BorderThickness="1"
             CornerRadius="{StaticResource CornerLg}"
             SnapsToDevicePixels="True"
@@ -92,10 +92,10 @@
                  ===================================================================== -->
             <Border x:Name="TitleBarBorder"
                     Grid.Row="0"
-                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}"
                     BorderThickness="0,0,0,1"
-                    Background="{StaticResource SidebarBackgroundBrush}">
-                <Grid Margin="12,0">
+                    Background="{DynamicResource SidebarBackgroundBrush}">
+                <Grid Margin="16,0,12,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
@@ -110,7 +110,7 @@
                                 Padding="6,2"
                                 VerticalAlignment="Center">
                             <TextBlock Text="DocMind"
-                                       FontSize="12.5"
+                                       FontSize="{StaticResource FontSizeCaption}"
                                        FontWeight="Bold"
                                        Foreground="{DynamicResource PrimaryBrush}"
                                        VerticalAlignment="Center"/>
@@ -121,7 +121,7 @@
                                 Margin="6,0,0,0">
                             <TextBlock Text="v1.0"
                                        Style="{DynamicResource ChipTextStyle}"
-                                       FontSize="10.5"/>
+                                       FontSize="{StaticResource FontSizeMicro}"/>
                         </Border>
                         <Border Style="{DynamicResource StatusPillStyle}"
                                 Background="{DynamicResource SurfaceBrush}"
@@ -135,7 +135,7 @@
                                          VerticalAlignment="Center"/>
                                 <TextBlock Text="{Binding BackendStatusText, Mode=OneWay}"
                                            Style="{DynamicResource ChipTextStyle}"
-                                           FontSize="10.5"/>
+                                           FontSize="{StaticResource FontSizeMicro}"/>
                             </StackPanel>
                         </Border>
                         <!-- 离线时的一键启动/重连操作 -->
@@ -143,7 +143,7 @@
                                 WindowChrome.IsHitTestVisibleInChrome="True"
                                 Command="{Binding StartBackendCommand}"
                                 Style="{StaticResource PrimaryButtonStyle}"
-                                FontSize="11"
+                                FontSize="{StaticResource FontSizeSmall}"
                                 Padding="8,2"
                                 Height="22"
                                 MinHeight="22"
@@ -155,7 +155,7 @@
                         <Button Command="{Binding FocusBackgroundTaskCommand}"
                                 WindowChrome.IsHitTestVisibleInChrome="True"
                                 Style="{StaticResource SecondaryButtonStyle}"
-                                FontSize="11"
+                                FontSize="{StaticResource FontSizeSmall}"
                                 Padding="8,2"
                                 Height="22"
                                 MinHeight="22"
@@ -163,9 +163,9 @@
                                 Visibility="{Binding HasBackgroundTask, Converter={StaticResource BoolToVis}}"
                                 ToolTip="点击快速跳转至进行中的后台任务">
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <Ellipse Width="6" Height="6" Fill="{StaticResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                <Ellipse Width="6" Height="6" Fill="{DynamicResource PrimaryBrush}" Margin="0,0,6,0"/>
                                 <TextBlock Text="{Binding BackgroundTaskSummary, Mode=OneWay}"
-                                           Foreground="{StaticResource PrimaryBrush}"
+                                           Foreground="{DynamicResource PrimaryBrush}"
                                            FontWeight="SemiBold"/>
                             </StackPanel>
                         </Button>
@@ -205,10 +205,10 @@
                                 Margin="2,0,-4,0"
                                 Cursor="Hand"
                                 Background="Transparent"
-                                Foreground="{StaticResource TextSecondaryBrush}"
+                                Foreground="{DynamicResource TextSecondaryBrush}"
                                 BorderThickness="0"
                                 Click="CloseButton_Click">
-                            <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource TextSecondaryBrush}"/>
+                            <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextSecondaryBrush}"/>
                             <Button.Style>
                                 <Style TargetType="Button">
                                     <Setter Property="Template">
@@ -278,9 +278,9 @@
                     <StackPanel VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal">
                             <Path Data="{StaticResource IconWarning}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource DangerBrush}" Margin="0,0,6,0"/>
-                            <TextBlock Text="后端服务离线" FontWeight="Bold" FontSize="13" Foreground="{DynamicResource DangerBrush}"/>
+                            <TextBlock Text="后端服务离线" FontWeight="Bold" FontSize="{StaticResource FontSizeBody}" Foreground="{DynamicResource DangerBrush}"/>
                         </StackPanel>
-                        <TextBlock Text="无法连接到后端服务，部分功能暂不可用。请检查后重启。" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,2,0,0"/>
+                        <TextBlock Text="无法连接到后端服务，部分功能暂不可用。请检查后重启。" FontSize="{StaticResource FontSizeSmall}" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,2,0,0"/>
                     </StackPanel>
                 </DockPanel>
             </Border>
@@ -314,7 +314,7 @@
                         </Grid.RowDefinitions>
 
                         <!-- 顶部灵动品牌图标 -->
-                        <Border Grid.Row="0" Width="36" Height="36" CornerRadius="8"
+                        <Border Grid.Row="0" Width="36" Height="36" CornerRadius="{StaticResource CornerMd}"
                                 Background="{DynamicResource PrimaryLightBrush}"
                                 HorizontalAlignment="Center" Margin="0,0,0,12"
                                 ToolTip="DocMind 本地向量知识库">
@@ -436,7 +436,7 @@
                 <Border x:Name="DrawerHost"
                         Grid.Column="1"
                         Background="{DynamicResource DrawerBackgroundBrush}"
-                        BorderBrush="{DynamicResource BorderLightBrush}"
+                        BorderBrush="{DynamicResource ElevatedBorderBrush}"
                         BorderThickness="0,0,1,0"
                         SnapsToDevicePixels="True"
                         ClipToBounds="True"
@@ -506,7 +506,7 @@
                                     ToolTip="开启新会话">
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                     <Path Data="{StaticResource IconPlus}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextInverseBrush}" Margin="0,0,6,0"/>
-                                    <TextBlock Text="新建对话" FontSize="13" FontWeight="SemiBold"/>
+                                    <TextBlock Text="新建对话" FontSize="{StaticResource FontSizeBody}" FontWeight="SemiBold"/>
                                 </StackPanel>
                             </Button>
                             <Button Grid.Column="1"
@@ -524,7 +524,7 @@
                             <TextBox Text="{Binding ChatViewModel.SessionSearchFilter, UpdateSourceTrigger=PropertyChanged}"
                                      Padding="26,5,22,5"
                                      Height="32"
-                                     FontSize="12"
+                                     FontSize="{StaticResource FontSizeCaption}"
                                      VerticalContentAlignment="Center"
                                      Background="{DynamicResource CardBrush}"
                                      BorderBrush="{DynamicResource BorderLightBrush}"
@@ -538,7 +538,7 @@
                                   Margin="8,0,0,0"
                                   IsHitTestVisible="False"/>
                             <TextBlock Text="搜索会话…"
-                                       FontSize="11.5"
+                                       FontSize="{StaticResource FontSizeSmall}"
                                        Foreground="{DynamicResource TextMutedBrush}"
                                        VerticalAlignment="Center"
                                        HorizontalAlignment="Left"
@@ -583,7 +583,7 @@
                                                          VerticalAlignment="Center"
                                                          Margin="0,0,6,0"/>
                                                 <TextBlock Text="{Binding DisplayTitle}"
-                                                           FontSize="12.5"
+                                                           FontSize="{StaticResource FontSizeCaption}"
                                                            FontWeight="Medium"
                                                            Foreground="{DynamicResource TextPrimaryBrush}"
                                                            TextTrimming="CharacterEllipsis"
@@ -591,7 +591,7 @@
                                                            ToolTip="{Binding Title}"/>
                                             </StackPanel>
                                             <TextBlock Text="{Binding Tag}"
-                                                       FontSize="10"
+                                                       FontSize="{StaticResource FontSizeMicro}"
                                                        Foreground="{DynamicResource TextTertiaryBrush}"
                                                        Margin="12,2,0,0"
                                                        TextTrimming="CharacterEllipsis"/>
@@ -605,7 +605,7 @@
                                                 VerticalAlignment="Center"
                                                 Margin="2,0,0,0"
                                                 ToolTip="删除此会话">
-                                            <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Stroke="{StaticResource TextSecondaryBrush}"/>
+                                            <Path Data="{StaticResource IconClose}" Style="{StaticResource IconSmStyle}" Stroke="{DynamicResource TextSecondaryBrush}"/>
                                             <Button.Style>
                                                 <Style TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
                                                     <Setter Property="Opacity" Value="0"/>
@@ -637,7 +637,7 @@
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                 <Path Data="{StaticResource IconLock}" Style="{StaticResource IconSmStyle}" Width="12" Height="12" Margin="0,0,4,0"/>
                                 <TextBlock Text="本地私有存储 · 永久留存"
-                                           FontSize="10.5"
+                                           FontSize="{StaticResource FontSizeMicro}"
                                            Foreground="{DynamicResource TextMutedBrush}"
                                            VerticalAlignment="Center"/>
                             </StackPanel>
@@ -650,7 +650,7 @@
                      ═══════════════════════════════════════════════════════════════ -->
                 <!-- 画布底色：防深色页面首帧露白 -->
                 <Border Grid.Column="2" Background="{DynamicResource CanvasBackgroundBrush}">
-                    <cc:TransitioningContentControl Content="{Binding CurrentPage}"
+                    <cc:TransitioningContentControl Content="{Binding CurrentView}"
                                                     Margin="0"
                                                     Focusable="False"/>
                 </Border>
@@ -660,10 +660,10 @@
                  状态栏 (Row 3)
                  ===================================================================== -->
             <Border Grid.Row="3"
-                    Background="{StaticResource SidebarBackgroundBrush}"
-                    BorderBrush="{StaticResource BorderBrush}"
+                    Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}"
                     BorderThickness="0,1,0,0">
-                <Grid Margin="12,0">
+                <Grid Margin="16,0,14,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
@@ -702,7 +702,7 @@
                             <TextBlock Text="处理中"
                                        Style="{DynamicResource ChipTextStyle}"
                                        Foreground="{DynamicResource PrimaryBrush}"
-                                       FontSize="10.5"/>
+                                       FontSize="{StaticResource FontSizeMicro}"/>
                         </StackPanel>
                     </Border>
                 </Grid>

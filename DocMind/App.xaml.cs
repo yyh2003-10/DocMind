@@ -276,6 +276,29 @@ namespace DocMind
 
             base.OnStartup(e);
 
+            // ===== 启动参数探针：--probe-view=SettingsView 直接实例化视图并记录完整异常堆栈（诊断白屏用） =====
+            var probeArg = e.Args.FirstOrDefault(a => a.StartsWith("--probe-view="));
+            if (probeArg is not null)
+            {
+                var viewName = probeArg["--probe-view=".Length..];
+                try
+                {
+                    var viewType = GetType().Assembly.GetType($"DocMind.Views.{viewName}")
+                        ?? throw new Exception($"未找到视图类型 DocMind.Views.{viewName}");
+                    var view = (System.Windows.UIElement)Activator.CreateInstance(viewType)!;
+                    DebugLog.Info($"[Probe] {viewName} 实例化成功", "Probe");
+                }
+                catch (Exception pex)
+                {
+                    DebugLog.Error(pex, "Probe", $"[Probe] {viewName} 实例化失败");
+                }
+                finally
+                {
+                    Current.Shutdown();
+                }
+                return;
+            }
+
             // ===== 全局异常捕获：所有未处理异常先落日志，事后可到「调试日志」页或日志文件排查 =====
             DispatcherUnhandledException += OnDispatcherUnhandledException;
             AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
@@ -295,7 +318,6 @@ namespace DocMind
             var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
             mainWindow.DataContext = _serviceProvider.GetRequiredService<MainViewModel>();
             mainWindow.Show();
-
             // 系统托盘
             _trayService = new TrayService(mainWindow);
             // 主窗口最小化 → 隐藏到托盘
@@ -424,12 +446,22 @@ namespace DocMind
                 {
                     eventSubscription = api.SubscribeEvents(msg =>
                     {
-                        if (msg.Type == "file_ingested")
+                        if (msg.Type is "file_ingested" or "file_source_missing" or "file_moved")
                         {
                             Dispatcher.InvokeAsync(() =>
                             {
                                 var fileName = System.IO.Path.GetFileName(msg.Path ?? "");
-                                if (msg.Result == "ingested")
+                                if (msg.Type == "file_source_missing")
+                                {
+                                    notifications.Warning(
+                                        $"源文件已不可访问，索引内容仍保留: {fileName}",
+                                        "监控来源缺失");
+                                }
+                                else if (msg.Type == "file_moved")
+                                {
+                                    notifications.Success($"已同步文件来源路径: {fileName}", "自动监控");
+                                }
+                                else if (msg.Result == "ingested")
                                 {
                                     notifications.Success($"已自动摄入文件: {fileName}（{msg.Collection ?? "default"}）", "自动监控摄入");
                                 }
@@ -437,14 +469,9 @@ namespace DocMind
                                 {
                                     notifications.Warning($"自动摄入失败: {fileName}\n{msg.Error ?? ""}", "监控摄入失败");
                                 }
-                            });
 
-                            try
-                            {
-                                var docsVm = _serviceProvider.GetService<DocumentsViewModel>();
-                                docsVm?.InvalidateCache();
-                            }
-                            catch { }
+                                _serviceProvider.GetService<MainViewModel>()?.HandleFileWatcherEvent();
+                            });
                         }
                     });
                 }
