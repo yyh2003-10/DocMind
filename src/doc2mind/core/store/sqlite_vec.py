@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from doc2mind.core.chunker.base import Chunk
+from doc2mind.core.store.contracts import StoreCapabilities, StoreError, StoreHealth
 from doc2mind.core.store.tokenizer import (
     segment,
     segment_query,
@@ -44,10 +45,6 @@ logger = logging.getLogger(__name__)
 # 探针缓存：本进程内当前 sqlite-vec 扩展是否支持 INT8 列写入。
 # None = 未探测；True/False = 缓存结果。避免每次 open() 都建表再删。
 _INT8_SUPPORTED: bool | None = None
-
-
-class StoreError(Exception):
-    """存储异常。"""
 
 
 def _normalize_collections(
@@ -147,8 +144,11 @@ def _build_fts5_match_unicode(tokens: list[str]) -> str:
 
     unicode61 把连续 CJK 保留为单个 token（含多字词），故对 jieba 已按空格
     切分的中文词/英文词/数字做精确匹配即可；空返回 ""。
+    token 内的双引号按 FTS5 规则转义为两个引号，否则查询含 `"` 时
+    MATCH 表达式引号失配，FTS5 把后续裸词（如 ROW）当列名报
+    "no such column"（真实故障：库内代码片段含 `"ROW"`）。
     """
-    quoted = [f'"{t}"' for t in tokens if t]
+    quoted = [f'"{t.replace(chr(34), chr(34) * 2)}"' for t in tokens if t]
     return " OR ".join(quoted) if quoted else ""
 
 
@@ -383,10 +383,10 @@ def sparse_token_weights(
     return items[:max_terms]
 
 
-class VectorStore:
-    """sqlite-vec 向量存储封装。
+class SqliteKnowledgeStore:
+    """SQLite/FTS5 implementation of the knowledge-store contract.
 
-    线程安全：单个 connection 由 lock 保护；多线程建议每线程一个 VectorStore。
+    线程安全：单个 connection 由 lock 保护；多线程建议每线程一个实例。
     """
 
     def __init__(
@@ -996,11 +996,15 @@ class VectorStore:
     ) -> int:
         """在已开启的事务内插入分块（调用方负责锁 / BEGIN / COMMIT / ROLLBACK）。
 
-        两段式批量写：先逐行写 vec_chunks 拿 rowid（vec0 虚拟表的 rowid
-        由 C 层分配，保持与历史一致的分配方式），随后把 chunks_meta /
+        两段式批量写：先按避撞 id 写 vec_chunks，再把 chunks_meta /
         bm25_index / sparse_terms 合并为 executemany 批量写。jieba 分词、
         sparse 词项、extra JSON 等纯 Python 开销在收集期完成，长文档
         （数千分块）的 SQL 往返从每 chunk 3-4 次降为 3 次。
+
+        id 分配：取 max(vec_chunks.id, chunks_meta.id)+1 后递增，显式写入
+        两侧。不能依赖 lastrowid —— vec0 自动分配与 chunks_meta 孤儿行
+        可能撞主键（UNIQUE constraint failed: chunks_meta.id），导致整篇
+        文档写库失败。
         """
         excluded_keys = {
             "type", "page", "sheet", "slide", "heading",
@@ -1012,17 +1016,26 @@ class VectorStore:
         vec_ids: list[int] = []
         inserted = 0
 
+        meta_max = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM chunks_meta"
+        ).fetchone()[0]
+        vec_max = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM vec_chunks"
+        ).fetchone()[0]
+        next_id = int(meta_max or 0) + 1
+        if int(vec_max or 0) >= next_id:
+            next_id = int(vec_max or 0) + 1
+
         # --- 第一段：向量表逐行插入，收集分配到的 chunk id ---
         for chunk, emb in zip(chunks, embeddings, strict=False):
             # 序列化向量为 bytes（vec0 接受 BLOB）
             emb_bytes = self._to_bytes(emb)
-            cur = conn.execute(
-                "INSERT INTO vec_chunks(embedding) VALUES (?)",
-                (emb_bytes,),
+            conn.execute(
+                "INSERT INTO vec_chunks(id, embedding) VALUES (?, ?)",
+                (next_id, emb_bytes),
             )
-            vec_id = cur.lastrowid
-            if vec_id is None:
-                raise StoreError("无法获取 vec_chunks.id")
+            vec_id = next_id
+            next_id += 1
             vec_ids.append(vec_id)
 
             meta = chunk.metadata
@@ -1750,18 +1763,24 @@ class VectorStore:
                 rows = cur.fetchall()
                 if not cols:
                     return [(int(r[0]), float(r[1])) for r in rows][:top_k]
-                # collection 过滤（支持多集合）
-                result: list[tuple[int, float]] = []
-                for cid, dist in rows:
-                    meta = self._conn.execute(
-                        "SELECT collection FROM chunks_meta WHERE id = ?",
-                        (cid,),
-                    ).fetchone()
-                    if meta and meta[0] in cols:
-                        result.append((int(cid), float(dist)))
-                        if len(result) >= top_k:
-                            break
-                return result
+                # collection 过滤（支持多集合）：一次批量查询替代逐候选 N+1 SQL。
+                ids = [int(cid) for cid, _ in rows]
+                if not ids:
+                    return []
+                id_placeholders = ",".join("?" * len(ids))
+                col_placeholders = ",".join("?" * len(cols))
+                allowed = self._conn.execute(
+                    f"SELECT id FROM chunks_meta "
+                    f"WHERE id IN ({id_placeholders}) "
+                    f"AND collection IN ({col_placeholders})",
+                    [*ids, *cols],
+                ).fetchall()
+                allowed_ids = {int(row[0]) for row in allowed}
+                return [
+                    (int(cid), float(dist))
+                    for cid, dist in rows
+                    if int(cid) in allowed_ids
+                ][:top_k]
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"向量检索失败: {e}") from e
 
@@ -1847,6 +1866,12 @@ class VectorStore:
                                 merged[int(str(cid))] = float(score)
 
                     # 2) LIKE 兜底：<3 chars 短词（trigram 无法命中）
+                    if short_tokens:
+                        logger.debug(
+                            "BM25 短词路径: tokenizer=trigram short_tokens=%s "
+                            "(FTS 无法匹配，走 LIKE 子串)",
+                            short_tokens[:8],
+                        )
                     for tok in short_tokens:
                         cur = self._conn.execute(
                             f"""
@@ -1913,6 +1938,25 @@ class VectorStore:
     def sparse_available(self) -> bool:
         """稀疏向量召回路（D2）是否启用。"""
         return self.sparse_retrieval_enabled
+
+    @property
+    def capabilities(self) -> StoreCapabilities:
+        """检索后端当前可用能力；FTS5 缺失时明确报告词法检索不可用。"""
+        return StoreCapabilities(
+            backend="sqlite",
+            vector_search=True,
+            lexical_search=self._fts_available,
+            sparse_search=self.sparse_retrieval_enabled,
+        )
+
+    def health_check(self) -> StoreHealth:
+        """检查数据库连接与 sqlite-vec 可读性，不修改库内状态。"""
+        healthy = self.ping()
+        return StoreHealth(
+            backend="sqlite",
+            healthy=healthy,
+            detail=("SQLite 与 sqlite-vec 正常" if healthy else "SQLite 未打开或 sqlite-vec 不可用"),
+        )
 
     def get_chunks(self, chunk_ids: Sequence[int]) -> list[StoredChunk]:
         """按 chunk_id 批量取元数据。"""
@@ -2009,6 +2053,53 @@ class VectorStore:
                 ]
             except Exception as e:  # noqa: BLE001
                 raise StoreError(f"获取邻块上下文失败: {e}") from e
+
+    def get_heading_siblings(
+        self, chunk_id: int, limit: int = 8
+    ) -> list[StoredChunk]:
+        """按命中 chunk 取同 (source, heading) 的兄弟分块（小到大 / 章节上下文）。
+
+        命中小块时返回同标题下其余块，把「父级章节」文本并入上下文；
+        无 heading 的块回退为空（调用方可再走邻块）。
+        """
+        limit = max(0, int(limit))
+        if limit == 0:
+            return []
+        with self._lock:
+            self._require_open()
+            try:
+                anchor = self._conn.execute(
+                    "SELECT source, heading, chunk_index FROM chunks_meta WHERE id = ?",
+                    (chunk_id,),
+                ).fetchone()
+                if anchor is None or not anchor[1]:
+                    return []
+                source, heading, idx = anchor
+                cur = self._conn.execute(
+                    """
+                    SELECT cm.id, cm.content, cm.source, cm.format, cm.doc_type, cm.page,
+                           cm.heading, d.file_hash, cm.collection, d.created_at,
+                           cm.tokens, cm.chunk_index, cm.extra, cm.sheet, cm.slide, cm.language
+                    FROM chunks_meta cm
+                    LEFT JOIN documents d ON d.id = cm.document_id
+                    WHERE cm.source = ? AND cm.heading = ? AND cm.id != ?
+                    ORDER BY ABS(cm.chunk_index - ?) ASC, cm.chunk_index ASC
+                    LIMIT ?
+                    """,
+                    (source, heading, chunk_id, idx, limit),
+                )
+                return [
+                    StoredChunk(
+                        id=r[0], content=r[1], source=r[2], format=r[3],
+                        doc_type=r[4], page=r[5], heading=r[6],
+                        file_hash=r[7] or "", collection=r[8], created_at=r[9],
+                        tokens=r[10], chunk_index=r[11],
+                        extra_metadata=json.loads(r[12]) if r[12] else {},
+                    )
+                    for r in cur.fetchall()
+                ]
+            except Exception as e:  # noqa: BLE001
+                raise StoreError(f"获取同标题上下文失败: {e}") from e
 
     def list_chunks_by_document(
         self, document_id: str, limit: int = 100
@@ -2161,11 +2252,72 @@ class VectorStore:
                 conn.execute("COMMIT")
                 # 同步存储维度，供后续表结构操作保持一致
                 self.embedding_dim = int(new_dim)
+                # 清理 chunks_meta 孤儿行：历史重建不完整会留下“有元数据、
+                # 无向量”的行，与后续 lastrowid/自动 id 撞主键，导入必失败。
+                purged = self.purge_orphan_chunks()
+                if purged:
+                    logger.warning(
+                        "rebuild 后清理 chunks_meta 孤儿行 %d 条（无对应向量）",
+                        purged,
+                    )
                 return inserted
             except Exception as e:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     conn.execute("ROLLBACK")
                 raise StoreError(f"重建向量表失败: {e}") from e
+
+    def purge_orphan_chunks(self) -> int:
+        """删除 chunks_meta 中无对应 vec_chunks 向量的孤儿行，返回删除数。
+
+        孤儿行会让语义检索漏召，且其 id 会与 vec_chunks 自动分配冲突，
+        导致新文档写库报 UNIQUE constraint failed: chunks_meta.id。
+        同步清理 bm25_index / sparse_terms / chunk_entities 中的悬空引用。
+        """
+        with self._lock:
+            self._require_open()
+            conn = self._conn
+            try:
+                conn.execute("BEGIN")
+                rows = conn.execute(
+                    """
+                    SELECT id FROM chunks_meta
+                    WHERE id NOT IN (SELECT id FROM vec_chunks)
+                    """
+                ).fetchall()
+                orphan_ids = [r[0] for r in rows]
+                if not orphan_ids:
+                    conn.execute("COMMIT")
+                    return 0
+                placeholders = ",".join("?" * len(orphan_ids))
+                conn.execute(
+                    f"DELETE FROM chunks_meta WHERE id IN ({placeholders})",
+                    orphan_ids,
+                )
+                if self._fts_available:
+                    conn.execute(
+                        f"DELETE FROM bm25_index WHERE CAST(chunk_id AS INTEGER) IN ({placeholders})",
+                        orphan_ids,
+                    )
+                self._delete_sparse_in_txn(conn, orphan_ids)
+                self._delete_graph_chunk_links_in_txn(conn, orphan_ids)
+                conn.execute("COMMIT")
+                return len(orphan_ids)
+            except Exception as e:  # noqa: BLE001
+                with contextlib.suppress(Exception):
+                    conn.execute("ROLLBACK")
+                raise StoreError(f"清理孤儿分块失败: {e}") from e
+
+    def count_orphan_chunks(self) -> int:
+        """统计 chunks_meta 中无对应向量的孤儿行数（只读，供库状态告警）。"""
+        with self._lock:
+            self._require_open()
+            row = self._conn.execute(
+                """
+                SELECT COUNT(*) FROM chunks_meta
+                WHERE id NOT IN (SELECT id FROM vec_chunks)
+                """
+            ).fetchone()
+            return int(row[0] or 0)
 
     # sort 白名单 → SQL 片段（避免任意列名注入）
     SORT_CLAUSES: dict[str, str] = {
@@ -2321,6 +2473,86 @@ class VectorStore:
             except sqlite3.Error:
                 return None
 
+    def find_documents_by_source(self, source: str) -> list[StoredDocument]:
+        """按精确来源路径查找所有活跃文档（可能跨集合重复摄入）。"""
+        with self._lock:
+            self._require_open()
+            try:
+                rows = self._conn.execute(
+                    "SELECT id, source, collection, format, file_hash, size_bytes,"
+                    " page_count, chunk_count, created_at, updated_at,"
+                    " title, tags, summary, enriched_at FROM documents"
+                    " WHERE source = ? AND deleted_at IS NULL",
+                    (source,),
+                ).fetchall()
+                return [self._row_to_document(row) for row in rows]
+            except sqlite3.Error as e:
+                raise StoreError(f"按来源查找文档失败: {e}") from e
+
+    @_retry_on_locked
+    def relocate_documents(
+        self, old_source: str, new_source: str, file_hash: str
+    ) -> int:
+        """仅在内容 hash 匹配时，原子更新文档和分块中的来源路径。
+
+        返回更新的文档数；来源不存在、hash 不匹配或新路径与同集合文档冲突时返回 0。
+        """
+        if not old_source or not new_source or not file_hash:
+            return 0
+
+        with self._lock:
+            self._require_open()
+            conn = self._conn
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    "SELECT id, collection FROM documents"
+                    " WHERE source = ? AND file_hash = ? AND deleted_at IS NULL",
+                    (old_source, file_hash),
+                ).fetchall()
+                if not rows:
+                    conn.execute("COMMIT")
+                    return 0
+
+                if old_source == new_source:
+                    conn.execute("COMMIT")
+                    return len(rows)
+
+                collections = list(dict.fromkeys(str(row[1]) for row in rows))
+                collection_slots = ", ".join("?" for _ in collections)
+                conflict = conn.execute(
+                    "SELECT 1 FROM documents"
+                    " WHERE source = ? AND deleted_at IS NULL"
+                    f" AND collection IN ({collection_slots}) LIMIT 1",
+                    [new_source, *collections],
+                ).fetchone()
+                if conflict is not None:
+                    conn.execute("ROLLBACK")
+                    return 0
+
+                document_ids = [str(row[0]) for row in rows]
+                id_slots = ", ".join("?" for _ in document_ids)
+                now = _now_iso()
+                conn.execute(
+                    "UPDATE documents SET source = ?, updated_at = ?"
+                    f" WHERE id IN ({id_slots}) AND deleted_at IS NULL",
+                    [new_source, now, *document_ids],
+                )
+                conn.execute(
+                    f"UPDATE chunks_meta SET source = ? WHERE document_id IN ({id_slots})",
+                    [new_source, *document_ids],
+                )
+                conn.execute("COMMIT")
+                return len(document_ids)
+            except sqlite3.IntegrityError:
+                with contextlib.suppress(Exception):
+                    conn.execute("ROLLBACK")
+                return 0
+            except Exception as e:  # noqa: BLE001
+                with contextlib.suppress(Exception):
+                    conn.execute("ROLLBACK")
+                raise StoreError(f"更新文档来源失败: {e}") from e
+
     def get_stats(self) -> StoreStats:
         """获取存储统计。"""
         with self._lock:
@@ -2336,23 +2568,43 @@ class VectorStore:
                 ).fetchone()[0]
                 # 各集合 (doc_count, chunk_count, size_bytes)，包含空集合。
                 # 软删除文档（deleted_at 非空）不计入 doc_count。
+                # 并集：collections 表 + documents 上实际出现过的 collection
+                # （避免只建过文档、未登记 collections 表时下拉「分组不全」）
                 rows = self._conn.execute(
                     """
-                    SELECT c.name,
-                           COUNT(DISTINCT d.id),
-                           COUNT(ch.id),
-                           COALESCE(SUM(d.size_bytes), 0)
-                    FROM collections c
-                    LEFT JOIN documents d ON d.collection = c.name
-                        AND d.source != '__collection_placeholder__'
-                        AND d.deleted_at IS NULL
-                    LEFT JOIN chunks_meta ch ON ch.document_id = d.id
-                    GROUP BY c.name
+                    SELECT name FROM (
+                        SELECT c.name AS name FROM collections c
+                        UNION
+                        SELECT DISTINCT d.collection AS name FROM documents d
+                            WHERE d.source != '__collection_placeholder__'
+                              AND d.deleted_at IS NULL
+                              AND d.collection IS NOT NULL
+                              AND d.collection != ''
+                    ) t
+                    WHERE name IS NOT NULL AND name != ''
                     """
                 ).fetchall()
-                collections = {
-                    r[0]: (int(r[1]), int(r[2]), int(r[3])) for r in rows
-                }
+                all_names = [str(r[0]) for r in rows]
+                collections: dict[str, tuple[int, int, int]] = {}
+                for name in all_names:
+                    stats_row = self._conn.execute(
+                        """
+                        SELECT COUNT(DISTINCT d.id),
+                               COUNT(ch.id),
+                               COALESCE(SUM(d.size_bytes), 0)
+                        FROM documents d
+                        LEFT JOIN chunks_meta ch ON ch.document_id = d.id
+                        WHERE d.collection = ?
+                          AND d.source != '__collection_placeholder__'
+                          AND d.deleted_at IS NULL
+                        """,
+                        (name,),
+                    ).fetchone()
+                    collections[name] = (
+                        int(stats_row[0] or 0),
+                        int(stats_row[1] or 0),
+                        int(stats_row[2] or 0),
+                    )
                 return StoreStats(
                     total_documents=doc_total,
                     total_chunks=chunk_total,
@@ -2390,6 +2642,11 @@ def _vector_to_bytes_int8(vec) -> bytes:
     arr = np.clip(np.asarray(vec, dtype=np.float32), -1.0, 1.0)
     q = np.rint(arr * 127.0).astype(np.int8)
     return q.tobytes()
+
+
+# Backwards-compatible name for existing callers. New code should depend on the
+# KnowledgeStore interface and construct SqliteKnowledgeStore at the composition root.
+VectorStore = SqliteKnowledgeStore
 
 
 def _probe_vec_int8_supported(conn: sqlite3.Connection, dim: int) -> bool:

@@ -24,6 +24,25 @@ public sealed record ProviderConfig
     public int? MaxTokens { get; init; }
 }
 
+/// <summary>研究任务规格。与用户问题分离，后端不会将这些字段拼入检索 query。</summary>
+public sealed record TaskContext
+{
+    [System.Text.Json.Serialization.JsonPropertyName("goal")]
+    public string? Goal { get; init; }
+
+    [System.Text.Json.Serialization.JsonPropertyName("audience")]
+    public string? Audience { get; init; }
+
+    [System.Text.Json.Serialization.JsonPropertyName("deliverable")]
+    public string? Deliverable { get; init; }
+
+    [System.Text.Json.Serialization.JsonPropertyName("citationStyle")]
+    public string? CitationStyle { get; init; }
+
+    [System.Text.Json.Serialization.JsonPropertyName("constraints")]
+    public string? Constraints { get; init; }
+}
+
 /// <summary>POST /v1/chat 请求体。</summary>
 public sealed record ChatRequest
 {
@@ -55,13 +74,22 @@ public sealed record ChatRequest
     [System.Text.Json.Serialization.JsonPropertyName("enableWebSearch")]
     public bool EnableWebSearch { get; init; }
 
+    /// <summary>联网搜索模式："normal"（普通搜索）| "deep"（深度搜索）；null/空 = normal。
+    /// 仅在 EnableWebSearch=true 时有意义。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("webSearchMode")]
+    public string? WebSearchMode { get; init; }
+
     /// <summary>知识图谱实体上下文（High-level 拓扑与背景注入）。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("entityContext")]
     public string? EntityContext { get; init; }
 
-    /// <summary>办公角色人设标识（office/architect/engineer/brainstorm）。</summary>
+    /// <summary>办公角色人设标识（office/architect/engineer/brainstorm 或 custom_xxx）。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("persona")]
     public string? Persona { get; init; }
+
+    /// <summary>自定义角色系统提示词（persona 为 custom_* 时随请求携带，后端据此生效）。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("personaPrompt")]
+    public string? PersonaPrompt { get; init; }
 
     /// <summary>本次对话临时附带的本地文档或图片路径列表（由后端工具实时提取与OCR）。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("attachments")]
@@ -75,4 +103,34 @@ public sealed record ChatRequest
     /// <summary>RAG 问答模式（"strict" / "hybrid"）；null = 沿用后端全局配置。</summary>
     [System.Text.Json.Serialization.JsonPropertyName("ragMode")]
     public string? RagMode { get; init; }
+
+    /// <summary>用户记忆上下文：独立字段，由后端注入生成消息；
+    /// 绝不拼进 Query（避免污染检索与会话历史）。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("memoryContext")]
+    public string? MemoryContext { get; init; }
+
+    /// <summary>研究任务规格；null = 普通问答。不会污染知识库检索 query。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("taskContext")]
+    public TaskContext? TaskContext { get; init; }
+
+    /// <summary>提示词双轨（P0）："rag" | "delivery"；null = 后端按意图自动推断。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("responseMode")]
+    public string? ResponseMode { get; init; }
+
+    /// <summary>续写：true 时不重复检索，基于会话历史补全；后端合并进上一条 assistant。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("continueWriting")]
+    public bool ContinueWriting { get; init; }
+
+    /// <summary>Agent 模式（兼容旧字段；chatMode 优先）。由对话页回答模式选择器映射。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("agentMode")]
+    public bool AgentMode { get; init; }
+
+    /// <summary>回答模式："rag" | "agent" | "auto"。优先级高于 agentMode。
+    /// null/空 = 用服务端 chat_mode_default。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("chatMode")]
+    public string? ChatMode { get; init; }
+
+    /// <summary>回答渲染格式："markdown"（普通气泡）| "html"（整页 HTML 沙箱气泡）；null = markdown。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("answerFormat")]
+    public string? AnswerFormat { get; init; }
 }

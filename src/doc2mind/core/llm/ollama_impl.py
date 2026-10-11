@@ -53,7 +53,12 @@ class OllamaClient(LLMClient):
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._timeout = timeout
-        self._host = (host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
+        host_val = (host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
+        # 防御：误把 OpenAI 兼容地址（带 /v1）填给 Ollama 原生通道时剥除，
+        # 否则会请求 {host}/v1/api/chat 得到 404
+        if host_val.endswith("/v1"):
+            host_val = host_val[:-3]
+        self._host = host_val
 
     @property
     def model_name(self) -> str:
@@ -104,6 +109,10 @@ class OllamaClient(LLMClient):
             ),
             "stream": False,
         }
+        # 与流式路径一致：推理模型显式请求思考链，使其进 message.thinking
+        # （本方法只返回 content），避免思考内容内联进正文
+        if self._is_thinking_model():
+            payload["think"] = True
         try:
             resp = httpx.post(
                 f"{self._host}/api/chat",
@@ -112,6 +121,13 @@ class OllamaClient(LLMClient):
             )
             resp.raise_for_status()
             data = resp.json()
+            done_reason = data.get("done_reason")
+            self._last_truncated = done_reason == "length"
+            if done_reason == "length":
+                logger.info(
+                    "输出因达到 token 上限被截断（done_reason=length, model=%s）",
+                    self._model,
+                )
             content = data.get("message", {}).get("content", "")
             return content.strip()
         except httpx.HTTPStatusError as e:
@@ -210,6 +226,12 @@ class OllamaClient(LLMClient):
                                     emitted_parts.append(content)
                                     yield ("content", content)
                             if data.get("done", False):
+                                self._last_truncated = data.get("done_reason") == "length"
+                                if self._last_truncated:
+                                    logger.info(
+                                        "流式输出因达到 token 上限被截断（done_reason=length, model=%s）",
+                                        self._model,
+                                    )
                                 break
                         except json.JSONDecodeError:
                             continue

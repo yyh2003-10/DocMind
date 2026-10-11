@@ -14,6 +14,50 @@ namespace DocMind.ViewModels;
 public partial class QualityViewModel : ViewModelBase
 {
     private readonly IDoc2kbApiService _apiService;
+    private readonly NotificationService? _notifications;
+    private readonly AppSettings? _appSettings;
+
+    /// <summary>后端不可达 → 全局离线横幅（FC-03/08）。</summary>
+    public event Action? BackendUnreachable;
+
+    /// <summary>LLM 未配置 → 跳转设置页。</summary>
+    public event Action? NavigateToSettingsRequested;
+
+    [RelayCommand]
+    private void NavigateToSettings() => NavigateToSettingsRequested?.Invoke();
+
+    /// <summary>AI 整理事前门禁（FC-06 类）。settings 为空时不阻断（兼容单测）。</summary>
+    public bool IsLlmConfigured
+    {
+        get
+        {
+            if (_appSettings is null)
+            {
+                return true;
+            }
+            var provider = _appSettings.LlmProvider?.Trim() ?? "";
+            if (provider.Length > 0 && !string.Equals(provider, "none", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(provider, "ollama", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(_appSettings.LlmApiKey)))
+            {
+                return true;
+            }
+            return _appSettings.LlmProfiles?.Any(p => p is { IsEnabled: true }
+                && (string.Equals(p.Provider, "ollama", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(p.ApiKey))) == true;
+        }
+    }
+
+    public string LlmConfigHint =>
+        "尚未配置大模型：AI 整理需要 LLM，请到【设置 → 大模型对话】完成配置。\n"
+        + "完全离线可选择 Ollama（本机推理、无需 API Key）。";
+
+    public void NotifyLlmGateChanged()
+    {
+        OnPropertyChanged(nameof(IsLlmConfigured));
+        PreviewCurateCommand.NotifyCanExecuteChanged();
+        ExecuteCurateCommand.NotifyCanExecuteChanged();
+    }
 
     private string? _collection;
     private bool _isBusy;
@@ -27,9 +71,14 @@ public partial class QualityViewModel : ViewModelBase
     private bool _hasPreviewResult;
     private CancellationTokenSource? _curateCts;
 
-    public QualityViewModel(IDoc2kbApiService apiService)
+    public QualityViewModel(
+        IDoc2kbApiService apiService,
+        NotificationService? notifications = null,
+        AppSettings? appSettings = null)
     {
         _apiService = apiService;
+        _notifications = notifications;
+        _appSettings = appSettings;
         Title = "质量看板";
         Warnings = new ObservableCollection<string>();
         Collections = new ObservableCollection<CollectionStats>();
@@ -43,6 +92,9 @@ public partial class QualityViewModel : ViewModelBase
     /// <summary>切换为该页面时触发一次加载；失败不缓存，下一次进入会自动重试。</summary>
     public async Task EnsureLoadedAsync()
     {
+        // 上次 AI 整理任务若还挂在后端（前端轮询曾中断），后台续接进度；
+        // 不 await —— 续接要跑到 job 终态，不能拖住页面加载。
+        _ = ResumeCurateWatchAsync();
         if (_hasLoadedOnce)
         {
             return;
@@ -101,6 +153,94 @@ public partial class QualityViewModel : ViewModelBase
 
     /// <summary>是否有质量警告。</summary>
     public bool HasWarnings => Warnings.Count > 0;
+
+    // ── 库状态（最新 / 待同步 / 索引过期） ──
+
+    private LibraryStatus? _libraryStatus;
+
+    public LibraryStatus? LibraryStatus
+    {
+        get => _libraryStatus;
+        private set
+        {
+            if (SetProperty(ref _libraryStatus, value))
+            {
+                OnPropertyChanged(nameof(LibraryStatusText));
+                OnPropertyChanged(nameof(LibraryStatusBadge));
+                OnPropertyChanged(nameof(HasLibraryIssues));
+                OnPropertyChanged(nameof(NeedsReindex));
+            }
+        }
+    }
+
+    public string LibraryStatusText =>
+        string.IsNullOrWhiteSpace(LibraryStatus?.Summary) ? "库状态未知" : LibraryStatus!.Summary;
+
+    public string LibraryStatusBadge => LibraryStatus?.Status switch
+    {
+        "ok" => "最新",
+        "empty" => "空库",
+        "warn" => "有提醒",
+        "reindex_needed" => "需重建索引",
+        _ => "未知",
+    };
+
+    public bool HasLibraryIssues => LibraryStatus?.Issues is { Count: > 0 };
+    public bool NeedsReindex => LibraryStatus?.NeedsReindex == true;
+
+    private bool _isReindexingFromStatus;
+
+    /// <summary>库状态提示需重建时，一键触发重建索引（确认后执行，复用 Documents 页同款 API）。</summary>
+    [RelayCommand]
+    private async Task ReindexFromStatusAsync()
+    {
+        if (_isReindexingFromStatus)
+        {
+            return;
+        }
+        var confirm = Services.ThemeMessageBox.Show(
+            "确定重建索引吗？\n将按当前嵌入模型重新计算全部分块向量。\n大库可能耗时较长，期间检索可能降级。",
+            "确认重建索引",
+            Services.ThemeMessageBoxButton.YesNo,
+            Services.ThemeMessageBoxImage.Question);
+        if (confirm != Services.ThemeMessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        _isReindexingFromStatus = true;
+        try
+        {
+            StatusMessage = "提交重建索引任务…";
+            var job = await _apiService.ReindexAsync(new ReindexRequest { Collection = null });
+            DebugLog.Info($"库状态一键重建: jobId={job.JobId}", "Quality");
+            var final = await _apiService.WatchJobUntilDoneAsync(job.JobId);
+            if (string.Equals(final.Status, "completed", StringComparison.OrdinalIgnoreCase))
+            {
+                _notifications.Success($"重建索引完成（{final.Processed}/{final.Total} 分块）");
+                InvalidateCache();
+                await RefreshAsync();
+            }
+            else if (string.Equals(final.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                _notifications.Info("重建索引已取消", "重建索引");
+            }
+            else
+            {
+                _notifications.Error($"重建索引失败：{final.Error ?? final.Status}");
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"重建索引失败：{ex.Message}";
+            _notifications.Error($"重建索引失败：{ex.Message}");
+            DebugLog.Error($"库状态一键重建失败: {ex.Message}", "Quality", ex);
+        }
+        finally
+        {
+            _isReindexingFromStatus = false;
+        }
+    }
 
     /// <summary>各集合文档/chunk 分布（用于图表/列表展示）。</summary>
     public ObservableCollection<CollectionStats> Collections { get; }
@@ -171,6 +311,15 @@ public partial class QualityViewModel : ViewModelBase
             var col = string.IsNullOrWhiteSpace(Collection) ? null : Collection.Trim();
             Report = await _apiService.GetQualityAsync(col);
             Stats = await _apiService.GetStatsAsync(col);
+            try
+            {
+                LibraryStatus = await _apiService.GetLibraryStatusAsync();
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"库状态拉取失败（不影响质量报告）: {ex.Message}", "Quality");
+                LibraryStatus = null;
+            }
 
             sw.Stop();
             foreach (var w in Report.Warnings)
@@ -208,6 +357,7 @@ public partial class QualityViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
             DebugLog.Error($"质量报告后端不可达: {ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Quality", ex);
@@ -252,12 +402,30 @@ public partial class QualityViewModel : ViewModelBase
         set => SetProperty(ref _curateProgressPercent, value);
     }
 
+    private bool _isCurateIndeterminate;
+
+    /// <summary>后端还没给出 total（任务刚提交/抢写锁中）→ 进度条走不确定动画，而不是停在 0%。</summary>
+    public bool IsCurateIndeterminate
+    {
+        get => _isCurateIndeterminate;
+        private set => SetProperty(ref _isCurateIndeterminate, value);
+    }
+
     /// <summary>整理任务状态文本（提交/进度/完成/失败）。</summary>
     public string CurateStatus
     {
         get => _curateStatus;
-        set => SetProperty(ref _curateStatus, value);
+        set
+        {
+            if (SetProperty(ref _curateStatus, value))
+            {
+                OnPropertyChanged(nameof(HasCurateStatus));
+            }
+        }
     }
+
+    /// <summary>有状态文案就显示（含失败/完成后的终态）——不随 IsCurating 归隐，避免错误信息一闪而过。</summary>
+    public bool HasCurateStatus => !string.IsNullOrWhiteSpace(CurateStatus);
 
     /// <summary>整理报告摘要（各项动作计数）。</summary>
     public string CurateSummary
@@ -274,10 +442,10 @@ public partial class QualityViewModel : ViewModelBase
 
     public bool HasCurateSummary => !string.IsNullOrWhiteSpace(CurateSummary);
 
-    private bool CanRunCurate => !IsCurating;
+    private bool CanRunCurate => !IsCurating && IsLlmConfigured;
 
     /// <summary>执行按钮（dry_run=false）需先完成一次只读预览（dedup/consolidate 有损，先确认再执行）。</summary>
-    private bool CanRunCurateExecute => !IsCurating && _hasPreviewResult;
+    private bool CanRunCurateExecute => !IsCurating && _hasPreviewResult && IsLlmConfigured;
 
     /// <summary>AI 整理只读预览（dry_run=true，零写入）：先看整理方案再决定是否执行。</summary>
     [RelayCommand(CanExecute = nameof(CanRunCurate))]
@@ -290,10 +458,39 @@ public partial class QualityViewModel : ViewModelBase
     /// <summary>页面离开时中止轮询（由外部调用；任务本身不强制取消，后端 job 继续或自然收敛）。</summary>
     public void CancelCuratePolling() => _curateCts?.Cancel();
 
+    // ── AI 整理任务跟踪（提交 / 进度 / 断线后续接） ──
+
+    /// <summary>最近一次提交的 curate job；非 null 且未在跟踪时，回到本页会自动续接进度。</summary>
+    private string? _lastCurateJobId;
+
+    /// <summary>_lastCurateJobId 对应的 dry_run 语义（续接后完成文案要用）。</summary>
+    private bool _lastCurateDryRun;
+
+    /// <summary>把 curate stage 键译成中文（无匹配返回 null，走通用文案）。</summary>
+    private static string? DescribeCurateStage(JobStatus j) => j.Stage switch
+    {
+        "queued" => "排队等待写入锁（其它导入/整理进行中）",
+        "enrich" => "打标签/摘要",
+        "categorize" => "判断分组归属",
+        "extract" => "抽取图谱实体",
+        "dedup" => "语义去重",
+        "consolidate" => "归纳合并",
+        _ => null,
+    };
+
     private async Task RunCurateAsync(bool dryRun)
     {
         if (IsCurating)
         {
+            return;
+        }
+        if (!IsLlmConfigured)
+        {
+            CurateStatus = LlmConfigHint;
+            _notifications?.Warning(LlmConfigHint, "需要配置大模型");
+            NavigateToSettingsRequested?.Invoke();
+            PreviewCurateCommand.NotifyCanExecuteChanged();
+            ExecuteCurateCommand.NotifyCanExecuteChanged();
             return;
         }
 
@@ -314,59 +511,9 @@ public partial class QualityViewModel : ViewModelBase
                 Actions = [.. CurateActions],
                 DryRun = dryRun,
             }, _curateCts.Token);
-            CurateStatus = $"任务已提交（{job.JobId}），等待后端…";
-
-            // Progress<T> 的回调是异步投递的，可能在轮询返回之后才执行；
-            // 若不设闸，落后的进度回调会把下面的失败/完成终态文案覆盖成中间状态文案。
-            var pollingCompleted = false;
-            void ApplyProgress(JobStatus j)
-            {
-                if (pollingCompleted) return;
-                CurateProgressPercent = (int)(j.Progress * 100);
-                CurateStatus = j.Status.Equals("running", StringComparison.OrdinalIgnoreCase)
-                    ? $"{mode}中 {CurateProgressPercent}%（{j.Processed}/{j.Total}）…"
-                    : $"任务状态: {j.Status}";
-            }
-
-            var progress = new Progress<JobStatus>(j =>
-            {
-                var app = System.Windows.Application.Current;
-                if (app?.Dispatcher != null && !app.Dispatcher.CheckAccess())
-                {
-                    app.Dispatcher.InvokeAsync(() => ApplyProgress(j));
-                }
-                else
-                {
-                    ApplyProgress(j);
-                }
-            });
-
-            // 优先走 job 进度 SSE 实时流（AUD-017 接通 /v1/jobs/{id}/events）；
-            // 服务内部在 SSE 不可用/中断时已自动回退到轮询，此处无需感知。
-            var final = await _apiService.WatchJobUntilDoneAsync(job.JobId, progress, ct: _curateCts.Token);
-            pollingCompleted = true;
-            CurateProgressPercent = (int)(final.Progress * 100);
-
-            if (final.Status.Equals("failed", StringComparison.OrdinalIgnoreCase))
-            {
-                CurateStatus = $"AI 整理{mode}失败: {final.Error}";
-                DebugLog.Error($"AI 整理{mode}失败: {final.Error}", "Quality");
-            }
-            else if (final.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase)
-                     || final.Status.Equals("canceled", StringComparison.OrdinalIgnoreCase))
-            {
-                CurateStatus = $"AI 整理{mode}已取消";
-            }
-            else
-            {
-                // 预览成功后解锁执行按钮（执行后保持，允许再次执行）
-                _hasPreviewResult = true;
-                CurateSummary = BuildCurateSummary(final);
-                CurateStatus = dryRun
-                    ? "✅ 预览完成（只读，未写入任何数据）——确认无误后可「执行」"
-                    : "✅ AI 整理执行完成";
-            }
-            ExecuteCurateCommand.NotifyCanExecuteChanged();
+            _lastCurateJobId = job.JobId;
+            _lastCurateDryRun = dryRun;
+            await WatchCurateJobAsync(job.JobId, dryRun, _curateCts.Token);
         }
         catch (OperationCanceledException)
         {
@@ -379,6 +526,7 @@ public partial class QualityViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             CurateStatus = $"后端不可达：{ex.Message}";
             DebugLog.Error($"AI 整理{mode}后端不可达: {ex.Message}", "Quality", ex);
         }
@@ -390,8 +538,149 @@ public partial class QualityViewModel : ViewModelBase
         finally
         {
             IsCurating = false;
+            IsCurateIndeterminate = false;
             _curateCts?.Dispose();
             _curateCts = null;
+        }
+    }
+
+    /// <summary>
+    /// 跟踪一个 curate job 到终态：进度经 SSE/轮询推进，终态写回状态与报告。
+    /// 供「提交」与「回到本页续接」两条路径复用；调用方负责 IsCurating / _curateCts 生命周期。
+    /// </summary>
+    private async Task WatchCurateJobAsync(string jobId, bool dryRun, CancellationToken ct)
+    {
+        var mode = dryRun ? "预览" : "执行";
+        CurateStatus = $"任务已提交（{jobId}），等待后端…";
+        // total 未知期间先走不确定动画；首个进度帧带 total 后自动转确定进度
+        IsCurateIndeterminate = true;
+
+        // Progress<T> 的回调是异步投递的，可能在轮询返回之后才执行；
+        // 若不设闸，落后的进度回调会把下面的失败/完成终态文案覆盖成中间状态文案。
+        var pollingCompleted = false;
+        void ApplyProgress(JobStatus j)
+        {
+            if (pollingCompleted) return;
+            CurateProgressPercent = (int)(j.Progress * 100);
+            if (!j.Status.Equals("running", StringComparison.OrdinalIgnoreCase))
+            {
+                CurateStatus = $"任务状态: {j.Status}";
+                return;
+            }
+
+            var stageText = DescribeCurateStage(j);
+            if (j.Total <= 0)
+            {
+                // 后端还没下发 total（刚提交/抢写锁中）：显示阶段文案而不是 0%
+                IsCurateIndeterminate = true;
+                CurateStatus = stageText is not null ? $"{mode}中…（{stageText}）" : $"{mode}中…（等待后端统计任务量）";
+                return;
+            }
+
+            IsCurateIndeterminate = false;
+            CurateStatus = stageText is not null
+                ? $"{mode}中 {CurateProgressPercent}%（{j.Processed}/{j.Total}）· {stageText}…"
+                : $"{mode}中 {CurateProgressPercent}%（{j.Processed}/{j.Total}）…";
+        }
+
+        var progress = new Progress<JobStatus>(j =>
+        {
+            var app = System.Windows.Application.Current;
+            if (app?.Dispatcher != null && !app.Dispatcher.CheckAccess())
+            {
+                app.Dispatcher.InvokeAsync(() => ApplyProgress(j));
+            }
+            else
+            {
+                ApplyProgress(j);
+            }
+        });
+
+        // 优先走 job 进度 SSE 实时流（AUD-017 接通 /v1/jobs/{id}/events）；
+        // 服务内部在 SSE 不可用/中断时已自动回退到轮询，此处无需感知。
+        var final = await _apiService.WatchJobUntilDoneAsync(jobId, progress, ct: ct);
+        pollingCompleted = true;
+        IsCurateIndeterminate = false;
+        CurateProgressPercent = (int)(final.Progress * 100);
+
+        if (final.Status.Equals("failed", StringComparison.OrdinalIgnoreCase))
+        {
+            CurateStatus = $"AI 整理{mode}失败: {final.Error}";
+            DebugLog.Error($"AI 整理{mode}失败: {final.Error}", "Quality");
+            _lastCurateJobId = null;
+        }
+        else if (final.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase)
+                 || final.Status.Equals("canceled", StringComparison.OrdinalIgnoreCase))
+        {
+            CurateStatus = $"AI 整理{mode}已取消";
+            _lastCurateJobId = null;
+        }
+        else
+        {
+            // 预览成功后解锁执行按钮（执行后保持，允许再次执行）
+            _hasPreviewResult = true;
+            CurateSummary = BuildCurateSummary(final);
+            CurateStatus = dryRun
+                ? "✅ 预览完成（只读，未写入任何数据）——确认无误后可「执行」"
+                : "✅ AI 整理执行完成";
+            _lastCurateJobId = null;
+        }
+        ExecuteCurateCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>
+    /// 回到质量看板时，若上次 curate job 还在后端跑但前端已脱钩（轮询异常中断等），
+    /// 按 job_id 重新接上进度。job 不存在/已终态则静默清理。
+    /// </summary>
+    internal async Task ResumeCurateWatchAsync()
+    {
+        if (IsCurating || _lastCurateJobId is not { } jobId)
+        {
+            return;
+        }
+        try
+        {
+            var snap = await _apiService.GetJobAsync(jobId);
+            if (snap.Status.Equals("running", StringComparison.OrdinalIgnoreCase))
+            {
+                DebugLog.Info($"续接 AI 整理进度: jobId={jobId}", "Quality");
+                IsCurating = true;
+                _curateCts = new CancellationTokenSource();
+                try
+                {
+                    await WatchCurateJobAsync(jobId, _lastCurateDryRun, _curateCts.Token);
+                }
+                finally
+                {
+                    IsCurating = false;
+                    IsCurateIndeterminate = false;
+                    _curateCts?.Dispose();
+                    _curateCts = null;
+                }
+            }
+            else
+            {
+                // 已终态但前端错过了结果（如应用重启前完成）→ 拉一次报告补齐展示
+                _lastCurateJobId = null;
+                if (snap.Status.Equals("completed", StringComparison.OrdinalIgnoreCase)
+                    && snap.Report is not null)
+                {
+                    _hasPreviewResult = true;
+                    CurateSummary = BuildCurateSummary(snap);
+                    CurateStatus = _lastCurateDryRun
+                        ? "✅ 预览完成（只读，未写入任何数据）——确认无误后可「执行」"
+                        : "✅ AI 整理执行完成";
+                    ExecuteCurateCommand.NotifyCanExecuteChanged();
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 页面再次离开：保持 _lastCurateJobId，下次回来继续续接
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"续接 AI 整理进度失败（jobId={jobId}）: {ex.Message}", "Quality");
         }
     }
 
@@ -425,4 +714,140 @@ public partial class QualityViewModel : ViewModelBase
 
     private static int CountOf(JsonElement root, string key)
         => root.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Array ? v.GetArrayLength() : 0;
+
+    // ===================== 整理历史 / 检索自评估 / 推荐配置 =====================
+
+    private string _curateRunsText = "尚未加载";
+    private string _evalResultText = "";
+    private string _recommendedText = "";
+    private bool _isEvalRunning;
+
+    /// <summary>最近整理运行摘要。</summary>
+    public string CurateRunsText
+    {
+        get => _curateRunsText;
+        private set => SetProperty(ref _curateRunsText, value);
+    }
+
+    /// <summary>检索自评估结果摘要。</summary>
+    public string EvalResultText
+    {
+        get => _evalResultText;
+        private set => SetProperty(ref _evalResultText, value);
+    }
+
+    /// <summary>推荐检索配置摘要。</summary>
+    public string RecommendedText
+    {
+        get => _recommendedText;
+        private set => SetProperty(ref _recommendedText, value);
+    }
+
+    public bool IsEvalRunning
+    {
+        get => _isEvalRunning;
+        private set
+        {
+            if (SetProperty(ref _isEvalRunning, value))
+                RunEvalCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    /// <summary>加载最近整理运行记录。</summary>
+    [RelayCommand]
+    private async Task LoadCurateRunsAsync()
+    {
+        try
+        {
+            var resp = await _apiService.ListCurateRunsAsync(days: 7, limit: 20);
+            if (resp.Items.Count == 0)
+            {
+                CurateRunsText = "近 7 天没有整理运行记录。";
+                return;
+            }
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"近 7 天 {resp.Items.Count} 次整理：");
+            foreach (var it in resp.Items.Take(5))
+            {
+                var kind = it.DryRun ? "预览" : "落盘";
+                sb.Append($"\n· {it.StartedAt} [{kind}] {string.Join("/", it.Actions)} · 改动 {it.ChangedDocIds.Count} 篇 · 跳过 {it.SkippedCount} · 错误 {it.ErrorCount}");
+                if (!string.IsNullOrWhiteSpace(it.Note)) sb.Append($"（{it.Note}）");
+            }
+            if (resp.Items.Count > 5) sb.Append($"\n… 共 {resp.Total} 条");
+            CurateRunsText = sb.ToString();
+        }
+        catch (Exception ex)
+        {
+            CurateRunsText = $"加载失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>运行本库检索自评估。</summary>
+    [RelayCommand(CanExecute = nameof(CanRunEval))]
+    private async Task RunEvalAsync()
+    {
+        if (IsEvalRunning) return;
+        IsEvalRunning = true;
+        EvalResultText = "评估中…";
+        try
+        {
+            var r = await _apiService.EvalLibraryAsync(sample: 20);
+            var sb = new System.Text.StringBuilder();
+            if (r.SelfRecallAtK is { } recall) sb.Append($"SelfRecall@k {recall:P1}");
+            if (r.Mrr is { } mrr) sb.Append(string.IsNullOrEmpty(sb.ToString()) ? $"MRR {mrr:P1}" : $" · MRR {mrr:P1}");
+            if (r.Sample > 0) sb.Append($" · 样本 {r.Sample}");
+            if (r.Suggestions.Count > 0)
+            {
+                sb.Append("\n建议：");
+                foreach (var s in r.Suggestions.Take(5)) sb.Append($"\n· {s}");
+            }
+            if (sb.Length == 0) sb.Append("评估完成，无指标返回。");
+            EvalResultText = sb.ToString();
+        }
+        catch (Exception ex)
+        {
+            EvalResultText = $"评估失败：{ex.Message}";
+        }
+        finally
+        {
+            IsEvalRunning = false;
+        }
+    }
+
+    private bool CanRunEval => !IsEvalRunning && !IsBusy;
+
+    /// <summary>加载推荐检索配置预览。</summary>
+    [RelayCommand]
+    private async Task LoadRecommendedAsync()
+    {
+        try
+        {
+            var r = await _apiService.GetRetrievalRecommendedAsync();
+            RecommendedText = (r.AlignedBefore ? "当前已对齐推荐配置。" : "当前配置与推荐不一致。")
+                + (string.IsNullOrWhiteSpace(r.Description) ? "" : $"\n{r.Description}");
+        }
+        catch (Exception ex)
+        {
+            RecommendedText = $"加载失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>一键应用推荐检索配置。</summary>
+    [RelayCommand]
+    private async Task ApplyRecommendedAsync()
+    {
+        try
+        {
+            var r = await _apiService.ApplyRetrievalRecommendedAsync();
+            RecommendedText = r.Applied
+                ? $"已应用推荐配置。{r.Description}"
+                : "推荐配置已对齐，无需修改。";
+            _notifications?.Success("推荐检索配置已应用", "检索配置");
+        }
+        catch (Exception ex)
+        {
+            RecommendedText = $"应用失败：{ex.Message}";
+            _notifications?.Error($"应用推荐配置失败：{ex.Message}", "检索配置");
+        }
+    }
 }

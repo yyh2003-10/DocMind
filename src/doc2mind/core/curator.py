@@ -26,7 +26,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from doc2mind.core.config import Settings
-from doc2mind.core.store.sqlite_vec import StoredDocument, StoreError, VectorStore
+from doc2mind.core.store import KnowledgeStore, StoreError
+from doc2mind.core.store.sqlite_vec import StoredDocument
 
 logger = logging.getLogger("doc2mind.curate")
 
@@ -48,6 +49,32 @@ class CurateCancelledError(Exception):
     """整理任务收到取消请求后用于中止后续阶段。"""
 
 
+def _report_progress(
+    progress: Callable[..., None] | None,
+    done: int,
+    total: int,
+    stage: str | None = None,
+    stage_progress: float | None = None,
+) -> None:
+    """上报 curate 进度。
+
+    新式回调签名为 progress(done, total, stage=…, stage_progress=…)：
+    stage 为当前动作名（enrich/categorize/extract/dedup/consolidate），
+    stage_progress 为当前单元内已完成的比例（0.0~1.0，可让进度在单篇
+    多动作之间也动起来）。旧式两参回调 progress(done, total) 自动降级
+    （TypeError 时去掉 stage 关键字重试，与 pipeline._make_stage_reporter 一致）。
+    """
+    if progress is None:
+        return
+    if stage is None and stage_progress is None:
+        progress(done, total)
+        return
+    try:
+        progress(done, total, stage=stage, stage_progress=stage_progress)
+    except TypeError:
+        progress(done, total)
+
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
 
@@ -55,7 +82,7 @@ def _now_iso() -> str:
 
 
 def _record_curate_run_safe(
-    store: VectorStore,
+    store: KnowledgeStore,
     started_at: str,
     dry_run: bool,
     collection: str | None,
@@ -303,14 +330,14 @@ def _slugify(name: str) -> str:
     return s[:32]
 
 
-def _doc_full_text(store: VectorStore, doc: StoredDocument, max_chars: int) -> str:
+def _doc_full_text(store: KnowledgeStore, doc: StoredDocument, max_chars: int) -> str:
     """拼接文档全部分块作为 LLM 输入（截断到 max_chars）。"""
     chunks = store.list_chunks_by_document(doc.id, limit=100)
     return "\n\n".join(c.content for c in chunks)[:max_chars]
 
 
 def _doc_representative_text(
-    store: VectorStore, doc: StoredDocument, max_chars: int = 1500
+    store: KnowledgeStore, doc: StoredDocument, max_chars: int = 1500
 ) -> str:
     """文档代表文本：优先 AI 摘要，其次前几个分块（去重/归类/判重的轻量输入）。"""
     if doc.summary:
@@ -344,7 +371,7 @@ _ENRICH_SYSTEM = (
 
 
 def enrich_document(
-    store: VectorStore,
+    store: KnowledgeStore,
     llm: Any,
     doc: StoredDocument,
     max_chars: int = 8000,
@@ -397,7 +424,7 @@ _CATEGORIZE_SYSTEM = (
 
 
 def categorize_document(
-    store: VectorStore,
+    store: KnowledgeStore,
     llm: Any,
     doc: StoredDocument,
     dry_run: bool = False,
@@ -465,7 +492,7 @@ _DEDUP_SYSTEM = (
 
 
 def _judge_duplicate(
-    store: VectorStore,
+    store: KnowledgeStore,
     llm: Any,
     doc_a: StoredDocument,
     doc_b: StoredDocument,
@@ -519,7 +546,7 @@ def _judge_duplicate(
 
 
 def find_duplicates(
-    store: VectorStore,
+    store: KnowledgeStore,
     embedder: Any,
     llm: Any,
     collection: str,
@@ -599,7 +626,7 @@ def _cosine_sim(a: Any, b: Any) -> float:
 
 
 def consolidate_notes(
-    store: VectorStore,
+    store: KnowledgeStore,
     embedder: Any,
     llm: Any,
     settings: Settings,
@@ -729,7 +756,7 @@ def consolidate_notes(
 
 # --- 汇总入口 ---
 def curate(
-    store: VectorStore,
+    store: KnowledgeStore,
     embedder: Any,
     llm: Any,
     settings: Settings,
@@ -752,7 +779,8 @@ def curate(
         actions: 动作列表，默认全部四项。
         dry_run: True = 只读预览（零写入）；False = 执行（删除/合并类生效）。
         top_k: enrich/categorize 处理的文档上限（默认 200，护栏防 LLM 失控）。
-        progress: 进度回调 (done, total)。
+        progress: 进度回调。优先以 progress(done, total, stage=…, stage_progress=…)
+            调用（阶段级进度）；旧式两参回调自动降级为 progress(done, total)。
         cancel_check: 可选取消探针；返回 True 时立即停止后续整理阶段。
 
     Returns:
@@ -792,10 +820,10 @@ def curate(
     # 阶段 1：enrich + categorize + extract（逐文档）
     need_doc_actions = any(a in report.actions for a in ("enrich", "categorize", "extract"))
     limit = top_k or DEFAULT_TOP_K
+    docs: list[StoredDocument] = []
     if need_doc_actions:
         # 多集合时按集合均匀分配抽取配额，避免排在前面的集合（如 default）耗尽配额导致其它集合无法抽取
         per_col_limit = max(10, limit // max(1, len(collections))) if not collection else limit
-        docs = []
         for c in collections:
             c_docs = [
                 d for d in store.list_documents(collection=c, limit=per_col_limit)
@@ -803,8 +831,15 @@ def curate(
             ]
             docs.extend(c_docs)
         docs = docs[: max(limit, len(docs))]
-        total = len(docs)
 
+    # 总工作单元 = 阶段1每篇文档1个 + 阶段2每个（集合×动作）1个。
+    # 一开始就下发总量：否则首个 LLM 调用（可能长达数分钟）期间
+    # progress 一直是 0/0，前端只能显示 0%（见 Quality 页 0% 问题）。
+    p2_actions = [a for a in ("dedup", "consolidate") if a in report.actions]
+    total_units = len(docs) + len(collections) * len(p2_actions)
+    _report_progress(progress, 0, total_units)
+
+    if need_doc_actions:
         # 增量优化：获取已提取过图谱实体的文档列表，避免重复消耗 LLM
         extracted_doc_ids: set[str] = set()
         if "extract" in report.actions:
@@ -817,20 +852,47 @@ def curate(
             except Exception:
                 pass
 
+        doc_actions = [a for a in ("enrich", "categorize", "extract") if a in report.actions]
+        n_doc_actions = len(doc_actions)
         for i, doc in enumerate(docs, start=1):
             if cancel_check is not None and cancel_check():
                 raise CurateCancelledError("整理任务已被取消")
+            step = 0
             if "enrich" in report.actions:
+                # 篇内 stage 进度：动作开始前上报已完成比例，让单篇多动作之间进度也能动
+                _report_progress(
+                    progress,
+                    i - 1,
+                    total_units,
+                    stage="enrich",
+                    stage_progress=step / n_doc_actions,
+                )
                 report.enriched.append(
                     enrich_document(store, llm, doc,
                                     max_chars=settings.curate_max_chars,
                                     dry_run=dry_run)
                 )
+                step += 1
             if "categorize" in report.actions:
+                _report_progress(
+                    progress,
+                    i - 1,
+                    total_units,
+                    stage="categorize",
+                    stage_progress=step / n_doc_actions,
+                )
                 report.categorized.append(
                     categorize_document(store, llm, doc, dry_run=dry_run)
                 )
+                step += 1
             if "extract" in report.actions:
+                _report_progress(
+                    progress,
+                    i - 1,
+                    total_units,
+                    stage="extract",
+                    stage_progress=step / n_doc_actions,
+                )
                 from doc2mind.core.extractor import extract_and_store, extract_entities
 
                 if doc.id in extracted_doc_ids and not dry_run:
@@ -868,14 +930,17 @@ def curate(
                             **store_res,
                             "dry_run": False,
                         })
-            if progress is not None:
-                progress(i, total)
+                step += 1
+            _report_progress(progress, i, total_units)
 
-    # 阶段 2：dedup + consolidate（逐集合）
+    # 阶段 2：dedup + consolidate（逐集合）—— 每个（集合×动作）计 1 个进度单元，
+    # 避免该阶段全程无回调（旧行为：阶段1跑完进度就冻在 100% 或 0）。
+    unit = len(docs)
     for c in collections:
         if cancel_check is not None and cancel_check():
             raise CurateCancelledError("整理任务已被取消")
         if "dedup" in report.actions:
+            _report_progress(progress, unit, total_units, stage="dedup", stage_progress=0.0)
             try:
                 report.duplicates.extend(
                     find_duplicates(
@@ -886,13 +951,18 @@ def curate(
                 )
             except Exception as e:  # noqa: BLE001 — 单集合失败不中断其它集合
                 report.errors.append(f"dedup 失败（collection={c}）: {e}")
+            unit += 1
+            _report_progress(progress, unit, total_units)
         if "consolidate" in report.actions:
+            _report_progress(progress, unit, total_units, stage="consolidate", stage_progress=0.0)
             try:
                 report.consolidated.extend(
                     consolidate_notes(store, embedder, llm, settings, c, dry_run=dry_run)
                 )
             except Exception as e:  # noqa: BLE001
                 report.errors.append(f"consolidate 失败（collection={c}）: {e}")
+            unit += 1
+            _report_progress(progress, unit, total_units)
 
     report.elapsed_ms = int((time.perf_counter() - t0) * 1000)
     logger.info(

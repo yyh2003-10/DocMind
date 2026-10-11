@@ -10,11 +10,14 @@
 
 from __future__ import annotations
 
+import threading
+
 from doc2mind.core.config import Settings
 from doc2mind.core.reranker.base import Reranker
 
 # 按模型名缓存已构造实例（模型加载是惰性、进程内复用）
 _reranker_cache: dict[str, Reranker] = {}
+_reranker_cache_lock = threading.Lock()
 
 
 def get_reranker(settings: Settings | None = None) -> Reranker | None:
@@ -39,9 +42,10 @@ def get_reranker(settings: Settings | None = None) -> Reranker | None:
         return None
 
     key = settings.rerank_model
-    cached = _reranker_cache.get(key)
-    if cached is not None:
-        return cached
+    with _reranker_cache_lock:
+        cached = _reranker_cache.get(key)
+        if cached is not None:
+            return cached
 
     try:
         from doc2mind.core.reranker.fastembed_impl import FastEmbedReranker
@@ -51,7 +55,11 @@ def get_reranker(settings: Settings | None = None) -> Reranker | None:
             cache_dir=settings.embed_cache_dir,
             hf_endpoint=settings.hf_endpoint,
         )
-        _reranker_cache[key] = reranker
+        with _reranker_cache_lock:
+            existing = _reranker_cache.get(key)
+            if existing is not None:
+                return existing
+            _reranker_cache[key] = reranker
         return reranker
     except Exception as e:  # noqa: BLE001 — 构造期异常（极少见）也降级
         from doc2mind.core.reranker.base import RerankerError

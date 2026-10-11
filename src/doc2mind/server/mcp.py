@@ -53,7 +53,7 @@ from doc2mind.core.pipeline import (
 from doc2mind.core.rag import RagError, rag_answer
 from doc2mind.core.reranker import get_reranker
 from doc2mind.core.retriever.search import Retriever
-from doc2mind.core.store.sqlite_vec import VectorStore
+from doc2mind.core.store import KnowledgeStore, create_knowledge_store
 
 # --- 模块级异步任务存储（MCP 进程内，供 ingest_job / reindex / get_job 用） ---
 _JOB_LOCK = threading.Lock()
@@ -97,14 +97,10 @@ def _get_job(job_id: str) -> dict[str, Any] | None:
 
 
 # --- 工具实现 ---
-def _open_store() -> tuple[VectorStore, Any]:
+def _open_store() -> tuple[KnowledgeStore, Any]:
     settings = get_settings()
     embedder = get_embedder(settings)
-    store = VectorStore(
-        settings.db_path, embedder.dimension,
-        bm25_jieba_enabled=settings.bm25_jieba_enabled,
-        sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
-    )
+    store = create_knowledge_store(settings, embedder.dimension)
     store.open()
     return store, embedder
 
@@ -161,6 +157,7 @@ def _tool_ingest(
         collection=collection,
         recursive=recursive,
         force=force,
+        cancel_event=None,
     )
     # 入库自动整理已剥离出导入路径：后台执行，导入立即返回
     curate_job_id = (
@@ -205,11 +202,7 @@ def _tool_ingest_job(
     # 任务需要独立打开的 store（后台线程不共享主循环的 store 连接）
     settings = get_settings()
     embedder = get_embedder(settings)
-    store = VectorStore(
-        settings.db_path, embedder.dimension,
-        bm25_jieba_enabled=settings.bm25_jieba_enabled,
-        sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
-    )
+    store = create_knowledge_store(settings, embedder.dimension)
     store.open()
 
     def _report_progress(
@@ -218,6 +211,7 @@ def _tool_ingest_job(
         current_file: str | None = None,
         stage: str | None = None,
         stage_progress: float | None = None,
+        stage_detail: str | None = None,
     ) -> None:
         # 与 http.py _update_ingest_job 同一折算：文件内阶段按固定跨度
         # 计入整体进度，单大文件导入时 get_job 也能看到条动。
@@ -227,6 +221,7 @@ def _tool_ingest_job(
             processed=done, total=total,
             progress=round((done + frac) / total, 4) if total > 0 else 0.0,
             current_file=current_file, stage=stage, stage_progress=stage_progress,
+            stage_detail=stage_detail,
         )
 
     def _run() -> None:
@@ -238,6 +233,7 @@ def _tool_ingest_job(
                 force=force,
                 store=store,
                 progress=_report_progress,
+                cancel_event=None,
             )
             _update_job(
                 job_id, status="completed", progress=1.0,
@@ -311,16 +307,17 @@ def _tool_search(
     """混合检索 Top-K。"""
     store, embedder = _open_store()
     try:
+        _s = get_settings()
         retriever = Retriever(
             store=store,
             embedder=embedder,
-            reranker=get_reranker(get_settings()),
-            rerank_recall=get_settings().rerank_recall,
-            rrf_weights=parse_rrf_weights(get_settings().rrf_weights),
-            fusion_mode=get_settings().fusion_mode,
-            rerank_calibration_temperature=(
-                get_settings().rerank_calibration_temperature
-            ),
+            reranker=get_reranker(_s),
+            rerank_recall=_s.rerank_recall,
+            query_instruction=_s.query_instruction,
+            semantic_floor=_s.semantic_floor,
+            rrf_weights=parse_rrf_weights(_s.rrf_weights),
+            fusion_mode=_s.fusion_mode,
+            rerank_calibration_temperature=_s.rerank_calibration_temperature,
         )
         hits, stats = retriever.search(
             query=query, collection=collection, top_k=top_k, min_score=min_score
@@ -563,11 +560,7 @@ def _tool_reindex(
 
     settings = get_settings()
     embedder = get_embedder(settings)
-    store = VectorStore(
-        settings.db_path, embedder.dimension,
-        bm25_jieba_enabled=settings.bm25_jieba_enabled,
-        sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
-    )
+    store = create_knowledge_store(settings, embedder.dimension)
     store.open()
 
     # 目标嵌入器：默认复用当前；指定 model 时探测维度，维度变化需重建向量表
@@ -685,6 +678,8 @@ def _tool_chat(
                 # bm25(0-1 关键词匹配)/rrf(排名分 ~0.016-0.033)/
                 # web_relevance/attachment；agent 据此判断可信度
                 "score_type": s.score_type,
+                # 人话置信标签：高/中/低/附件/排名参考/未知
+                "confidence_label": getattr(s, "confidence_label", ""),
             }
             for s in answer.sources
         ],
@@ -810,6 +805,18 @@ def _tool_inspect_artifact(content: str) -> str:
         "recommendations": report.recommendations,
         "highlights": report.highlights,
     })
+
+
+def _tool_library_status() -> str:
+    """库状态：最新/空库/需重建索引/配置告警。Agent 据此决定是否提醒用户 reindex。"""
+    from doc2mind.core.config import get_settings
+    from doc2mind.core.library_status import get_library_status
+
+    store, _emb = _open_store()
+    try:
+        return _ok(get_library_status(store, get_settings()))
+    finally:
+        store.close()
 
 
 
@@ -1060,6 +1067,14 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
             "required": ["content"],
         },
     },
+    {
+        "name": "library_status",
+        "description": (
+            "查询知识库健康状态：ok/empty/warn/reindex_needed，含文档数、分块数、"
+            "嵌入维度是否对齐、以及可操作 issue 列表。检索异常或换模型后应先调用。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -1160,6 +1175,7 @@ def _dispatch_tool(name: str, args: dict[str, Any]) -> str:
         "graph_get": _tool_graph_get,
         "create_artifact": _tool_create_artifact,
         "inspect_artifact": _tool_inspect_artifact,
+        "library_status": _tool_library_status,
     }
     handler = handlers.get(name)
     if handler is None:

@@ -1,7 +1,11 @@
+using System;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
+using System.Threading.Tasks;
 using DocMind.Services;
 using DocMind.ViewModels;
 
@@ -10,6 +14,7 @@ namespace DocMind.Views;
 public partial class ChatView : UserControl
 {
     private ChatViewModel? _vm;
+    private bool _htmlClipUpdatePending;
 
     public ChatView()
     {
@@ -85,14 +90,78 @@ public partial class ChatView : UserControl
     {
         if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add)
         {
+            
             var sv = FindName("MessageScroll") as ScrollViewer;
             sv?.ScrollToBottom();
         }
+        else
+        {
+            
+        }
+    }
+
+    /// <summary>
+    /// 消息气泡内的 FlowDocumentScrollViewer / TextBox 会在 MouseWheel 冒泡阶段吞掉滚轮
+    /// （即使 VerticalScrollBarVisibility=Disabled），导致外层 MessageScroll 收不到滚轮、
+    /// 鼠标停在回答正文上无法上下滚动。在 Preview 隧道阶段由外层统一消费并滚动消息列表。
+    /// </summary>
+    private void MessageScroll_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (sender is not ScrollViewer sv)
+        {
+            return;
+        }
+
+        // 先放行给事件源所在的内层可滚动控件（WebView2 气泡、思考详情等）：
+        // 内层还能沿滚轮方向继续滚时绝不接管，否则其内部滚动全部失效；
+        // 内层已到边界（或无内层滚动区）才由外层统一滚动。
+        if (e.OriginalSource is DependencyObject source && CanInnerScroll(source, e.Delta))
+        {
+            return; // 不置 Handled，让事件正常到达内层
+        }
+
+        // 一格滚轮（±120）约等于 3 行，按 24px 行高折算，与系统默认手感接近
+        double pixels = e.Delta / 120.0 * 48.0;
+        double maxOffset = Math.Max(0, sv.ExtentHeight - sv.ViewportHeight);
+        double newOffset = Math.Max(0, Math.Min(maxOffset, sv.VerticalOffset - pixels));
+        sv.ScrollToVerticalOffset(newOffset);
+        e.Handled = true;
+    }
+
+    /// <summary>判断滚轮事件源到外层之间是否存在可沿本次方向继续滚动的内层滚动区。</summary>
+    private static bool CanInnerScroll(DependencyObject source, double delta)
+    {
+        DependencyObject? current = source;
+        while (current is not null)
+        {
+            if (current is ScrollViewer inner && inner.ScrollableHeight > 0)
+            {
+                return delta < 0
+                    ? inner.VerticalOffset < inner.ScrollableHeight // 向下滚（内容上移）
+                    : inner.VerticalOffset > 0;                     // 向上滚
+            }
+            // 事件源可能是 Run/TextElement 等 ContentElement（非 Visual），
+            // 直接调 VisualTreeHelper.GetParent 会抛 InvalidOperationException；
+            // 非 Visual 节点用逻辑树向上，仍找不到再终止。
+            current = current is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D
+                ? System.Windows.Media.VisualTreeHelper.GetParent(current)
+                : System.Windows.LogicalTreeHelper.GetParent(current);
+        }
+        return false;
     }
 
     /// <summary>处理内容增加时的自动滚动，保持在底部时的吸附效果（用户向上回看时不强行拉回底部）。</summary>
+    private void MessageScroll_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        ScheduleHtmlViewportClip();
+    }
+
     private void MessageScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
+        // 同步裁剪：慢一帧就会把已滚出视口的 WebView2 盖到外层（遮挡闪动）。
+        // 再排一个 Render 优先级的兜底，吸收布局后续微调。
+        UpdateHtmlViewportClip();
+        ScheduleHtmlViewportClip();
         if (e.ExtentHeightChange > 0)
         {
             var oldScrollableHeight = e.ExtentHeight - e.ExtentHeightChange - e.ViewportHeight;
@@ -132,6 +201,107 @@ public partial class ChatView : UserControl
         if (sender is FlowDocumentScrollViewer viewer)
         {
             viewer.Document = null;
+        }
+    }
+
+    /// <summary>HTML 体验气泡加载完成：接线引用角标桥（气泡内 a.cite 点击 → 复用 SourceRef 打开链路）。</summary>
+    private void HtmlBubble_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Controls.HtmlAnswerBubble bubble)
+        {
+            return;
+        }
+        if (bubble.DataContext is not ViewModels.ChatMessage msg || _vm is null)
+        {
+            return;
+        }
+        bubble.CiteRequested -= OnHtmlBubbleCiteRequested;
+        bubble.CiteRequested += OnHtmlBubbleCiteRequested;
+        bubble.SizeChanged -= HtmlBubble_SizeChanged;
+        bubble.SizeChanged += HtmlBubble_SizeChanged;
+        ScheduleHtmlViewportClip();
+    }
+
+    private void HtmlBubble_SizeChanged(object? sender, SizeChangedEventArgs e)
+    {
+        ScheduleHtmlViewportClip();
+    }
+
+    private void ScheduleHtmlViewportClip()
+    {
+        if (_htmlClipUpdatePending || !IsLoaded || MessageScroll is null)
+        {
+            return;
+        }
+
+        _htmlClipUpdatePending = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+        {
+            _htmlClipUpdatePending = false;
+            UpdateHtmlViewportClip();
+        }));
+    }
+
+    private void UpdateHtmlViewportClip()
+    {
+        if (!MessageScroll.IsLoaded || MessageScroll.ActualWidth <= 0 || MessageScroll.ActualHeight <= 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var origin = MessageScroll.PointToScreen(new Point(0, 0));
+            var transform = PresentationSource.FromVisual(MessageScroll)?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
+            var viewportPixels = transform.Transform(new Vector(MessageScroll.ViewportWidth, MessageScroll.ViewportHeight));
+            // PointToScreen 已经是原生窗口使用的屏幕像素坐标；只缩放 DIP 尺寸。
+            var viewport = new Rect(origin, new Size(viewportPixels.X, viewportPixels.Y));
+            foreach (var bubble in FindVisualChildren<Controls.HtmlAnswerBubble>(MessageScroll))
+            {
+                bubble.UpdateNativeViewportClip(viewport);
+            }
+        }
+        catch
+        {
+            // 布局变化或窗口销毁期间下一帧会自动重试。
+        }
+    }
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject root)
+        where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T match)
+            {
+                yield return match;
+            }
+
+            foreach (var descendant in FindVisualChildren<T>(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
+    private void OnHtmlBubbleCiteRequested(object? sender, int index)
+    {
+        if (sender is not Controls.HtmlAnswerBubble bubble)
+        {
+            return;
+        }
+        if (bubble.DataContext is not ViewModels.ChatMessage msg)
+        {
+            return;
+        }
+        // 复用现有链路：展开来源列表 + 高亮 + 打开抽屉
+        msg.NotifySourceMarker(index);
+        var src = msg.Sources?.FirstOrDefault(s => s.Index == index);
+        if (src is not null)
+        {
+            _vm?.OpenSourceCommand.Execute(src);
         }
     }
 

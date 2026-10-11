@@ -386,6 +386,19 @@ class TestHTTPConfigLLMFields:
         s = get_settings()
         assert s.llm_model is None or s.llm_model == ""
 
+    def test_post_config_embed_model_path_clears_and_invalidates_embedder(self, config_client) -> None:
+        """本地嵌入模型目录清除后，后续请求不得继续复用旧 embedder。"""
+        state = config_client.app.state.doc2mind
+        state.settings.embed_model_path = "C:/models/bge-small-zh"
+        state.embedder = object()  # 不创建真实模型，只验证运行时缓存失效契约
+
+        resp = config_client.post("/v1/config", json={"embed_model_path": ""})
+
+        assert resp.status_code == 200
+        assert resp.json()["embed_model_path"] is None
+        assert state.settings.embed_model_path is None
+        assert state.embedder is None
+
 
 # ======================================================================
 # 5. 并发 session 写入安全测试
@@ -586,6 +599,31 @@ class TestChatsEndpoints:
         assert [m["role"] for m in detail["messages"]] == ["user", "assistant"]
         assert detail["messages"][0]["content"] == "DocMind 支持哪些格式？"
 
+    def test_chat_detail_returns_agent_trajectory_and_recovery_warning(self, chats_client) -> None:
+        """历史会话回看必须保留 Agent 已完成步骤与未完成原因。"""
+        from doc2mind.core.store.chat_store import ChatStore
+
+        payload = {
+            "steps": [
+                {"step": 1, "type": "tool_result", "tool_id": "kb_search", "status": "ok", "summary": "命中 2 条"},
+            ],
+            "warning": "工具调用次数已达上限",
+        }
+        store = ChatStore(get_settings().db_path)
+        store.append_turn(
+            "agent-history",
+            "完成研究任务",
+            "当前已形成部分结论。",
+            trajectory_json=json.dumps(payload, ensure_ascii=False),
+        )
+
+        response = chats_client.get("/v1/chats/agent-history")
+
+        assert response.status_code == 200
+        assistant = response.json()["messages"][1]
+        assert assistant["trajectory"][0]["tool_id"] == "kb_search"
+        assert assistant["trajectory_warning"] == "工具调用次数已达上限"
+
     def test_session_context_recovers_from_db_after_memory_eviction(self, chats_client) -> None:
         """内存 LRU 清空（模拟后端重启）后，续聊仍能从 DB 恢复上下文。"""
         tc = chats_client
@@ -659,7 +697,7 @@ class TestRagSystemPrompt:
         assert get_settings().rag_system_prompt is None
 
     def test_custom_prompt_used_in_llm_messages(self) -> None:
-        """自定义提示词替换内置 _SYSTEM_PROMPT 进入 LLM 消息列表。"""
+        """自定义提示词进入 LLM 消息列表（包裹主题锚定前缀与档案提示）。"""
         mock_llm = MockLLMClient("回答。")
         s = Settings(llm_provider="openai", llm_api_key="test", rag_system_prompt="用文言文回答。")
         stack = _mock_rag_patches(mock_llm)
@@ -669,7 +707,10 @@ class TestRagSystemPrompt:
             stack.close()
         system_msg = mock_llm.last_messages[0]
         assert system_msg["role"] == "system"
-        assert system_msg["content"] == "用文言文回答。"
+        content = system_msg["content"].strip()
+        assert "用文言文回答。" in content
+        assert content.startswith("【")  # 主题锚定/档案提示前缀
+        assert "【主题锚定" in content
 
     def test_default_prompt_when_unset(self) -> None:
         mock_llm = MockLLMClient("回答。")

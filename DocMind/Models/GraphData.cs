@@ -57,7 +57,65 @@ public record GraphContextSnippet(
     [property: JsonPropertyName("doc_summary")] string DocSummary = ""
 )
 {
-    public string DisplayTitle => !string.IsNullOrWhiteSpace(DocTitle) ? DocTitle : (!string.IsNullOrWhiteSpace(Source) ? System.IO.Path.GetFileName(Source) : "æœªå‘½åæ¥æº");
+    [JsonPropertyName("chunk_index")]
+    public int ChunkIndex { get; init; }
+
+    [JsonPropertyName("doc_type")]
+    public string DocType { get; init; } = "";
+
+    [JsonPropertyName("evidence_reason")]
+    public string EvidenceReason { get; init; } = "";
+
+    [JsonPropertyName("sheet")]
+    public string Sheet { get; init; } = "";
+
+    [JsonPropertyName("slide")]
+    public int Slide { get; init; } = 0;
+
+    public string DisplayTitle => !string.IsNullOrWhiteSpace(DocTitle) ? DocTitle : (!string.IsNullOrWhiteSpace(Source) ? System.IO.Path.GetFileName(Source) : "Î´ÃüÃûÀ´Ô´");
+
+    public string ContentTypeLabel => DocType switch
+    {
+        "table" => "±í¸ñ",
+        "code" => "´úÂë",
+        "list" => "ÁĞ±í",
+        "heading" => "±êÌâ",
+        "paragraph" => "¶ÎÂä",
+        _ => string.IsNullOrWhiteSpace(DocType) ? "ÎÄ±¾" : DocType
+    };
+
+    public string ChunkPositionLabel => ChunkIndex >= 0 ? $"ÇĞÆ¬ #{ChunkIndex + 1}" : "ÇĞÆ¬Î»ÖÃÎ´Öª";
+
+    /// <summary>ÓÃÓÚ²àÀ¸¿ìËÙÉ¨¶ÁµÄÀ´Ô´Î»ÖÃ±êÇ©¡£</summary>
+    public string LocationLabel
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(Heading))
+                parts.Add(Heading.Trim());
+            if (Page > 0)
+                parts.Add($"P.{Page}");
+            if (!string.IsNullOrWhiteSpace(Sheet))
+                parts.Add($"Sheet: {Sheet}");
+            if (Slide > 0)
+                parts.Add($"Slide: {Slide}");
+            return parts.Count > 0 ? string.Join(" ¡¤ ", parts) : "Î´±ê×¢Î»ÖÃ";
+        }
+    }
+
+    /// <summary>ÇĞÆ¬ÕıÎÄµÄ¶ÌÕªÒª£¬±ÜÃâ²àÀ¸Ò»´ò¿ª¾Í±»³¤¶ÎÂäÑÍÃ»¡£</summary>
+    public string PreviewText
+    {
+        get
+        {
+            var text = (Content ?? string.Empty).Trim();
+            return text.Length > 150 ? text[..150] + "¡­" : text;
+        }
+    }
+
+    public bool HasSummary => !string.IsNullOrWhiteSpace(DocSummary);
+    public bool HasLocation => !string.IsNullOrWhiteSpace(Heading) || Page > 0 || !string.IsNullOrWhiteSpace(Sheet) || Slide > 0;
 }
 
 public record GraphSourceDocument(
@@ -67,7 +125,7 @@ public record GraphSourceDocument(
     [property: JsonPropertyName("chunk_count")] int ChunkCount = 0
 )
 {
-    public string DisplayTitle => !string.IsNullOrWhiteSpace(Title) ? Title : (!string.IsNullOrWhiteSpace(Source) ? System.IO.Path.GetFileName(Source) : "æœªå‘½åæ–‡æ¡£");
+    public string DisplayTitle => !string.IsNullOrWhiteSpace(Title) ? Title : (!string.IsNullOrWhiteSpace(Source) ? System.IO.Path.GetFileName(Source) : "Î´ÃüÃûÎÄµµ");
 }
 
 public record GraphEntityDetailResponse(
@@ -99,7 +157,7 @@ public sealed record EntityDistillRequest
     [JsonPropertyName("dialogueSummary")]
     public string? DialogueSummary { get; init; }
 
-    [JsonPropertyName("localSnippets")]
+    [property: JsonPropertyName("localSnippets")]
     public IReadOnlyList<string> LocalSnippets { get; init; } = [];
 
     [JsonPropertyName("webReferences")]
@@ -129,5 +187,3 @@ public sealed record EntityDistillResponse
     [JsonPropertyName("model")]
     public string Model { get; init; } = string.Empty;
 }
-
-

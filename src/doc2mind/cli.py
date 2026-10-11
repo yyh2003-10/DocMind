@@ -7,6 +7,8 @@
     doc2mind list [--collection NAME]             # 列出文档
     doc2mind remove <path|doc_id>                 # 删除
     doc2mind stats [--collection NAME]            # 统计
+    doc2mind export --format snapshot OUTPUT      # 导出后端无关 snapshot
+    doc2mind import --backend postgres SNAPSHOT   # 导入 snapshot 至 PostgreSQL
     doc2mind convert <input> [output]             # 格式转换
     doc2mind serve                                # 启动 HTTP 服务 (extras)
     doc2mind mcp                                  # 启动 MCP Server
@@ -26,7 +28,7 @@ from rich.console import Console
 from rich.table import Table
 
 from doc2mind import __version__
-from doc2mind.core.config import get_settings
+from doc2mind.core.config import get_settings, set_settings
 from doc2mind.core.converter import (
     SUPPORTED_FORMATS,
     ConversionError,
@@ -37,7 +39,7 @@ from doc2mind.core.loader.detect import get_loader, is_supported
 from doc2mind.core.logging_setup import setup_logging
 from doc2mind.core.pipeline import ingest_path
 from doc2mind.core.retriever.search import Retriever
-from doc2mind.core.store.sqlite_vec import VectorStore
+from doc2mind.core.store import KnowledgeStore, create_knowledge_store
 
 app = typer.Typer(
     name="doc2mind",
@@ -83,17 +85,13 @@ def main_callback(
     return
 
 
-def _open_store() -> tuple[VectorStore, Embedder]:
+def _open_store() -> tuple[KnowledgeStore, Embedder]:
     """打开 store + embedder，返回 (store, embedder)。"""
     from doc2mind.core.embedder import get_embedder
 
     settings = get_settings()
     embedder = get_embedder(settings)
-    store = VectorStore(
-        settings.db_path, embedder.dimension,
-        bm25_jieba_enabled=settings.bm25_jieba_enabled,
-        sparse_retrieval_enabled=settings.sparse_retrieval_enabled,
-    )
+    store = create_knowledge_store(settings, embedder.dimension)
     store.open()
     return store, embedder
 
@@ -124,6 +122,7 @@ def ingest(
             collection=collection,
             recursive=recursive,
             force=force,
+            cancel_event=None,
         )
 
     # 渲染结果表
@@ -162,24 +161,25 @@ def search(
     ),
 ) -> None:
     """混合检索：BM25 + 向量余弦，RRF 融合 Top-K。"""
+    from doc2mind.core.config import get_settings, parse_rrf_weights
     from doc2mind.core.embedder.base import EmbedderError
     from doc2mind.core.embedder.fastembed_impl import first_run_hint
-    from doc2mind.core.retriever.search import RetrievalError
     from doc2mind.core.reranker import get_reranker
-    from doc2mind.core.config import get_settings, parse_rrf_weights
+    from doc2mind.core.retriever.search import RetrievalError
 
     store, embedder = _open_store()
     try:
+        _s = get_settings()
         retriever = Retriever(
             store=store,
             embedder=embedder,
-            reranker=get_reranker(get_settings()),
-            rerank_recall=get_settings().rerank_recall,
-            rrf_weights=parse_rrf_weights(get_settings().rrf_weights),
-            fusion_mode=get_settings().fusion_mode,
-            rerank_calibration_temperature=(
-                get_settings().rerank_calibration_temperature
-            ),
+            reranker=get_reranker(_s),
+            rerank_recall=_s.rerank_recall,
+            query_instruction=_s.query_instruction,
+            semantic_floor=_s.semantic_floor,
+            rrf_weights=parse_rrf_weights(_s.rrf_weights),
+            fusion_mode=_s.fusion_mode,
+            rerank_calibration_temperature=_s.rerank_calibration_temperature,
         )
         hits, stats = retriever.search(
             query=query, collection=collection, top_k=top_k
@@ -347,6 +347,96 @@ def stats(
 
 
 @app.command()
+def export(
+    output: Path = typer.Argument(..., help="snapshot 输出 ZIP 文件路径。"),
+    format: str = typer.Option("snapshot", "--format", help="导出格式：当前仅支持 snapshot。"),
+) -> None:
+    """导出后端无关的知识库 snapshot（索引可由目标后端重建）。"""
+    from doc2mind.core.snapshot import SnapshotError, create_snapshot
+
+    if format.strip().lower() != "snapshot":
+        rprint(f"[red]不支持的导出格式:[/red] {format}（当前仅支持 snapshot）")
+        raise typer.Exit(code=1)
+
+    settings = get_settings()
+    try:
+        manifest = create_snapshot(
+            settings.db_path,
+            output.expanduser(),
+            embedding_model=settings.embed_model,
+        )
+    except SnapshotError as exc:
+        rprint(f"[red][失败] snapshot 导出失败:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    counts = manifest.get("counts", {})
+    rprint(
+        f"[green][成功] snapshot 导出完成:[/green] {manifest['path']} "
+        f"（文档 {counts.get('documents', 0)}，分块 {counts.get('chunks', 0)}，"
+        f"向量 {counts.get('embeddings', 0)}）"
+    )
+
+
+@app.command("import")
+def import_snapshot_command(
+    snapshot: Path = typer.Argument(..., help="要导入的 snapshot ZIP 文件。"),
+    backend: str = typer.Option("postgres", "--backend", help="目标后端：当前仅支持 postgres。"),
+    tenant_id: str = typer.Option(..., "--tenant-id", help="目标租户 ID（必须显式指定）。"),
+    dsn: str | None = typer.Option(
+        None,
+        "--dsn",
+        envvar="DOCMIND_POSTGRES_DSN",
+        help="PostgreSQL 连接字符串；也可通过 DOCMIND_POSTGRES_DSN 环境变量提供。",
+    ),
+    embedding_model: str | None = typer.Option(
+        None,
+        "--embedding-model",
+        help="目标 embedding 模型；仅在与 snapshot 记录模型一致时复用向量缓存。",
+    ),
+) -> None:
+    """把已校验的 SQLite snapshot 追加导入 PostgreSQL，不覆盖目标数据。"""
+    from doc2mind.core.snapshot import SnapshotError
+    from doc2mind.core.store.contracts import StoreError
+    from doc2mind.core.store.postgres_snapshot import import_snapshot
+    from doc2mind.core.store.postgres_write import connect_postgres
+
+    if backend.strip().lower() != "postgres":
+        rprint(f"[red]不支持的导入后端:[/red] {backend}（当前仅支持 postgres）")
+        raise typer.Exit(code=1)
+    if not snapshot.is_file():
+        rprint(f"[red]snapshot 文件不存在:[/red] {snapshot}")
+        raise typer.Exit(code=1)
+    if not dsn:
+        rprint("[red]请通过 --dsn 或 DOCMIND_POSTGRES_DSN 提供 PostgreSQL 连接字符串。[/red]")
+        raise typer.Exit(code=1)
+
+    connection = None
+    try:
+        connection = connect_postgres(dsn)
+        report = import_snapshot(
+            connection,
+            snapshot.expanduser(),
+            tenant_id=tenant_id,
+            embedding_model=embedding_model,
+        )
+    except (SnapshotError, StoreError, OSError) as exc:
+        rprint(f"[red][失败] snapshot 导入失败:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+    counts = report["counts"]
+    rprint(
+        f"[green][成功] snapshot 导入完成:[/green] tenant={report['tenant_id']} "
+        f"（文档 {counts['documents']}，分块 {counts['chunks']}，"
+        f"复用向量 {report['imported_embeddings']}）"
+    )
+    if report["needs_reindex"]:
+        rprint("[yellow]向量缓存未完整复用或模型不匹配；完成导入后需要重建向量索引。[/yellow]")
+
+
+@app.command()
 def convert(
     input_path: Path = typer.Argument(..., help="输入文件或目录。"),
     output: Path | None = typer.Argument(
@@ -511,6 +601,10 @@ def _run_chat_once(
                         if heading:
                             loc_str += f"（{heading}）"
                         rprint(f"  [{idx}] {loc_str}  [dim]score={score:.2f}[/dim]")
+
+                warning = final_frame.get("warning")
+                if warning:
+                    rprint(f"[yellow]⚠ {warning}[/yellow]")
 
                 rprint(
                     f"[dim]模型: {final_frame.get('model')} ({final_frame.get('provider')}) | "
@@ -802,15 +896,54 @@ def config(
     model: str | None = typer.Option(
         None, "--model", "-M", help="临时指定嵌入模型（仅本次进程，不持久化）。"
     ),
+    recommended_retrieval: bool = typer.Option(
+        False,
+        "--recommended-retrieval",
+        help="预览推荐检索配置 diff；加 --apply 写回持久化。",
+    ),
+    apply: bool = typer.Option(
+        False, "--apply", help="与 --recommended-retrieval 连用：写回配置。"
+    ),
 ) -> None:
-    """查看 / 切换嵌入模型配置。
+    """查看 / 切换嵌入模型配置；应用推荐检索参数。
 
     示例：
         doc2mind config --show               # 查看当前配置
-        doc2mind config --set-model BAAI/bge-small-en-v1.5   # 切换模型（持久化）
-        doc2mind config --model <名称>       # 临时用某个模型跑一次
+        doc2mind config --set-model BAAI/bge-small-en-v1.5
+        doc2mind config --recommended-retrieval          # 只预览
+        doc2mind config --recommended-retrieval --apply  # 应用并持久化
     """
     from doc2mind.core.embedder.catalog import get_model_info, render_catalog_table
+
+    if recommended_retrieval:
+        from doc2mind.core.config import (
+            apply_recommended_retrieval,
+            recommended_retrieval_preview,
+        )
+
+        s = get_settings()
+        preview = recommended_retrieval_preview(s)
+        rprint(f"[bold]{preview['label']}[/bold] — {preview['description']}")
+        if preview["aligned"]:
+            rprint("[green]当前配置已与推荐检索参数对齐[/green]")
+            return
+        rprint("将变更字段：")
+        for ch in preview["changes"]:
+            rprint(
+                f"  [yellow]{ch['field']}[/yellow]: "
+                f"{ch['from']!r} → [green]{ch['to']!r}[/green]"
+            )
+        if not apply:
+            rprint(
+                "\n[dim]仅预览。确认后加 --apply 写回 config.toml。[/dim]"
+            )
+            return
+        updated, changes = apply_recommended_retrieval(s)
+        if not _save_settings_or_warn(updated):
+            raise typer.Exit(code=1)
+        set_settings(updated)
+        rprint(f"[green]已应用 {len(changes)} 项推荐检索参数并持久化[/green]")
+        return
 
     if model:
         # 临时覆盖：仅本次进程

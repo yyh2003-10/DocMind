@@ -457,3 +457,49 @@ class TestSearchUX:
             assert store.count_documents("不存在的集合", None) == 0
         finally:
             store.close()
+
+
+# ----------------------------------------------------------------------
+# 来源文件移动
+# ----------------------------------------------------------------------
+def test_relocate_documents_updates_document_and_chunk_source(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    old_source = str(tmp_path / "old.md")
+    new_source = str(tmp_path / "renamed.md")
+    doc = _doc("doc-move", "default", old_source, 1)
+    store.replace_document(
+        doc, [_chunk("可检索的保留内容")], [_emb("source lifecycle")]
+    )
+    try:
+        assert store.relocate_documents(old_source, new_source, doc.file_hash) == 1
+        assert store.find_documents_by_source(old_source) == []
+        assert store.find_documents_by_source(new_source)[0].id == "doc-move"
+        row = store._conn.execute(
+            "SELECT source FROM chunks_meta WHERE document_id = ?", ("doc-move",)
+        ).fetchone()
+        assert row[0] == new_source
+    finally:
+        store.close()
+
+
+def test_relocate_documents_rejects_hash_mismatch_and_path_conflict(
+    tmp_path: Path,
+) -> None:
+    store = _open_store(tmp_path)
+    old_source = str(tmp_path / "old.md")
+    new_source = str(tmp_path / "existing.md")
+    old_doc = _doc("doc-old", "default", old_source, 1)
+    store.replace_document(
+        old_doc, [_chunk("old content")], [_emb("old content")]
+    )
+    try:
+        assert store.relocate_documents(old_source, new_source, "wrong-hash") == 0
+        target_doc = _doc("doc-target", "default", new_source, 1)
+        store.replace_document(
+            target_doc, [_chunk("target content")], [_emb("target content")]
+        )
+        assert store.relocate_documents(old_source, new_source, old_doc.file_hash) == 0
+        assert store.find_documents_by_source(old_source)[0].id == "doc-old"
+        assert store.find_documents_by_source(new_source)[0].id == "doc-target"
+    finally:
+        store.close()

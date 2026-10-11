@@ -370,6 +370,74 @@ public class ImportViewModelTests
         vm.NewCollectionName = "   ";
         Assert.False(vm.ConfirmCreateCollectionCommand.CanExecute(null));
     }
+
+    // --- 取消契约测试 (FC-01c) ---
+
+    [Fact]
+    public void CancelImportCommand_WithoutCurrentJobId_DoesNotThrow()
+    {
+        // Given: 没有 _currentJobId（未开始导入）
+        var fake = new FakeDoc2kbApiService();
+        var vm = CreateVm(fake);
+
+        // When: 调用 CancelImportCommand
+        var exception = Record.Exception(() => vm.CancelImportCommand.Execute(null));
+
+        // Then: 不抛异常
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public async Task CancelImportCommand_WithCurrentJobId_CallsCancelJobAsync()
+    {
+        // Given: 导入进行中（有 _currentJobId）
+        var fake = new FakeDoc2kbApiService();
+        var vm = CreateVm(fake);
+        var jobId = "test-job-1";
+        var cancelCalled = false;
+
+        fake.OnCancelJob = (id, ct) =>
+        {
+            cancelCalled = true;
+            return Task.FromResult(new JobStatus { JobId = id, Status = "cancelled" });
+        };
+
+        // 模拟导入进行中（通过 ImportCommand）
+        fake.OnIngestJob = (_, _) => Task.FromResult(RunningJob(jobId, 0, 3));
+        vm.SelectedPath = "test.md";
+        await vm.ImportCommand.ExecuteAsync(null);
+
+        // When: 调用 CancelImportCommand
+        await vm.CancelImportCommand.ExecuteAsync(null);
+
+        // Then: 调用 CancelJobAsync
+        Assert.True(cancelCalled, "CancelJobAsync should be called when _currentJobId is set");
+    }
+
+    [Fact]
+    public async Task CancelImportCommand_WhenCancelJobAsyncThrows_DoesNotCrash()
+    {
+        // Given: CancelJobAsync 抛异常
+        var fake = new FakeDoc2kbApiService();
+        var vm = CreateVm(fake);
+        var jobId = "test-job-2";
+
+        fake.OnCancelJob = (id, ct) =>
+        {
+            throw new InvalidOperationException("Network error");
+        };
+
+        // 模拟导入进行中
+        fake.OnIngestJob = (_, _) => Task.FromResult(RunningJob(jobId, 0, 3));
+        vm.SelectedPath = "test.md";
+        await vm.ImportCommand.ExecuteAsync(null);
+
+        // When: 调用 CancelImportCommand（CancelJobAsync 会抛异常）
+        var exception = await Record.ExceptionAsync(async () => await vm.CancelImportCommand.ExecuteAsync(null));
+
+        // Then: 不崩溃（catch 后 Warn）
+        Assert.Null(exception);
+    }
 }
 /// <summary>
 /// DescribeStage：后端文件内阶段（解析/切片/嵌入/写库/AI 整理）优先展示，
@@ -378,7 +446,7 @@ public class ImportViewModelTests
 public class DescribeStageTests
 {
     private static JobStatus Job(
-        string? stage = null, double? stageProgress = null,
+        string? stage = null, double? stageProgress = null, string? stageDetail = null,
         string? currentFile = null, int processed = 0, int total = 0)
         => new()
         {
@@ -390,6 +458,7 @@ public class DescribeStageTests
             StartedAt = "2026-01-01T00:00:00",
             Stage = stage,
             StageProgress = stageProgress,
+            StageDetail = stageDetail,
             CurrentFile = currentFile,
         };
 
@@ -402,6 +471,30 @@ public class DescribeStageTests
     {
         var text = ImportViewModel.DescribeStage(Job(stage: stage, currentFile: @"C:\docs\a.pdf"));
         Assert.Equal($"{expectedStage}：a.pdf", text);
+    }
+
+    [Fact]
+    public void Parsing_WithPageDetail_ShowsPageInfo()
+    {
+        var text = ImportViewModel.DescribeStage(
+            Job(stage: "parsing", stageDetail: "第 3/12 页", currentFile: @"C:\docs\a.pdf"));
+        Assert.Equal("正在解析文档（第 3/12 页）：a.pdf", text);
+    }
+
+    [Fact]
+    public void Parsing_WithTotalPagesOnly_ShowsTotalPages()
+    {
+        var text = ImportViewModel.DescribeStage(
+            Job(stage: "parsing", stageDetail: "共 12 页", currentFile: @"C:\docs\a.pdf"));
+        Assert.Equal("正在解析文档（共 12 页）：a.pdf", text);
+    }
+
+    [Fact]
+    public void Parsing_WithProgressOnly_ShowsPercent()
+    {
+        var text = ImportViewModel.DescribeStage(
+            Job(stage: "parsing", stageProgress: 0.25, currentFile: @"C:\docs\a.pdf"));
+        Assert.Equal("正在解析文档（25%）：a.pdf", text);
     }
 
     [Fact]

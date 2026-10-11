@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -39,10 +40,105 @@ _ENTITY_SYSTEM = (
     "规则要求：\n"
     "1. topics：提取 1~4 个概括本文核心业务脉络或功能模块的高维主题，名称精炼有力；\n"
     "2. entities：提取 3~25 个核心实体，每个实体依据内容逻辑归属到对应的主题；\n"
-    "3. relations：严格按照知识内容真实的因果、输入输出、组成或调用关系建立连接，推荐关系类型 [belongs_to, uses, depends_on, part_of, develops, feeds_into, combines_with, implements, related_to]；\n"
-    "4. 严格使用 JSON 双引号，严禁使用单引号；\n"
-    "5. 只输出合法 JSON 纯文本，不要输出 markdown 代码栅栏以外的任何文字。"
+    "3. relations：严格按照知识内容真实的因果、输入输出、组成或调用关系建立连接，"
+    "推荐关系类型 [belongs_to, uses, depends_on, part_of, develops, feeds_into, combines_with, implements]；"
+    "禁止用 related_to 兜底——没有明确语义关系就不要输出该条；\n"
+    "4. 实体命名必须与文档原文一致：禁止把长型号/缩写再切碎（例如文档写 ASDA-B3，"
+    "不得输出实体 AS 或 ASD；文档写 AtomCode，不得输出 Atom）；禁止凭空扩写英文全称"
+    "（不得把缩写解释成 agent skills 之类文档中未出现的词）；\n"
+    "5. 实体名须能在原文中找到字面出现；仅 1~2 个字母的碎片名一律不要输出；\n"
+    "6. 严格使用 JSON 双引号，严禁使用单引号；\n"
+    "7. 只输出合法 JSON 纯文本，不要输出 markdown 代码栅栏以外的任何文字。"
 )
+
+
+# 文档中出现的长型号/缩写；用于拦截 LLM 把其切成 1~2 字母碎片实体
+_LONG_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9]{2,}(?:[-_][A-Za-z0-9]+)*")
+
+
+def _source_long_tokens(text: str) -> set[str]:
+    """原文中的长拉丁/型号 token（小写），用于碎片实体拦截。"""
+    return {m.group().lower() for m in _LONG_TOKEN_RE.finditer(text or "")}
+
+
+def _is_fragment_of_long_token(name: str, long_tokens: set[str]) -> bool:
+    """实体名是否只是原文更长 token 的碎片（如 AS ⊂ ASDA-B3）。"""
+    clean = (name or "").strip()
+    if not clean or len(clean) > 2:
+        return False
+    if not re.fullmatch(r"[A-Za-z]{1,2}", clean):
+        return False
+    frag = clean.lower()
+    # 本身就在原文以完整形式出现过（如真的实体「AI」）则放行
+    # 碎片判定：存在某个更长 token 包含该碎片，且碎片不是独立词
+    for token in long_tokens:
+        if len(token) <= len(frag):
+            continue
+        if frag in token:
+            # 独立词例外：token 以碎片开头且后跟非字母（如 as 在 "as "）——
+            # 长 token 集合来自连续拉丁串，这里只要求「包含且更长」即视为碎片
+            return True
+    return False
+
+
+def _sanitize_extracted(
+    extracted: dict[str, Any],
+    source_text: str,
+) -> dict[str, Any]:
+    """过滤脏实体/空关系，避免 ASD→AS、related_to 兜底污染图谱。"""
+    long_tokens = _source_long_tokens(source_text)
+    source_cf = (source_text or "").casefold()
+
+    clean_entities: list[dict[str, Any]] = []
+    kept_names: set[str] = set()
+    for ent in extracted.get("entities") or []:
+        if not isinstance(ent, dict):
+            continue
+        name = str(ent.get("name", "")).strip()
+        if not name or len(name) < 2:
+            continue
+        if _is_fragment_of_long_token(name, long_tokens):
+            logger.debug("丢弃碎片实体: %s", name)
+            continue
+        # 仅拦截明显未在原文出现的拉丁实体；中文实体多为语义归纳，不强制字面
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9._/-]*", name) and name.casefold() not in source_cf:
+            logger.debug("丢弃原文未出现的拉丁实体: %s", name)
+            continue
+        ent = dict(ent)
+        ent["name"] = name
+        clean_entities.append(ent)
+        kept_names.add(name)
+
+    clean_relations: list[dict[str, Any]] = []
+    for rel in extracted.get("relations") or []:
+        if not isinstance(rel, dict):
+            continue
+        frm = str(rel.get("from", "")).strip()
+        to = str(rel.get("to", "")).strip()
+        rtype = str(rel.get("type", "")).strip()
+        if not frm or not to or frm == to:
+            continue
+        # 空关系或 related_to 兜底：没有明确语义就不要建边
+        if not rtype or rtype == "related_to":
+            logger.debug("丢弃 related_to/空类型关系: %s -> %s", frm, to)
+            continue
+        # 端点须是已保留实体或主题
+        topic_names = {
+            str(t.get("name", "")).strip()
+            for t in (extracted.get("topics") or [])
+            if isinstance(t, dict)
+        }
+        if frm not in kept_names and frm not in topic_names:
+            continue
+        if to not in kept_names and to not in topic_names:
+            continue
+        clean_relations.append({"from": frm, "to": to, "type": rtype})
+
+    return {
+        "topics": extracted.get("topics") or [],
+        "entities": clean_entities,
+        "relations": clean_relations,
+    }
 
 
 def extract_entities(
@@ -72,19 +168,12 @@ def extract_entities(
     if not result or not isinstance(result, dict):
         return {}
 
-    topics = result.get("topics")
-    entities = result.get("entities")
-    relations = result.get("relations")
-
-    clean_topics = topics if isinstance(topics, list) else []
-    clean_entities = entities if isinstance(entities, list) else []
-    clean_relations = relations if isinstance(relations, list) else []
-
-    return {
-        "topics": clean_topics,
-        "entities": clean_entities,
-        "relations": clean_relations,
+    raw = {
+        "topics": result.get("topics") if isinstance(result.get("topics"), list) else [],
+        "entities": result.get("entities") if isinstance(result.get("entities"), list) else [],
+        "relations": result.get("relations") if isinstance(result.get("relations"), list) else [],
     }
+    return _sanitize_extracted(raw, text)
 
 
 def extract_and_store(

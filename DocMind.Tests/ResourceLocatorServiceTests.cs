@@ -206,14 +206,19 @@ public sealed class ResourcePathPanelViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Items_ContainAllFourResources()
+    public void Items_ContainAllSupportedResources()
     {
         var (vm, _) = CreateVm();
-        Assert.Equal(4, vm.Items.Count);
-        Assert.Equal(LocatableResource.Poppler, vm.Items[0].Kind);
-        Assert.Equal(LocatableResource.BackendPython, vm.Items[1].Kind);
-        Assert.Equal(LocatableResource.OfflineWheels, vm.Items[2].Kind);
-        Assert.Equal(LocatableResource.EmbedModelCache, vm.Items[3].Kind);
+        Assert.Equal(
+            new[]
+            {
+                LocatableResource.Poppler,
+                LocatableResource.BackendPython,
+                LocatableResource.OfflineWheels,
+                LocatableResource.EmbedModelCache,
+                LocatableResource.OcrModelCache,
+            },
+            vm.Items.Select(item => item.Kind));
     }
 
     [Fact]

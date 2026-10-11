@@ -89,6 +89,8 @@ public partial class ResourcePathPanelViewModel : ViewModelBase
                 "插件安装优先从此目录取包，无需联网；可放在 U 盘携带"),
             new(LocatableResource.EmbedModelCache, "嵌入模型缓存目录",
                 "本地语义向量模型缓存（fastembed_cache）；换位置后需重新下载或复制模型"),
+            new(LocatableResource.OcrModelCache, "OCR 模型缓存目录",
+                "PaddleOCR 识别模型（official_models）；换位置后需重新下载或复制模型"),
         };
 
         // 任一行 IsBusy 变化 → 广播 IsAnyScanning 并刷新各命令的 CanExecute。
@@ -263,11 +265,11 @@ public partial class ResourcePathPanelViewModel : ViewModelBase
 
     private bool DefaultConfirm(string displayName)
     {
-        return MessageBox.Show(
+        return Services.ThemeMessageBox.Show(
             $"在高概率位置未找到 {displayName} 的可用配置。\n\n"
             + "是否全盘深搜（含 U 盘，跳过系统目录，SSD 约 1-3 分钟，可中途取消）？",
             "自动寻找可用配置",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question) == MessageBoxResult.Yes;
+            Services.ThemeMessageBoxButton.YesNo,
+            Services.ThemeMessageBoxImage.Question) == Services.ThemeMessageBoxResult.Yes;
     }
 }

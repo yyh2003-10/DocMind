@@ -12,6 +12,7 @@ public sealed class TrayService : IDisposable
     private readonly TaskbarIcon _icon;
     private readonly Window _mainWindow;
     private string _statusText = "DocMind - 离线";
+    private bool _disposed;
 
     /// <summary>托盘状态灯文案。</summary>
     public string StatusText
@@ -40,6 +41,7 @@ public sealed class TrayService : IDisposable
     /// </summary>
     public void ShowNotification(string title, string message)
     {
+        if (_disposed) return;
         try
         {
             _icon.ShowNotification(
@@ -76,6 +78,7 @@ public sealed class TrayService : IDisposable
 
     public void UpdateStatus(BackendState state)
     {
+        if (_disposed) return;
         var text = state switch
         {
             BackendState.Online => "DocMind - 在线",
@@ -109,12 +112,14 @@ public sealed class TrayService : IDisposable
 
     public void HideToTray()
     {
+        if (_disposed) return;
         _mainWindow.Hide();
         HiddenToTray?.Invoke(this, EventArgs.Empty);
     }
 
     public void ShowMainWindow()
     {
+        if (_disposed) return;
         _mainWindow.Show();
         _mainWindow.WindowState = WindowState.Normal;
         // 从托盘恢复时窗口常被其他窗口盖住、Activate() 抢不到前台。
@@ -161,5 +166,19 @@ public sealed class TrayService : IDisposable
         public event EventHandler? CanExecuteChanged { add { } remove { } }
     }
 
-    public void Dispose() => _icon.Dispose();
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        try
+        {
+            // 先摘掉命令与菜单：退出瞬间托盘单击回调内部会 Dispatcher.Invoke，
+            // Dispatcher 已关机时会抛 TaskCanceledException
+            _icon.LeftClickCommand = null;
+            _icon.DoubleClickCommand = null;
+            _icon.ContextMenu = null;
+        }
+        catch { /* ignore on exit */ }
+        try { _icon.Dispose(); } catch { /* ignore on exit */ }
+    }
 }

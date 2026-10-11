@@ -409,6 +409,54 @@ class TestCurateOrchestration:
                actions=["enrich"], progress=lambda done, total: seen.append((done, total)))
         assert seen and seen[-1] == (2, 2)
 
+    def test_progress_total_known_before_first_doc(self, store, settings) -> None:
+        """首帧立即下发 (0, total>0)：否则首个 LLM 调用期间前端只能显示 0/0 → 0%。"""
+        _add_doc(store, "d-1", "default", "note:alpha 笔记", ["alpha 内容"])
+        _add_doc(store, "d-2", "default", "note:beta 笔记", ["beta 内容"])
+        seen: list[tuple[int, int]] = []
+        curate(store, DummyEmbedder(), _mkllm(), settings, collection="default",
+               actions=["enrich"], progress=lambda done, total: seen.append((done, total)))
+        assert seen[0][0] == 0
+        assert seen[0][1] == 2  # total 在首帧就已知，不为 0
+
+    def test_progress_receives_stage_kwarg(self, store, settings) -> None:
+        """新式回调拿到 stage/stage_progress（阶段级进度），旧式两参回调不受影响。"""
+        _add_doc(store, "d-1", "default", "note:alpha 笔记", ["alpha 内容"])
+        stages: list[tuple[int, int, str | None, float | None]] = []
+
+        def on_progress(
+            done: int, total: int, stage: str | None = None, stage_progress: float | None = None
+        ) -> None:
+            stages.append((done, total, stage, stage_progress))
+
+        curate(
+            store,
+            DummyEmbedder(),
+            _mkllm(),
+            settings,
+            collection="default",
+            actions=["enrich"],
+            progress=on_progress,
+        )
+        # 首帧无 stage；enrich 阶段带 stage 名
+        assert stages[0][2] is None
+        assert any(s[2] == "enrich" for s in stages)
+        assert all(0.0 <= (s[3] or 0.0) <= 1.0 for s in stages)
+        # 单调不回退：done 递增
+        dones = [s[0] for s in stages]
+        assert dones == sorted(dones)
+
+    def test_progress_counts_stage2_units(self, store, settings) -> None:
+        """阶段 2（dedup/consolidate）也计入进度单元——旧行为该阶段全程无回调。"""
+        _add_doc(store, "d-1", "default", "note:alpha 笔记", ["alpha 内容"])
+        seen: list[tuple[int, int]] = []
+        curate(store, DummyEmbedder(), _mkllm(), settings, collection="default",
+               actions=["enrich", "dedup"],
+               progress=lambda done, total: seen.append((done, total)))
+        # 1 篇文档 + 1 集合 × 1 个阶段2动作 = 2 个单元
+        assert seen[0][1] == 2
+        assert seen[-1] == (2, 2)
+
 
 # ----------------------------------------------------------------------
 # pipeline 入库自动整理（_auto_curate_after_ingest 集成）

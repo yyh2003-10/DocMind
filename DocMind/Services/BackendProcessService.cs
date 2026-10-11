@@ -72,6 +72,26 @@ public sealed class BackendProcessService : IDisposable
     /// <summary>实际后端地址变化事件（端口被占用顺延后触发，供 API 客户端同步 BaseAddress）。</summary>
     public event EventHandler<string>? BackendUrlChanged;
 
+    /// <summary>崩溃自动重启成功事件（供 UI 重新拉取会话/任务状态，避免僵尸进度）。</summary>
+    public event EventHandler? AutoRestarted;
+
+    // ---- 崩溃自动重启策略（M0-3）----
+    // 连续失败上限内的意外退出按 0s/5s/15s 退避自动拉起；任何一次成功启动
+    // （含手动）都会把计数清零。连续 3 次失败后停止自动重启，转人工恢复。
+    private const int MaxAutoRestarts = 3;
+    private int _crashRestartCount;
+
+    /// <summary>第 attempt 次自动重启前的退避毫秒数（1=立即，2=5s，≥3=15s）。</summary>
+    internal static int AutoRestartDelayMs(int attempt) => attempt switch
+    {
+        <= 1 => 0,
+        2 => 5_000,
+        _ => 15_000,
+    };
+
+    internal static bool ShouldAutoRestart(int attempt, bool isMaintenance)
+        => !isMaintenance && attempt < MaxAutoRestarts;
+
     public BackendProcessService(
         AppSettings settings,
         ILogger<BackendProcessService>? logger = null)
@@ -123,6 +143,7 @@ public sealed class BackendProcessService : IDisposable
         {
             DebugLog.Info("健康探测通过：复用 URL 上已有的后端实例，不拉起子进程", "Backend");
             SetState(BackendState.Online);
+            _crashRestartCount = 0; // 任何一次成功启动都重置崩溃重启计数
             progress?.Report("检测到后端已在线，复用现有实例");
             // 持续健康监控：该实例退出时状态灯翻离线
             StartHealthMonitor();
@@ -154,6 +175,7 @@ public sealed class BackendProcessService : IDisposable
             if (ready)
             {
                 SetState(BackendState.Online);
+                _crashRestartCount = 0; // 任何一次成功启动都重置崩溃重启计数
                 progress?.Report("后端已就绪");
                 // 启动后台监控：进程意外退出时更新状态
                 _monitorCts = new CancellationTokenSource();
@@ -357,6 +379,15 @@ public sealed class BackendProcessService : IDisposable
             psi.Environment["DOC2MIND_EMBED_CACHE_DIR"] = _settings.EmbedCacheDir.Trim();
             injectedEnv.Add($"DOC2MIND_EMBED_CACHE_DIR={psi.Environment["DOC2MIND_EMBED_CACHE_DIR"]}");
         }
+        if (!string.IsNullOrWhiteSpace(_settings.OcrModelDir))
+        {
+            // PaddleOCR/PaddleX 模型目录：后端 settings.ocr_model_dir 与
+            // PADDLE_PDX_CACHE_HOME 均由此对齐（用户可在设置页切换）。
+            var ocrDir = _settings.OcrModelDir.Trim();
+            psi.Environment["DOC2MIND_OCR_MODEL_DIR"] = ocrDir;
+            psi.Environment["PADDLE_PDX_CACHE_HOME"] = ocrDir;
+            injectedEnv.Add($"DOC2MIND_OCR_MODEL_DIR={ocrDir}");
+        }
 
         // 设置页的模型/分块参数 → 后端 DOC2MIND_* 环境变量（重启后端生效）。
         // 只在非空时注入，留空让后端用内置默认值。
@@ -416,6 +447,21 @@ public sealed class BackendProcessService : IDisposable
         injectedEnv.Add($"DOC2MIND_LLM_TEMPERATURE={psi.Environment["DOC2MIND_LLM_TEMPERATURE"]}");
         psi.Environment["DOC2MIND_LLM_MAX_TOKENS"] = _settings.LlmMaxTokens.ToString();
         injectedEnv.Add($"DOC2MIND_LLM_MAX_TOKENS={psi.Environment["DOC2MIND_LLM_MAX_TOKENS"]}");
+        if (_settings.LlmTimeoutSec > 0)
+        {
+            psi.Environment["DOC2MIND_LLM_TIMEOUT"] = _settings.LlmTimeoutSec.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            injectedEnv.Add($"DOC2MIND_LLM_TIMEOUT={psi.Environment["DOC2MIND_LLM_TIMEOUT"]}");
+        }
+        if (_settings.WebSearchTimeoutSec > 0)
+        {
+            psi.Environment["DOC2MIND_WEB_SEARCH_TIMEOUT"] = _settings.WebSearchTimeoutSec.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            injectedEnv.Add($"DOC2MIND_WEB_SEARCH_TIMEOUT={psi.Environment["DOC2MIND_WEB_SEARCH_TIMEOUT"]}");
+        }
+        if (!string.IsNullOrWhiteSpace(_settings.WebSearchSearxngUrl))
+        {
+            psi.Environment["DOC2MIND_WEB_SEARCH_SEARXNG_URL"] = _settings.WebSearchSearxngUrl.Trim();
+            injectedEnv.Add("DOC2MIND_WEB_SEARCH_SEARXNG_URL=<已注入，值略>");
+        }
         psi.Environment["DOC2MIND_RAG_TOP_K"] = _settings.RagTopK.ToString();
         injectedEnv.Add($"DOC2MIND_RAG_TOP_K={psi.Environment["DOC2MIND_RAG_TOP_K"]}");
         if (!string.IsNullOrWhiteSpace(_settings.RagSystemPrompt))
@@ -922,6 +968,48 @@ public sealed class BackendProcessService : IDisposable
                     DebugLog.Info("子进程退出后探测到健康实例，保持在线（端口可能被外部实例占用）", "Backend");
                     SetState(BackendState.Online);
                     StartHealthMonitor();
+                }
+                else if (ShouldAutoRestart(_crashRestartCount, IsMaintenance))
+                {
+                    // 自愈路径：退避后自动拉起。立即置 Offline 让状态灯如实反映，
+                    // 重启成功后 StartAsync 会拉起新的 MonitorAsync 接管监控。
+                    while (ShouldAutoRestart(_crashRestartCount, IsMaintenance) && !ct.IsCancellationRequested)
+                    {
+                        _crashRestartCount++;
+                        var delayMs = AutoRestartDelayMs(_crashRestartCount);
+                        DebugLog.Warn(
+                            $"后端退出且无健康实例，自动重启 {_crashRestartCount}/{MaxAutoRestarts}" +
+                            (delayMs > 0 ? $"（{delayMs / 1000}s 退避）" : "（立即）"),
+                            "Backend");
+                        SetState(BackendState.Offline);
+                        try
+                        {
+                            if (delayMs > 0)
+                            {
+                                await Task.Delay(delayMs, ct).ConfigureAwait(false);
+                            }
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            return; // 用户主动停止，放弃自动重启
+                        }
+                        // 重启用 None：MonitorAsync 的令牌随 StopAsync 取消时，
+                        // StartAsync 内部会自行清理，不再沿旧令牌启动新监控
+                        if (await StartAsync(ct: CancellationToken.None).ConfigureAwait(false))
+                        {
+                            DebugLog.Info($"后端自动重启成功（第 {_crashRestartCount} 次尝试）", "Backend");
+                            AutoRestarted?.Invoke(this, EventArgs.Empty);
+                            return; // StartAsync 已启动新的 MonitorAsync
+                        }
+                        DebugLog.Warn($"后端自动重启第 {_crashRestartCount} 次未就绪", "Backend");
+                    }
+                    if (_crashRestartCount >= MaxAutoRestarts)
+                    {
+                        DebugLog.Error(
+                            $"后端连续 {MaxAutoRestarts} 次自动重启失败，已停止自动重启；" +
+                            "请查看后端日志或在状态栏手动重启", "Backend");
+                    }
+                    SetState(BackendState.Offline);
                 }
                 else
                 {

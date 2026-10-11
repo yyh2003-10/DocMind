@@ -58,4 +58,38 @@ public class ConvertViewModelTests
         vm.InputPath = @"C:\test.md";
         Assert.True(vm.ConvertCommand.CanExecute(null));
     }
+
+    [Fact]
+    public void CanImportToKnowledgeBase_Notifies_WhenLastResultOrOutputPathChanges()
+    {
+        // 回归守卫（原 UX P0-D）：LastResult/OutputPath 变化时必须发出
+        // CanImportToKnowledgeBase 通知，否则转换页「一键导入知识库」按钮
+        // 的 Visibility 绑定永远停在初始 Collapsed，跨页链路 UI 断裂。
+        var fake = new FakeDoc2kbApiService();
+        var vm = CreateVm(fake);
+        var notified = new List<string>();
+        vm.PropertyChanged += (_, e) => notified.Add(e.PropertyName);
+
+        var file = Path.Combine(Path.GetTempPath(), $"convert-import-{Guid.NewGuid():N}.md");
+        File.WriteAllText(file, "converted");
+        try
+        {
+            vm.OutputPath = file;
+            vm.LastResult = new ConvertResult { Input = "test.md", OutputFormat = "md", Content = "<p>ok</p>" };
+
+            Assert.Contains(nameof(ConvertViewModel.CanImportToKnowledgeBase), notified);
+            Assert.True(vm.CanImportToKnowledgeBase);
+            Assert.True(vm.ImportToKnowledgeBaseCommand.CanExecute(null));
+
+            notified.Clear();
+            vm.OutputPath = string.Empty;
+            Assert.Contains(nameof(ConvertViewModel.CanImportToKnowledgeBase), notified);
+            Assert.False(vm.CanImportToKnowledgeBase);
+            Assert.False(vm.ImportToKnowledgeBaseCommand.CanExecute(null));
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
 }

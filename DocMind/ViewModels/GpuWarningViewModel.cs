@@ -507,6 +507,14 @@ public partial class GpuWarningViewModel : ViewModelBase
                 ? "安装完成，请点击「重启后端」生效"
                 : "安装失败，请查看上方日志排查";
             OnPropertyChanged(nameof(CanRestart));
+            if (success && _selectedPath is "ocr-cpu" or "paddle-ocr-gpu")
+            {
+                // OCR 组件装好后模型仍需另下（国内源，约 150MB）——明确提示用户
+                StatusMessage = "安装完成。首次识别扫描件还需下载 OCR 模型（设置 → 下载 OCR 模型）";
+                _notifications.Success(
+                    "OCR 组件已安装。\n请到「设置 → 嵌入模型 / OCR」点击「下载 OCR 模型」，\n或导入扫描件时按提示下载（约 150MB，国内源）。",
+                    "OCR 模型");
+            }
         });
     }
 

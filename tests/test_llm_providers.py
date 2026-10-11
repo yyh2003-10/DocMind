@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
 import pytest
@@ -15,10 +16,69 @@ from doc2mind.core.llm.anthropic_impl import AnthropicClient, _split_system
 from doc2mind.core.llm.base import LLMClient, LLMError, LLMTimeoutError
 from doc2mind.core.llm.gemini_impl import GeminiClient, _to_contents
 from doc2mind.core.llm.ollama_impl import OllamaClient
+from doc2mind.core.llm.openai_impl import OpenAIClient
+
+
+def test_chat_timeout_does_not_wait_for_stuck_provider_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A short LLM timeout must return to the HTTP layer promptly."""
+    client = OllamaClient(model="test-model")
+
+    def stuck_call(*args, **kwargs):  # noqa: ANN002, ANN003
+        time.sleep(0.25)
+        return "late"
+
+    monkeypatch.setattr(client, "_do_chat", stuck_call)
+    started = time.perf_counter()
+    with pytest.raises(LLMTimeoutError):
+        client.chat([{"role": "user", "content": "ping"}], timeout=0.02)
+
+    assert time.perf_counter() - started < 0.15
 
 
 def _resp(status: int = 200, json_data: dict | None = None) -> httpx.Response:
     return httpx.Response(status, json=json_data or {}, request=httpx.Request("POST", "http://test"))
+
+
+def test_openai_client_parses_native_tool_calls_without_network() -> None:
+    from types import SimpleNamespace
+
+    captured: dict = {}
+    tool_call = SimpleNamespace(
+        id="call_1",
+        function=SimpleNamespace(name="kb_search", arguments='{"query":"beam"}'),
+    )
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason="tool_calls",
+                message=SimpleNamespace(content=None, tool_calls=[tool_call]),
+            )
+        ]
+    )
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **kwargs: captured.update(request=kwargs) or response
+            )
+        )
+    )
+    client = object.__new__(OpenAIClient)
+    client._client = fake_client
+    client._model = "mock-model"
+    client._temperature = 0.3
+    client._max_tokens = 512
+    client._last_truncated = False
+
+    turn = client.chat_with_tools(
+        [{"role": "user", "content": "find evidence"}],
+        tools=[{"type": "function", "function": {"name": "kb_search"}}],
+    )
+
+    assert client.supports_tool_calling is True
+    assert captured["request"]["tool_choice"] == "auto"
+    assert turn.wants_tools is True
+    assert turn.tool_calls[0].name == "kb_search"
+    assert turn.tool_calls[0].arguments == {"query": "beam"}
 
 
 # --- Anthropic ---
@@ -934,3 +994,322 @@ class TestWrapApiError404Hint:
         msg = str(OpenAIClient._wrap_api_error(self._ApiErr("not found"), "流式调用"))
         assert "模型名或 API 地址不存在" in msg
         assert "base_url 需含 /v1" in msg
+
+# --- 截断信号读取（tasks T5 / 验收 A8） ---
+class TestTruncationSignal:
+    """四 provider 读取 finish_reason 等价截断信号并暴露 last_truncated。"""
+
+    def test_initial_state_not_truncated(self) -> None:
+        pytest.importorskip("openai")
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+        assert client.last_truncated is False
+
+    def test_openai_nonstream_length_sets_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create",
+            lambda *a, **kw: SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="被截断的回答"),
+                finish_reason="length",
+            )]),
+            raising=False,
+        )
+        assert client.chat([{"role": "user", "content": "q"}]) == "被截断的回答"
+        assert client.last_truncated is True
+
+    def test_openai_nonstream_stop_clears_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create",
+            lambda *a, **kw: SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="完整回答"),
+                finish_reason="stop",
+            )]),
+            raising=False,
+        )
+        client.chat([{"role": "user", "content": "q"}])
+        assert client.last_truncated is False
+
+    def test_openai_nonstream_missing_finish_no_false_positive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create",
+            lambda *a, **kw: SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="回答"),
+                finish_reason=None,
+            )]),
+            raising=False,
+        )
+        client.chat([{"role": "user", "content": "q"}])
+        assert client.last_truncated is False
+
+    def test_openai_stream_length_exhausted_sets_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """续写 3 次仍 length → last_truncated=True（T6.1 触发条件）。"""
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+
+        def len_frame():
+            return SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(reasoning_content=None, content=None),
+                finish_reason="length",
+            )])
+
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create",
+            lambda *a, **kw: [len_frame()],
+            raising=False,
+        )
+        list(client.stream_chat_tagged([{"role": "user", "content": "q"}], timeout=5))
+        assert client.last_truncated is True
+
+    def test_openai_stream_normal_stop_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("openai")
+        from types import SimpleNamespace
+
+        from doc2mind.core.llm.openai_impl import OpenAIClient
+
+        client = OpenAIClient(api_key="sk-test")
+
+        def stop_frame(content):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(reasoning_content=None, content=content),
+                finish_reason=None,
+            )])
+
+        final = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(reasoning_content=None, content=None),
+            finish_reason="stop",
+        )])
+
+        monkeypatch.setattr(
+            type(client._client.chat.completions), "create",
+            lambda *a, **kw: [stop_frame("完整回答"), final],
+            raising=False,
+        )
+        list(client.stream_chat_tagged([{"role": "user", "content": "q"}], timeout=5))
+        assert client.last_truncated is False
+
+    def test_anthropic_nonstream_max_tokens_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda *a, **kw: _resp(200, {
+                "content": [{"type": "text", "text": "被截断"}],
+                "stop_reason": "max_tokens",
+            }),
+        )
+        client = AnthropicClient(api_key="k")
+        assert client.chat([{"role": "user", "content": "q"}]) == "被截断"
+        assert client.last_truncated is True
+
+    def test_anthropic_nonstream_end_turn_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda *a, **kw: _resp(200, {
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+            }),
+        )
+        client = AnthropicClient(api_key="k")
+        client.chat([{"role": "user", "content": "q"}])
+        assert client.last_truncated is False
+
+    def test_gemini_nonstream_max_tokens_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda *a, **kw: _resp(200, {
+                "candidates": [{
+                    "content": {"parts": [{"text": "被截断"}]},
+                    "finishReason": "MAX_TOKENS",
+                }],
+            }),
+        )
+        client = GeminiClient(api_key="k")
+        assert client.chat([{"role": "user", "content": "q"}]) == "被截断"
+        assert client.last_truncated is True
+
+    def test_gemini_nonstream_stop_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda *a, **kw: _resp(200, {
+                "candidates": [{
+                    "content": {"parts": [{"text": "ok"}]},
+                    "finishReason": "STOP",
+                }],
+            }),
+        )
+        client = GeminiClient(api_key="k")
+        client.chat([{"role": "user", "content": "q"}])
+        assert client.last_truncated is False
+
+    def test_ollama_nonstream_length_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda *a, **kw: _resp(200, {
+                "message": {"content": "被截断"},
+                "done_reason": "length",
+                "done": True,
+            }),
+        )
+        client = OllamaClient(model="qwen2.5-7b")
+        assert client.chat([{"role": "user", "content": "q"}]) == "被截断"
+        assert client.last_truncated is True
+
+    def test_ollama_nonstream_stop_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda *a, **kw: _resp(200, {
+                "message": {"content": "ok"},
+                "done_reason": "stop",
+                "done": True,
+            }),
+        )
+        client = OllamaClient(model="qwen2.5-7b")
+        client.chat([{"role": "user", "content": "q"}])
+        assert client.last_truncated is False
+
+
+# ======================================================================
+# 模型配置修复回归：factory 本地根地址补 /v1、ollama 剥 /v1、tools 降级
+# ======================================================================
+class TestFactoryBaseUrlNormalization:
+    def test_local_root_url_gets_v1_appended(self) -> None:
+        from doc2mind.core.llm.factory import normalize_openai_base_url
+
+        # LM Studio / Ollama 按根地址存储（与其界面展示一致），SDK 需要带 /v1
+        assert normalize_openai_base_url("http://127.0.0.1:1234") == "http://127.0.0.1:1234/v1"
+        assert normalize_openai_base_url("http://127.0.0.1:1234/") == "http://127.0.0.1:1234/v1"
+        assert normalize_openai_base_url("http://localhost:1234") == "http://localhost:1234/v1"
+        assert normalize_openai_base_url("http://127.0.0.1:11434") == "http://127.0.0.1:11434/v1"
+
+    def test_urls_with_path_or_v1_untouched(self) -> None:
+        from doc2mind.core.llm.factory import normalize_openai_base_url
+
+        # 已带 /v1 或自定义路径（反向代理）原样保留；云端地址不动
+        assert normalize_openai_base_url("http://127.0.0.1:1234/v1") == "http://127.0.0.1:1234/v1"
+        assert normalize_openai_base_url("http://127.0.0.1:8080/llm") == "http://127.0.0.1:8080/llm"
+        assert normalize_openai_base_url("https://api.deepseek.com/v1") == "https://api.deepseek.com/v1"
+        assert normalize_openai_base_url("https://open.bigmodel.cn/api/paas/v4") == "https://open.bigmodel.cn/api/paas/v4"
+
+    def test_empty_base_url_untouched(self) -> None:
+        from doc2mind.core.llm.factory import normalize_openai_base_url
+
+        assert normalize_openai_base_url(None) is None
+        assert normalize_openai_base_url("") is None
+        assert normalize_openai_base_url("  /  ") is None
+
+    def test_local_client_gets_placeholder_key_without_api_key(self) -> None:
+        from doc2mind.core.llm import factory
+
+        s = Settings(llm_provider="openai", llm_api_key="", llm_base_url="http://127.0.0.1:1234", llm_model="m")
+        client = factory.get_llm_client(s)
+        assert client is not None and client.provider == "openai"
+
+    def test_remote_client_without_key_raises_friendly_error(self) -> None:
+        from doc2mind.core.llm import factory
+
+        s = Settings(llm_provider="openai", llm_api_key="", llm_base_url="https://api.deepseek.com/v1", llm_model="m")
+        with pytest.raises(LLMError, match="API Key"):
+            factory.get_llm_client(s)
+
+
+class TestOllamaHostV1Defense:
+    def test_host_strips_misplaced_v1_suffix(self) -> None:
+        """误把 OpenAI 兼容地址（带 /v1）填给 ollama 通道时剥除，否则 /v1/api/chat 404。"""
+        client = OllamaClient(model="m", host="http://127.0.0.1:11434/v1")
+        assert client._host == "http://127.0.0.1:11434"
+
+    def test_host_keeps_plain_root(self) -> None:
+        client = OllamaClient(model="m", host="http://127.0.0.1:11434/")
+        assert client._host == "http://127.0.0.1:11434"
+
+
+class TestOllamaNonStreamThinking:
+    def test_reasoning_model_sets_think_param(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """非流式与流式一致：推理模型请求 think=true，思考链不内联进正文。"""
+        captured: dict = {}
+
+        def fake_post(url, json=None, timeout=None, **kw):
+            captured["json"] = json
+            return _resp(200, {"message": {"content": "答案"}, "done_reason": "stop", "done": True})
+
+        monkeypatch.setattr(httpx, "post", fake_post)
+        client = OllamaClient(model="deepseek-r1:7b")
+        out = client.chat([{"role": "user", "content": "hi"}])
+        assert out == "答案"
+        assert captured["json"].get("think") is True
+
+    def test_plain_model_no_think_param_nonstream(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict = {}
+
+        def fake_post(url, json=None, timeout=None, **kw):
+            captured["json"] = json
+            return _resp(200, {"message": {"content": "ok"}, "done_reason": "stop", "done": True})
+
+        monkeypatch.setattr(httpx, "post", fake_post)
+        client = OllamaClient(model="llama3.2")
+        client.chat([{"role": "user", "content": "hi"}])
+        assert "think" not in captured["json"]
+
+
+class TestOpenAiToolsFallback:
+    def test_tools_rejected_falls_back_to_plain_chat(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """服务端 400 拒绝 tools（旧版 LM Studio）→ 降级纯文本补全，且后续调用不再带 tools。"""
+        from types import SimpleNamespace
+
+        client = OpenAIClient(api_key="k", model="m", base_url="http://127.0.0.1:1234/v1")
+
+        class Fake400(Exception):
+            status_code = 400
+
+            def __str__(self) -> str:
+                return "Tool usage is not allowed for this model"
+
+        calls: list[dict] = []
+
+        def fake_create(**kwargs):
+            calls.append(kwargs)
+            if "tools" in kwargs:
+                raise Fake400()
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(content="纯文本回答", tool_calls=None),
+                )],
+            )
+
+        monkeypatch.setattr(
+            client, "_client",
+            SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))),
+        )
+        monkeypatch.setattr(client, "chat", lambda msgs, max_tokens=None: "纯文本回答")
+
+        tools = [{"type": "function", "function": {"name": "x", "parameters": {}}}]
+        turn = client.chat_with_tools([{"role": "user", "content": "hi"}], tools=tools)
+        assert turn.final_text == "纯文本回答"
+        assert turn.tool_calls == []
+
+        # 已记住服务端不支持 tools：第二次直接走纯文本，不再发 tools 参数
+        turn2 = client.chat_with_tools([{"role": "user", "content": "hi"}], tools=tools)
+        assert turn2.final_text == "纯文本回答"
+        assert len(calls) == 1 and "tools" in calls[0]

@@ -14,8 +14,8 @@ public interface IDoc2kbApiService
     Task<LlmTestResult> LlmTestAsync(LlmTestRequest req, CancellationToken ct = default);
     /// <summary>列出提供商可用模型（POST /v1/llm/models）：Ollama 本地模型 / 云端 /models 接口，不落盘。</summary>
     Task<LlmModelsResult> LlmModelsAsync(LlmModelsRequest req, CancellationToken ct = default);
-    /// <summary>历史会话列表（GET /v1/chats，按更新时间倒序）。</summary>
-    Task<ChatSessionListResponse> ListChatsAsync(int limit = 50, CancellationToken ct = default);
+    /// <summary>历史会话列表（GET /v1/chats，按更新时间倒序；q 按标题/消息内容过滤）。</summary>
+    Task<ChatSessionListResponse> ListChatsAsync(int limit = 50, string? q = null, CancellationToken ct = default);
     /// <summary>会话全部消息（GET /v1/chats/{id}，回看/续聊）。</summary>
     Task<ChatSessionDetail> GetChatAsync(string chatId, CancellationToken ct = default);
     /// <summary>删除会话（DELETE /v1/chats/{id}，内存 + SQLite）。</summary>
@@ -29,8 +29,9 @@ public interface IDoc2kbApiService
     Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default);
     /// <summary>流式对话：消费 SSE 逐 token 输出。onToken 每收到一个 token 触发，onDone 在终帧触发，返回终帧元数据。
     /// onStatus 阶段状态；onThinking 推理链增量（DeepSeek-R1/Qwen3 等模型的 reasoning_content）；
-    /// onRestart 后端重启生成（上下文溢出精简后重试）时触发，调用方应丢弃已累积的正文重新开始。</summary>
-    Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, Action? onRestart = null, CancellationToken ct = default);
+    /// onRestart 后端重启生成（上下文溢出精简后重试）时触发，调用方应丢弃已累积的正文重新开始；
+    /// onAgentEvent Agent 轨迹帧（agent_plan/tool_call/tool_result/artifact_ready），默认忽略亦安全。</summary>
+    Task<ChatStreamResult> ChatStreamAsync(ChatRequest req, Action<string> onToken, Action<ChatStreamResult> onDone, Action<string>? onStatus = null, Action<string>? onThinking = null, Action? onRestart = null, Action<string, string>? onAgentEvent = null, Action<string, string>? onPermissionRequest = null, CancellationToken ct = default);
     Task<DocumentListResponse> ListDocumentsAsync(string? collection = null, int page = 1, int pageSize = 20, string? format = null, string sort = "created_at_desc", string? q = null, CancellationToken ct = default);
     Task<DocumentDetail> GetDocumentAsync(string id, int chunks = 5, int chunkContentLength = 200, string? collection = null, CancellationToken ct = default);
     Task<DeleteResult> DeleteDocumentAsync(string id, string? collection = null, CancellationToken ct = default);
@@ -43,6 +44,20 @@ public interface IDoc2kbApiService
     /// <summary>AI 知识库整理（POST /v1/curate，异步任务）：打标签/摘要/归类/语义去重/归纳合并。
     /// dry_run=true（默认）只读预览零写入；dedup/consolidate 有损，确认预览后用 dry_run=false 执行。</summary>
     Task<JobStatus> CurateAsync(CurateRequest req, CancellationToken ct = default);
+    /// <summary>启动可重连的 Agent 后台任务（POST /v1/agent/jobs）。</summary>
+    Task<JobStatus> StartAgentJobAsync(ChatRequest req, CancellationToken ct = default);
+    /// <summary>列出近 N 天 AI 整理运行记录（GET /v1/curate-runs）。</summary>
+    /// <summary>裁决 Agent L2 权限挂起（POST /v1/agent/permission/{id}）。</summary>
+    Task<bool> ResolveAgentPermissionAsync(string requestId, bool allow, CancellationToken ct = default);
+
+    Task<CurateRunsResponse> ListCurateRunsAsync(int days = 7, int limit = 50, CancellationToken ct = default);
+
+    /// <summary>本库检索自评估（POST /v1/eval/library）。</summary>
+    Task<LibraryEvalResult> EvalLibraryAsync(string? collection = null, int sample = 30, CancellationToken ct = default);
+
+    /// <summary>推荐检索配置预览/应用（GET/POST /v1/config/retrieval-recommended）。</summary>
+    Task<RetrievalRecommendedResult> GetRetrievalRecommendedAsync(CancellationToken ct = default);
+    Task<RetrievalRecommendedResult> ApplyRetrievalRecommendedAsync(CancellationToken ct = default);
     Task<JobStatus> GetJobAsync(string jobId, CancellationToken ct = default);
     /// <summary>取消异步任务（DELETE /v1/jobs/{jobId}）。</summary>
     Task<JobStatus> CancelJobAsync(string jobId, CancellationToken ct = default);
@@ -60,6 +75,12 @@ public interface IDoc2kbApiService
     /// <summary>本地 AI 环境与模型资产智能探测（GET /v1/system/local-ai-environment）。</summary>
     Task<LocalAiEnvironment> GetLocalAiEnvironmentAsync(CancellationToken ct = default);
 
+    /// <summary>一键拉取 Ollama 模型（POST /v1/system/ollama/pull，后台子进程执行，进度走轮询）。</summary>
+    Task<OllamaPullStatus> StartOllamaPullAsync(string model, CancellationToken ct = default);
+
+    /// <summary>轮询 ollama pull 进度（GET /v1/system/ollama/pull/status）。</summary>
+    Task<OllamaPullStatus> GetOllamaPullStatusAsync(CancellationToken ct = default);
+
     /// <summary>GPU 加速包一键安装（POST /v1/system/install-gpu，SSE 流式）。
     /// onLog 每收到一行 pip 日志触发，onDone 在安装完成/失败时触发（bool 为成功标志）。</summary>
     Task InstallGpuAsync(string path, Action<string> onLog, Action<bool> onDone, CancellationToken ct = default);
@@ -75,6 +96,10 @@ public interface IDoc2kbApiService
     /// <summary>下载嵌入模型（POST /v1/system/download-model，SSE 流式进度）。
     /// progress 每收到一帧进度触发；成功返回模型快照目录路径，失败抛 ApiException。</summary>
     Task<string?> DownloadModelAsync(string? modelName = null, IProgress<DownloadProgressFrame>? progress = null, CancellationToken ct = default);
+
+    /// <summary>下载 OCR 识别模型到配置目录（POST /v1/system/download-ocr-models，SSE 流式进度）。
+    /// 与嵌入模型下载分开：OCR 走国内源 modelscope/bos，目录可切换。</summary>
+    Task<string?> DownloadOcrModelsAsync(IProgress<DownloadProgressFrame>? progress = null, CancellationToken ct = default);
 
     /// <summary>知识图谱可视化数据（GET /v1/graph/visualize）。</summary>
     Task<GraphResponse> GetGraphAsync(string? collection = null, int limit = 200, CancellationToken ct = default);
@@ -108,7 +133,34 @@ public interface IDoc2kbApiService
 
     /// <summary>PPT 效果自检与质量体检评分（POST /v1/creative/inspect）。</summary>
     Task<PptInspectionReportDto> InspectCreativeArtifactAsync(string content, CancellationToken ct = default);
+    /// <summary>保存 Artifact 草稿版本。</summary>
+    Task<ArtifactVersionResponse> SaveArtifactVersionAsync(string artifactId, CreativeExportRequest draft, CancellationToken ct = default);
+    /// <summary>列出 Artifact 历史版本。</summary>
+    Task<List<ArtifactVersionSummary>> ListArtifactVersionsAsync(string artifactId, CancellationToken ct = default);
+    /// <summary>读取 Artifact 历史版本完整内容。</summary>
+    Task<ArtifactVersionResponse> GetArtifactVersionAsync(string artifactId, string versionId, CancellationToken ct = default);
 
     /// <summary>订阅后端事件流（SSE GET /v1/events）。返回 IDisposable 用于取消订阅。</summary>
     IDisposable SubscribeEvents(Action<EventMessage> onEvent, CancellationToken ct = default);
+
+    /// <summary>库健康状态（GET /v1/library/status）：ok/empty/warn/reindex_needed。</summary>
+    Task<LibraryStatus> GetLibraryStatusAsync(CancellationToken ct = default);
+
+    /// <summary>切换使用档案（POST /v1/profile）：notes/docs/agent/library。</summary>
+    Task<ProfileSwitchResult> SetUsageProfileAsync(string profile, CancellationToken ct = default);
+
+    // ── 回收站（软删除恢复，基础数据安全能力）──
+    /// <summary>列出回收站（GET /v1/trash）。</summary>
+    Task<TrashListResponse> ListTrashAsync(int limit = 100, CancellationToken ct = default);
+    /// <summary>恢复软删除文档（POST /v1/trash/{id}/restore）。注意：仅恢复元数据，需重新摄入/reindex 才能被检索。</summary>
+    Task<TrashRestoreResponse> RestoreTrashedDocumentAsync(string documentId, CancellationToken ct = default);
+    /// <summary>物理清理超过 N 天的回收站条目（POST /v1/trash/purge）。</summary>
+    Task<TrashPurgeResponse> PurgeTrashAsync(int olderThanDays = 30, CancellationToken ct = default);
+
+    /// <summary>创建知识库一致性备份（POST /v1/backup）。</summary>
+    Task<BackupResponse> CreateBackupAsync(string? outputPath = null, CancellationToken ct = default);
+    /// <summary>恢复知识库备份；后端会先保留当前数据库副本（POST /v1/backup/restore）。</summary>
+    Task<BackupResponse> RestoreBackupAsync(string backupPath, CancellationToken ct = default);
+    /// <summary>导出脱敏诊断包（POST /v1/diagnostics/bundle）。</summary>
+    Task<BackupResponse> CreateDiagnosticBundleAsync(string? outputPath = null, bool includeLogs = false, CancellationToken ct = default);
 }

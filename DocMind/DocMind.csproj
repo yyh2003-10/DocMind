@@ -8,9 +8,9 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>DocMind</RootNamespace>
     <AssemblyName>DocMind</AssemblyName>
-    <Version>1.0.1</Version>
-    <AssemblyVersion>1.0.1.0</AssemblyVersion>
-    <FileVersion>1.0.1.0</FileVersion>
+    <Version>1.0.3</Version>
+    <AssemblyVersion>1.0.3.0</AssemblyVersion>
+    <FileVersion>1.0.3.0</FileVersion>
     <ApplicationIcon>Assets\DocMind.ico</ApplicationIcon>
 
     <!-- 单文件发布（仅 Release） -->
@@ -22,6 +22,19 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Local build/check artifacts must never be picked up as source files by the SDK globs. -->
+    <Compile Remove="tmp\**" />
+    <Page Remove="tmp\**" />
+    <None Remove="tmp\**" />
+    <EmbeddedResource Remove="tmp\**" />
+    <Compile Remove="tmpout\**" />
+    <Page Remove="tmpout\**" />
+    <None Remove="tmpout\**" />
+    <EmbeddedResource Remove="tmpout\**" />
+    <Compile Remove="tmpout2\**" />
+    <Page Remove="tmpout2\**" />
+    <None Remove="tmpout2\**" />
+    <EmbeddedResource Remove="tmpout2\**" />
     <None Remove="托盘图标D 单.png" />
     <None Remove="Assets\DocMind.ico" />
     <None Remove="Assets\DocMind.png" />

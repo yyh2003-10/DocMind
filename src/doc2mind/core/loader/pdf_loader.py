@@ -47,6 +47,154 @@ from doc2mind.core.models import (
 _HEADING_FONT_SIZE = 16.0
 _MIN_FONT_SAMPLES = 1
 
+# 文本对象类型：pypdfium2 FPDF_PAGEOBJ_TEXT（用常量名导入，避免依赖 raw 路径）
+_FPDF_PAGEOBJ_TEXT = 1
+
+
+def _probe_pdfium_text(path: Path, sample_pages: int = 3) -> tuple[int, int]:
+    """快速探测 PDF 文本层（pypdfium2，秒级）。
+
+    只读页数 + 抽样页 count_chars，不解析布局。扫描件/纯图 PDF 返回近 0 字符，
+    调用方可跳过 pdfminer 全量解析直接进 OCR。
+
+    Returns:
+        (page_count, sample_char_count)；失败返回 (0, -1) 表示探测不可用。
+    """
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        return 0, -1
+    try:
+        with pdfium.PdfDocument(str(path)) as doc:
+            page_total = len(doc)
+            if page_total <= 0:
+                return 0, 0
+            n = min(sample_pages, page_total)
+            # 首/中/末采样，覆盖"首页空白、正文在中间"的版式
+            indices = sorted({0, page_total // 2, page_total - 1})[:n]
+            chars = 0
+            for i in indices:
+                if not (0 <= i < page_total):
+                    continue
+                page = doc[i]
+                tp = page.get_textpage()
+                try:
+                    chars += int(tp.count_chars() or 0)
+                finally:
+                    tp.close()
+            return page_total, chars
+    except Exception:  # noqa: BLE001 — 探测失败不阻断，退回 pdfminer
+        return 0, -1
+
+
+def _extract_with_pdfium(
+    path: Path,
+    progress: Callable[[int, int], None] | None = None,
+) -> tuple[list, int]:
+    """pypdfium2 快速文本抽取（比 pdfminer 快一个数量级）。
+
+    按文本对象的 y 坐标聚行，再按字号启发式区分标题/正文，元数据与
+    pdfminer 路径对齐（type/level/page/font_size/source_format）。
+
+    Returns:
+        (elements, page_count)；失败抛 LoaderError 由调用方回退 pdfminer。
+    """
+    try:
+        import pypdfium2 as pdfium
+        from pypdfium2.internal.consts import pdfium_c
+    except ImportError as e:
+        raise LoaderError("pypdfium2 未安装，无法使用快速 PDF 解析") from e
+
+    text_filter = [int(pdfium_c.FPDF_PAGEOBJ_TEXT)]
+    elements: list[DocumentElement] = []
+
+    with pdfium.PdfDocument(str(path)) as doc:
+        page_total = len(doc)
+        for page_no in range(page_total):
+            page = doc[page_no]
+            tp = page.get_textpage()
+            try:
+                # (y_top, x_left, text, font_size) 收集文本对象
+                items: list[tuple[float, float, str, float]] = []
+                for obj in page.get_objects(filter=text_filter, textpage=tp):
+                    try:
+                        text = (obj.extract() or "").strip()
+                        if not text:
+                            continue
+                        fs = float(obj.get_font_size() or 0.0)
+                        x0, y0, x1, y1 = obj.get_bounds()
+                        # bounds 为 PDF 坐标（y 向上）：y_top 取上边
+                        items.append((float(y1), float(x0), text, fs))
+                    except Exception:  # noqa: BLE001 — 单对象失败跳过
+                        continue
+            finally:
+                tp.close()
+
+            # 按 y 降序（页顶→页底）、同行按 x 升序
+            items.sort(key=lambda t: (-t[0], t[1]))
+
+            # 聚行：y_top 差 < 3pt 视为同一行
+            rows: list[list[tuple[float, float, str, float]]] = []
+            for it in items:
+                if rows and abs(rows[-1][0][0] - it[0]) < 3.0:
+                    rows[-1].append(it)
+                else:
+                    rows.append([it])
+
+            for row in rows:
+                row.sort(key=lambda t: t[1])
+                content = " ".join(t[2] for t in row).strip()
+                if not content:
+                    continue
+                font_sizes = [t[3] for t in row if t[3] > 0]
+                avg_size = (
+                    sum(font_sizes) / len(font_sizes) if font_sizes else 0.0
+                )
+                is_heading = avg_size > _HEADING_FONT_SIZE
+                elem_type = ElementType.HEADING if is_heading else ElementType.PARAGRAPH
+                metadata: dict = {
+                    "type": "heading" if is_heading else "paragraph",
+                    "page": page_no + 1,
+                    "font_size": round(avg_size, 2) if avg_size else None,
+                    "source_format": DocFormat.PDF.value,
+                }
+                if is_heading:
+                    metadata["level"] = 1
+                elements.append(
+                    DocumentElement(content=content, type=elem_type, metadata=metadata)
+                )
+
+            if progress is not None:
+                progress(page_no + 1, page_total)
+
+    return elements, page_total
+
+
+def _pdf_page_count(path: Path) -> int:
+    """轻量读 PDF 页树拿总页数（只走页树，不做内容解析）。
+
+    优先 pypdfium2（更快），失败回退 pdfminer；再失败返回 0 ——
+    调用方退回"总页数未知"进度，不阻断解析。
+    """
+    try:
+        import pypdfium2 as pdfium
+
+        with pdfium.PdfDocument(str(path)) as doc:
+            return int(len(doc))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from pdfminer.pdfdocument import PDFDocument
+        from pdfminer.pdfpage import PDFPage
+        from pdfminer.pdfparser import PDFParser
+
+        with open(path, "rb") as fp:
+            parser = PDFParser(fp)
+            document = PDFDocument(parser)
+            return sum(1 for _ in PDFPage.create_pages(document))
+    except Exception:  # noqa: BLE001 — 页数失败不阻断，退回不定进度
+        return 0
+
 
 class PdfLoader(Loader):
     """PDF 文档加载器（pdfminer.six 实现）。"""
@@ -58,14 +206,8 @@ class PdfLoader(Loader):
         path: Path,
         progress: Callable[[int, int], None] | None = None,
     ) -> LoadedDocument:
-        try:
-            from pdfminer.high_level import extract_pages
-            from pdfminer.layout import LTChar, LTTextBox
-        except ImportError as e:
-            raise LoaderError(
-                "pdfminer.six 未安装。请运行：pip install pdfminer.six"
-            ) from e
-
+        # pdfminer 仅作 pdfium 失败时的兜底，不再在入口强制安装；
+        # 主路径 pypdfium2 / OCR 回退均不依赖它。
         if not path.exists():
             raise LoaderError(f"文件不存在: {path}")
 
@@ -73,52 +215,88 @@ class PdfLoader(Loader):
             file_hash, size_bytes = stream_file_hash(path)
             elements: list[DocumentElement] = []
             page_no = 0
+            # 先走页树拿总页数，解析进度才能报「第 N/M 页」；
+            # 拿不到则 total=0，pipeline 折算为不定进度（行为同旧版）。
+            page_total = _pdf_page_count(path)
+            # 先报一次 (0, 总页数)：首页解析慢时 UI 立刻能显示「共 N 页」，
+            # 而不是停在 0% 直到第一页解析完才第一次回调。
+            if progress is not None and page_total > 0:
+                progress(0, page_total)
 
-            for page_layout in extract_pages(path):
-                page_no += 1
-                # 页级进度：pdfminer 流式解析拿不到总页数，total 传 0
-                # （pipeline 折算为不定进度，仅表示"还在动"）
-                if progress is not None:
-                    progress(page_no, 0)
-                for node in page_layout:
-                    if not isinstance(node, LTTextBox):
-                        continue
-                    text = node.get_text().strip()
-                    if not text:
-                        continue
+            # 快检文本层（pypdfium2 秒级）：扫描件/纯图 PDF 字符数近 0，
+            # 跳过 pdfminer 全量解析直接进 OCR，避免"先白跑一遍再 OCR"双倍耗时。
+            probe_pages, probe_chars = _probe_pdfium_text(path)
+            if page_total <= 0 and probe_pages > 0:
+                page_total = probe_pages
+            is_scanned = probe_chars == 0 and probe_pages > 0
 
-                    # 收集所有字符的字号，用平均值判断标题
-                    font_sizes: list[float] = []
-                    for child in node:
-                        if isinstance(child, LTChar):
-                            font_sizes.append(float(child.size))
-
-                    if len(font_sizes) >= _MIN_FONT_SAMPLES:
-                        avg_size = sum(font_sizes) / len(font_sizes)
-                    else:
-                        avg_size = 0.0
-
-                    if avg_size > _HEADING_FONT_SIZE:
-                        elem_type = ElementType.HEADING
-                        metadata = {
-                            "type": "heading",
-                            "level": 1,  # PDF 无法精确分级，统一 H1
-                            "page": page_no,
-                            "font_size": round(avg_size, 2),
-                            "source_format": DocFormat.PDF.value,
-                        }
-                    else:
-                        elem_type = ElementType.PARAGRAPH
-                        metadata = {
-                            "type": "paragraph",
-                            "page": page_no,
-                            "font_size": round(avg_size, 2) if avg_size else None,
-                            "source_format": DocFormat.PDF.value,
-                        }
-
-                    elements.append(
-                        DocumentElement(content=text, type=elem_type, metadata=metadata)
+            if is_scanned:
+                logger.info(
+                    "PDF 无文本层（%s，%s 页），跳过文本解析直接 OCR",
+                    path.name, page_total,
+                )
+                elements = _ocr_fallback(path, page_total or page_no, progress=progress)
+                page_no = page_total or 0
+            else:
+                # 快速路径：pypdfium2 按文本对象抽取（比 pdfminer 快一个数量级）
+                try:
+                    elements, pdfium_pages = _extract_with_pdfium(path, progress=progress)
+                    page_no = pdfium_pages or page_no
+                    if page_total <= 0:
+                        page_total = page_no
+                except Exception as pdfium_err:  # noqa: BLE001 — 回退 pdfminer
+                    logger.info(
+                        "pypdfium2 抽取失败（%s），回退 pdfminer: %s",
+                        path.name, pdfium_err,
                     )
+                    elements = []
+                    page_no = 0
+                    from pdfminer.high_level import extract_pages
+                    from pdfminer.layout import LTChar, LTTextBox
+
+                    for page_layout in extract_pages(path):
+                        page_no += 1
+                        if progress is not None:
+                            progress(page_no, page_total)
+                        for node in page_layout:
+                            if not isinstance(node, LTTextBox):
+                                continue
+                            text = node.get_text().strip()
+                            if not text:
+                                continue
+
+                            # 收集所有字符的字号，用平均值判断标题
+                            font_sizes: list[float] = []
+                            for child in node:
+                                if isinstance(child, LTChar):
+                                    font_sizes.append(float(child.size))
+
+                            if len(font_sizes) >= _MIN_FONT_SAMPLES:
+                                avg_size = sum(font_sizes) / len(font_sizes)
+                            else:
+                                avg_size = 0.0
+
+                            if avg_size > _HEADING_FONT_SIZE:
+                                elem_type = ElementType.HEADING
+                                metadata = {
+                                    "type": "heading",
+                                    "level": 1,  # PDF 无法精确分级，统一 H1
+                                    "page": page_no,
+                                    "font_size": round(avg_size, 2),
+                                    "source_format": DocFormat.PDF.value,
+                                }
+                            else:
+                                elem_type = ElementType.PARAGRAPH
+                                metadata = {
+                                    "type": "paragraph",
+                                    "page": page_no,
+                                    "font_size": round(avg_size, 2) if avg_size else None,
+                                    "source_format": DocFormat.PDF.value,
+                                }
+
+                            elements.append(
+                                DocumentElement(content=text, type=elem_type, metadata=metadata)
+                            )
 
             # 扫描型 PDF 回退：pdfminer 提 0 元素 → 矢量图纸/扫描图，
             # 用 pdf2image 渲每页为图片走 ImageLoader OCR

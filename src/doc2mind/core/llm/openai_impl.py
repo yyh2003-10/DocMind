@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator
 from typing import Any
@@ -13,6 +14,9 @@ from typing import Any
 from doc2mind.core.llm.base import (
     LLMClient,
     LLMError,
+    NativeToolCall,
+    ToolCallingTurn,
+    is_provider_overloaded_error,
     is_transient_network_error,
     iter_exception_chain,
     merge_stream_retry_text,
@@ -35,6 +39,10 @@ class OpenAIClient(LLMClient):
         temperature: 默认温度
         max_tokens: 默认最大 token 数
     """
+
+    # 服务端拒绝 tools 参数时在实例上置位（旧版 LM Studio / 未开启 tool use 的兼容服务），
+    # 后续 chat_with_tools 直接走纯文本补全。类级默认兜底 object.__new__ 构造的实例（测试）。
+    _tools_unsupported = False
 
     def __init__(
         self,
@@ -86,6 +94,102 @@ class OpenAIClient(LLMClient):
     def provider(self) -> str:
         return "openai"
 
+    @property
+    def supports_tool_calling(self) -> bool:
+        return True
+
+    def chat_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int | None = None,
+    ) -> ToolCallingTurn:
+        """调用 OpenAI 兼容的原生 function-calling 接口。
+
+        服务端以 400 拒绝 tools 参数（旧版 LM Studio 未开启 tool use 等）时
+        自动降级：本次及后续调用改走纯文本补全，Agent 框架按「无工具调用」处理，
+        而不是每轮都失败。
+        """
+        if self._tools_unsupported:
+            return ToolCallingTurn(
+                final_text=self.chat(messages, max_tokens=max_tokens),
+                tool_calls=[],
+            )
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=self._temperature,
+                max_tokens=sanitize_max_tokens(
+                    max_tokens if max_tokens is not None else self._max_tokens
+                ),
+            )
+        except Exception as exc:
+            if self._looks_like_tools_rejected(exc):
+                self._tools_unsupported = True
+                logger.warning(
+                    "服务端拒绝 tools 参数（可能是旧版 LM Studio 或未开启工具调用），"
+                    "已降级为纯文本补全: %s",
+                    exc,
+                )
+                return ToolCallingTurn(
+                    final_text=self.chat(messages, max_tokens=max_tokens),
+                    tool_calls=[],
+                )
+            raise self._wrap_api_error(exc, "原生工具调用") from exc
+
+        if not getattr(response, "choices", None):
+            raise LLMError("OpenAI API tool-calling 未返回候选结果")
+
+        choice = response.choices[0]
+        self._last_truncated = getattr(choice, "finish_reason", None) == "length"
+        message = choice.message
+        calls: list[NativeToolCall] = []
+        for index, raw_call in enumerate(getattr(message, "tool_calls", None) or []):
+            function = getattr(raw_call, "function", None)
+            name = str(getattr(function, "name", "") or "").strip()
+            if not name:
+                continue
+
+            raw_arguments = getattr(function, "arguments", "{}") or "{}"
+            try:
+                arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+            except (TypeError, json.JSONDecodeError):
+                logger.warning("原生工具 %s 返回了无效参数 JSON，交给执行器返回可见错误", name)
+                arguments = {}
+            if not isinstance(arguments, dict):
+                arguments = {}
+
+            calls.append(
+                NativeToolCall(
+                    id=str(getattr(raw_call, "id", "") or f"native_{index + 1}"),
+                    name=name,
+                    arguments=arguments,
+                )
+            )
+
+        return ToolCallingTurn(
+            final_text=(getattr(message, "content", None) or "").strip(),
+            tool_calls=calls,
+        )
+
+    @staticmethod
+    def _looks_like_tools_rejected(exc: Exception) -> bool:
+        """识别「服务端不支持/未开启 tools 参数」类 400 错误（旧版 LM Studio 等）。"""
+        status = None
+        for item in iter_exception_chain(exc):
+            s = getattr(item, "status_code", None)
+            if s is not None:
+                status = s
+                break
+        if status != 400:
+            return False
+        msg = str(exc).lower()
+        return "tool" in msg
+
     @staticmethod
     def _wrap_api_error(e: Exception, action: str) -> LLMError:
         """把 openai SDK 异常转成带原因分类的 LLMError（对齐 Anthropic/Gemini）。
@@ -114,6 +218,8 @@ class OpenAIClient(LLMClient):
             hint = "请求过于频繁或额度不足"
         elif status is not None and 500 <= status < 600:
             hint = "服务端错误，请稍后重试"
+        elif is_provider_overloaded_error(e):
+            hint = "上游服务临时过载，请稍后重试"
         elif is_transient_network_error(e):
             hint = "网络连接不稳定或代理超时，请检查网络或稍后重试"
         else:
@@ -159,6 +265,13 @@ class OpenAIClient(LLMClient):
                 ),
             )
             choice = resp.choices[0]
+            finish = getattr(choice, "finish_reason", None)
+            self._last_truncated = finish == "length"
+            if finish == "length":
+                logger.info(
+                    "输出因达到 token 上限被截断（finish_reason=length, model=%s）",
+                    self._model,
+                )
             msg = choice.message
             content = getattr(msg, "content", None) or ""
             return content.strip()
@@ -266,6 +379,13 @@ class OpenAIClient(LLMClient):
                     logger.info("输出达到单次 token 上限(length)，自动发起下一轮无缝续写补全...")
                     continue
 
+                # 续写耗尽仍 length（或正常 finish=stop）→ 上报截断标记供 T6.1 消费
+                self._last_truncated = last_finish_reason == "length"
+                if self._last_truncated:
+                    logger.info(
+                        "续写达上限仍被截断（finish_reason=length, model=%s），上报截断标记",
+                        self._model,
+                    )
                 return
             except LLMError:
                 raise
@@ -316,5 +436,5 @@ class OpenAIClient(LLMClient):
 
     @staticmethod
     def _is_transient_stream_error(e: Exception) -> bool:
-        """判断是否为可重试的瞬时网络错误（连接被对端关闭/截断/重置等）。"""
-        return is_transient_network_error(e)
+        """判断是否为可重试的瞬时错误（网络抖动 / 上游过载）。"""
+        return is_transient_network_error(e) or is_provider_overloaded_error(e)

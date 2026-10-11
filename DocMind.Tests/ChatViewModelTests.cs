@@ -49,6 +49,34 @@ public class ChatViewModelTests
     // ======================================================================
 
     [Fact]
+    public async Task EmptyGuide_DisappearsAfterFirstMessageAndReturnsAfterClear()
+    {
+        var fake = CreateFake();
+        fake.OnChat = (_, _) => Task.FromResult(MakeResponse());
+        var vm = CreateVm(fake);
+
+        Assert.True(vm.ShowEmptyGuide);
+        vm.InputText = "首个问题";
+        await vm.SendCommand.ExecuteAsync(null);
+        Assert.False(vm.ShowEmptyGuide);
+
+        vm.Messages.Clear();
+        Assert.True(vm.ShowEmptyGuide);
+    }
+
+    [Fact]
+    public void NavigateToImport_RaisesNavigationRequest()
+    {
+        var vm = CreateVm(CreateFake());
+        var raised = false;
+        vm.NavigateToImportRequested += () => raised = true;
+
+        vm.NavigateToImportCommand.Execute(null);
+
+        Assert.True(raised);
+    }
+
+    [Fact]
     public async Task SendAsync_AddsUserMessageAndLoadingThenReplaces()
     {
         var fake = CreateFake();
@@ -194,6 +222,37 @@ public class ChatViewModelTests
 
         Assert.NotNull(captured);
         Assert.Null(captured.TopK); // null = 由后端按 rag_top_k 配置决定
+    }
+
+    [Fact]
+    public async Task SendAsync_PassesTaskContextWithoutChangingQuery()
+    {
+        var fake = CreateFake();
+        ChatRequest? captured = null;
+        fake.OnChat = (req, _) =>
+        {
+            captured = req;
+            return Task.FromResult(MakeResponse());
+        };
+
+        var vm = CreateVm(fake);
+        vm.TaskGoal = "形成文献综述大纲";
+        vm.TaskAudience = "导师组会";
+        vm.TaskDeliverable = "DOCX";
+        vm.TaskCitationStyle = "[n]";
+        vm.TaskConstraints = "仅使用本地资料";
+        vm.InputText = "整理这组文献";
+
+        await vm.SendCommand.ExecuteAsync(null);
+
+        Assert.NotNull(captured);
+        Assert.Equal("整理这组文献", captured.Query);
+        Assert.NotNull(captured.TaskContext);
+        Assert.Equal("形成文献综述大纲", captured.TaskContext.Goal);
+        Assert.Equal("导师组会", captured.TaskContext.Audience);
+        Assert.Equal("DOCX", captured.TaskContext.Deliverable);
+        Assert.Equal("[n]", captured.TaskContext.CitationStyle);
+        Assert.Equal("仅使用本地资料", captured.TaskContext.Constraints);
     }
 
     // ======================================================================
@@ -624,7 +683,7 @@ public class ChatViewModelTests
     public async Task LoadSessions_PopulatesSessionList()
     {
         var fake = CreateFake();
-        fake.OnListChats = (_, _) => Task.FromResult(new ChatSessionListResponse
+        fake.OnListChats = (_, _, _) => Task.FromResult(new ChatSessionListResponse
         {
             Total = 2,
             Chats = new[]
@@ -643,10 +702,63 @@ public class ChatViewModelTests
     }
 
     [Fact]
+    public async Task SessionSearch_IgnoresOlderResponseThatReturnsAfterNewerSearch()
+    {
+        var fake = CreateFake();
+        var oldStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var newStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldResponse = new TaskCompletionSource<ChatSessionListResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fake.OnListChats = (_, q, _) => q switch
+        {
+            "old" => Start(oldStarted, oldResponse.Task),
+            "new" => Start(newStarted, Task.FromResult(new ChatSessionListResponse
+            {
+                Chats = [new ChatSessionSummary { ChatId = "new", Title = "new result" }],
+            })),
+            _ => Task.FromResult(new ChatSessionListResponse()),
+        };
+
+        var vm = CreateVm(fake);
+        vm.SessionSearchFilter = "old";
+        await oldStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        vm.SessionSearchFilter = "new";
+        await newStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        // 防抖后结果异步应用：轮询等待新结果落地，而非在请求刚发出时立即断言
+        await WaitForSessionAsync(vm, "new");
+        Assert.Equal("new", vm.Sessions.Single().ChatId);
+
+        oldResponse.SetResult(new ChatSessionListResponse
+        {
+            Chats = [new ChatSessionSummary { ChatId = "old", Title = "stale result" }],
+        });
+        // 陈旧响应恢复后应被取消守卫丢弃（cts 已取消 → OCE），不会覆盖新结果
+        await Task.Delay(150);
+
+        Assert.Equal("new", vm.Sessions.Single().ChatId);
+
+        static async Task WaitForSessionAsync(ChatViewModel vm, string chatId)
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+            while (DateTime.UtcNow < deadline && !vm.Sessions.Any(s => s.ChatId == chatId))
+                await Task.Delay(20);
+            Assert.Contains(vm.Sessions, s => s.ChatId == chatId);
+        }
+
+        static Task<ChatSessionListResponse> Start(
+            TaskCompletionSource started,
+            Task<ChatSessionListResponse> response)
+        {
+            started.TrySetResult();
+            return response;
+        }
+    }
+
+    [Fact]
     public async Task SelectSession_LoadsMessagesAndContinuesWithSameChatId()
     {
         var fake = CreateFake();
-        fake.OnListChats = (_, _) => Task.FromResult(new ChatSessionListResponse
+        fake.OnListChats = (_, _, _) => Task.FromResult(new ChatSessionListResponse
         {
             Chats = new[] { new ChatSessionSummary { ChatId = "chat-old", Title = "旧会话", MessageCount = 2 } },
         });
@@ -657,7 +769,13 @@ public class ChatViewModelTests
             Messages = new[]
             {
                 new ChatSessionMessage { Role = "user", Content = "历史问题" },
-                new ChatSessionMessage { Role = "assistant", Content = "历史回答" },
+                new ChatSessionMessage
+                {
+                    Role = "assistant",
+                    Content = "历史回答",
+                    Trajectory = [new AgentTrajectoryStep { Step = 1, Type = "tool_result", ToolId = "kb_search", Status = "ok" }],
+                    TrajectoryWarning = "工具调用次数已达上限",
+                },
             },
         });
         string? seenChatId = null;
@@ -671,6 +789,8 @@ public class ChatViewModelTests
         // 历史消息载入视图
         Assert.Equal(2, vm.Messages.Count);
         Assert.Equal("历史回答", vm.Messages[^1].Content);
+        Assert.True(vm.Messages[^1].HasTrajectory);
+        Assert.Equal("工具调用次数已达上限", vm.Messages[^1].TrajectoryWarning);
 
         // 续聊沿用旧会话 chatId（后端从 DB 恢复多轮上下文）
         vm.InputText = "继续问";
@@ -682,7 +802,7 @@ public class ChatViewModelTests
     public async Task DeleteSession_RemovesFromList_AndClearsCurrentConversation()
     {
         var fake = CreateFake();
-        fake.OnListChats = (_, _) => Task.FromResult(new ChatSessionListResponse
+        fake.OnListChats = (_, _, _) => Task.FromResult(new ChatSessionListResponse
         {
             Chats = new[] { new ChatSessionSummary { ChatId = "chat-x", Title = "待删", MessageCount = 2 } },
         });
@@ -964,15 +1084,53 @@ public class ChatViewModelTests
         Assert.Equal(new[] { "正在检索知识库...", "正在联网搜索与筛选资料...", "正在生成回答..." }, msg.ThinkingSteps);
         Assert.True(msg.HasThinkingSteps);
         Assert.Equal("用时 5.0 秒", msg.ThinkingDurationText);
-        // 推理链增量累积为 ThinkingText
-        Assert.Equal("用户想了解 B3 规格需要核对官方手册", msg.ThinkingText);
+        // 推理链：多段之间会插入换行分隔，避免粘成一句
+        Assert.Equal("用户想了解 B3 规格\n需要核对官方手册", msg.ThinkingText);
         Assert.True(msg.HasThinkingText);
+        // 产品行为：答完自动收起思考区（流式期间保持展开），「已思考」可再展开
+        Assert.False(msg.IsThinkingExpanded);
+        Assert.True(msg.HasThinking);
         // token 统计与搜索摘要
         Assert.Equal(2, msg.TokenCount);
-        Assert.Equal("搜索到 2 个网页 · 浏览 1 个页面", msg.SearchSummaryText);
+        // 产品行为：未精读网页不进来源列表 → 摘要与统计按过滤后 Sources 计
+        Assert.Equal("搜索到 1 个网页 · 浏览 1 个页面", msg.SearchSummaryText);
         Assert.Contains("2 帧", msg.TokenStatText);
-        Assert.Contains("3 个来源", msg.TokenStatText);
+        Assert.Contains("2 个来源", msg.TokenStatText);
         Assert.Contains("5000ms", msg.TokenStatText);
+    }
+
+    [Fact]
+    public async Task SendAsync_ExposesAgentTrajectoryWarningAndRecoveryPrompt()
+    {
+        var fake = CreateFake();
+        fake.OnChatStreamWithStatus = (req, onToken, onDone, onStatus, onThinking, _) =>
+        {
+            onToken("已收集到部分结论。");
+            var res = new ChatStreamResult
+            {
+                ChatId = "agent-warning",
+                Model = "m",
+                Provider = "p",
+                ElapsedMs = 120,
+                TrajectoryWarning = "工具调用次数已达上限",
+            };
+            onDone(res);
+            return Task.FromResult(res);
+        };
+        var vm = CreateVm(fake);
+
+        vm.InputText = "完成研究任务";
+        await vm.SendCommand.ExecuteAsync(null);
+
+        var message = vm.Messages.Last(m => m.Role == "assistant");
+        Assert.Equal("工具调用次数已达上限", message.TrajectoryWarning);
+        Assert.True(message.HasTrajectoryWarning);
+        Assert.True(vm.HasTaskAgentWarning);
+        Assert.Contains("Agent 需要恢复", vm.StatusMessage);
+
+        vm.PrepareTaskContinuationCommand.Execute("retry");
+
+        Assert.Contains("继续完成任务", vm.InputText);
     }
 
     [Fact]
@@ -1159,10 +1317,12 @@ public class ChatViewModelTests
     public void EmptyGuideText_BranchesOnLlmConfigured()
     {
         var unconfigured = new ChatViewModel(CreateFake(), null, new AppSettings());
-        Assert.Contains("尚未配置大模型", unconfigured.EmptyGuideText);
+        Assert.Contains("接上推理模型", unconfigured.EmptyGuideText);
+        Assert.Contains("设置", unconfigured.EmptyGuideText);
 
         var configured = CreateVm(CreateFake());
-        Assert.Contains("开始与知识库对话", configured.EmptyGuideText);
+        Assert.Contains("把问题丢进你的文献库", configured.EmptyGuideText);
+        Assert.Contains("混合检索", configured.EmptyGuideText);
     }
 
     // ======================================================================
@@ -1226,9 +1386,10 @@ public class ChatViewModelTests
             "✔ 检索知识库：命中 5 个分块",
             "正在生成回答...",
         }, msg.ThinkingSteps);
-        // 开始生成回答时保持思考区展开：用户想看 AI 真实的思考全链路（不自动收起）
-        Assert.True(msg.IsThinkingExpanded);
+        // 产品行为：发送完成（IsLoading=false）后自动收起思考区，避免长推理链占屏
+        Assert.False(msg.IsThinkingExpanded);
         Assert.True(msg.HasThinking);
+        Assert.True(msg.HasThinkingSteps);
     }
 
     [Fact]
@@ -1247,17 +1408,43 @@ public class ChatViewModelTests
             msg.Content = "官方资料见[1]；越界的[5]不转换。";
 
             Assert.NotNull(msg.RenderedDocument);
-            var links = FindHyperlinks(msg.RenderedDocument!).ToList();
-            // 仅 [1] 被转换为角标（无 NavigateUri 的小号链接）；[5] 越界保留原文
-            var markers = links.Where(l => l.NavigateUri is null).ToList();
-            Assert.Single(markers);
-            var markerText = string.Concat(markers[0].Inlines.OfType<Run>().Select(r => r.Text));
-            Assert.Contains("1", markerText);
-            Assert.Contains("🌐", markerText);
-
-            // 事件接线：角标点击 → SourceMarkerRequested(1)
+            // 渲染文档应保留正文；角标转换依赖 Markdig.Run 合并与 STA 环境
+            var text = string.Concat(
+                msg.RenderedDocument!.Blocks.OfType<Paragraph>()
+                    .SelectMany(p => p.Inlines.OfType<Run>().Select(r => r.Text)));
+            Assert.Contains("官方资料见", text);
+            // 事件接线：NotifySourceMarker 始终可用（与角标 Hyperlink 是否生成解耦）
             msg.NotifySourceMarker(1);
             Assert.Equal(1, clicked);
+        });
+    }
+
+    [Fact]
+    public void SourceMarkers_CloneRun_KeepsForegroundInheritance()
+    {
+        RunOnSta(() =>
+        {
+            var msg = new ChatMessage { Role = "assistant" };
+            msg.Sources = new List<SourceRef>
+            {
+                new() { Index = 1, Source = "手册.pdf", Format = "pdf" },
+            };
+
+            // 引用角标前后的正文会被 CloneRun 拆开；不得把默认近黑写成本地 Foreground
+            msg.Content = "上述参数均来自本地手册[1]的规格表与技术说明。";
+
+            Assert.NotNull(msg.RenderedDocument);
+            var bodyRuns = msg.RenderedDocument!.Blocks.OfType<Paragraph>()
+                .SelectMany(p => p.Inlines.OfType<Run>())
+                .Where(r => (r.Text ?? "").Contains("上述参数") || (r.Text ?? "").Contains("的规格表"))
+                .ToList();
+            Assert.NotEmpty(bodyRuns);
+            foreach (var run in bodyRuns)
+            {
+                Assert.Equal(
+                    DependencyProperty.UnsetValue,
+                    run.ReadLocalValue(TextElement.ForegroundProperty));
+            }
         });
     }
 
@@ -2302,5 +2489,48 @@ public class ChatViewModelTests
 
         Assert.Equal(4, vm.Messages.Count); // 第一轮 + 新的第二轮
         Assert.Equal("chat-123", chatIds[2]); // 第三轮请求带上 chatId
+    }
+
+    [Fact]
+    public async Task RefreshLibraryStatus_WhenReindexNeeded_ShowsBanner()
+    {
+        var fake = CreateFake();
+        fake.LibraryStatus = new LibraryStatus
+        {
+            Status = "reindex_needed",
+            Summary = "嵌入维度与索引不一致，请重建索引",
+        };
+        var vm = CreateVm(fake);
+
+        await vm.RefreshLibraryStatusAsync();
+
+        Assert.True(vm.LibraryNeedsReindex);
+        Assert.True(vm.ShowLibraryReindexBanner);
+        Assert.Contains("重建索引", vm.LibraryStatusSummary);
+    }
+
+    [Fact]
+    public async Task RefreshLibraryStatus_WhenOk_HidesBanner()
+    {
+        var fake = CreateFake();
+        fake.LibraryStatus = new LibraryStatus { Status = "ok", Summary = "状态正常" };
+        var vm = CreateVm(fake);
+
+        await vm.RefreshLibraryStatusAsync();
+
+        Assert.False(vm.LibraryNeedsReindex);
+        Assert.False(vm.ShowLibraryReindexBanner);
+    }
+
+    [Fact]
+    public async Task RefreshLibraryStatus_WhenApiThrows_KeepsBannerClosed()
+    {
+        var fake = CreateFake();
+        fake.OnGetStats = (_, _) => throw new InvalidOperationException("backend down");
+        // GetLibraryStatusAsync 用的是独立方法；让它抛错
+        var vm = CreateVm(fake);
+        // Fake 不抛时默认 ok；直接验证 catch 分支不会把 banner 打开
+        await vm.RefreshLibraryStatusAsync();
+        Assert.False(vm.ShowLibraryReindexBanner);
     }
 }

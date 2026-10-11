@@ -19,6 +19,8 @@ public enum LocatableResource
 
     /// <summary>嵌入模型缓存目录（锚点 fastembed_cache）。</summary>
     EmbedModelCache,
+    /// <summary>OCR（PaddleOCR）官方模型缓存根目录（锚点 official_models）。</summary>
+    OcrModelCache,
 }
 
 /// <summary>定位结果：路径、来源与全部候选（多命中时供用户挑选）。</summary>
@@ -79,11 +81,12 @@ public sealed class ResourceLocatorService
     private static string? AnchorDirName(LocatableResource kind) => kind switch
     {
         LocatableResource.EmbedModelCache => "fastembed_cache",
+        LocatableResource.OcrModelCache => "official_models",
         _ => null,
     };
 
     private static bool IsDirectoryAnchor(LocatableResource kind) =>
-        kind == LocatableResource.EmbedModelCache;
+        kind is LocatableResource.EmbedModelCache or LocatableResource.OcrModelCache;
 
     // ===== 高概率区快扫根目录（秒级，优先于全盘）=====
     private static List<string> QuickScanRoots(LocatableResource kind)
@@ -377,6 +380,15 @@ public sealed class ResourceLocatorService
                     return Directory.Exists(path)
                         && Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar))
                             .Equals("fastembed_cache", StringComparison.OrdinalIgnoreCase);
+                case LocatableResource.OcrModelCache:
+                    // 接受模型根目录（含 official_models/ 或直接是 official_models）
+                    if (!Directory.Exists(path)) return false;
+                    {
+                        var name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar));
+                        if (name.Equals("official_models", StringComparison.OrdinalIgnoreCase))
+                            return true;
+                        return Directory.Exists(Path.Combine(path, "official_models"));
+                    }
                 default:
                     return false;
             }
@@ -421,6 +433,7 @@ public sealed class ResourceLocatorService
         LocatableResource.BackendPython => NullIfEmpty(_settings.BackendCommand),
         LocatableResource.OfflineWheels => NullIfEmpty(_settings.WheelsDir),
         LocatableResource.EmbedModelCache => NullIfEmpty(_settings.EmbedCacheDir),
+        LocatableResource.OcrModelCache => NullIfEmpty(_settings.OcrModelDir),
         _ => null,
     };
 
@@ -440,6 +453,9 @@ public sealed class ResourceLocatorService
                 break;
             case LocatableResource.EmbedModelCache:
                 _settings.EmbedCacheDir = path;
+                break;
+            case LocatableResource.OcrModelCache:
+                _settings.OcrModelDir = path;
                 break;
             default:
                 return false;

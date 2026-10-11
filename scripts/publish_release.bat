@@ -2,7 +2,7 @@
 chcp 65001 >nul
 
 REM 版本号唯一来源：改版本只改这一处（打包文件名 / 安装包参数 / 提示文案统一使用）
-set APP_VERSION=1.0.1
+set APP_VERSION=1.0.3
 
 set ROOT_DIR=%~dp0..
 cd /d "%ROOT_DIR%"
@@ -54,6 +54,15 @@ echo ============================================================
 echo   [*] 打包绿色便携版 ZIP (DocMind-v%APP_VERSION%-win-x64.zip)
 echo ============================================================
 
+REM 前置校验：python-runtime 缺失时直接失败（v1.0.2 事故根因：xcopy 静默跳过，
+REM 绿色版解压后后端无 python 可启动）
+if not exist "python-runtime\python.exe" (
+    echo [✗] python-runtime\python.exe 不存在：便携运行时未构建或构建不完整。
+    echo [✗] 绿色版 ZIP 与安装包都依赖它，请先运行 scripts\setup.ps1 -BuildPortableRuntime。
+    pause
+    exit /b 1
+)
+
 if not exist "installer\Output" mkdir "installer\Output"
 
 if exist "installer\Output\staging" rmdir /s /q "installer\Output\staging"
@@ -74,7 +83,13 @@ copy "start.bat" "installer\Output\staging\" >nul
 
 echo [*] 正在压缩为 DocMind-v%APP_VERSION%-win-x64.zip ...
 if exist "installer\Output\DocMind-v%APP_VERSION%-win-x64.zip" del /f /q "installer\Output\DocMind-v%APP_VERSION%-win-x64.zip"
-powershell.exe -NoProfile -Command "Compress-Archive -Path 'installer\Output\staging\*' -DestinationPath 'installer\Output\DocMind-v%APP_VERSION%-win-x64.zip' -Force"
+REM 用 make_green_zip.ps1 打包（标准正斜杠条目名；Compress-Archive 会写反斜杠条目名）
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "scripts\make_green_zip.ps1" -StagingDir "installer\Output\staging" -OutputZip "installer\Output\DocMind-v%APP_VERSION%-win-x64.zip"
+if %ERRORLEVEL% neq 0 (
+    echo [✗] 绿色版 ZIP 打包失败
+    pause
+    exit /b 1
+)
 rmdir /s /q "installer\Output\staging"
 echo [✓] 绿色版 ZIP 打包完成: installer\Output\DocMind-v%APP_VERSION%-win-x64.zip
 

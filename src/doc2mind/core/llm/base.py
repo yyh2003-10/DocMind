@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from typing import Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
-# 默认 LLM 调用超时（秒），防 API 挂起阻塞请求线程
-DEFAULT_TIMEOUT = 120
+if TYPE_CHECKING:
+    from doc2mind.core.llm.metadata import ModelMetadata
+
+logger = logging.getLogger(__name__)
+
+# 默认 LLM 调用超时（秒），防 API 挂起阻塞请求线程。
+# 120s 对 NIM/大 MoE + 慢链路偏紧（TTFT/帧间隔易顶满），默认提到 180s；
+# 仍不够时用 DOC2MIND_LLM_TIMEOUT / config.llm_timeout 再调大。
+DEFAULT_TIMEOUT = 180
 
 # 主流 LLM 网关对输出 token 上限的常见硬限制（sensenova 等严格校验网关
 # 实测 [1, 65536]）。超出时选择不传该参数，由服务端取模型默认上限。
@@ -31,6 +40,40 @@ def sanitize_max_tokens(value: int | None) -> int | None:
     if value < 1:
         return 1
     if value > MAX_TOKENS_CEILING:
+        return None
+    return value
+
+
+def sanitize_max_tokens_v2(
+    value: int | None,
+    metadata: ModelMetadata | None = None,
+) -> int | None:
+    """max_tokens 归一 v2（T5 方案 A：天花板随 metadata 声明动态放行）。
+
+    规则：
+      - value < 1 → 1
+      - value > MAX_TOKENS_CEILING(65536)：
+          - 若 metadata 明确声明 max_output_tokens 且 value ≤ 声明值 → 放行（采用 value），留日志
+          - 否则 → None（不传，由服务端取默认）
+      - 其余 → value
+
+    metadata 为 None 时行为退化为原 `sanitize_max_tokens`。
+    """
+    if value is None:
+        return None
+    if value < 1:
+        return 1
+    if value > MAX_TOKENS_CEILING:
+        declared = getattr(metadata, "max_output_tokens", None)
+        if isinstance(declared, int) and declared > 0 and value <= declared:
+            logger.info(
+                "sanitize_max_tokens_v2: max_tokens=%d 超天花板 %d，"
+                "但模型声明输出上限 %d，动态放行",
+                value,
+                MAX_TOKENS_CEILING,
+                declared,
+            )
+            return value
         return None
     return value
 
@@ -180,12 +223,64 @@ def is_transient_network_error(exc: BaseException | None) -> bool:
     return False
 
 
+def is_provider_overloaded_error(exc: BaseException | None) -> bool:
+    """判断是否为上游过载/限流类错误（NVIDIA NIM / OpenAI 等）。
+
+    典型文案：`Service temporarily overloaded`、`503 Service Unavailable`、
+    `The server had an error`。这类错误与网络抖动不同——需要稍长退避后重试，
+    不是裁剪上下文能解决的。
+    """
+    if exc is None:
+        return False
+    for e in iter_exception_chain(exc):
+        status = getattr(e, "status_code", None)
+        if status in (429, 502, 503, 529):
+            return True
+        msg = str(e).lower()
+        if any(
+            k in msg
+            for k in (
+                "temporarily overloaded",
+                "service overloaded",
+                "overloaded",
+                "capacity",
+                "too many requests",
+                "rate limit",
+                "server had an error",
+                "503 service unavailable",
+            )
+        ):
+            return True
+    return False
+
+
 class LLMError(Exception):
     """LLM 调用异常。"""
 
 
 class LLMTimeoutError(LLMError):
     """LLM 调用超时。"""
+
+
+@dataclass(frozen=True)
+class NativeToolCall:
+    """供应商原生 function/tool call 的统一表示。"""
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ToolCallingTurn:
+    """一次原生 tool-calling 响应：工具调用或最终正文。"""
+
+    final_text: str = ""
+    tool_calls: list[NativeToolCall] = field(default_factory=list)
+
+    @property
+    def wants_tools(self) -> bool:
+        return bool(self.tool_calls)
 
 
 class LLMClient(ABC):
@@ -242,6 +337,35 @@ class LLMClient(ABC):
         """
         raise LLMError(f"提供商 {self.provider} 暂不支持列出模型，请手动输入模型名")
 
+    @property
+    def supports_tool_calling(self) -> bool:
+        """是否实现 OpenAI 风格的原生 tool-calling。"""
+        return False
+
+    def chat_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int | None = None,
+    ) -> ToolCallingTurn:
+        """请求原生工具调用。未实现的供应商由 Agent 自动降级到受控编排。"""
+        raise LLMError(f"提供商 {self.provider} 不支持原生 tool-calling")
+
+    @property
+    def last_truncated(self) -> bool:
+        """最近一次调用是否因输出上限被截断（finish_reason=length 等价信号）。
+
+        provider 在 _do_chat / 流式续写末尾设置 _last_truncated；
+        rag 调用层据此发 SSE 截断提示帧（T6.1）与非流式截断日志（T6.2）。
+        未设置的 provider 默认 False（不误报）。
+        """
+        return bool(getattr(self, "_last_truncated", False))
+
+    @last_truncated.setter
+    def last_truncated(self, value: bool) -> None:
+        self._last_truncated = bool(value)
+
     def chat(
         self,
         messages: list[dict],
@@ -265,18 +389,26 @@ class LLMClient(ABC):
             LLMTimeoutError: 调用超时
         """
         effective_timeout = timeout if timeout and timeout > 0 else DEFAULT_TIMEOUT
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(self._do_chat, messages, temperature, max_tokens)
-            try:
-                return future.result(timeout=effective_timeout)
-            except FuturesTimeoutError:
-                raise LLMTimeoutError(
-                    f"LLM 调用超时 ({effective_timeout}s)，请检查网络或增加 DOC2MIND_LLM_TIMEOUT"
-                ) from None
-            except LLMError:
-                raise
-            except Exception as e:
-                raise LLMError(f"LLM 调用失败: {e}") from e
+        # Avoid ``with ThreadPoolExecutor`` here: its implicit
+        # shutdown(wait=True) would keep a timed-out provider call blocking
+        # the HTTP request until the network stack eventually returns.
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(self._do_chat, messages, temperature, max_tokens)
+        try:
+            return future.result(timeout=effective_timeout)
+        except FuturesTimeoutError:
+            future.cancel()
+            raise LLMTimeoutError(
+                f"LLM 调用超时 ({effective_timeout}s)，请检查网络或增加 DOC2MIND_LLM_TIMEOUT"
+            ) from None
+        except LLMError:
+            raise
+        except Exception as e:
+            raise LLMError(f"LLM 调用失败: {e}") from e
+        finally:
+            # A running provider call cannot always be interrupted, but it
+            # must not hold the request thread hostage after timeout/cancel.
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def stream_chat(
         self,

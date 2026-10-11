@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http;
 using System.Text;
 using DocMind.Models;
 using DocMind.Services;
@@ -218,7 +219,7 @@ public class Doc2kbApiServiceSseParserTests
             "data: {\"token\":\"部分\"}",
             "data: {\"token\":\"回答\"}",
             "",
-            "data: {\"done\":true,\"chat_id\":\"chat-abc\",\"model\":\"m1\",\"provider\":\"openai\",\"model_spec\":{\"display_name\":\"DeepSeek Chat\",\"context_window\":65536,\"max_output_tokens\":8192,\"is_reasoning_model\":false,\"summary_text\":\"上下文 64K · 最大输出 8K\"},\"total_chunks\":2,\"elapsed_ms\":1234,\"partial\":true,\"warning\":\"回答因网络连接中断，当前内容仅供参考，请重新发送问题获取完整回答。\",\"sources\":[{\"index\":1,\"source\":\"a.pdf\",\"chunk_id\":7,\"format\":\"pdf\",\"page\":3,\"heading\":\"架构\",\"score\":0.9,\"source_type\":\"local\",\"snippet\":\"原文\"}]}",
+            "data: {\"done\":true,\"chat_id\":\"chat-abc\",\"model\":\"m1\",\"provider\":\"openai\",\"model_spec\":{\"display_name\":\"DeepSeek Chat\",\"context_window\":65536,\"max_output_tokens\":8192,\"is_reasoning_model\":false,\"summary_text\":\"上下文 64K · 最大输出 8K\"},\"total_chunks\":2,\"elapsed_ms\":1234,\"partial\":true,\"warning\":\"回答因网络连接中断，当前内容仅供参考，请重新发送问题获取完整回答。\",\"trajectory_warning\":\"工具 web_search 连续失败，将收尾\",\"sources\":[{\"index\":1,\"source\":\"a.pdf\",\"chunk_id\":7,\"format\":\"pdf\",\"page\":3,\"heading\":\"架构\",\"score\":0.9,\"source_type\":\"local\",\"snippet\":\"原文\"}]}",
             "data: [DONE]",
             "");
         var (service, _) = CreateService(sse);
@@ -235,6 +236,7 @@ public class Doc2kbApiServiceSseParserTests
         Assert.Equal(1234, result.ElapsedMs);
         Assert.True(result.Partial);
         Assert.Contains("网络连接中断", result.Warning);
+        Assert.Contains("web_search", result.TrajectoryWarning);
         // model_spec 全字段解析（此前被 ParseDoneFrame 丢弃）
         Assert.Equal("DeepSeek Chat", result.ModelDisplayName);
         Assert.Equal(65536, result.ContextWindow);
@@ -309,5 +311,25 @@ public class Doc2kbApiServiceSseParserTests
         Assert.Equal(string.Empty, result.ChatId);
         Assert.Equal(0, result.TotalChunks);
         Assert.Empty(result.Sources);
+    }
+
+    [Fact]
+    public void ChatStream_ToleratesDuplicatedDataPrefix()
+    {
+        // 回归防护：后端 done 帧曾拼出 "data: data: {...}" 双前缀，
+        // 端上只剥一次前缀时 payload 仍以 'd' 开头，JsonDocument.Parse 直接抛
+        // PARSE_ERROR，整轮回答判定失败（HTML 气泡随之空白）。
+        var sse = "data: data: {\"token\":\"双前缀也认\"}\n\n"
+                  + "data: data: {\"done\":true,\"chat_id\":\"c-dup\",\"model\":\"m\",\"provider\":\"p\","
+                  + "\"total_chunks\":1,\"elapsed_ms\":9,\"partial\":false,\"sources\":[]}\n\n"
+                  + "data: data: [DONE]\n\n";
+        var (service, _) = CreateService(sse);
+        var tokens = new List<string>();
+
+        var result = Run(new ChatRequest { Query = "q" }, service, tokens);
+
+        Assert.Equal("双前缀也认", Assert.Single(tokens));
+        Assert.Equal("c-dup", result.ChatId);
+        Assert.Equal(1, result.TotalChunks);
     }
 }

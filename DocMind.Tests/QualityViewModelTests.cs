@@ -1,4 +1,6 @@
 using DocMind.Models;
+using DocMind;
+using DocMind.Models;
 using DocMind.Services;
 using DocMind.ViewModels;
 
@@ -10,7 +12,7 @@ namespace DocMind.Tests;
 public class QualityViewModelTests
 {
     private static QualityViewModel CreateVm(FakeDoc2kbApiService fake)
-        => new(fake);
+        => new(fake, new NotificationService());
 
     [Fact]
     public async Task EnsureLoadedAsync_LoadsOnceAndIsIdempotent()
@@ -53,6 +55,22 @@ public class QualityViewModelTests
         Assert.Single(vm.Collections);
         Assert.Equal(10, vm.Stats!.TotalDocuments);
         Assert.Equal(100, vm.Stats.TotalChunks);
+    }
+
+    [Fact]
+    public void IsLlmConfigured_EnabledOllamaProfileWithoutKey_ReturnsTrue()
+    {
+        var settings = new AppSettings
+        {
+            LlmProvider = "none",
+            LlmProfiles = new List<LlmProfile>
+            {
+                new() { Id = "ollama", Name = "本地 Ollama", Provider = "ollama", IsEnabled = true }
+            }
+        };
+        var vm = new QualityViewModel(new FakeDoc2kbApiService(), new NotificationService(), settings);
+
+        Assert.True(vm.IsLlmConfigured);
     }
 
     [Fact]

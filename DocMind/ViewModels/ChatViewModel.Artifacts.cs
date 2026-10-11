@@ -19,6 +19,7 @@ public partial class ChatViewModel : ViewModelBase
     private bool _isSourceDrawerOpen;
     private double _sourceDrawerWidth;
     private ArtifactItem? _selectedArtifact;
+    private ArtifactItem? _pendingArtifactRevision;
     private int _currentSlideIndex;
     private bool _isArtifactMode;
 
@@ -30,6 +31,13 @@ public partial class ChatViewModel : ViewModelBase
         {
             if (SetProperty(ref _selectedArtifact, value))
             {
+                // Inspection and version records are artifact-specific. Do not let a
+                // previously selected artifact's result look like it belongs to this one.
+                InspectionReport = null;
+                IsInspectionReportOpen = false;
+                ArtifactVersions.Clear();
+                SelectedArtifactVersion = null;
+                IsVersionPanelOpen = false;
                 OnPropertyChanged(nameof(HasSelectedArtifact));
                 OnPropertyChanged(nameof(SelectedArtifactTitle));
                 OnPropertyChanged(nameof(SelectedSlide));
@@ -136,6 +144,8 @@ public partial class ChatViewModel : ViewModelBase
                 OnPropertyChanged(nameof(HasSelectedSource));
                 OnPropertyChanged(nameof(SelectedSourceTitle));
                 OnPropertyChanged(nameof(SelectedSourceSnippet));
+                OnPropertyChanged(nameof(SelectedSourceAnswerSupport));
+                OnPropertyChanged(nameof(HasSelectedSourceAnswerSupport));
             }
         }
     }
@@ -162,6 +172,73 @@ public partial class ChatViewModel : ViewModelBase
                 : "（该切片暂无全文预览或来自早期版本会话，可通过下方动作查看原文）";
         }
     }
+
+    /// <summary>答案侧与该引用对应的表述：从助手消息中抽取含 [n] 角标的句子，供原文件对照。</summary>
+    public string SelectedSourceAnswerSupport
+    {
+        get
+        {
+            var src = SelectedSource;
+            if (src is null)
+            {
+                return string.Empty;
+            }
+
+            var marker = $"[{src.Index}]";
+            for (var i = Messages.Count - 1; i >= 0; i--)
+            {
+                var msg = Messages[i];
+                if (!string.Equals(msg.Role, "assistant", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                if (msg.Sources is not { Count: > 0 })
+                {
+                    continue;
+                }
+
+                var content = msg.Content ?? string.Empty;
+                var idx = content.IndexOf(marker, StringComparison.Ordinal);
+                if (idx < 0)
+                {
+                    continue;
+                }
+
+                var start = idx;
+                while (start > 0)
+                {
+                    var c = content[start - 1];
+                    if (c is '。' or '！' or '？' or '\n' or '；')
+                    {
+                        break;
+                    }
+                    start--;
+                }
+
+                var end = idx + marker.Length;
+                while (end < content.Length)
+                {
+                    var c = content[end];
+                    if (c is '。' or '！' or '？' or '\n' or '；')
+                    {
+                        end++;
+                        break;
+                    }
+                    end++;
+                }
+
+                var sentence = content[start..end].Trim();
+                if (sentence.Length > 0)
+                {
+                    return sentence;
+                }
+            }
+
+            return string.Empty;
+        }
+    }
+
+    public bool HasSelectedSourceAnswerSupport => !string.IsNullOrWhiteSpace(SelectedSourceAnswerSupport);
 
     /// <summary>协同来源预览抽屉是否展开。</summary>
     public bool IsSourceDrawerOpen
@@ -292,6 +369,135 @@ public partial class ChatViewModel : ViewModelBase
         OnPropertyChanged(nameof(SlideAccentSoftBrush));
     }
 
+    /// <summary>自定义主题随导出携带完整色值，后端据此构建 PPT 配色（内置主题走后端库）。</summary>
+    private static Dictionary<string, object>? BuildThemeColorsPayload(PptThemeOption? theme)
+    {
+        if (theme is null || !theme.IsCustom)
+            return null;
+        // 键名与后端 theme_colors / get_theme 约定一致（camelCase 由 JsonPropertyName 负责）
+        return new Dictionary<string, object>
+        {
+            ["name"] = theme.DisplayName,
+            ["description"] = theme.Description ?? "",
+            ["primary"] = theme.PrimaryHex,
+            ["bg"] = theme.BgHex,
+        };
+    }
+
+    private async Task<bool> SaveArtifactVersionSnapshotAsync(ArtifactItem artifact)
+    {
+        try
+        {
+            var version = await _apiService.SaveArtifactVersionAsync(
+                artifact.Id,
+                new CreativeExportRequest
+                {
+                    Content = artifact.RawContent,
+                    Format = artifact.Type,
+                    Title = artifact.Title,
+                });
+            if (version.Version > 0)
+            {
+                artifact.LatestVersion = version.Version;
+                RefreshSelectedArtifactBindings(artifact);
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"保存创作物版本失败: {ex.Message}", "Chat");
+            return false;
+        }
+    }
+
+    private async Task<CreativeExportResponse> ExportAndTrackAsync(
+        ArtifactItem artifact,
+        CreativeExportRequest request)
+    {
+        try
+        {
+            var response = await _apiService.ExportCreativeArtifactAsync(request);
+            if (response.Ok && !string.IsNullOrWhiteSpace(response.FilePath))
+            {
+                SetArtifactLifecycle(artifact, ArtifactLifecycleState.Exported, response.FilePath);
+            }
+            else
+            {
+                SetArtifactLifecycle(artifact, ArtifactLifecycleState.ExportFailed, exportError: response.Error);
+            }
+            return response;
+        }
+        catch (Exception ex)
+        {
+            SetArtifactLifecycle(artifact, ArtifactLifecycleState.ExportFailed, exportError: ex.Message);
+            throw;
+        }
+    }
+
+    private void SetArtifactLifecycle(
+        ArtifactItem artifact,
+        ArtifactLifecycleState state,
+        string? exportedFilePath = null,
+        string? exportError = null)
+    {
+        artifact.LifecycleState = state;
+        artifact.ExportedFilePath = exportedFilePath;
+        artifact.ExportError = exportError;
+        RefreshSelectedArtifactBindings(artifact);
+        RefreshTaskProgress();
+    }
+
+    private void RefreshSelectedArtifactBindings(ArtifactItem artifact)
+    {
+        if (!ReferenceEquals(artifact, SelectedArtifact))
+        {
+            return;
+        }
+
+        OnPropertyChanged(nameof(SelectedArtifact));
+        OnPropertyChanged(nameof(SelectedArtifactTitle));
+        OnPropertyChanged(nameof(SelectedSlide));
+        OnPropertyChanged(nameof(HasSelectedSlide));
+        OnPropertyChanged(nameof(SlideCountText));
+    }
+
+    private static ArtifactItem? ParseArtifactForPreview(ArtifactItem artifact, string content, string? format, string? title)
+    {
+        var safeType = string.IsNullOrWhiteSpace(format) ? artifact.Type : format.Trim();
+        var safeTitle = (string.IsNullOrWhiteSpace(title) ? artifact.Title : title)
+            .Replace('"', ' ')
+            .Replace('\r', ' ')
+            .Replace('\n', ' ');
+        var safeTheme = (artifact.Theme ?? "tech_blue").Replace('"', ' ');
+        var parser = new ChatMessage { Role = "assistant" };
+        parser.Content = $":::artifact type=\"{safeType}\" title=\"{safeTitle}\" theme=\"{safeTheme}\"\n{content.Trim()}\n:::";
+        parser.ForceRefreshRender();
+        return parser.Artifact;
+    }
+
+    private ArtifactItem ResolvePendingArtifactRevision(ChatMessage message, ArtifactItem generated)
+    {
+        var original = _pendingArtifactRevision;
+        if (original is null)
+        {
+            return generated;
+        }
+
+        _pendingArtifactRevision = null;
+        original.Type = generated.Type;
+        original.Title = generated.Title;
+        original.Theme = generated.Theme;
+        original.RawContent = generated.RawContent;
+        original.Slides = generated.Slides;
+        original.LastInspectionScore = null;
+        SetArtifactLifecycle(original, ArtifactLifecycleState.Draft);
+        InspectionReport = null;
+        IsInspectionReportOpen = false;
+        message.Artifact = original;
+        RefreshSelectedArtifactBindings(original);
+        return original;
+    }
+
     /// <summary>打开创作物画布抽屉。</summary>
     [RelayCommand]
     public void OpenArtifact(object? param)
@@ -354,19 +560,30 @@ public partial class ChatViewModel : ViewModelBase
         }
 
         var fmt = targetFormat ?? artifact.Type;
+        if (IsBlockedByPptGate(artifact, fmt, out var gateError))
+        {
+            SetArtifactLifecycle(artifact, ArtifactLifecycleState.ExportFailed, exportError: gateError);
+            StatusMessage = gateError;
+            _notifications?.Warning(gateError, "导出已拦截");
+            DebugLog.Warn($"PPT 导出门禁拦截: {gateError}", "Chat");
+            return;
+        }
+
         StatusMessage = $"正在编译导出 {fmt.ToUpperInvariant()} 物理文件（主题: {SelectedTheme.DisplayName}）…";
 
         try
         {
+            await SaveArtifactVersionSnapshotAsync(artifact);
             var req = new CreativeExportRequest
             {
                 Content = artifact.RawContent,
                 Format = fmt,
                 Title = artifact.Title,
                 Theme = SelectedTheme.Id,
+                ThemeColors = BuildThemeColorsPayload(SelectedTheme),
             };
 
-            var res = await _apiService.ExportCreativeArtifactAsync(req);
+            var res = await ExportAndTrackAsync(artifact, req);
             if (res.Ok && !string.IsNullOrWhiteSpace(res.FilePath))
             {
                 StatusMessage = $"已导出文件：{res.FileName}";
@@ -410,6 +627,18 @@ public partial class ChatViewModel : ViewModelBase
             await Task.Delay(500);
 
             var fmt = artifact.Type;
+            if (IsBlockedByPptGate(artifact, fmt, out var gateError))
+            {
+                SetArtifactLifecycle(artifact, ArtifactLifecycleState.ExportFailed, exportError: gateError);
+                StatusMessage = gateError;
+                DebugLog.Warn($"自动导出门禁拦截: {gateError}", "Chat");
+                return;
+            }
+
+            var exportTheme = ReferenceEquals(artifact, SelectedArtifact)
+                ? SelectedTheme
+                : AllThemes.FirstOrDefault(t => t.Id == (artifact.Theme ?? "tech_blue")) ?? SelectedTheme;
+            await SaveArtifactVersionSnapshotAsync(artifact);
             var req = new CreativeExportRequest
             {
                 Content = artifact.RawContent,
@@ -417,12 +646,11 @@ public partial class ChatViewModel : ViewModelBase
                 Title = artifact.Title,
                 // 若该创作物正在工作台中预览，则跟随用户当前选定的主题，
                 // 否则自动导出会停留在 artifact 自带的原始 theme，与随后手动导出/网页放映的配色对不上。
-                Theme = ReferenceEquals(artifact, SelectedArtifact)
-                    ? SelectedTheme.Id
-                    : (artifact.Theme ?? "tech_blue"),
+                Theme = exportTheme.Id,
+                ThemeColors = BuildThemeColorsPayload(exportTheme),
             };
 
-            var res = await _apiService.ExportCreativeArtifactAsync(req);
+            var res = await ExportAndTrackAsync(artifact, req);
             if (res.Ok && !string.IsNullOrWhiteSpace(res.FilePath))
             {
                 StatusMessage = $"✅ 已自动导出 {fmt.ToUpperInvariant()}：{res.FileName}";
@@ -443,6 +671,12 @@ public partial class ChatViewModel : ViewModelBase
             }
             else
             {
+                // 后端硬门禁也可能拒绝：把「结构不合格」直接透出到状态栏
+                var failMsg = string.IsNullOrWhiteSpace(res.Error) ? "自动导出创作物失败" : res.Error;
+                if (failMsg.Contains("结构不合格", StringComparison.Ordinal))
+                {
+                    StatusMessage = failMsg;
+                }
                 DebugLog.Warn($"自动导出创作物失败: {res.Error}", "Chat");
             }
         }
@@ -450,6 +684,129 @@ public partial class ChatViewModel : ViewModelBase
         {
             DebugLog.Warn($"自动导出创作物异常（不影响对话）: {ex.Message}", "Chat");
         }
+    }
+
+    /// <summary>
+    /// PPT 导出硬门禁（客户端预检，与 Python validate_pptx_export 对齐）。
+    /// 拒绝：页码占位标题 / 空正文页 / 残留 Markdown 超阈值。
+    /// </summary>
+    internal static bool IsBlockedByPptGate(ArtifactItem artifact, string fmt, out string error)
+    {
+        error = string.Empty;
+        if (!string.Equals(fmt, "pptx", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(fmt, "ppt", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // 仅当预览侧已解析出幻灯片时才做客户端门禁；
+        // Slides 为空时交给 Python 后端用 raw_content 重新解析并做权威门禁。
+        if (artifact.Slides.Count == 0)
+        {
+            return false;
+        }
+
+        var placeholderPages = new List<int>();
+        var emptyPages = new List<int>();
+        var residuePages = new List<int>();
+        var pageTitleRx = new System.Text.RegularExpressions.Regex(@"^第\s*\d+\s*页$");
+        var mathRx = new System.Text.RegularExpressions.Regex(@"\$[^$\n]{1,40}\$");
+
+        foreach (var s in artifact.Slides)
+        {
+            var title = s.Title?.Trim() ?? string.Empty;
+            if (pageTitleRx.IsMatch(title))
+            {
+                placeholderPages.Add(s.Index);
+            }
+
+            if (!HasRealPptBody(s))
+            {
+                var isCoverish = string.Equals(s.Layout, "cover", StringComparison.OrdinalIgnoreCase) || s.IsCover;
+                if (!(isCoverish && (!string.IsNullOrWhiteSpace(s.Title) || !string.IsNullOrWhiteSpace(s.Subtitle))))
+                {
+                    emptyPages.Add(s.Index);
+                }
+            }
+
+            if (CountMarkdownResidue(s, mathRx) >= 3)
+            {
+                residuePages.Add(s.Index);
+            }
+        }
+
+        var errors = new List<string>();
+        if (placeholderPages.Count > 0)
+        {
+            errors.Add($"存在页码占位标题页（{string.Join("、", placeholderPages)}），请为每页提供 `# 标题`");
+        }
+        if (emptyPages.Count > 0)
+        {
+            errors.Add($"存在空正文页（{string.Join("、", emptyPages)}），请补充要点/表格/金句内容");
+        }
+        if (residuePages.Count > 0)
+        {
+            errors.Add($"正文/表格残留 Markdown 语法（{string.Join("、", residuePages)}），请清理 `**加粗**` 与 `$公式$`");
+        }
+
+        if (errors.Count > 0)
+        {
+            error = "结构不合格，请重生成：" + string.Join("；", errors);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool HasRealPptBody(SlideItem s)
+    {
+        if (s.BulletPoints.Any(b => !string.IsNullOrWhiteSpace(b))) return true;
+        if (s.TableData != null && s.TableData.Any(row => row.Any(c => !string.IsNullOrWhiteSpace(c)))) return true;
+        if (s.Cards.Any(c => !string.IsNullOrWhiteSpace(c.Title)
+            || !string.IsNullOrWhiteSpace(c.Content)
+            || c.Bullets.Any(b => !string.IsNullOrWhiteSpace(b)))) return true;
+        if (s.Metrics.Any(m => !string.IsNullOrWhiteSpace(m.Value) || !string.IsNullOrWhiteSpace(m.Label))) return true;
+        if (s.TimelineNodes.Any(t => !string.IsNullOrWhiteSpace(t.Stage) || !string.IsNullOrWhiteSpace(t.Title))) return true;
+        if (!string.IsNullOrWhiteSpace(s.QuoteText)) return true;
+        return false;
+    }
+
+    private static int CountMarkdownResidue(SlideItem s, System.Text.RegularExpressions.Regex mathRx)
+    {
+        static int Hits(string? text, System.Text.RegularExpressions.Regex mathRx)
+        {
+            if (string.IsNullOrEmpty(text)) return 0;
+            var boldPairs = System.Text.RegularExpressions.Regex.Matches(text, @"\*\*").Count / 2;
+            return boldPairs + mathRx.Matches(text).Count;
+        }
+
+        var total = 0;
+        foreach (var b in s.BulletPoints) total += Hits(b, mathRx);
+        total += Hits(s.QuoteText, mathRx);
+        foreach (var c in s.Cards)
+        {
+            total += Hits(c.Title, mathRx);
+            total += Hits(c.Content, mathRx);
+            foreach (var b in c.Bullets) total += Hits(b, mathRx);
+        }
+        foreach (var m in s.Metrics)
+        {
+            total += Hits(m.Value, mathRx);
+            total += Hits(m.Label, mathRx);
+        }
+        foreach (var t in s.TimelineNodes)
+        {
+            total += Hits(t.Stage, mathRx);
+            total += Hits(t.Title, mathRx);
+        }
+        if (s.TableData != null)
+        {
+            foreach (var row in s.TableData)
+            {
+                foreach (var cell in row) total += Hits(cell, mathRx);
+            }
+        }
+        return total;
     }
 
     private PptInspectionReportDto? _inspectionReport;
@@ -494,6 +851,8 @@ public partial class ChatViewModel : ViewModelBase
         {
             var report = await _apiService.InspectCreativeArtifactAsync(artifact.RawContent);
             InspectionReport = report;
+            artifact.LastInspectionScore = report.Score;
+            SetArtifactLifecycle(artifact, ArtifactLifecycleState.Checked);
             IsInspectionReportOpen = true;
             StatusMessage = $"PPT 自检完成：健康度得分 {report.Score} 分 ({report.Grade})";
             _notifications?.Info($"PPT 效果自检完成：健康得分 {report.Score} 分 ({report.Grade})\n{report.Summary}", "效果自检报告");
@@ -512,6 +871,171 @@ public partial class ChatViewModel : ViewModelBase
     public void CloseInspectionReport()
     {
         IsInspectionReportOpen = false;
+    }
+
+    // ===================== 创作物版本管理 =====================
+
+    private System.Collections.ObjectModel.ObservableCollection<DocMind.Models.ArtifactVersionSummary> _artifactVersions = new();
+    private DocMind.Models.ArtifactVersionSummary? _selectedArtifactVersion;
+    private bool _isVersionPanelOpen;
+
+    /// <summary>当前创作物的版本列表。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<DocMind.Models.ArtifactVersionSummary> ArtifactVersions
+    {
+        get => _artifactVersions;
+        private set => SetProperty(ref _artifactVersions, value);
+    }
+
+    /// <summary>选中的历史版本。</summary>
+    public DocMind.Models.ArtifactVersionSummary? SelectedArtifactVersion
+    {
+        get => _selectedArtifactVersion;
+        set
+        {
+            if (SetProperty(ref _selectedArtifactVersion, value))
+                RestoreArtifactVersionCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    /// <summary>版本面板是否展开。</summary>
+    public bool IsVersionPanelOpen
+    {
+        get => _isVersionPanelOpen;
+        set => SetProperty(ref _isVersionPanelOpen, value);
+    }
+
+    /// <summary>保存当前创作物为一个新版本。</summary>
+    [RelayCommand]
+    private async Task SaveArtifactVersionAsync()
+    {
+        var artifact = SelectedArtifact;
+        if (artifact == null || string.IsNullOrWhiteSpace(artifact.RawContent))
+        {
+            _notifications?.Warning("没有可存版本的创作物");
+            return;
+        }
+        try
+        {
+            if (!await SaveArtifactVersionSnapshotAsync(artifact))
+            {
+                _notifications?.Error("保存版本失败，请稍后重试");
+                return;
+            }
+            await LoadArtifactVersionsAsync();
+            IsVersionPanelOpen = true;
+            _notifications?.Success("已保存版本", "版本");
+        }
+        catch (Exception ex)
+        {
+            _notifications?.Error($"保存版本失败：{ex.Message}");
+            DebugLog.Warn($"保存创作物版本失败: {ex.Message}", "Chat");
+        }
+    }
+
+    /// <summary>加载版本列表。</summary>
+    [RelayCommand]
+    private async Task LoadArtifactVersionsAsync()
+    {
+        var artifact = SelectedArtifact;
+        if (artifact == null) return;
+        try
+        {
+            var list = await _apiService.ListArtifactVersionsAsync(artifact.Id);
+            ArtifactVersions = new System.Collections.ObjectModel.ObservableCollection<DocMind.Models.ArtifactVersionSummary>(list);
+            IsVersionPanelOpen = true;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"加载版本列表失败: {ex.Message}", "Chat");
+        }
+    }
+
+    [RelayCommand]
+    private void CloseArtifactVersionPanel()
+    {
+        IsVersionPanelOpen = false;
+    }
+
+    /// <summary>把选中版本恢复为当前草稿（不自动再导出）。</summary>
+    [RelayCommand(CanExecute = nameof(CanRestoreVersion))]
+    private async Task RestoreArtifactVersionAsync()
+    {
+        var artifact = SelectedArtifact;
+        var ver = SelectedArtifactVersion;
+        if (artifact == null || ver == null) return;
+        try
+        {
+            var full = await _apiService.GetArtifactVersionAsync(artifact.Id, ver.VersionId);
+            if (full != null && !string.IsNullOrWhiteSpace(full.Content))
+            {
+                var parsed = ParseArtifactForPreview(artifact, full.Content, full.Format, full.Title);
+                artifact.RawContent = parsed?.RawContent ?? full.Content;
+                artifact.Slides = parsed?.Slides ?? new List<SlideItem>();
+                if (!string.IsNullOrWhiteSpace(full.Format))
+                    artifact.Type = full.Format!;
+                if (!string.IsNullOrWhiteSpace(full.Title))
+                    artifact.Title = full.Title!;
+                artifact.LastInspectionScore = null;
+                SetArtifactLifecycle(artifact, ArtifactLifecycleState.Draft);
+                InspectionReport = null;
+                IsInspectionReportOpen = false;
+                // 触发预览刷新
+                SelectedArtifact = artifact;
+                OnPropertyChanged(nameof(SelectedArtifact));
+                _notifications?.Success($"已恢复版本 v{ver.Version}", "版本");
+            }
+        }
+        catch (Exception ex)
+        {
+            _notifications?.Error($"恢复版本失败：{ex.Message}");
+        }
+    }
+
+    private bool CanRestoreVersion => SelectedArtifact != null && SelectedArtifactVersion != null;
+
+    /// <summary>按体检报告建议修订当前 PPT（1 轮，续写/重发提示给模型）。</summary>
+    [RelayCommand]
+    private async Task ReviseFromInspectionAsync()
+    {
+        var report = InspectionReport;
+        var artifact = SelectedArtifact;
+        if (report == null || artifact == null || string.IsNullOrWhiteSpace(artifact.RawContent))
+            return;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("请根据以下 PPT 体检结果修订演示文稿，只改结构与表达，不编造无依据事实；");
+        sb.AppendLine("保持 Artifact 语法（`---` 分页、`### 卡片`、`<!-- note: -->` 备注），输出完整修订后的全文。");
+        sb.AppendLine($"体检得分：{report.Score}（{report.Grade}）");
+        if (!string.IsNullOrWhiteSpace(report.Summary))
+            sb.AppendLine($"总结：{report.Summary}");
+        foreach (var issue in report.Issues.Take(8))
+        {
+            sb.Append("- ");
+            if (!string.IsNullOrWhiteSpace(issue.Category)) sb.Append($"[{issue.Category}] ");
+            sb.Append(issue.Message);
+            if (!string.IsNullOrWhiteSpace(issue.FixSuggestion)) sb.Append($" → {issue.FixSuggestion}");
+            sb.AppendLine();
+        }
+        foreach (var rec in report.Recommendations.Take(5))
+            sb.AppendLine($"- 建议：{rec}");
+
+        CloseInspectionReport();
+        // 以续写方式提交：不新开用户气泡，把修订要求并入本轮
+        await SaveArtifactVersionSnapshotAsync(artifact);
+        // A new response gives the parser a complete revised artifact to attach.
+        _pendingArtifactRevision = artifact;
+        InputText = sb.ToString();
+        try
+        {
+            await SendAsync();
+        }
+        finally
+        {
+            if (ReferenceEquals(_pendingArtifactRevision, artifact))
+            {
+                _pendingArtifactRevision = null;
+            }
+        }
     }
 
     private bool _isSlideShowOpen;
@@ -580,6 +1104,7 @@ public partial class ChatViewModel : ViewModelBase
                 Format = "html",
                 Title = artifact.Title,
                 Theme = SelectedTheme.Id,
+                ThemeColors = BuildThemeColorsPayload(SelectedTheme),
             };
 
             var res = await _apiService.ExportCreativeArtifactAsync(req);
@@ -615,16 +1140,17 @@ public partial class ChatViewModel : ViewModelBase
         SelectedSource = src;
         IsSourceDrawerOpen = true;
 
-        // 若来源是 PDF 且当前抽屉过窄，自适应调整至舒适阅读宽度（560px）
-        if ((string.Equals(src.Format, "pdf", StringComparison.OrdinalIgnoreCase)
-             || src.Source.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
-            && SourceDrawerWidth < 540)
+        // 原文件 × 关键点对照：PDF 默认半屏沉浸阅读（对齐 ima 分屏），
+        // 过窄时自动放宽到半屏档；用户仍可拖把手或点展开再放大。
+        var isPdf = string.Equals(src.Format, "pdf", StringComparison.OrdinalIgnoreCase)
+                    || src.Source.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
+        if (isPdf && SourceDrawerWidth < 800)
         {
-            SourceDrawerWidth = 560;
+            SourceDrawerWidth = 880;
         }
 
-        StatusMessage = $"查看切片出处：{src.DisplayTitle} ({src.ScoreBadgeText})";
-        DebugLog.Info($"展开引用来源抽屉: index={src.Index} source={src.Source} page={src.Page}", "Chat");
+        StatusMessage = $"原文对照：{src.DisplayTitle} ({src.ScoreBadgeText})";
+        DebugLog.Info($"展开原文对照抽屉: index={src.Index} source={src.Source} page={src.Page}", "Chat");
     }
 
     /// <summary>在浏览器中打开当前选中的网页来源 URL（仅 http/https，防危险协议）。</summary>

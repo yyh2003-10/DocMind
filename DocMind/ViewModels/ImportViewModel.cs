@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Linq;
 using System.Text;
 using CommunityToolkit.Mvvm.Input;
 using DocMind.Models;
@@ -9,6 +10,10 @@ namespace DocMind.ViewModels;
 
     public partial class ImportViewModel : ViewModelBase
     {
+
+    /// <summary>后端不可达时通知 Main 刷新全局离线横幅（FC-03/08）。</summary>
+    public event Action? BackendUnreachable;
+
         /// <summary>下拉框中的「新建分组」哨兵项，选中后切换为内联输入新名称。</summary>
         public const string NewCollectionSentinel = "＋ 新建分组…";
 
@@ -40,6 +45,7 @@ namespace DocMind.ViewModels;
             Results = new ObservableCollection<IngestResult>();
             Skipped = new ObservableCollection<string>();
             Failed = new ObservableCollection<string>();
+            HealthWarnings = new ObservableCollection<string>();
             AvailableCollections = new ObservableCollection<string> { "default", NewCollectionSentinel };
             // CollectionChanged 订阅在三个集合属性的 setter 里完成（整体替换后对新实例生效）
 
@@ -453,6 +459,56 @@ namespace DocMind.ViewModels;
         set => SetProperty(ref _statusMessage, value);
     }
 
+    // ── 导入健康摘要（完成卡片） ──
+
+    private bool _hasHealthSummary;
+    /// <summary>是否显示导入健康摘要卡片。</summary>
+    public bool HasHealthSummary
+    {
+        get => _hasHealthSummary;
+        private set => SetProperty(ref _hasHealthSummary, value);
+    }
+
+    private string _healthSummaryText = string.Empty;
+    /// <summary>健康摘要主文案（例如「全部分块在嵌入窗口内」或「3 个分块可能被截断」）。</summary>
+    public string HealthSummaryText
+    {
+        get => _healthSummaryText;
+        private set => SetProperty(ref _healthSummaryText, value);
+    }
+
+    private System.Collections.ObjectModel.ObservableCollection<string> _healthWarnings = new();
+    /// <summary>健康警告列表（人话）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<string> HealthWarnings
+    {
+        get => _healthWarnings;
+        private set
+        {
+            if (SetProperty(ref _healthWarnings, value))
+            {
+                OnPropertyChanged(nameof(HasHealthWarnings));
+            }
+        }
+    }
+
+    public bool HasHealthWarnings => HealthWarnings is { Count: > 0 };
+
+    private string? _suggestQuery;
+    /// <summary>建议试问短句；空则隐藏按钮。</summary>
+    public string? SuggestQuery
+    {
+        get => _suggestQuery;
+        private set
+        {
+            if (SetProperty(ref _suggestQuery, value))
+            {
+                OnPropertyChanged(nameof(HasSuggestQuery));
+            }
+        }
+    }
+
+    public bool HasSuggestQuery => !string.IsNullOrWhiteSpace(SuggestQuery);
+
     /// <summary>进度百分比（0-100），由异步 job 轮询推送。</summary>
     public int ProgressPercent
     {
@@ -521,6 +577,7 @@ namespace DocMind.ViewModels;
 
     /// <summary>把 job 快照转成"正在做什么"的一句话：优先展示后端文件内阶段
     /// （解析/切片/嵌入/写库/AI 整理，单大文件导入时的可见进度），
+    /// 解析阶段带真实页码（共 N 页 / 第 N/M 页），
     /// 无阶段信息（旧后端）时退回文件计数文案。</summary>
     internal static string DescribeStage(JobStatus j)
     {
@@ -529,7 +586,12 @@ namespace DocMind.ViewModels;
             : Path.GetFileName(j.CurrentFile);
         var stageText = j.Stage switch
         {
-            "parsing" => "正在解析文档",
+            // 解析优先显示页码细节（「共 12 页」「第 3/12 页」），没有再退回百分比
+            "parsing" => j.StageDetail is { Length: > 0 } detail
+                ? $"正在解析文档（{detail}）"
+                : j.StageProgress is { } psp
+                    ? $"正在解析文档（{(int)Math.Round(psp * 100)}%）"
+                    : "正在解析文档",
             "chunking" => "正在切片",
             "embedding" => j.StageProgress is { } sp
                 ? $"正在向量嵌入（{(int)Math.Round(sp * 100)}%）"
@@ -578,11 +640,125 @@ namespace DocMind.ViewModels;
         }
     }
 
+    /// <summary>
+    /// 导入前核对嵌入模型维度与向量库维度；不一致时按实际情况提示，
+    /// 用户只需确认「是否重建索引」。确认后先重建再继续导入，拒绝则取消本次导入。
+    /// 返回 true 表示可继续导入。
+    /// </summary>
+    private async Task<bool> EnsureEmbeddingAlignedAsync()
+    {
+        LibraryStatus? status;
+        try
+        {
+            status = await _apiService.GetLibraryStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            // 库状态读不到时不阻断导入；后端写库段仍有同款维度预检兜底
+            DebugLog.Warn($"导入前读取库状态失败，跳过维度预检: {ex.Message}", "Import");
+            return true;
+        }
+
+        // 空库：首次导入会按当前模型建表，无需重建
+        if (status is null || status.IsEmpty || status.TotalChunks <= 0)
+        {
+            return true;
+        }
+
+        var embedDim = status.EmbedDim;
+        var storeDim = status.StoreDim;
+        var dimMismatch = embedDim is > 0 && storeDim is > 0 && embedDim != storeDim;
+
+        // 维度一致且库健康 → 直接导入
+        if (!dimMismatch && !status.NeedsReindex)
+        {
+            return true;
+        }
+
+        string prompt;
+        if (dimMismatch)
+        {
+            prompt =
+                $"嵌入模型维度（{embedDim}）与向量库维度（{storeDim}）不一致。\n" +
+                "通常是因为更换了嵌入模型但尚未重建索引。\n\n" +
+                "是否现在重建索引，然后继续导入？\n" +
+                "· 选「是」：按当前模型重新生成全部向量，完成后自动继续导入（大库可能较久）\n" +
+                "· 选「否」：取消本次导入；也可稍后到「文档库」页手动重建，或切回原嵌入模型";
+        }
+        else
+        {
+            var detail = status.Issues is { Count: > 0 }
+                ? string.Join("\n", status.Issues.Select(i => $"· {i.Message}"))
+                : status.Summary;
+            prompt =
+                "知识库索引需要重建后才能可靠导入/检索：\n" +
+                $"{detail}\n\n" +
+                "是否现在重建索引，然后继续导入？\n" +
+                "· 选「是」：重建完成后自动继续导入\n" +
+                "· 选「否」：取消本次导入；也可稍后到「文档库」页手动重建";
+        }
+
+        var confirm = Services.ThemeMessageBox.Show(
+            prompt,
+            dimMismatch ? "导入前需要重建索引" : "索引需要修复",
+            Services.ThemeMessageBoxButton.YesNo,
+            Services.ThemeMessageBoxImage.Warning);
+        if (confirm != Services.ThemeMessageBoxResult.Yes)
+        {
+            StatusMessage = "已取消导入：请先重建索引或切回原嵌入模型后再试";
+            CurrentProcessingItem = "导入未开始";
+            DebugLog.Info(
+                $"导入前维度预检未通过且用户未确认重建: embedDim={embedDim} storeDim={storeDim} status={status.Status}",
+                "Import");
+            return false;
+        }
+
+        // 用户确认 → 先重建，成功后放行导入
+        IsBusy = true;
+        StatusMessage = "正在重建索引…";
+        CurrentProcessingItem = "按当前嵌入模型重新生成向量…";
+        try
+        {
+            var job = await _apiService.ReindexAsync(new ReindexRequest { Collection = null });
+            DebugLog.Info($"导入前自动重建索引: jobId={job.JobId}", "Import");
+            var final = await _apiService.WatchJobUntilDoneAsync(job.JobId);
+            if (!string.Equals(final.Status, "completed", StringComparison.OrdinalIgnoreCase))
+            {
+                StatusMessage = $"重建索引未完成（{final.Status}）：{final.Error ?? "请稍后到「文档库」页重试"}";
+                _notifications.Error($"重建索引失败：{final.Error ?? final.Status}");
+                DebugLog.Error($"导入前重建失败: jobId={final.JobId} status={final.Status} error={final.Error}", "Import");
+                return false;
+            }
+
+            _notifications.Success($"重建索引完成（{final.Processed}/{final.Total} 分块），继续导入");
+            StatusMessage = "重建完成，开始导入…";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"重建索引失败：{ex.Message}";
+            _notifications.Error($"重建索引失败：{ex.Message}");
+            DebugLog.Error($"导入前重建异常: {ex.Message}", "Import", ex);
+            return false;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
     /// <summary>执行导入：异步 job + 轮询真实进度，可从任务页取消。</summary>
     [RelayCommand(CanExecute = nameof(CanImport))]
     private async Task ImportAsync()
     {
         if (!CanImport)
+        {
+            return;
+        }
+
+        // 维度预检：换嵌入模型后未重建索引时，导入前给一次「确认重建」机会，
+        // 而不是跑完解析/嵌入再整批失败，让用户再去别处找重建按钮。
+        if (!await EnsureEmbeddingAlignedAsync())
         {
             return;
         }
@@ -596,6 +772,10 @@ namespace DocMind.ViewModels;
         Skipped.Clear();
         Failed.Clear();
         ProgressPercent = 0;
+        HasHealthSummary = false;
+        HealthWarnings = new ObservableCollection<string>();
+        SuggestQuery = null;
+        HealthSummaryText = string.Empty;
 
         var opId = $"ingest_{DateTime.Now:yyyyMMdd_HHmmss}_{Path.GetFileNameWithoutExtension(SelectedPath)}";
         DebugLog.Info($"开始导入: Path='{SelectedPath.Trim()}' Collection='{(string.IsNullOrWhiteSpace(Collection) ? "default" : Collection.Trim())}' Recursive={Recursive} opId={opId}", "Import");
@@ -693,6 +873,48 @@ namespace DocMind.ViewModels;
                 return;
             }
 
+            if (final.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase)
+                || final.Status.Equals("canceled", StringComparison.OrdinalIgnoreCase))
+            {
+                // FC-01b：取消也要展示「前 N 篇已导入」明细
+                sw.Stop();
+                var cancelIngested = 0;
+                if (final.Results is { Count: > 0 })
+                {
+                    var ingestedList = new List<IngestResult>();
+                    var skippedList = new List<string>();
+                    var failedList = new List<string>();
+                    foreach (var r in final.Results)
+                    {
+                        switch (r.Status)
+                        {
+                            case "ingested":
+                                cancelIngested++;
+                                ingestedList.Add(r);
+                                break;
+                            case "skipped":
+                                skippedList.Add(r.Source);
+                                break;
+                            case "failed":
+                                failedList.Add($"{r.Source}：{WithOcrInstallHint(r.Error) ?? "未知原因"}");
+                                break;
+                        }
+                    }
+                    Results = new ObservableCollection<IngestResult>(ingestedList);
+                    Skipped = new ObservableCollection<string>(skippedList);
+                    Failed = new ObservableCollection<string>(failedList);
+                }
+                StatusMessage = !string.IsNullOrWhiteSpace(final.CancelNote)
+                    ? final.CancelNote
+                    : cancelIngested > 0
+                        ? $"已取消导入：前 {cancelIngested} 篇已导入可搜索，其余未处理。"
+                        : "已取消导入：尚无已完成文件入库。";
+                CurrentProcessingItem = "任务已取消";
+                _notifications.Info(StatusMessage, "导入已取消");
+                DebugLog.Info($"导入已取消: {StatusMessage} jobId={final.JobId}", "Import");
+                return;
+            }
+
             // 后端 JobStatus.results：每个文件的最终状态（ingested / skipped / failed），
             // 由后端在任务完成时填充，前端无需二次同步请求。
             var ingested = 0;
@@ -761,6 +983,9 @@ namespace DocMind.ViewModels;
                 : "完成：无新增文档（全部跳过或失败）";
             CurrentProcessingItem = $"导入完成（共处理 {final.Processed} 个文档）";
 
+            // 导入健康摘要：从 Results 聚合超窗块数 / 警告 / 试问建议
+            ApplyHealthSummary(final.Results);
+
             DebugLog.Info(
                 $"导入完成: ingested={ingested} skipped={skipped} failed={failed} " +
                 $"totalDocuments={final.Processed} 耗时{sw.ElapsedMilliseconds}ms",
@@ -790,10 +1015,47 @@ namespace DocMind.ViewModels;
         catch (OperationCanceledException) when (_importCts.IsCancellationRequested)
         {
             sw.Stop();
-            StatusMessage = "已取消导入（后台可能仍在处理未完成文件）";
+            // FC-01b：取消后尽量拉一次 job，展示「已导入 N 篇」明细
+            var cancelMsg = "已取消导入";
+            try
+            {
+                if (!string.IsNullOrEmpty(_currentJobId))
+                {
+                    var jobAfter = await _apiService.GetJobAsync(_currentJobId);
+                    var n = jobAfter.Results?.Count(r => r.Status == "ingested") ?? 0;
+                    if (!string.IsNullOrWhiteSpace(jobAfter.CancelNote))
+                    {
+                        cancelMsg = jobAfter.CancelNote;
+                    }
+                    else if (n > 0)
+                    {
+                        cancelMsg = $"已取消导入：前 {n} 篇已导入可搜索，其余未处理。";
+                    }
+                    else
+                    {
+                        cancelMsg = "已取消导入：尚无已完成文件入库。";
+                    }
+                    if (jobAfter.Results is { Count: > 0 })
+                    {
+                        var ingestedList = jobAfter.Results.Where(r => r.Status == "ingested").ToList();
+                        var skippedList = jobAfter.Results.Where(r => r.Status == "skipped").Select(r => r.Source).ToList();
+                        var failedList = jobAfter.Results.Where(r => r.Status == "failed")
+                            .Select(r => $"{r.Source}：{WithOcrInstallHint(r.Error) ?? "未知原因"}").ToList();
+                        Results = new ObservableCollection<IngestResult>(ingestedList);
+                        Skipped = new ObservableCollection<string>(skippedList);
+                        Failed = new ObservableCollection<string>(failedList);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"取消后拉取 job 明细失败: {ex.Message}", "Import");
+                cancelMsg = "已取消导入（明细暂不可用，可稍后在文档库确认）";
+            }
+            StatusMessage = cancelMsg;
             CurrentProcessingItem = "任务已取消";
-            _notifications.Info("导入已取消");
-            DebugLog.Info($"导入已取消，耗时{sw.ElapsedMilliseconds}ms", "Import");
+            _notifications.Info(cancelMsg);
+            DebugLog.Info($"导入已取消，耗时{sw.ElapsedMilliseconds}ms msg={cancelMsg}", "Import");
         }
         catch (ApiException ex)
         {
@@ -806,6 +1068,7 @@ namespace DocMind.ViewModels;
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
             CurrentProcessingItem = "后端服务未响应";
@@ -835,6 +1098,80 @@ namespace DocMind.ViewModels;
             ImportCompleted?.Invoke();
             // 导入后端可能自动新建了集合（如导入到新分组），刷新下拉列表
             _ = LoadCollectionsAsync();
+        }
+    }
+
+    /// <summary>从 job 结果聚合导入健康摘要（超窗块 / 警告 / 试问）。</summary>
+    private void ApplyHealthSummary(IReadOnlyList<IngestResult>? results)
+    {
+        if (results is null || results.Count == 0)
+        {
+            HasHealthSummary = false;
+            return;
+        }
+
+        var longTotal = 0;
+        var warns = new List<string>();
+        string? suggest = null;
+        foreach (var r in results)
+        {
+            if (!string.Equals(r.Status, "ingested", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            longTotal += r.LongChunkCount;
+            foreach (var w in r.HealthWarnings)
+            {
+                if (!string.IsNullOrWhiteSpace(w) && !warns.Contains(w))
+                {
+                    warns.Add(w);
+                }
+            }
+            if (suggest is null && !string.IsNullOrWhiteSpace(r.SuggestQuery))
+            {
+                suggest = r.SuggestQuery;
+            }
+        }
+
+        if (longTotal == 0 && warns.Count == 0)
+        {
+            HealthSummaryText = "导入健康：全部分块在嵌入窗口内，可直接检索";
+        }
+        else if (longTotal > 0)
+        {
+            HealthSummaryText = $"导入健康：{longTotal} 个分块超出嵌入窗口，检索时可能只命中前半截";
+        }
+        else
+        {
+            HealthSummaryText = "导入健康：有配置提醒，请查看下方警告";
+        }
+
+        HealthWarnings = new ObservableCollection<string>(warns);
+        SuggestQuery = suggest;
+        HasHealthSummary = true;
+
+        if (longTotal > 0)
+        {
+            _notifications.Warning(HealthSummaryText);
+        }
+    }
+
+    /// <summary>把建议试问短句复制到剪贴板（用户可去对话页粘贴）。</summary>
+    [RelayCommand]
+    private void CopySuggestQuery()
+    {
+        if (string.IsNullOrWhiteSpace(SuggestQuery))
+        {
+            return;
+        }
+        try
+        {
+            System.Windows.Clipboard.SetText(SuggestQuery);
+            _notifications.Success($"已复制试问句：{SuggestQuery}");
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"复制试问句失败: {ex.Message}", "Import");
         }
     }
 

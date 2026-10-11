@@ -62,6 +62,10 @@ public sealed class CreativeExportRequest
 
     [JsonPropertyName("theme")]
     public string? Theme { get; set; }
+
+    /// <summary>自定义主题配色（theme 不在后端内置库时用于构建完整 PPT 配色）。</summary>
+    [JsonPropertyName("themeColors")]
+    public Dictionary<string, object>? ThemeColors { get; set; }
 }
 
 /// <summary>创作交付物导出响应结果。</summary>
@@ -84,6 +88,24 @@ public sealed class CreativeExportResponse
 
     [JsonPropertyName("error")]
     public string? Error { get; set; }
+}
+
+/// <summary>Artifact 历史版本摘要。</summary>
+public class ArtifactVersionSummary
+{
+    [JsonPropertyName("version_id")] public string VersionId { get; set; } = string.Empty;
+    [JsonPropertyName("artifact_id")] public string ArtifactId { get; set; } = string.Empty;
+    [JsonPropertyName("version")] public int Version { get; set; }
+    [JsonPropertyName("created_at")] public string CreatedAt { get; set; } = string.Empty;
+    [JsonPropertyName("format")] public string? Format { get; set; }
+    [JsonPropertyName("title")] public string? Title { get; set; }
+    [JsonPropertyName("sources")] public List<Dictionary<string, object?>> Sources { get; set; } = new();
+}
+
+/// <summary>Artifact 历史版本完整内容，用于恢复/重新生成。</summary>
+public sealed class ArtifactVersionResponse : ArtifactVersionSummary
+{
+    [JsonPropertyName("content")] public string Content { get; set; } = string.Empty;
 }
 
 /// <summary>卡片网格中的单个卡片。</summary>
@@ -158,14 +180,39 @@ public sealed class SlideItem
             .ToList();
 }
 
+/// <summary>创作交付物从草稿到导出的生命周期状态。</summary>
+public enum ArtifactLifecycleState
+{
+    Draft,
+    Checked,
+    Exported,
+    ExportFailed,
+}
+
 /// <summary>创作交付物前端综合模型。</summary>
 public sealed class ArtifactItem
 {
+    /// <summary>版本管理用 ID（会话内稳定；缺省自动生成）。</summary>
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Type { get; set; } = "docx"; // pptx, docx, xlsx, html, md
     public string Title { get; set; } = "知识创作交付物";
     public string Theme { get; set; } = "tech_blue";
     public string RawContent { get; set; } = string.Empty;
     public List<SlideItem> Slides { get; set; } = new();
+    public ArtifactLifecycleState LifecycleState { get; set; } = ArtifactLifecycleState.Draft;
+    public string? ExportedFilePath { get; set; }
+    public string? ExportError { get; set; }
+    public int? LastInspectionScore { get; set; }
+    public int? LatestVersion { get; set; }
+
+    public string LifecycleText => LifecycleState switch
+    {
+        ArtifactLifecycleState.Checked => "已检查",
+        ArtifactLifecycleState.Exported => "已导出",
+        ArtifactLifecycleState.ExportFailed => "导出失败",
+        _ => "草稿",
+    };
+
     public int SlideCount => Slides.Count;
     public bool IsPpt => string.Equals(Type, "pptx", StringComparison.OrdinalIgnoreCase);
     public bool IsDoc => string.Equals(Type, "docx", StringComparison.OrdinalIgnoreCase);

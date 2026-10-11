@@ -87,7 +87,7 @@ public partial class SearchView : UserControl
 
                 tb.Inlines.Add(new Run(text[match.Index..(match.Index + match.Length)])
                 {
-                    Background = new SolidColorBrush(Color.FromRgb(255, 243, 205)),
+                    Background = ResolveSearchHighlightBrush(),
                 });
 
                 lastPos = match.Index + match.Length;
@@ -100,6 +100,31 @@ public partial class SearchView : UserControl
         {
             // 正则异常时回退到纯文本
         }
+    }
+
+    private static Brush ResolveSearchHighlightBrush()
+    {
+        try
+        {
+            if (Application.Current?.TryFindResource("WarningLightBrush") is Brush themeBrush)
+                return themeBrush;
+            if (Application.Current?.TryFindResource("HoverBrush") is Brush hover)
+                return hover;
+        }
+        catch
+        {
+            // ignore
+        }
+        // 深色下用半透明琥珀，避免浅黄块
+        try
+        {
+            if (Application.Current?.TryFindResource("PrimaryLightBrush") is Brush b)
+                return b;
+            if (Application.Current?.TryFindResource("SelectedBrush") is Brush s)
+                return s;
+        }
+        catch { }
+        return new SolidColorBrush(Color.FromArgb(0x55, 0x81, 0x8C, 0xF8));
     }
 
     /// <summary>激活时自动聚焦搜索框。</summary>
@@ -130,5 +155,15 @@ public partial class SearchView : UserControl
         {
             _vm.SearchCommand.Execute(null);
         }
+    }
+
+    /// <summary>聚焦输入框时弹出搜索历史（有历史才弹）。</summary>
+    private void QueryBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (_vm is null) return;
+        // Popup 因点击外部关闭时 IsOpen 已为 false 而 VM 属性仍为 true；
+        // 先置 false 再按需置 true，保证绑定值发生变化、面板能再次弹出
+        _vm.ShowHistory = false;
+        _vm.ShowHistory = _vm.HasSearchHistory;
     }
 }

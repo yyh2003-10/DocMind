@@ -7,6 +7,10 @@ namespace DocMind.ViewModels;
 
 public partial class ConvertViewModel : ViewModelBase
 {
+
+    /// <summary>后端不可达时通知 Main 刷新全局离线横幅（FC-03/08）。</summary>
+    public event Action? BackendUnreachable;
+
     private readonly IDoc2kbApiService _apiService;
     private readonly NotificationService _notifications;
 
@@ -52,7 +56,14 @@ public partial class ConvertViewModel : ViewModelBase
     public string OutputPath
     {
         get => _outputPath;
-        set => SetProperty(ref _outputPath, value);
+        set
+        {
+            if (SetProperty(ref _outputPath, value))
+            {
+                OnPropertyChanged(nameof(CanImportToKnowledgeBase));
+                ImportToKnowledgeBaseCommand.NotifyCanExecuteChanged();
+            }
+        }
     }
 
     /// <summary>目标格式：md / json / txt / html。</summary>
@@ -93,7 +104,14 @@ public partial class ConvertViewModel : ViewModelBase
     public ConvertResult? LastResult
     {
         get => _lastResult;
-        set => SetProperty(ref _lastResult, value);
+        set
+        {
+            if (SetProperty(ref _lastResult, value))
+            {
+                OnPropertyChanged(nameof(CanImportToKnowledgeBase));
+                ImportToKnowledgeBaseCommand.NotifyCanExecuteChanged();
+            }
+        }
     }
 
     private bool CanConvert => !IsBusy && !string.IsNullOrWhiteSpace(InputPath);
@@ -210,6 +228,7 @@ public partial class ConvertViewModel : ViewModelBase
         }
         catch (BackendConnectionException ex)
         {
+            BackendUnreachable?.Invoke();
             sw.Stop();
             StatusMessage = $"后端不可达：{ex.Message}";
             DebugLog.Error($"转换后端不可达: {ex.Message} 耗时{sw.ElapsedMilliseconds}ms", "Convert", ex);

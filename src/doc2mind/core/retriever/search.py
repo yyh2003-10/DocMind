@@ -26,7 +26,7 @@ from typing import Any
 
 from doc2mind.core.embedder.base import Embedder, EmbedderError
 from doc2mind.core.reranker.base import Reranker, RerankerError
-from doc2mind.core.store.sqlite_vec import StoreError, VectorStore
+from doc2mind.core.store.contracts import KnowledgeStore, StoreError
 
 
 class RetrievalError(Exception):
@@ -104,7 +104,7 @@ class Retriever:
 
     def __init__(
         self,
-        store: VectorStore,
+        store: KnowledgeStore,
         embedder: Embedder,
         rrf_k: int = 60,
         reranker: "Reranker | None" = None,
@@ -206,7 +206,7 @@ class Retriever:
                     if "dim" in low or "dimension" in low or "维" in str(e):
                         degraded_reason = (
                             "向量维度与索引不一致（换嵌入模型后未重建索引），"
-                            "本次为纯 BM25 检索；请在设置页执行「重建索引」"
+                            "本次为纯 BM25 检索；请在「文档库」页执行「重建索引」"
                         )
                     else:
                         degraded_reason = f"向量检索不可用（{e}），本次为纯 BM25 检索"

@@ -52,7 +52,7 @@ class PptxExporter:
 
         slides = artifact.slides
         if not slides:
-            slides = parse_pptx_slides(artifact.raw_content)
+            slides = parse_pptx_slides(artifact.raw_content, deck_title=artifact.title)
 
         if not slides:
             slides = [
@@ -512,7 +512,9 @@ class PptxExporter:
         qtf = q_box.text_frame
         qtf.word_wrap = True
         qp = qtf.paragraphs[0]
-        qp.text = f"“ {model.quote_text or model.bullet_points[0] if model.bullet_points else '核心结论与洞察'} ”"
+        # 运算符优先级：必须先解析 bullets 兜底，否则无 bullet 时会无视 quote_text
+        quote = model.quote_text or (model.bullet_points[0] if model.bullet_points else "核心结论与洞察")
+        qp.text = f"“ {quote} ”"
         qp.font.size = Pt(24)
         qp.font.bold = True
         qp.font.color.rgb = _to_pptx_rgb(theme.text_main)

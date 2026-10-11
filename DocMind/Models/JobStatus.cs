@@ -21,8 +21,17 @@ public sealed record JobStatus
     public string? Stage { get; init; }
     /// <summary>阶段内进度 0.0~1.0（可选，embedding 阶段有真实值，其余为 null）。</summary>
     public double? StageProgress { get; init; }
+    /// <summary>阶段内人话细节（如「共 12 页」「第 3/12 页」），解析阶段真实页码进度。</summary>
+    public string? StageDetail { get; init; }
     /// <summary>异步 job 完成后的详细结果列表（可选，向后兼容），由后端在完成时填充。</summary>
     public IReadOnlyList<IngestResult> Results { get; init; } = [];
     /// <summary>curate 任务完成后的整理报告（其它类型任务为 null）。原始 JSON 保留结构，UI 按需解析。</summary>
     public JsonElement? Report { get; init; }
+    /// <summary>FC-01b：取消时后端人话说明（已导入 N 篇…）；完成任务为 null。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("cancel_note")]
+    public string? CancelNote { get; init; }
+    public string? PermissionRequestId { get; init; }
+    public string? PermissionToolId { get; init; }
+    public int? PermissionTimeoutSec { get; init; }
+    public AgentJobResult? Result { get; init; }
 }

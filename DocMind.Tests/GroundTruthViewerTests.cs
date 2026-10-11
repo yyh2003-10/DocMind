@@ -51,8 +51,8 @@ public class GroundTruthViewerTests
         Assert.True(vm.IsSourceDrawerOpen);
         Assert.False(vm.IsArtifactMode);
         Assert.Equal(pdfSource, vm.SelectedSource);
-        // 宽度应自适应提升至 560px
-        Assert.Equal(560, vm.SourceDrawerWidth);
+        // PDF 原文对照：过窄时自动放宽至舒适阅读宽（半屏阅读档 880）
+        Assert.Equal(880, vm.SourceDrawerWidth);
     }
 
     [Fact]

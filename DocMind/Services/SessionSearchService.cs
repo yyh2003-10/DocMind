@@ -5,13 +5,12 @@ using Microsoft.Data.Sqlite;
 namespace DocMind.Services;
 
 /// <summary>
-/// 会话全文搜索服务：基于 SQLite FTS5，搜索所有历史对话。
-/// 灵感来源：Hermes Agent 的 session_search 工具。
+/// 会话全文搜索服务：直连后端 SQLite（只读），搜索所有历史对话。
 ///
 /// 设计要点：
 /// - 与后端共用同一个 doc2mind.db 数据库（只读连接）
-/// - FTS5 全文检索，~20ms 延迟
-/// - 支持按会话 ID 过滤
+/// - 后端 chat_messages 实际列名为 created_at（不是 timestamp）
+/// - 优先 FTS5（chat_messages_fts，CJK 已分词入库）；表不存在时回退 LIKE
 /// - 零 LLM 成本
 /// </summary>
 public sealed class SessionSearchService
@@ -36,11 +35,8 @@ public sealed class SessionSearchService
     public bool DatabaseExists => File.Exists(_dbPath);
 
     /// <summary>
-    /// 搜索历史对话（FTS5 全文检索）。
+    /// 搜索历史对话（FTS5 优先，失败/无表时 LIKE 回退）。
     /// </summary>
-    /// <param name="query">搜索关键词。</param>
-    /// <param name="limit">返回结果上限。</param>
-    /// <param name="sessionId">可选：仅搜索指定会话。</param>
     public Task<IReadOnlyList<SessionSearchResult>> SearchAsync(
         string query, int limit = 10, string? sessionId = null)
     {
@@ -53,55 +49,23 @@ public sealed class SessionSearchService
             using var conn = new SqliteConnection($"Data Source={_dbPath};Mode=ReadOnly");
             conn.Open();
 
-            // 检查 FTS5 表是否存在
-            if (!TableExists(conn, "chat_messages_fts"))
-                return Task.FromResult<IReadOnlyList<SessionSearchResult>>(
-                    Array.Empty<SessionSearchResult>());
-
-            var ftsQuery = BuildFtsQuery(query);
-
-            var sql = sessionId is null
-                ? """
-                    SELECT m.content, m.role, m.timestamp, m.chat_id,
-                           COALESCE(s.title, ''), fts.rank
-                    FROM chat_messages_fts fts
-                    JOIN chat_messages m ON m.rowid = fts.rowid
-                    LEFT JOIN chat_sessions s ON s.id = m.chat_id
-                    WHERE chat_messages_fts MATCH $query
-                    ORDER BY fts.rank
-                    LIMIT $limit
-                  """
-                : """
-                    SELECT m.content, m.role, m.timestamp, m.chat_id,
-                           COALESCE(s.title, ''), fts.rank
-                    FROM chat_messages_fts fts
-                    JOIN chat_messages m ON m.rowid = fts.rowid
-                    LEFT JOIN chat_sessions s ON s.id = m.chat_id
-                    WHERE chat_messages_fts MATCH $query AND m.chat_id = $sid
-                    ORDER BY fts.rank
-                    LIMIT $limit
-                  """;
-
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = sql;
-            cmd.Parameters.AddWithValue("$query", ftsQuery);
-            cmd.Parameters.AddWithValue("$limit", limit);
-            if (sessionId is not null) cmd.Parameters.AddWithValue("$sid", sessionId);
-
             var results = new List<SessionSearchResult>();
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
+
+            if (TableExists(conn, "chat_messages_fts"))
             {
-                results.Add(new SessionSearchResult
+                try
                 {
-                    Content = reader.GetString(0),
-                    Role = reader.GetString(1),
-                    Timestamp = DateTime.TryParse(reader.GetString(2), out var ts) ? ts : DateTime.MinValue,
-                    SessionId = reader.GetString(3),
-                    SessionTitle = reader.GetString(4),
-                    Rank = reader.GetDouble(5)
-                });
+                    SearchViaFts(conn, query, limit, sessionId, results);
+                    return Task.FromResult<IReadOnlyList<SessionSearchResult>>(results);
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Warn($"FTS 会话搜索失败，回退 LIKE: {ex.Message}", "SessionSearch");
+                    results.Clear();
+                }
             }
+
+            SearchViaLike(conn, query, limit, sessionId, results);
             return Task.FromResult<IReadOnlyList<SessionSearchResult>>(results);
         }
         catch (Exception ex)
@@ -125,11 +89,12 @@ public sealed class SessionSearchService
             conn.Open();
 
             using var cmd = conn.CreateCommand();
+            // 后端实际列名是 created_at（历史 bug：曾误用 timestamp 导致读取必失败）
             cmd.CommandText = """
-                SELECT content, role, timestamp, chat_id
+                SELECT content, role, created_at, chat_id
                 FROM chat_messages
                 WHERE chat_id = $sid
-                ORDER BY rowid DESC
+                ORDER BY id DESC
                 LIMIT $limit
             """;
             cmd.Parameters.AddWithValue("$sid", chatId);
@@ -139,13 +104,7 @@ public sealed class SessionSearchService
             using var reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                results.Add(new SessionSearchResult
-                {
-                    Content = reader.GetString(0),
-                    Role = reader.GetString(1),
-                    Timestamp = DateTime.TryParse(reader.GetString(2), out var ts) ? ts : DateTime.MinValue,
-                    SessionId = reader.GetString(3),
-                });
+                results.Add(ReadResult(reader));
             }
             results.Reverse(); // 按时间正序
             return Task.FromResult<IReadOnlyList<SessionSearchResult>>(results);
@@ -160,6 +119,108 @@ public sealed class SessionSearchService
 
     // ═══════════════════════════════════════════════════════
 
+    private static void SearchViaFts(
+        SqliteConnection conn, string query, int limit, string? sessionId,
+        List<SessionSearchResult> results)
+    {
+        var ftsQuery = BuildFtsQuery(query);
+        var safeQuery = ftsQuery.Replace("'", "''");
+
+        var sql = sessionId is null
+            ? $"""
+                SELECT m.content, m.role, m.created_at, m.chat_id,
+                       COALESCE(s.title, ''), fts.rank
+                FROM chat_messages_fts fts
+                JOIN chat_messages m ON m.rowid = fts.rowid
+                LEFT JOIN chat_sessions s ON s.id = m.chat_id
+                WHERE chat_messages_fts MATCH '{safeQuery}'
+                ORDER BY fts.rank
+                LIMIT $limit
+              """
+            : $"""
+                SELECT m.content, m.role, m.created_at, m.chat_id,
+                       COALESCE(s.title, ''), fts.rank
+                FROM chat_messages_fts fts
+                JOIN chat_messages m ON m.rowid = fts.rowid
+                LEFT JOIN chat_sessions s ON s.id = m.chat_id
+                WHERE chat_messages_fts MATCH '{safeQuery}' AND m.chat_id = $sid
+                ORDER BY fts.rank
+                LIMIT $limit
+              """;
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$limit", limit);
+        if (sessionId is not null) cmd.Parameters.AddWithValue("$sid", sessionId);
+
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var r = ReadResult(reader);
+            results.Add(new SessionSearchResult
+            {
+                Content = r.Content,
+                Role = r.Role,
+                Timestamp = r.Timestamp,
+                SessionId = r.SessionId,
+                SessionTitle = reader.GetString(4),
+                Rank = reader.IsDBNull(5) ? 0 : reader.GetDouble(5),
+            });
+        }
+    }
+
+    private static void SearchViaLike(
+        SqliteConnection conn, string query, int limit, string? sessionId,
+        List<SessionSearchResult> results)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sessionId is null
+            ? """
+                SELECT m.content, m.role, m.created_at, m.chat_id,
+                       COALESCE(s.title, ''), 0.0 AS rank
+                FROM chat_messages m
+                LEFT JOIN chat_sessions s ON s.id = m.chat_id
+                WHERE m.content LIKE $pat
+                ORDER BY m.id DESC
+                LIMIT $limit
+              """
+            : """
+                SELECT m.content, m.role, m.created_at, m.chat_id,
+                       COALESCE(s.title, ''), 0.0 AS rank
+                FROM chat_messages m
+                LEFT JOIN chat_sessions s ON s.id = m.chat_id
+                WHERE m.content LIKE $pat AND m.chat_id = $sid
+                ORDER BY m.id DESC
+                LIMIT $limit
+              """;
+        cmd.Parameters.AddWithValue("$pat", $"%{query.Trim()}%");
+        cmd.Parameters.AddWithValue("$limit", limit);
+        if (sessionId is not null) cmd.Parameters.AddWithValue("$sid", sessionId);
+
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var r = ReadResult(reader);
+            results.Add(new SessionSearchResult
+            {
+                Content = r.Content,
+                Role = r.Role,
+                Timestamp = r.Timestamp,
+                SessionId = r.SessionId,
+                SessionTitle = reader.GetString(4),
+                Rank = 0.0,
+            });
+        }
+    }
+
+    private static SessionSearchResult ReadResult(SqliteDataReader reader) => new()
+    {
+        Content = reader.GetString(0),
+        Role = reader.GetString(1),
+        Timestamp = DateTime.TryParse(reader.GetString(2), out var ts) ? ts : DateTime.MinValue,
+        SessionId = reader.GetString(3),
+    };
+
     private static bool TableExists(SqliteConnection conn, string tableName)
     {
         using var cmd = conn.CreateCommand();
@@ -168,16 +229,63 @@ public sealed class SessionSearchService
         return (long)cmd.ExecuteScalar()! > 0;
     }
 
-    private static string BuildFtsQuery(string query)
+    /// <summary>
+    /// 构建 FTS5 查询：后端 FTS 对 CJK 按字入库（unicode61 + 分词空格），
+    /// 中文需拆成单字 AND / 双字短语，否则 MATCH 整词永远空结果。
+    /// </summary>
+    internal static string BuildFtsQuery(string query)
     {
         query = query.Trim();
         if (query.Contains('"') || query.Contains('*') || query.Contains(" OR ") || query.Contains(" AND "))
             return query;
 
-        var tokens = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (tokens.Length == 1)
-            return $"\"{tokens[0]}\"*";
+        var tokens = new List<string>();
+        var latin = new System.Text.StringBuilder();
+        foreach (var ch in query)
+        {
+            if (IsCjk(ch))
+            {
+                if (latin.Length > 0) { tokens.Add(latin.ToString()); latin.Clear(); }
+                tokens.Add(ch.ToString());
+            }
+            else if (char.IsWhiteSpace(ch) || ch is ',' or '.' or ';' or '!' or '?')
+            {
+                if (latin.Length > 0) { tokens.Add(latin.ToString()); latin.Clear(); }
+            }
+            else
+            {
+                latin.Append(ch);
+            }
+        }
+        if (latin.Length > 0) tokens.Add(latin.ToString());
 
-        return string.Join(" AND ", tokens.Select(t => $"\"{t}\""));
+        var meaningful = new List<string>();
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            var t = tokens[i];
+            if (t.Length == 1 && IsCjk(t[0]))
+            {
+                // CJK 单字：与相邻 CJK 合成双字短语；孤立单字仍保留
+                if (i + 1 < tokens.Count && tokens[i + 1].Length == 1 && IsCjk(tokens[i + 1][0]))
+                    meaningful.Add($"\"{t}{tokens[i + 1]}\"");
+                else
+                    meaningful.Add($"\"{t}\"");
+            }
+            else if (t.Length >= 2)
+            {
+                meaningful.Add($"\"{t}\"");
+            }
+        }
+        meaningful = meaningful.Distinct().ToList();
+        if (meaningful.Count == 0)
+            return "\"__no_match__\"";
+        if (meaningful.Count == 1)
+            return meaningful[0];
+        return string.Join(" OR ", meaningful);
     }
+
+    private static bool IsCjk(char c) =>
+        (c >= 0x4E00 && c <= 0x9FFF) ||
+        (c >= 0x3400 && c <= 0x4DBF) ||
+        (c >= 0xF900 && c <= 0xFAFF);
 }

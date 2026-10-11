@@ -391,10 +391,41 @@ _ocr_test_p2.png
 pip_*.log
 # 测试文件（不上传，不上 CI）
 tests/
+!tests/
+tests/*
+!tests/test_store_contracts.py
+!tests/test_postgres_schema.py
+!tests/test_postgres_batch_writer.py
+!tests/test_postgres_batch_writer_integration.py
+!tests/test_postgres_snapshot.py
 # 端口状态文件（运行时由 doc2mind serve 写入）
 server.port
 # 构建验证临时产物 / 杂项脚本
 tmp/
+# ===== DocMind 开发期临时产物（一次性补丁脚本 / 调试输出，不入仓库）=====
+tmp_*.py
+tmp_*.md
+tmp_*_frames/
+tmp_question_frames/
+tmpout*/
+# 便携 Python 运行时（安装包构建产物，随 ZIP/安装包分发，不入仓库）
+python-runtime/
+# 手工实测记录与调试截图（个人数据）
+我手动实测的聊天记录/
+view_*.jpg
+dc1_screenshot_issues.md
+dc1_video_analysis.md
+ima_vs_DocMind_*.md
+# 合并期备份残留
+docs/handoffs/pre-merge-untracked-backup/
+# PPT 导出 QA 样例产物
+ppt_qa/
+# 编辑器/构建残留与零字节垃圾
+*.bak
+=ro
+.arts/
+.temp/
+.v2c/
 powershell.cmd
 run_detached.py
 run_low_compute_demo.py

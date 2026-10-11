@@ -14,4 +14,5 @@ public sealed record Document
     public int ChunkCount { get; init; }
     public string CreatedAt { get; init; } = string.Empty;
     public string UpdatedAt { get; init; } = string.Empty;
+    public bool SourceMissing { get; init; }
 }

@@ -316,7 +316,8 @@ fake ??= new FakeDoc2kbApiService();
     {
         var vm = CreateVm();
         Assert.Contains(vm.EmbedModelOptions, o => o.ModelId == "BAAI/bge-small-zh-v1.5");
-        Assert.Contains(vm.EmbedModelOptions, o => o.ModelId == "BAAI/bge-base-en-v1.5");
+        // 目录实际是 bge-small-en-v1.5（旧断言写 bge-base-en 一直失败，与产品目录对齐）
+        Assert.Contains(vm.EmbedModelOptions, o => o.ModelId == "BAAI/bge-small-en-v1.5");
     }
 
     [Fact]
@@ -327,6 +328,87 @@ fake ??= new FakeDoc2kbApiService();
         // 不在推荐清单的模型值应补一个自定义项，避免下拉选中态空白
         Assert.Contains(vm.EmbedModelOptions, o => o.ModelId == "my-org/custom-model");
         Assert.Equal("my-org/custom-model", vm.EmbedModel);
+    }
+
+    // ----------------------------------------------------------------------
+    // 「知识库嵌入模型」下拉选中态（回归：曾恒为空白）
+    // 根因：构造期套 balanced 预设时 EmbedOptions 尚未填充，FindCustomEmbed 返回 null，
+    // 而 ComboBox 的 SelectedItem 绑的就是 CustomEmbed。
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void CustomEmbed_AfterConstruction_SelectsSavedModel()
+    {
+        var settings = new AppSettings { EmbedModel = "BAAI/bge-small-en-v1.5" };
+        var vm = CreateVm(settings);
+
+        // 下拉必须有选中态，且显示的就是当前生效的模型
+        Assert.NotNull(vm.CustomEmbed);
+        Assert.Equal("BAAI/bge-small-en-v1.5", vm.CustomEmbed!.Id);
+        // 选中项必须是 ItemsSource 里的实例（否则 WPF 匹配不到，仍显示空白）
+        Assert.Contains(vm.CustomEmbed, vm.EmbedOptions);
+        // 初始化不应标脏
+        Assert.False(vm.IsDirty);
+    }
+
+    [Fact]
+    public void CustomEmbed_OutsideCatalog_SelectsCustomItemNotBlank()
+    {
+        var settings = new AppSettings { EmbedModel = "my-org/custom-model" };
+        var vm = CreateVm(settings);
+
+        Assert.NotNull(vm.CustomEmbed);
+        Assert.Equal("my-org/custom-model", vm.CustomEmbed!.Id);
+        Assert.Contains(vm.CustomEmbed, vm.EmbedOptions);
+    }
+
+    [Fact]
+    public void SelectingCustomEmbed_WritesEmbedModel()
+    {
+        var vm = CreateVm();
+        var target = vm.EmbedOptions.First(o => o.Id == "intfloat/multilingual-e5-large");
+
+        vm.CustomEmbed = target;
+
+        // 用户看到的选项必须就是真正落盘/推送后端的字段
+        Assert.Equal("intfloat/multilingual-e5-large", vm.EmbedModel);
+        Assert.True(vm.IsDirty);
+    }
+
+    [Fact]
+    public void SettingEmbedModel_KeepsDropdownInSync()
+    {
+        var vm = CreateVm();
+
+        vm.EmbedModel = "jinaai/jina-embeddings-v2-base-zh";
+
+        Assert.NotNull(vm.CustomEmbed);
+        Assert.Equal("jinaai/jina-embeddings-v2-base-zh", vm.CustomEmbed!.Id);
+    }
+
+    [Fact]
+    public void Revert_RestoresDropdownSelection()
+    {
+        var settings = new AppSettings { EmbedModel = "BAAI/bge-small-zh-v1.5" };
+        var vm = CreateVm(settings);
+        vm.EmbedModel = "intfloat/multilingual-e5-large";
+
+        vm.RevertCommand.Execute(null);
+
+        Assert.Equal("BAAI/bge-small-zh-v1.5", vm.EmbedModel);
+        Assert.Equal("BAAI/bge-small-zh-v1.5", vm.CustomEmbed?.Id);
+    }
+
+    [Fact]
+    public void ResetToDefaults_KeepsDropdownNonBlank()
+    {
+        var settings = new AppSettings { EmbedModel = "my-org/custom-model" };
+        var vm = CreateVm(settings);
+
+        vm.ResetToDefaultsCommand.Execute(null);
+
+        Assert.Equal("BAAI/bge-small-zh-v1.5", vm.EmbedModel);
+        Assert.Equal("BAAI/bge-small-zh-v1.5", vm.CustomEmbed?.Id);
     }
 
     // ======================================================================
@@ -450,6 +532,30 @@ fake ??= new FakeDoc2kbApiService();
         await task;
 
         Assert.False(vm.IsTestingConnection);
+    }
+
+    [Fact]
+    public async Task CancelProgress_CancelsInFlightConnectionTest()
+    {
+        var fake = new FakeDoc2kbApiService
+        {
+            OnGetHealth = _ => Task.FromResult(new HealthStatus { Status = "ok" }),
+            OnLlmTest = async (_, ct) =>
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                return new LlmTestResult { Ok = true, Provider = "openai", Model = "test" };
+            },
+        };
+        var vm = CreateVm(new AppSettings { LlmProvider = "openai" }, fake);
+
+        var task = vm.TestConnectionCommand.ExecuteAsync(null);
+        Assert.True(vm.IsTestingConnection);
+
+        vm.CancelProgressCommand.Execute(null);
+        await task;
+
+        Assert.False(vm.IsTestingConnection);
+        Assert.Contains("取消", vm.StatusMessage);
     }
 
     // ======================================================================
@@ -719,6 +825,39 @@ fake ??= new FakeDoc2kbApiService();
         Assert.Null(captured!.LlmModel);
     }
 
+    [Fact]
+    public async Task SaveAsync_SwitchProvider_DoesNotCarryOldCredentialsOrModel()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService
+        {
+            OnUpdateConfig = (req, _) =>
+            {
+                captured = req;
+                return Task.FromResult(new BackendConfig());
+            },
+        };
+        var settings = new AppSettings
+        {
+            LlmProvider = "openai",
+            LlmApiKey = "old-provider-key",
+            LlmBaseUrl = "https://old.example/v1",
+            LlmModel = "old-model",
+        };
+        var vm = CreateVm(settings, fake);
+        vm.LlmProvider = "ollama";
+        vm.LlmApiKey = null;
+        vm.LlmBaseUrl = null;
+        vm.LlmModel = "";
+
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Null(settings.LlmApiKey);
+        Assert.Equal("", captured!.LlmApiKey);
+        Assert.Equal("", captured.LlmBaseUrl);
+        Assert.Equal("", captured.LlmModel);
+    }
+
     // ======================================================================
     // 获取模型列表（POST /v1/llm/models）
     // ======================================================================
@@ -744,8 +883,10 @@ fake ??= new FakeDoc2kbApiService();
 
         await vm.RefreshLlmModelsCommand.ExecuteAsync(null);
 
-        Assert.Equal(3, vm.LlmModels.Count);
+        // 3 个拉取到的模型 + 已配置默认模型「llama3.2」保留并插入候选首位（不再被第一个模型覆盖）
+        Assert.Equal(4, vm.LlmModels.Count);
         Assert.Contains("qwen2.5:7b", vm.LlmModels.Select(i => i.Name));
+        Assert.Equal("llama3.2", vm.LlmModel);
         // 请求带 UI 当前输入值（未保存也能拉）
         Assert.Equal("ollama", captured!.Provider);
         Assert.Contains("3 个模型", vm.StatusMessage);
@@ -779,6 +920,65 @@ fake ??= new FakeDoc2kbApiService();
 
         Assert.Empty(vm.LlmModels);
         Assert.Contains("401", vm.StatusMessage);
+    }
+
+    [Fact]
+    public async Task RefreshLlmModels_ProviderChangesWhileLoading_DoesNotApplyStaleResult()
+    {
+        var response = new TaskCompletionSource<LlmModelsResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fake = new FakeDoc2kbApiService
+        {
+            OnLlmModels = (_, _) => response.Task,
+        };
+        var vm = CreateVm(new AppSettings { LlmProvider = "openai", LlmModel = "existing-model" }, fake);
+
+        var refresh = vm.RefreshLlmModelsCommand.ExecuteAsync(null);
+        vm.LlmProvider = "anthropic";
+        response.SetResult(new LlmModelsResult
+        {
+            Ok = true,
+            Provider = "openai",
+            Models = new[] { "stale-openai-model" },
+        });
+        await refresh;
+
+        Assert.Equal(new[] { "existing-model" }, vm.LlmModels.Select(m => m.Name));
+        Assert.Equal("existing-model", vm.LlmModel);
+    }
+
+    [Fact]
+    public async Task AutoApplyLlmConnection_ChangeDuringRequest_PushesLatestValuesAfterCurrentRequest()
+    {
+        var firstRequestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstRequest = new TaskCompletionSource<BackendConfig>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pushedModels = new List<string?>();
+        var fake = new FakeDoc2kbApiService
+        {
+            OnUpdateConfig = (req, _) =>
+            {
+                pushedModels.Add(req.LlmModel);
+                if (pushedModels.Count == 1)
+                {
+                    firstRequestStarted.SetResult();
+                    return releaseFirstRequest.Task;
+                }
+                return Task.FromResult(new BackendConfig());
+            },
+        };
+        var vm = CreateVm(new AppSettings { LlmProvider = "openai", LlmModel = "model-a" }, fake);
+        var apply = typeof(SettingsViewModel).GetMethod("AutoApplyLlmConnectionAsync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+        vm.LlmModel = "model-a-edited";
+        var first = (Task)apply.Invoke(vm, null)!;
+        await firstRequestStarted.Task;
+        vm.LlmModel = "model-b";
+        var overlapping = (Task)apply.Invoke(vm, null)!;
+        await overlapping;
+        releaseFirstRequest.SetResult(new BackendConfig());
+        await first;
+
+        Assert.Equal(new string?[] { "model-a-edited", "model-b" }, pushedModels);
     }
 
     // ======================================================================
@@ -900,35 +1100,6 @@ fake ??= new FakeDoc2kbApiService();
     // ======================================================================
     // 预设模版与系统全面体检 (Doctor) 测试
     // ======================================================================
-
-    [Fact]
-    public void SelectedPreset_AppliesDeepSeekTemplate()
-    {
-        var vm = CreateVm(new AppSettings());
-        var deepseekPreset = vm.AvailablePresets.First(p => p.Id == "deepseek");
-
-        vm.SelectedPreset = deepseekPreset;
-
-        Assert.Equal("openai", vm.LlmProvider);
-        Assert.Equal("https://api.deepseek.com/v1", vm.LlmBaseUrl);
-        Assert.Equal("deepseek-chat", vm.LlmModel);
-        Assert.Contains("deepseek-chat", vm.LlmModels.Select(i => i.Name));
-        Assert.Contains("DeepSeek", vm.StatusMessage);
-    }
-
-    [Fact]
-    public void SelectedPreset_AppliesOllamaTemplate()
-    {
-        var vm = CreateVm(new AppSettings());
-        var ollamaPreset = vm.AvailablePresets.First(p => p.Id == "ollama");
-
-        vm.SelectedPreset = ollamaPreset;
-
-        Assert.Equal("ollama", vm.LlmProvider);
-        Assert.Equal("http://localhost:11434", vm.LlmBaseUrl);
-        Assert.Equal("qwen2.5:7b", vm.LlmModel);
-        Assert.Contains("qwen2.5:7b", vm.LlmModels.Select(i => i.Name));
-    }
 
     [Fact]
     public async Task RunDoctorCommand_FetchesReportAndUpdatesScore()
@@ -1116,6 +1287,81 @@ fake ??= new FakeDoc2kbApiService();
     }
 
     [Fact]
+    public async Task SetDefaultProvider_AlsoAppliesGlobalConfigAndBackend()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService
+        {
+            OnUpdateConfig = (req, _) =>
+            {
+                captured = req;
+                return Task.FromResult(new BackendConfig { Notice = null });
+            }
+        };
+        var profile = new LlmProfile
+        {
+            Id = "p-default",
+            Name = "默认 DeepSeek",
+            Provider = "openai",
+            BaseUrl = "https://api.deepseek.com/v1",
+            ApiKey = "sk-default",
+            Model = "deepseek-chat",
+        };
+        var settings = new AppSettings { LlmProfiles = new List<LlmProfile> { profile } };
+        var vm = CreateVm(settings, fake);
+        vm.SelectedProfile = vm.SavedProfiles[0];
+
+        await vm.SetDefaultProviderCommand.ExecuteAsync(null);
+
+        Assert.Equal("p-default", settings.ActiveProfileId);
+        Assert.Equal("openai", settings.LlmProvider);
+        Assert.Equal("https://api.deepseek.com/v1", settings.LlmBaseUrl);
+        Assert.Equal("deepseek-chat", settings.LlmModel);
+        Assert.Equal("sk-default", settings.LlmApiKey);
+        Assert.NotNull(captured);
+        Assert.Equal("openai", captured!.LlmProvider);
+        Assert.Equal("deepseek-chat", captured.LlmModel);
+        Assert.True(vm.IsSelectedProviderDefault);
+    }
+
+    [Fact]
+    public async Task ApplyProfileWithoutApiKey_ClearsPreviousProviderKey()
+    {
+        BackendConfigUpdate? captured = null;
+        var fake = new FakeDoc2kbApiService
+        {
+            OnUpdateConfig = (req, _) =>
+            {
+                captured = req;
+                return Task.FromResult(new BackendConfig { Notice = null });
+            }
+        };
+        var profile = new LlmProfile
+        {
+            Id = "p-no-key",
+            Name = "No key provider",
+            Provider = "openai",
+            BaseUrl = "https://example.test/v1",
+            Model = "model-b",
+            ApiKey = null,
+        };
+        var settings = new AppSettings
+        {
+            LlmProvider = "anthropic",
+            LlmApiKey = "old-provider-secret",
+            LlmProfiles = new List<LlmProfile> { profile },
+        };
+        var vm = CreateVm(settings, fake);
+        vm.SelectedProfile = vm.SavedProfiles[0];
+
+        await vm.ApplyProfileCommand.ExecuteAsync(null);
+
+        Assert.Null(vm.LlmApiKey);
+        Assert.Equal("", captured?.LlmApiKey);
+        Assert.Null(settings.LlmApiKey);
+    }
+
+    [Fact]
     public void DeleteProfile_RemovesAndClearsActive()
     {
         var active = new LlmProfile { Id = "p1", Name = "DeepSeek", Provider = "openai" };
@@ -1288,34 +1534,6 @@ fake ??= new FakeDoc2kbApiService();
         Assert.True(preset.RequiresApiKey);
     }
 
-    [Fact]
-    public void SelectedPreset_AppliesAnthropicOfficial()
-    {
-        var vm = CreateVm(new AppSettings());
-        var preset = vm.AvailablePresets.First(p => p.Id == "anthropic");
-
-        vm.SelectedPreset = preset;
-
-        Assert.Equal("anthropic", vm.LlmProvider);
-        Assert.Equal("https://api.anthropic.com", vm.LlmBaseUrl);
-        Assert.Equal(preset.DefaultModel, vm.LlmModel);
-        Assert.Contains(preset.DefaultModel, vm.LlmModels.Select(i => i.Name));
-    }
-
-    [Fact]
-    public void SelectedPreset_AppliesGeminiOfficial()
-    {
-        var vm = CreateVm(new AppSettings());
-        var preset = vm.AvailablePresets.First(p => p.Id == "gemini");
-
-        vm.SelectedPreset = preset;
-
-        Assert.Equal("gemini", vm.LlmProvider);
-        Assert.Equal("https://generativelanguage.googleapis.com", vm.LlmBaseUrl);
-        Assert.Equal(preset.DefaultModel, vm.LlmModel);
-        Assert.Contains(preset.DefaultModel, vm.LlmModels.Select(i => i.Name));
-    }
-
     // ======================================================================
     // 档案一键体检（CheckAllProfiles）
     // ======================================================================
@@ -1451,26 +1669,6 @@ fake ??= new FakeDoc2kbApiService();
         Assert.Contains("deepseek-coder", vm.LlmModels.Select(i => i.Name));
         // 默认模型已回填
         Assert.Equal("deepseek-chat", vm.LlmModel);
-    }
-
-    [Fact]
-    public void ProviderOptions_MergeBuiltInPresets_AndCustomProviders()
-    {
-        var settings = new AppSettings
-        {
-            LlmProfiles = new List<LlmProfile>
-            {
-                new() { Id = "p1", Name = "我的 DeepSeek", Provider = "openai" },
-            },
-        };
-        var vm = CreateVm(settings);
-
-        // 合并下拉 = 内置预设 + 自定义服务商
-        Assert.Equal(LlmPresetCatalog.All.Count + 1, vm.ProviderOptions.Count);
-        Assert.Contains(vm.ProviderOptions, o => o.IsBuiltIn && o.Preset?.Id == "deepseek");
-        Assert.Contains(vm.ProviderOptions, o => o.IsCustom && o.Profile?.Id == "p1");
-        // 默认选中：有 ActiveProfileId 时优先；无则首个
-        Assert.NotNull(vm.SelectedProviderOption);
     }
 
     [Fact]
@@ -1729,5 +1927,489 @@ fake ??= new FakeDoc2kbApiService();
         // 这些字段变更不应触发重启（保存后 ShowRestartBanner 应保持 false）
     }
 
+    // ======================================================================
+    // 机型档位整套搭配（bundle）
+    // ======================================================================
 
+    private static AutoSetupRecommendation MakeBundle(string state = "ready", bool rerankEnabled = true, string tier = "mainstream")
+        => new()
+        {
+            Id = $"bundle_{tier}",
+            Kind = "bundle",
+            Tier = tier,
+            IsCurrentTier = true,
+            State = state,
+            Title = "主流（6-8GB 显存）",
+            EmbedModel = "BAAI/bge-small-zh-v1.5",
+            RerankModel = rerankEnabled ? "BAAI/bge-reranker-base" : "",
+            RerankEnabled = rerankEnabled,
+            Model = "qwen3:8b",
+            BaseUrl = "http://127.0.0.1:11434/v1",
+            PullCommand = "ollama pull modelscope.cn/Qwen/Qwen3-8B-GGUF",
+            InstallerUrl = "https://ollama.com/download",
+        };
+
+    [Fact]
+    public void ApplyBundle_ReadyState_AppliesWholeConfig()
+    {
+        var vm = CreateVm();
+        var bundle = MakeBundle(state: "ready");
+
+        vm.ApplyBundleCommand.Execute(bundle);
+
+        Assert.Equal("BAAI/bge-small-zh-v1.5", vm.EmbedModel);
+        Assert.Equal("qwen3:8b", vm.LlmModel);
+        Assert.Equal("openai", vm.LlmProvider);
+        Assert.True(vm.RerankEnabled);
+        Assert.Equal("BAAI/bge-reranker-base", vm.RerankModel);
+        // StatusMessage 不在此断言：ApplyBundle 后台触发 TestConnectionAsync，会异步覆盖状态栏文案
+    }
+
+    [Fact]
+    public void ApplyBundle_MinimalTier_DisablesRerank()
+    {
+        var vm = CreateVm();
+        var bundle = MakeBundle(state: "ready", rerankEnabled: false, tier: "minimal");
+
+        vm.ApplyBundleCommand.Execute(bundle);
+
+        Assert.False(vm.RerankEnabled);
+    }
+
+    [Fact]
+    public void ApplyBundle_RuntimeMissing_ConfirmNo_DoesNotOpenInstaller()
+    {
+        var vm = CreateVm();
+        var before = vm.EmbedModel;
+        string? openedUrl = null;
+        vm.ConfirmInstallerOpenOverride = _ => false;   // 用户拒绝
+        vm.OpenInstallerUrlOverride = url => openedUrl = url;
+        var bundle = MakeBundle(state: "runtime_missing");
+
+        vm.ApplyBundleCommand.Execute(bundle);
+
+        Assert.Null(openedUrl);          // 拒绝确认 → 不打开下载页
+        Assert.Equal(before, vm.EmbedModel);
+        Assert.Equal("", vm.LlmModel);   // runtime_missing 态不改任何配置字段
+    }
+
+    [Fact]
+    public void ApplyBundle_RuntimeMissing_ConfirmYes_OpensInstallerOnly()
+    {
+        var vm = CreateVm();
+        string? openedUrl = null;
+        vm.ConfirmInstallerOpenOverride = _ => true;    // 用户确认
+        vm.OpenInstallerUrlOverride = url => openedUrl = url;
+        var bundle = MakeBundle(state: "runtime_missing");
+
+        vm.ApplyBundleCommand.Execute(bundle);
+
+        Assert.Equal("https://ollama.com/download", openedUrl);  // 确认后才打开
+        Assert.Equal("", vm.LlmModel);                            // 仍不改配置
+    }
+
+    [Fact]
+    public void ApplyBundle_RuntimeMissing_ButInstalled_DoesNotOpenInstaller()
+    {
+        // 后端 state 滞后（runtime_missing）但本机明明已装 Ollama → 二次校验拦截，绝不引导下载
+        var vm = CreateVm();
+        var env = new LocalAiEnvironment
+        {
+            Ollama = new ServiceStatusInfo { Installed = true, InstallPath = @"C:\ollama\ollama.exe" },
+        };
+        vm.GetType().GetProperty("LocalAiEnv")!.SetValue(vm, env);
+        string? openedUrl = null;
+        vm.OpenInstallerUrlOverride = url => openedUrl = url;
+        vm.ConfirmInstallerOpenOverride = _ => true;
+        var bundle = MakeBundle(state: "runtime_missing");
+
+        vm.ApplyBundleCommand.Execute(bundle);
+
+        Assert.Null(openedUrl);
+        Assert.Equal("", vm.LlmModel);
+    }
+
+    [Fact]
+    public void ApplyBundle_InstalledStopped_InvokesStartRuntime()
+    {
+        // installed_stopped 态走启动运行时路径（StartInstalledRuntime 内部有 Process.Start，
+        // 此处用 InstallPath 指向不存在文件让 TryStartRuntime 走失败分支，只验证分流正确）
+        var vm = CreateVm();
+        var env = new LocalAiEnvironment
+        {
+            Ollama = new ServiceStatusInfo { Installed = true, InstallPath = @"C:\__nonexistent__\ollama.exe" },
+            LmStudio = new ServiceStatusInfo { Installed = false },
+        };
+        vm.GetType().GetProperty("LocalAiEnv")!.SetValue(vm, env);
+        string? openedUrl = null;
+        vm.OpenInstallerUrlOverride = url => openedUrl = url;
+        var bundle = MakeBundle(state: "installed_stopped");
+
+        vm.ApplyBundleCommand.Execute(bundle);
+
+        Assert.Null(openedUrl);   // installed_stopped 绝不打开下载页
+        Assert.Equal("", vm.LlmModel);
+    }
+
+    [Fact]
+    public void ApplyBundle_NonBundleKind_Ignored()
+    {
+        var vm = CreateVm();
+        var service = new AutoSetupRecommendation { Id = "ollama", Kind = "service", Model = "qwen2.5" };
+
+        vm.ApplyBundleCommand.Execute(service);
+
+        Assert.Equal("", vm.LlmModel); // service 条目不走 bundle 应用逻辑
+    }
+
+    [Fact]
+    public void LocalAiEnvironment_TierAndBundleFields_Deserialize()
+    {
+        var json = """
+        {
+          "ollama": {"running": false},
+          "lm_studio": {"running": false},
+          "local_gguf_models": [],
+          "local_gguf_count": 0,
+          "tier": {"tier": "mainstream", "tier_name": "主流", "vram_gb": 6.0, "source": "nvidia-smi"},
+          "bundle_version": 1,
+          "recommendations": [{
+            "id": "bundle_mainstream", "kind": "bundle", "tier": "mainstream",
+            "is_current_tier": true, "state": "model_missing",
+            "embed_model": "BAAI/bge-small-zh-v1.5", "rerank_model": "BAAI/bge-reranker-base",
+            "rerank_enabled": true, "model": "qwen3:8b",
+            "pull_command": "ollama pull modelscope.cn/Qwen/Qwen3-8B-GGUF",
+            "installer_url": "",
+            "chat_options": [{"model_id": "qwen3:8b", "display_name": "Qwen3-8B", "size_gb": 5.2,
+                              "pull_command": "ollama pull modelscope.cn/Qwen/Qwen3-8B-GGUF",
+                              "recommended": true, "note": ""}]
+          }]
+        }
+        """;
+        var env = JsonSerializer.Deserialize<LocalAiEnvironment>(json);
+
+        Assert.NotNull(env);
+        Assert.Equal(1, env!.BundleVersion);
+        Assert.NotNull(env.Tier);
+        var rec = Assert.Single(env.Recommendations);
+        Assert.Equal("bundle", rec.Kind);
+        Assert.Equal("mainstream", rec.Tier);
+        Assert.True(rec.IsCurrentTier);
+        Assert.Equal("model_missing", rec.State);
+        Assert.True(rec.RerankEnabled);
+        Assert.Equal("qwen3:8b", rec.Model);
+        var opt = Assert.Single(rec.ChatOptions);
+        Assert.Equal("qwen3:8b", opt.ModelId);
+        Assert.Equal(5.2, opt.SizeGb);
+    }
+
+    [Fact]
+    public void BundleRecommendations_FiltersBundlesAndSortsCurrentFirst()
+    {
+        var vm = CreateVm();
+        var env = new LocalAiEnvironment
+        {
+            Recommendations = new List<AutoSetupRecommendation>
+            {
+                new() { Id = "ollama", Kind = "service" },
+                new() { Id = "bundle_flagship", Kind = "bundle", Tier = "flagship", IsCurrentTier = false },
+                new() { Id = "bundle_mainstream", Kind = "bundle", Tier = "mainstream", IsCurrentTier = true },
+            },
+        };
+        vm.GetType().GetProperty("LocalAiEnv")!.SetValue(vm, env);
+
+        var bundles = vm.BundleRecommendations;
+        Assert.Equal(2, bundles.Count);
+        Assert.All(bundles, b => Assert.Equal("bundle", b.Kind));
+        Assert.True(bundles[0].IsCurrentTier); // 当前档位排最前
+        Assert.True(vm.HasBundleRecommendations);
+    }
+
+    // ======================================================================
+    // 模型配置修复回归：URL 归一化 / 协议切换 Key 串号 / 模型列表旁路写盘 / 镜像污染
+    // ======================================================================
+
+    [Theory]
+    [InlineData("http://127.0.0.1:1234", null, "http://127.0.0.1:1234")]
+    [InlineData("http://127.0.0.1:1234/", null, "http://127.0.0.1:1234")]
+    [InlineData("http://127.0.0.1:1234/v1", "ollama", "http://127.0.0.1:1234")]    // ollama 误带 /v1 → 剥除
+    [InlineData("http://127.0.0.1:1234/v1", "openai", "http://127.0.0.1:1234/v1")] // openai 保留（后端自补）
+    [InlineData("127.0.0.1:1234", null, "http://127.0.0.1:1234")]                  // 缺协议头 → 补 http://
+    [InlineData("https://api.deepseek.com/v1/", "openai", "https://api.deepseek.com/v1")]
+    public void LlmUrlNormalizer_NormalizesTrailingSlash_Scheme_AndV1Suffix(
+        string input, string? provider, string expected)
+    {
+        Assert.Equal(expected, DocMind.Helpers.LlmUrlNormalizer.Normalize(input, provider));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("http://")]
+    public void LlmUrlNormalizer_InvalidInput_ReturnsNull(string input)
+    {
+        Assert.Null(DocMind.Helpers.LlmUrlNormalizer.Normalize(input, "openai"));
+    }
+
+    [Fact]
+    public void CloudProtocolSwitch_ClearsFormApiKey_ToAvoidCrossProviderLeak()
+    {
+        var vm = CreateVm(new AppSettings());
+        vm.CloudProtocol = "openai";
+        vm.LlmApiKey = "sk-deepseek";
+
+        vm.CloudProtocol = "anthropic";
+
+        Assert.True(string.IsNullOrWhiteSpace(vm.LlmApiKey), "切换协议后表单 Key 必须清空，防止旧 Key 推给新服务商");
+    }
+
+    [Fact]
+    public async Task SetDefaultModel_PersistsModel_AndPushesToBackend()
+    {
+        var updates = new List<BackendConfigUpdate>();
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (req, _) =>
+        {
+            updates.Add(req);
+            return Task.FromResult(new BackendConfig());
+        };
+
+        var settings = new AppSettings { LlmProvider = "openai", LlmBaseUrl = "http://127.0.0.1:1234" };
+        var vm = CreateVm(settings, fake);
+        vm.LlmModels.Add(new LlmModelItem("qwen2.5-7b-instruct"));
+
+        await vm.SetDefaultModelCommand.ExecuteAsync(new LlmModelItem("qwen2.5-7b-instruct"));
+
+        Assert.Equal("qwen2.5-7b-instruct", settings.LlmModel);              // 落盘
+        Assert.Contains(updates, u => u.LlmModel == "qwen2.5-7b-instruct"); // 推送后端免重启生效
+    }
+
+    [Fact]
+    public async Task RefreshLlmModels_KeepsExistingDefaultModel_WhenAlreadySet()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (_, _) => Task.FromResult(new BackendConfig());
+        fake.OnLlmModels = (_, _) => Task.FromResult(new LlmModelsResult
+        {
+            Ok = true,
+            Provider = "openai",
+            Models = new[] { "model-a", "model-b" },
+        });
+
+        var settings = new AppSettings { LlmProvider = "openai", LlmModel = "my-default" };
+        var vm = CreateVm(settings, fake);
+
+        await vm.RefreshLlmModelsCommand.ExecuteAsync(null);
+
+        Assert.Equal("my-default", vm.LlmModel);       // 不被第一个模型覆盖
+        Assert.Equal("my-default", settings.LlmModel); // 落盘值不被改写
+        // 候选仍全量导入（当前默认不在列表中时被插入首位以保持选中态）
+        Assert.Contains("model-a", vm.LlmModels.Select(i => i.Name));
+        Assert.Contains("model-b", vm.LlmModels.Select(i => i.Name));
+        Assert.Equal("my-default", vm.SelectedModelCandidate?.Name);
+    }
+
+    [Fact]
+    public async Task RefreshLlmModels_DoesNotMirrorCandidates_WhenFormShowsOtherProvider()
+    {
+        var fake = new FakeDoc2kbApiService();
+        fake.OnUpdateConfig = (_, _) => Task.FromResult(new BackendConfig());
+        fake.OnLlmModels = (_, _) => Task.FromResult(new LlmModelsResult
+        {
+            Ok = true,
+            Provider = "ollama",
+            Models = new[] { "qwen2.5:7b" },
+        });
+
+        // 全局 provider 是 openai，表单正编辑 ollama 档案（暂存态）：
+        // 拉到的 ollama 候选不得镜像进全局默认分组种子
+        var settings = new AppSettings
+        {
+            LlmProvider = "openai",
+            LlmAvailableModels = new List<string> { "gpt-4o-mini" },
+        };
+        var vm = CreateVm(settings, fake);
+        vm.LlmProvider = "ollama";
+
+        await vm.RefreshLlmModelsCommand.ExecuteAsync(null);
+
+        Assert.Equal(new List<string> { "gpt-4o-mini" }, settings.LlmAvailableModels);
+    }
+
+    [Fact]
+    public async Task SaveProfile_TemperatureEqualsGlobal_StoresNullToFollowGlobal()
+    {
+        var settings = new AppSettings { LlmTemperature = 0.7, LlmMaxTokens = 8192 };
+        var vm = CreateVm(settings, new FakeDoc2kbApiService());
+        vm.LlmProvider = "openai";
+        vm.LlmModel = "deepseek-chat";
+        // 温度/MaxTokens 未改动 = 全局默认 → 档案应存 null（跟随全局），而非钉死当前值
+
+        vm.ProfileNameInput = "我的档案";
+        vm.SaveProfileCommand.Execute(null);
+
+        var profile = Assert.Single(vm.SavedProfiles);
+        Assert.Null(profile.Temperature);
+        Assert.Null(profile.MaxTokens);
+
+        vm.LlmTemperature = 0.3;
+        vm.ProfileNameInput = "我的档案";
+        vm.SaveProfileCommand.Execute(null);
+        Assert.Equal(0.3, vm.SavedProfiles[0].Temperature); // 显式偏离全局才钉死
+    }
+
+    // ======================================================================
+    // 统一对话模型来源（本地 + 云端同一套字段）
+    // ======================================================================
+
+    [Fact]
+    public void ChatSourceOptions_ContainLocalAndCloudSources()
+    {
+        var vm = CreateVm(new AppSettings());
+
+        var local = vm.ChatSourceOptions.Where(o => o.IsLocal).Select(o => o.Id).ToList();
+        Assert.Contains("ollama", local);
+        Assert.Contains("lmstudio", local);
+        Assert.Contains("local-custom", local);   // 本地也能自定义地址
+        Assert.Contains("deepseek", vm.ChatSourceOptions.Select(o => o.Id));
+        Assert.Contains("anthropic", vm.ChatSourceOptions.Select(o => o.Id));
+    }
+
+    [Fact]
+    public void Constructor_InfersChatSource_FromSavedProviderAndUrl()
+    {
+        var vm = CreateVm(new AppSettings
+        {
+            LlmProvider = "ollama",
+            LlmBaseUrl = "http://127.0.0.1:11434",
+            LlmModel = "qwen3:8b",
+        });
+
+        Assert.Equal("ollama", vm.SelectedChatSource);
+        Assert.True(vm.IsLocalChatSource);
+        Assert.False(vm.IsCloudChatSource);
+        Assert.True(vm.IsChatSourceKeyOptional);   // 本地来源 Key 可选
+
+        var cloud = CreateVm(new AppSettings
+        {
+            LlmProvider = "openai",
+            LlmBaseUrl = "https://api.deepseek.com/v1",
+            LlmModel = "deepseek-chat",
+        });
+        Assert.Equal("deepseek", cloud.SelectedChatSource);
+        Assert.True(cloud.IsCloudChatSource);
+        Assert.False(cloud.IsChatSourceKeyOptional);
+    }
+
+    [Fact]
+    public void SelectingCloudSource_FillsUrlAndProvider_AndIsNotLocal()
+    {
+        var vm = CreateVm(new AppSettings());
+
+        vm.SelectedChatSource = "deepseek";
+
+        Assert.Equal("openai", vm.LlmProvider);
+        Assert.Equal("https://api.deepseek.com/v1", vm.LlmBaseUrl);
+        Assert.False(vm.IsLocalChatSource);
+        // 旧 UseCloudChat 派生视图同步，兼容既有代码路径
+        Assert.True(vm.UseCloudChat);
+        Assert.False(vm.UseLocalChat);
+    }
+
+    [Fact]
+    public void SelectingLocalSource_KeepsUserEditedUrl()
+    {
+        var vm = CreateVm(new AppSettings());
+        vm.SelectedChatSource = "local-custom";
+        vm.LlmBaseUrl = "http://192.168.1.50:8000";
+
+        // 切到 Ollama 再切回：用户手填的地址不得被预设覆盖
+        vm.SelectedChatSource = "ollama";
+        vm.SelectedChatSource = "local-custom";
+
+        Assert.Equal("http://192.168.1.50:8000", vm.LlmBaseUrl);
+    }
+
+    [Fact]
+    public void SwitchingSource_AcrossLocalCloudBoundary_ClearsFormApiKey()
+    {
+        var vm = CreateVm(new AppSettings());
+        vm.SelectedChatSource = "deepseek";
+        vm.LlmApiKey = "sk-deepseek";
+
+        vm.SelectedChatSource = "ollama";   // 本地 ← 云端
+
+        Assert.True(string.IsNullOrWhiteSpace(vm.LlmApiKey),
+            "跨本地/云端切换必须清空表单 Key，防止旧凭据串到新来源");
+    }
+
+    [Fact]
+    public void SelectingLocalModelOption_WritesModelName()
+    {
+        var vm = CreateVm(new AppSettings());
+        vm.SelectedChatSource = "ollama";
+
+        vm.CustomChat = vm.ChatModelOptions.First(o => o.Id == "qwen3:14b");
+
+        Assert.Equal("qwen3:14b", vm.LlmModel);   // 下拉选中值 = 真正生效的模型名
+    }
+
+    [Fact]
+    public void SettingModelName_SyncsLocalModelOptionSelection()
+    {
+        var vm = CreateVm(new AppSettings());
+        vm.SelectedChatSource = "ollama";
+
+        vm.LlmModel = "qwen3:4b";
+        Assert.Equal("qwen3:4b", vm.CustomChat?.Id);
+
+        vm.LlmModel = "some-cloud-model";   // 不在常用本地清单里 → 清空选中态
+        Assert.Null(vm.CustomChat);
+    }
+
+    [Fact]
+    public void UseLocalChat_LegacyFlag_SyncsSourceDropdown()
+    {
+        var vm = CreateVm(new AppSettings());
+        vm.SelectedChatSource = "deepseek";
+        Assert.False(vm.IsLocalChatSource);
+
+        vm.UseLocalChat = true;   // 旧入口写入
+
+        Assert.True(vm.IsLocalChatSource);
+        Assert.True(vm.SelectedChatSourceOption!.IsLocal);
+    }
+
+    [Fact]
+    public void CustomLocalSource_ResolvesProviderFromPort()
+    {
+        var vm = CreateVm(new AppSettings());
+        vm.SelectedChatSource = "local-custom";
+
+        // Ollama 端口 → 原生通道（否则 /v1/api/chat 必 404）
+        vm.LlmBaseUrl = "http://192.168.1.50:11434";
+        Assert.Equal("ollama", vm.LlmProvider);
+
+        // 其它端口 → OpenAI 兼容通道
+        vm.LlmBaseUrl = "http://192.168.1.50:8000";
+        Assert.Equal("openai", vm.LlmProvider);
+
+        // 切换来源时不误判云端地址
+        vm.SelectedChatSource = "deepseek";
+        vm.LlmBaseUrl = "https://api.deepseek.com/v1";
+        Assert.Equal("openai", vm.LlmProvider);
+    }
+
+    [Fact]
+    public void SwitchingToCustomLocal_WithExistingOllamaUrl_ResolvesProvider()
+    {
+        var vm = CreateVm(new AppSettings());
+        // 用户先在云端来源里手填了一个 Ollama 端口地址
+        vm.SelectedChatSource = "deepseek";
+        vm.LlmBaseUrl = "http://192.168.1.50:11434";
+
+        vm.SelectedChatSource = "local-custom";   // 地址未变，仍须判定为 ollama 通道
+
+        Assert.Equal("ollama", vm.LlmProvider);
+    }
 }

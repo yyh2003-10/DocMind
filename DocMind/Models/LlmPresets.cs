@@ -12,7 +12,8 @@ public sealed record LlmPreset(
     IReadOnlyList<string> RecommendedModels,
     string Description,
     bool RequiresApiKey = true,
-    string? ConsoleUrl = null
+    string? ConsoleUrl = null,
+    bool IsLocal = false
 )
 {
     public override string ToString() => DisplayName;
@@ -65,7 +66,7 @@ public static class LlmPresetCatalog
             "zhipu",
             "🧠 智谱清言 BigModel (GLM-4)",
             "openai",
-            "https://open.bigmodel.cn/api/paas/v4/",
+            "https://open.bigmodel.cn/api/paas/v4",
             "glm-4-flash",
             new[] { "glm-4-flash", "glm-4-plus", "glm-4-long", "glm-4-air" },
             "清华智谱 GLM-4 认知大模型，glm-4-flash 免费极速调用",
@@ -90,7 +91,22 @@ public static class LlmPresetCatalog
             new[] { "qwen2.5:7b", "deepseek-r1:8b", "llama3.2:3b", "gemma2:9b" },
             "本地离线大模型引擎，完全不依赖外网与 API Key",
             RequiresApiKey: false,
-            ConsoleUrl: "https://ollama.com/library"
+            ConsoleUrl: "https://ollama.com/library",
+            IsLocal: true
+        ),
+        new(
+            "lmstudio",
+            "💻 本地 LM Studio (OpenAI 兼容)",
+            "openai",
+            // 本地运行时统一按根地址存储（与 LM Studio 界面展示一致），
+            // OpenAI 兼容通道的 /v1 由后端 factory 对本地无路径地址自动补全
+            "http://127.0.0.1:1234",
+            "",
+            new[] { "qwen2.5-7b-instruct", "llama-3.2-3b-instruct", "deepseek-r1-distill-qwen-7b" },
+            "LM Studio 本地推理（GUI 加载 GGUF），OpenAI 兼容接口，无需 API Key",
+            RequiresApiKey: false,
+            ConsoleUrl: "https://lmstudio.ai/",
+            IsLocal: true
         ),
         new(
             "openai",

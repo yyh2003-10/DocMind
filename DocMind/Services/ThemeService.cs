@@ -90,12 +90,7 @@ public sealed class ThemeService
     {
         try
         {
-            var dict = LoadThemeDictionary(mode);
-            var merged = Application.Current.Resources.MergedDictionaries;
-            if (merged.Count > 0)
-                merged[0] = dict;
-            else
-                merged.Add(dict);
+            ReplaceThemeDictionary(LoadThemeDictionary(mode));
         }
         catch (Exception ex)
         {
@@ -103,19 +98,39 @@ public sealed class ThemeService
         }
     }
 
+    /// <summary>
+    /// 只替换 Theme 字典，保留 Icons 等其它 MergedDictionaries。
+    /// 历史 bug：直接 merged[0] = theme 会把 Icons.xaml 顶掉，
+    /// 导致 MainWindow 启动时 StaticResource IconSettings 找不到。
+    /// </summary>
+    private static void ReplaceThemeDictionary(ResourceDictionary themeDict)
+    {
+        var merged = Application.Current.Resources.MergedDictionaries;
+        for (int i = 0; i < merged.Count; i++)
+        {
+            var src = merged[i].Source?.OriginalString ?? "";
+            if (src.Contains("Theme", StringComparison.OrdinalIgnoreCase))
+            {
+                merged[i] = themeDict;
+                return;
+            }
+        }
+        merged.Add(themeDict);
+    }
+
     /// <summary>启动时加载已保存的主题。</summary>
     public void LoadInitialTheme()
     {
         var mode = CurrentTheme;
-        var dict = LoadThemeDictionary(mode);
-        var merged = Application.Current.Resources.MergedDictionaries;
-        if (merged.Count > 0)
-            merged[0] = dict;
-        else
-            merged.Add(dict);
+        ReplaceThemeDictionary(LoadThemeDictionary(mode));
     }
 
     /// <summary>重启当前应用。</summary>
+    /// <remarks>
+    /// 必须把旧进程 PID 传给新实例（--restart-wait）：若先 Process.Start 再 Shutdown，
+    /// 新进程几乎必然撞上尚未释放的单实例 Mutex，被判定"已有实例"后自行退出，
+    /// 表现为切主题后程序消失、自动重启失败。新实例在抢 Mutex 前会等待本进程退出。
+    /// </remarks>
     private static void RestartApp()
     {
         var exePath = Environment.ProcessPath;
@@ -125,8 +140,19 @@ public sealed class ThemeService
         var startInfo = new ProcessStartInfo(exePath)
         {
             UseShellExecute = true,
+            Arguments = $"--restart-wait {Environment.ProcessId}",
         };
-        Process.Start(startInfo);
+
+        try
+        {
+            Process.Start(startInfo);
+        }
+        catch
+        {
+            // 拉起失败则不要退出，避免用户丢掉当前会话
+            return;
+        }
+
         Application.Current.Shutdown();
     }
 

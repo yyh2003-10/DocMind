@@ -739,6 +739,16 @@ def _poppler_available() -> bool:
         return False
 
 
+def _ocr_model_status() -> dict[str, Any]:
+    """OCR 官方模型缓存状态（目录/源/是否就绪），供设置页下载提示。"""
+    try:
+        from doc2mind.core.loader.ocr_models import ocr_model_cache_status
+
+        return ocr_model_cache_status()
+    except Exception as e:  # noqa: BLE001 — 状态探测失败不拖垮诊断面板
+        return {"ocr_model_cached": False, "error": str(e)}
+
+
 def get_dependencies_status() -> dict[str, Any]:
     """聚合返回所有依赖的就绪状态，供前端「环境自检」面板一次拉取。
 
@@ -766,6 +776,7 @@ def get_dependencies_status() -> dict[str, Any]:
         "cuda_runtime_tag": diag.get("cuda_runtime_tag"),
         "recommended_path": diag.get("recommended_path"),
         "ocr_available": _ocr_available(),
+        "ocr_model_status": _ocr_model_status(),
         "model_cached": is_model_cached(),
         "model_name": settings.embed_model,
         "poppler_available": _poppler_available(),

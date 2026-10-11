@@ -128,6 +128,21 @@ def _get_ocr(lang: str = "ch", device: str | None = None, slot: int = 0) -> obje
     _register_nvidia_dll_dirs()
     # 必须先于 import paddleocr 执行（paddle 一旦初始化，flags 不再生效）
     _disable_paddle_pir()
+    # 模型目录 + 国内源（modelscope/bos）必须先于 paddlex import 生效
+    from doc2mind.core.loader.ocr_models import (
+        configure_paddle_model_env,
+        ocr_download_hint,
+        ocr_models_cached,
+    )
+
+    model_dir = configure_paddle_model_env()
+    lang_for_models = lang or "ch"
+    if not ocr_models_cached(lang_for_models):
+        # 不静默下载：首次使用须用户确认（设置页/安装后「下载 OCR 模型」）
+        raise LoaderError(
+            ocr_download_hint(lang_for_models)
+            or f"OCR 模型未就绪，请先下载（目录：{model_dir}）"
+        )
 
     try:
         from paddleocr import PaddleOCR
@@ -194,8 +209,12 @@ def _get_ocr(lang: str = "ch", device: str | None = None, slot: int = 0) -> obje
             else:
                 raise gpu_err
     except Exception as e:  # noqa: BLE001 — PaddleOCR 初始化失败原因多样
+        from doc2mind.core.loader.ocr_models import ocr_download_hint
+
+        hint = ocr_download_hint(lang_for_models)
         raise LoaderError(
-            f"PaddleOCR 初始化失败：{e}。首次运行需下载模型，请检查网络。"
+            f"PaddleOCR 初始化失败：{e}。"
+            + (f"\n{hint}" if hint else "\n若为模型下载失败，请检查网络后重试。")
         ) from e
 
     # 标注实例的运行环境，供推理崩溃时精准降级（GPU→CPU / mkldnn→纯CPU）

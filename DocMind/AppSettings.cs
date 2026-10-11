@@ -23,6 +23,24 @@ public sealed class CustomThemeEntry
     public string Description { get; set; } = string.Empty;
     public string PrimaryHex { get; set; } = "#3B82F6";
     public string BgHex { get; set; } = "#F8FAFC";
+
+    /// <summary>设置页列表色块预览（PrimaryHex）。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Windows.Media.Brush PrimaryBrush
+    {
+        get
+        {
+            try
+            {
+                var c = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(PrimaryHex);
+                return new System.Windows.Media.SolidColorBrush(c);
+            }
+            catch
+            {
+                return System.Windows.Media.Brushes.SteelBlue;
+            }
+        }
+    }
 }
 
 public class AppSettings
@@ -71,8 +89,13 @@ public class AppSettings
     /// 空 = 默认 %LOCALAPPDATA%\doc2mind\fastembed_cache）。</summary>
     public string? EmbedCacheDir { get; set; }
 
+    /// <summary>OCR（PaddleOCR/PaddleX）官方模型缓存根目录。
+    /// 注入 DOC2MIND_OCR_MODEL_DIR；模型落在该目录下 official_models/。
+    /// 空 = 默认 %LOCALAPPDATA%\doc2mind\paddle_models。</summary>
+    public string? OcrModelDir { get; set; }
+
     // ===== 推送到后端的共享配置 — LLM / RAG 对话（启动时注入 DOC2MIND_* 环境变量） =====
-    /// <summary>LLM 提供商标识（none | openai | ollama）。</summary>
+    /// <summary>LLM 提供商标识（none | openai | ollama | anthropic | gemini）。</summary>
     public string LlmProvider { get; set; } = "none";
     /// <summary>OpenAI 兼容 API Key（对应 DOC2MIND_LLM_API_KEY）。</summary>
     public string? LlmApiKey { get; set; }
@@ -90,20 +113,86 @@ public class AppSettings
     public double LlmTemperature { get; set; } = 0.7;
     /// <summary>最大 token 数（对应 DOC2MIND_LLM_MAX_TOKENS）。</summary>
     public int LlmMaxTokens { get; set; } = 8192;
+
+    // ── Agent 进阶能力预留（默认关闭；基础产品不暴露危险能力）──
+    /// <summary>是否在对话请求中允许 Agent 模式（后端 agentMode）。默认 false = 仅 RAG。
+    /// 与「默认回答模式」分离：本项是能力总闸。</summary>
+    public bool AgentModeEnabled { get; set; } = false;
+
+    /// <summary>对话页最后选择的回答模式（rag/agent/auto）。重启后恢复。</summary>
+    public string? LastChatMode { get; set; }
+
+    /// <summary>全局默认回答模式（rag/agent/auto）。出厂 rag；设置页可改并推后端。</summary>
+    public string DefaultChatMode { get; set; } = "rag";
+    /// <summary>长文大纲编排开关。</summary>
+    public bool LongformEnabled { get; set; } = false;
+    /// <summary>长文最大章节数。</summary>
+    public int LongformMaxSections { get; set; } = 8;
+    /// <summary>长文总字数上限。</summary>
+    public int LongformMaxChars { get; set; } = 12000;
+    /// <summary>联网搜索 Provider。</summary>
+    public string SearchProvider { get; set; } = "builtin";
+    /// <summary>搜索 Provider API Key（本地敏感字段，仅本机）。</summary>
+    public string? SearchProviderApiKey { get; set; }
+    /// <summary>搜索 Provider 端点。</summary>
+    public string? SearchProviderEndpoint { get; set; }
+
+    /// <summary>对话页最后选择的回答渲染格式（"markdown" | "html"）。
+    /// html = HTML 体验模式（整页 HTML 沙箱气泡）；重启后恢复。异常值按 markdown 处理。</summary>
+    public string? LastAnswerFormat { get; set; }
+
+    /// <summary>HTML 气泡是否允许引用公网 CDN 资源（默认允许）。
+    /// 关闭时收紧气泡内 CSP 的 script-src/connect-src，仅内联资源可用。
+    /// 注意：此开关只约束端上 WebView2 沙箱 CSP，后端不消费。</summary>
+    public bool HtmlAllowCdn { get; set; } = true;
+
+    /// <summary>解析对话页应恢复的回答模式：LastChatMode → DefaultChatMode → auto（UI 初始）。</summary>
+    public string ResolveChatMode()
+    {
+        var last = (LastChatMode ?? "").Trim().ToLowerInvariant();
+        if (last is "rag" or "agent" or "auto")
+        {
+            return last;
+        }
+        var def = (DefaultChatMode ?? "").Trim().ToLowerInvariant();
+        return def is "rag" or "agent" or "auto" ? def : "auto";
+    }
+
+    /// <summary>Agent 工作区写入策略：ask | session_allow | always_allow_workspace。</summary>
+    public string AgentFileWritePolicy { get; set; } = "session_allow";
+
+    /// <summary>Agent 单次任务最大步数（进阶能力启用后生效）。</summary>
+    public int AgentMaxSteps { get; set; } = 8;
+    /// <summary>LLM 调用/流式空闲超时（秒，对应 DOC2MIND_LLM_TIMEOUT）。
+    /// 0 = 用后端默认 180s。慢网/大模型（NIM 等）建议 300+。</summary>
+    public double LlmTimeoutSec { get; set; } = 300;
+    /// <summary>联网搜索总预算（秒，对应 DOC2MIND_WEB_SEARCH_TIMEOUT）。
+    /// 多引擎聚合 + 正文精读硬上限；过短会在慢网/反爬下拿不到正文。默认 36。</summary>
+    public double WebSearchTimeoutSec { get; set; } = 36;
+    /// <summary>自建/自选 SearXNG 实例地址（对应 DOC2MIND_WEB_SEARCH_SEARXNG_URL）。
+    /// 空 = 用内置公有实例；可填单个 URL 或逗号分隔多个，如 http://127.0.0.1:8888。</summary>
+    public string? WebSearchSearxngUrl { get; set; }
     /// <summary>检索引用 chunk 数（对应 DOC2MIND_RAG_TOP_K）。</summary>
     public int RagTopK { get; set; } = 5;
     /// <summary>自定义 RAG 系统提示词（对应 DOC2MIND_RAG_SYSTEM_PROMPT；空 = 用后端内置默认提示词）。</summary>
     public string? RagSystemPrompt { get; set; }
     /// <summary>多轮对话历史 token 预算（对应 DOC2MIND_RAG_MAX_HISTORY_TOKENS；0 = 不按 token 截断）。</summary>
     public int RagMaxHistoryTokens { get; set; } = 4096;
-    /// <summary>RAG 问答模式（"strict" = 严格知识库模式；"hybrid" = 混合常识增强模式，未命中本地文档时使用大模型常识解答）。</summary>
-    public string RagMode { get; set; } = "hybrid";
+    /// <summary>RAG 问答模式（"strict" = 严格知识库模式；"hybrid" = 混合常识增强模式，未命中本地文档时使用大模型常识解答）。
+    /// 默认与后端 config 默认（strict）保持一致——本值仅在保存时经 /v1/config 推送，启动不注入；
+    /// 旧客户端默认 hybrid 会导致「从未保存过设置」期间前后端模式脱节。</summary>
+    public string RagMode { get; set; } = "strict";
+
+    /// <summary>使用档案：docs | notes | agent | library。决定回答风格与检索默认预设。</summary>
+    public string UsageProfile { get; set; } = "docs";
 
     /// <summary>是否启用检索后重排（Reranker / cross-encoder 精排），对应 DOC2MIND_RERANK_ENABLED。
     /// 开启后用重排模型对召回候选逐对打分重排，显著提升知识检索相关性；模型不可用时自动降级为原始 RRF 排序。</summary>
     public bool RerankEnabled { get; set; } = true;
-    /// <summary>重排模型名（fastembed TextRanking 支持列表中的模型），对应 DOC2MIND_RERANK_MODEL。默认多语言模型，首次使用需联网下载约 1.3GB。</summary>
-    public string RerankModel { get; set; } = "Xenova/bge-reranker-v2-m3";
+    /// <summary>重排模型名（fastembed TextCrossEncoder 支持列表中的模型），对应 DOC2MIND_RERANK_MODEL。
+    /// 默认 BAAI/bge-reranker-base（中英可用，首次使用需联网下载约 280MB）。
+    /// 注意：Xenova/bge-reranker-v2-m3 不在支持列表，会被自动纠正。</summary>
+    public string RerankModel { get; set; } = "BAAI/bge-reranker-base";
     /// <summary>送入重排器的候选数上限（对应 DOC2MIND_RERANK_RECALL），默认 20。</summary>
     public int RerankRecall { get; set; } = 20;
 
@@ -123,8 +212,44 @@ public class AppSettings
     /// （裸模型名，用设置页全局配置的 provider/key/地址）。</summary>
     public string? LastChatProfileId { get; set; }
 
-    /// <summary>对话页「🌐 联网搜索」开关是否开启（持久化，重启后保持勾选状态）。</summary>
+    /// <summary>设置页「获取模型列表」拉到的可用模型名（持久化，由设置页保存时镜像 LlmModels 写入）。
+    /// 对话页默认提供商分组的种子来源之一：让用户不必每次都到对话页点刷新，
+    /// 重启后也能直接看到上次拉取的全部模型。始终镜像设置页当前的模型候选，
+    /// 切换服务商时由设置页先 Clear 再重填，故无需额外的来源指纹。</summary>
+    public List<string> LlmAvailableModels { get; set; } = new();
+
+    /// <summary>对话页「🌐 联网搜索」开关是否开启（持久化，重启后保持勾选状态）。
+    /// 兼容旧配置；新字段以 WebSearchMode 为准，两者写入时同步。</summary>
     public bool EnableWebSearch { get; set; } = false;
+
+    /// <summary>联网搜索模式：off / normal / deep（持久化）。
+    /// 空 = 旧配置未写过此字段，启动时按 EnableWebSearch 迁移为 normal/off。</summary>
+    public string WebSearchMode { get; set; } = "";
+
+    /// <summary>解析有效联网模式（兼容旧 EnableWebSearch 布尔字段）。</summary>
+    public string ResolveWebSearchMode()
+    {
+        var m = (WebSearchMode ?? "").Trim().ToLowerInvariant();
+        return m switch
+        {
+            "deep" => "deep",
+            "normal" => "normal",
+            "off" => "off",
+            _ => EnableWebSearch ? "normal" : "off",
+        };
+    }
+
+    /// <summary>写回联网模式，并同步旧布尔字段。</summary>
+    public void SetWebSearchMode(string mode)
+    {
+        var m = (mode ?? "off").Trim().ToLowerInvariant();
+        if (m is not ("off" or "normal" or "deep"))
+        {
+            m = "off";
+        }
+        WebSearchMode = m;
+        EnableWebSearch = m is "normal" or "deep";
+    }
 
     /// <summary>对话页右侧协同抽屉（出处 / 创作物工作台）的宽度（像素，持久化）。
     /// 用户拖动分隔条改变宽度后落盘，下次启动自动还原；有效区间 240~720，
@@ -215,7 +340,8 @@ public class AppSettings
     }
 
     /// <summary>持久化当前设置到用户级目录（%LOCALAPPDATA%\DocMind\appsettings.json）。
-    /// 唯一的落盘出口：LlmApiKey 统一经 DPAPI 加密（幂等：明文迁移为密文、已密文原样、空值原样），
+    /// 唯一的落盘出口：LlmApiKey/GithubToken/SearchProviderApiKey 统一经 DPAPI 加密
+    /// （幂等：明文迁移为密文、已密文原样、空值原样），
     /// 内存单例仍持明文供运行时使用。序列化副本，不改动 this 的字段值。
     /// LlmProfiles 同样加密各档案的 ApiKey（深拷贝后加密，不污染内存单例的明文）。</summary>
     public void Save()
@@ -224,6 +350,8 @@ public class AppSettings
         var snapshot = (AppSettings)MemberwiseClone();
         snapshot.LlmApiKey = SecretProtector.Protect(LlmApiKey);
         snapshot.GithubToken = SecretProtector.Protect(GithubToken);
+        // 搜索 Provider API Key 同为敏感凭据：密文落盘（明文为旧版存量，保存时自动迁移）
+        snapshot.SearchProviderApiKey = SecretProtector.Protect(SearchProviderApiKey);
         // 档案 key 加密：先深拷贝每个档案，只对副本加密，内存单例保持明文供运行时使用
         snapshot.LlmProfiles = LlmProfiles?.Select(p =>
         {

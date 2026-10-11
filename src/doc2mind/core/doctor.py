@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import sys
+import tempfile
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -102,34 +102,49 @@ def run_diagnostics(check_network: bool = True) -> DoctorReport:
         )
     )
 
-    # 2. 存储与 SQLite 向量库读写检测
+    # 2. 按配置探测存储后端能力与健康状态，不直接绑定 SQLite。
     try:
         data_dir = _user_data_dir()
         data_dir.mkdir(parents=True, exist_ok=True)
         config_dir = _user_config_dir()
         config_dir.mkdir(parents=True, exist_ok=True)
+        from doc2mind.core.store import create_knowledge_store
 
-        test_db = data_dir / "_doctor_test.db"
-        con = sqlite3.connect(test_db)
-        con.execute("CREATE TABLE _t (id INT, val TEXT)")
-        con.execute("INSERT INTO _t VALUES (1, 'ok')")
-        con.commit()
-        con.close()
-        test_db.unlink(missing_ok=True)
+        # 独立临时目录避免 doctor 触碰用户知识库，并自动清理 SQLite WAL 文件。
+        with tempfile.TemporaryDirectory(prefix="docmind-doctor-", dir=data_dir) as tmp:
+            store = create_knowledge_store(
+                settings,
+                settings.embed_dim,
+                db_path=os.path.join(tmp, "probe.db"),
+            )
+            try:
+                store.open()
+                health = store.health_check()
+                if not health.healthy:
+                    raise RuntimeError(health.detail)
+                capabilities = store.capabilities
+            finally:
+                store.close()
 
         report.checks.append(
             DiagnosticCheck(
-                name="本地存储读写",
+                name="存储后端",
                 category="storage",
                 status="ok",
-                message="用户数据与配置目录读写正常",
-                detail=f"数据目录: {data_dir}\n配置目录: {config_dir}",
+                message=f"{capabilities.backend} 后端读写与健康检查正常",
+                detail=(
+                    f"backend={capabilities.backend}, "
+                    f"vector={capabilities.vector_search}, "
+                    f"lexical={capabilities.lexical_search}, "
+                    f"sparse={capabilities.sparse_search}\n"
+                    f"数据目录: {data_dir}\n配置目录: {config_dir}"
+                ),
             )
         )
     except Exception as e:  # noqa: BLE001
         report.checks.append(
             DiagnosticCheck(
-                name="本地存储读写",
+                name="存储后端",
                 category="storage",
                 status="error",
                 message=f"目录读写失败: {e}",
@@ -207,6 +222,48 @@ def run_diagnostics(check_network: bool = True) -> DoctorReport:
                 message="PaddleOCR 引擎已安装就绪",
             )
         )
+        # 5.0.1 OCR 官方模型是否已下载（国内源；未下载时扫描件导入会明确提示）
+        try:
+            from doc2mind.core.loader.ocr_models import ocr_model_cache_status
+
+            st = ocr_model_cache_status()
+            if st.get("ocr_model_cached"):
+                report.checks.append(
+                    DiagnosticCheck(
+                        name="OCR 识别模型",
+                        category="extension",
+                        status="ok",
+                        message="识别模型已就绪",
+                        detail=f"目录: {st.get('ocr_model_dir')}",
+                    )
+                )
+            else:
+                missing = "、".join(st.get("ocr_models_missing") or [])
+                report.checks.append(
+                    DiagnosticCheck(
+                        name="OCR 识别模型",
+                        category="extension",
+                        status="warn",
+                        message="识别模型尚未下载（扫描件/图片导入前需就绪）",
+                        detail=(
+                            f"缺失: {missing}；目录: {st.get('ocr_model_dir')}；"
+                            f"源: {st.get('ocr_model_source')}（国内）"
+                        ),
+                        fix_suggestion=(
+                            "到【设置 → 知识库】点击「下载 OCR 模型」（约 150MB，国内源），"
+                            "或在「外部组件路径」指定已有模型目录后重启后端。"
+                        ),
+                    )
+                )
+        except Exception as e:  # noqa: BLE001 — 状态探测失败不拖垮诊断
+            report.checks.append(
+                DiagnosticCheck(
+                    name="OCR 识别模型",
+                    category="extension",
+                    status="info",
+                    message=f"模型状态探测失败: {e}",
+                )
+            )
     else:
         report.checks.append(
             DiagnosticCheck(
