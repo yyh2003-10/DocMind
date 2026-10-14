@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # DocMind 一键部署脚本（Windows / PowerShell）
 #
 # 用法（普通用户即可，无需管理员）：
@@ -18,7 +18,7 @@
 #   - 项目本身以 editable 方式注册（--no-deps，避免二次解析覆盖锁定版本）
 #   - 国内网络：pip 走清华镜像；HF 模型下载内置 hf-mirror.com 镜像
 #   - 大 whl（paddlepaddle-gpu ~300MB 等）pip 若停滞，用 curl -C - 断点续传
-#     下载后 pip install <本地whl>，详见 docs/部署指南.md
+#     下载后 pip install <本地whl>
 # ============================================================
 
 [CmdletBinding()]
@@ -93,7 +93,7 @@ foreach ($req in $reqs) {
     $reqPath = Join-Path $RepoRoot $req
     Write-Host "--- $req ---"
     & $VenvPython -m pip install -r $reqPath -i $PipMirror
-    if ($LASTEXITCODE -ne 0) { throw "依赖安装失败: $req（大包可尝试 curl -C - 断点续传，见 docs/部署指南.md）" }
+    if ($LASTEXITCODE -ne 0) { throw "依赖安装失败: $req（大包可尝试 curl -C - 断点续传后安装本地 whl）" }
 }
 
 # ------------------------------------------------------------

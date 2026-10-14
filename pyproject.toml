@@ -76,7 +76,7 @@ native-pdf = [
 # 注意：默认装 CPU 版 paddlepaddle（无 NVIDIA 显卡也能跑，但较慢）。
 # 本机（RTX 2060）验证使用的是 GPU 版 paddlepaddle-gpu==3.3.1 (cu126)，
 # 与 onnxruntime-gpu 的 cu13 运行时共存，属于特例环境；普通设备建议
-# 单一运行时。GPU 版安装见 requirements-ocr.txt / docs/部署指南。
+# 单一运行时。GPU 版安装见 requirements-ocr.txt。
 ocr = [
     "paddleocr==3.7.0",
     "paddlepaddle==3.3.1",

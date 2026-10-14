@@ -14,7 +14,7 @@ using Microsoft.Web.WebView2.Core;
 /// <summary>
 /// HTML 体验气泡：把 AI 输出的自包含整页 HTML 渲染为独立 WebView2 沙箱文档。
 ///
-/// 双阶段渲染（对齐 docs/handoffs/html-bubble-handoff.md 第四节）：
+/// 双阶段渲染：
 /// - 收集中（<see cref="IsStreaming"/>=true）：只显示轻量进度壳 + 去标签纯文本预览，
 ///   绝不把半截 HTML 交给 WebView2——半截页面会闪崩、布局跳动。
 /// - 完稿（<see cref="IsStreaming"/>=false）：一次性 NavigateToString 整页。

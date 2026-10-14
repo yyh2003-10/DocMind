@@ -1,10 +1,10 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     DocMind 核心链路 API 冒烟验证脚本（Windows / PowerShell 5.1+）。
 
 .DESCRIPTION
-    按 docs/verification/core-chain-and-smoke.md 的「卡点验收矩阵」逐项验证。
+    按本文件内「卡点验收矩阵」逐项验证。
     主链（摄入 → 分块嵌入 → 混合检索 → RAG 问答 → 流式 → 会话持久化）默认全跑；
     支线（转换 / 交付物导出 / 重建索引 / AI 整理 / 知识图谱 / 系统依赖）用 -Deep 开启。
 
@@ -847,7 +847,7 @@ if ($known -gt 0) {
 }
 
 Write-Host ''
-Write-Host ('详细文档: docs/verification/core-chain-and-smoke.md') -ForegroundColor DarkGray
+Write-Host ('卡点矩阵与验收标准: 见本脚本头部注释') -ForegroundColor DarkGray
 Write-Host ''
 
 if ($fail -gt 0) { exit 1 } else { exit 0 }

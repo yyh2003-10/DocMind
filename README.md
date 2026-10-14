@@ -92,8 +92,8 @@ doc2mind convert ./batch/ --format md --out ./out/
 .\scripts\smoke.ps1 -Deep
 ```
 
-存在 FAIL 时退出码为 1，可直接接 CI。完整卡点矩阵、验收标准与文档漂移清单见
-[`docs/verification/core-chain-and-smoke.md`](docs/verification/core-chain-and-smoke.md)。
+存在 FAIL 时退出码为 1，可直接接 CI。卡点矩阵与验收标准见
+[`scripts/smoke.ps1`](scripts/smoke.ps1) 头部注释。
 
 ## MCP 接入
 
@@ -137,7 +137,6 @@ WPF  ┘        │
 ```
 
 WPF 桌面客户端源码在 [`DocMind/`](DocMind/)，HTTP API 文档在 [`docs/api.md`](docs/api.md)，
-使用说明在 [`docs/使用说明-每个页面在干嘛.md`](docs/使用说明-每个页面在干嘛.md)，
 MCP 接入文档在 [`docs/mcp.md`](docs/mcp.md)。
 
 ## 配置

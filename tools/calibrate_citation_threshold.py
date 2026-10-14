@@ -5,7 +5,7 @@
 
 用法：
   $env:PYTHONPATH="src"; python tools/calibrate_citation_threshold.py --collection doc2mind
-  python tools/calibrate_citation_threshold.py --dry-run --out docs/verification/xxx.csv
+  python tools/calibrate_citation_threshold.py --dry-run --out calibration.csv
 """
 
 from __future__ import annotations

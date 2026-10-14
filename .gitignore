@@ -323,7 +323,8 @@ __pycache__/
 # !tools/packages.config
 
 # DocMind 工具依赖（本地 poppler 等第三方二进制，不提交）
-tools/
+tools/*
+!tools/calibrate_citation_threshold.py
 
 # Tabs Studio
 *.tss
@@ -416,8 +417,6 @@ view_*.jpg
 dc1_screenshot_issues.md
 dc1_video_analysis.md
 ima_vs_DocMind_*.md
-# 合并期备份残留
-docs/handoffs/pre-merge-untracked-backup/
 # PPT 导出 QA 样例产物
 ppt_qa/
 # 编辑器/构建残留与零字节垃圾
@@ -432,3 +431,38 @@ run_low_compute_demo.py
 verification_output/
 nul
 x/
+
+# ===== 仓库清理后新增（2026-10 智能体工作文件清退）=====
+# dotnet 本地构建输出目录（内容与 DocMind/Resources、DocMind/Assets 重复）
+ci-out/
+# 各 AI IDE 的本地配置与会话记录
+/.codebuddy/
+/.trae/
+/.codeartsdoer/
+/.zcode/
+# MCP 本地配置（写死绝对路径，不入仓库）
+.mcp.json
+# 本地知识库数据库与运行时端口文件
+doc2mind.db*
+server.port
+# 智能体工作记录目录（派工表 / 交接 / 审计 / 验收报告 / 评估集）
+docs/agents/
+docs/handoffs/
+docs/audit/
+docs/verification/
+eval/
+# 会话交接与一次性补丁脚本
+/HANDOVER.md
+/DocMind/HANDOVER.md
+/_replace_emojis.py
+/DocMind_Chat_*.md
+# 绑死 worktree 的调参诊断页
+/index.html
+/assets/diag.css
+/assets/diag.js
+# 本地仓库清理工作文件
+/.cleanup-plan.md
+/.filter-repo-keep*.txt
+/.git-cleanup-filter.py
+/.diag*.py
+/.git-backup-before-cleanup/
